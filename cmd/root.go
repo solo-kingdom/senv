@@ -1,0 +1,57 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"os/user"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+)
+
+var (
+	dataPath string
+)
+
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "senv",
+	Short: "Secure environment variable and configuration manager",
+	Long: `Senv is a secure tool for managing environment variables and configuration files.
+It provides encrypted storage for sensitive data with group-based organization.`,
+}
+
+// Execute adds all child commands to the root command and sets flags appropriately.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func init() {
+	// Get default data path
+	defaultPath := getDefaultDataPath()
+
+	rootCmd.PersistentFlags().StringVar(&dataPath, "path", defaultPath, "data storage path")
+}
+
+func getDefaultDataPath() string {
+	usr, err := user.Current()
+	if err != nil {
+		return filepath.Join(os.Getenv("HOME"), ".config", "senv", "data")
+	}
+	return filepath.Join(usr.HomeDir, ".config", "senv", "data")
+}
+
+func getDataPath() string {
+	// Expand home directory if needed
+	if dataPath[:2] == "~/" {
+		usr, err := user.Current()
+		if err != nil {
+			return dataPath
+		}
+		return filepath.Join(usr.HomeDir, dataPath[2:])
+	}
+	return dataPath
+}
