@@ -13,6 +13,7 @@ import (
 type Manager struct {
 	storage  *storage.Manager
 	password string
+	key      []byte // Derived key (alternative to password)
 }
 
 // NewManager creates a new environment variable manager
@@ -23,9 +24,25 @@ func NewManager(storage *storage.Manager, password string) *Manager {
 	}
 }
 
+// NewManagerWithKey creates a new environment variable manager with a derived key
+func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
+	return &Manager{
+		storage: storage,
+		key:     key,
+	}
+}
+
 // Get retrieves an environment variable from a group
 func (m *Manager) Get(group string, key string) (string, error) {
-	envGroup, err := m.storage.LoadEnvGroup(group, m.password)
+	var envGroup *storage.EnvGroup
+	var err error
+
+	if m.key != nil {
+		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
+	} else {
+		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("failed to load group %s: %w", group, err)
 	}
@@ -40,7 +57,15 @@ func (m *Manager) Get(group string, key string) (string, error) {
 
 // Set sets an environment variable in a group
 func (m *Manager) Set(group string, key string, value string) error {
-	envGroup, err := m.storage.LoadEnvGroup(group, m.password)
+	var envGroup *storage.EnvGroup
+	var err error
+
+	if m.key != nil {
+		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
+	} else {
+		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
+	}
+
 	if err != nil {
 		// If group doesn't exist, create it
 		envGroup = storage.NewEnvGroup(group)
@@ -53,7 +78,13 @@ func (m *Manager) Set(group string, key string, value string) error {
 	envGroup.Variables[key] = value
 	envGroup.UpdatedAt = time.Now()
 
-	if err := m.storage.SaveEnvGroup(envGroup, m.password); err != nil {
+	if m.key != nil {
+		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
+	} else {
+		err = m.storage.SaveEnvGroup(envGroup, m.password)
+	}
+
+	if err != nil {
 		return fmt.Errorf("failed to save group %s: %w", group, err)
 	}
 
@@ -62,7 +93,15 @@ func (m *Manager) Set(group string, key string, value string) error {
 
 // Delete deletes an environment variable from a group
 func (m *Manager) Delete(group string, key string) error {
-	envGroup, err := m.storage.LoadEnvGroup(group, m.password)
+	var envGroup *storage.EnvGroup
+	var err error
+
+	if m.key != nil {
+		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
+	} else {
+		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to load group %s: %w", group, err)
 	}
@@ -74,7 +113,13 @@ func (m *Manager) Delete(group string, key string) error {
 	delete(envGroup.Variables, key)
 	envGroup.UpdatedAt = time.Now()
 
-	if err := m.storage.SaveEnvGroup(envGroup, m.password); err != nil {
+	if m.key != nil {
+		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
+	} else {
+		err = m.storage.SaveEnvGroup(envGroup, m.password)
+	}
+
+	if err != nil {
 		return fmt.Errorf("failed to save group %s: %w", group, err)
 	}
 
@@ -87,7 +132,15 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 
 	if group != "" {
 		// List specific group
-		envGroup, err := m.storage.LoadEnvGroup(group, m.password)
+		var envGroup *storage.EnvGroup
+		var err error
+
+		if m.key != nil {
+			envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
+		} else {
+			envGroup, err = m.storage.LoadEnvGroup(group, m.password)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to load group %s: %w", group, err)
 		}
@@ -100,7 +153,12 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 		}
 
 		for _, g := range groups {
-			envGroup, err := m.storage.LoadEnvGroup(g, m.password)
+			var envGroup *storage.EnvGroup
+			if m.key != nil {
+				envGroup, err = m.storage.LoadEnvGroupWithKey(g, m.key)
+			} else {
+				envGroup, err = m.storage.LoadEnvGroup(g, m.password)
+			}
 			if err != nil {
 				continue // Skip groups that can't be loaded
 			}
@@ -132,7 +190,12 @@ func (m *Manager) Export() (string, error) {
 	// Collect all variables
 	allVars := make(map[string]string)
 	for _, group := range activeGroups {
-		envGroup, err := m.storage.LoadEnvGroup(group, m.password)
+		var envGroup *storage.EnvGroup
+		if m.key != nil {
+			envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
+		} else {
+			envGroup, err = m.storage.LoadEnvGroup(group, m.password)
+		}
 		if err != nil {
 			continue // Skip groups that can't be loaded
 		}
@@ -178,7 +241,13 @@ func (m *Manager) AddGroup(name string) error {
 
 	// Create new group
 	envGroup := storage.NewEnvGroup(name)
-	if err := m.storage.SaveEnvGroup(envGroup, m.password); err != nil {
+	if m.key != nil {
+		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
+	} else {
+		err = m.storage.SaveEnvGroup(envGroup, m.password)
+	}
+
+	if err != nil {
 		return fmt.Errorf("failed to create group %s: %w", name, err)
 	}
 
@@ -287,7 +356,13 @@ func (m *Manager) ListGroups() ([]GroupInfo, error) {
 			}
 		}
 
-		envGroup, err := m.storage.LoadEnvGroup(name, m.password)
+		var envGroup *storage.EnvGroup
+		if m.key != nil {
+			envGroup, err = m.storage.LoadEnvGroupWithKey(name, m.key)
+		} else {
+			envGroup, err = m.storage.LoadEnvGroup(name, m.password)
+		}
+
 		varCount := 0
 		if err == nil {
 			varCount = len(envGroup.Variables)
