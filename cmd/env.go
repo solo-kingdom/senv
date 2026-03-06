@@ -15,9 +15,7 @@ var envCmd = &cobra.Command{
 	Long:  `Manage encrypted environment variables organized by groups.`,
 }
 
-var (
-	envGroup string
-)
+var envGroup string
 
 func init() {
 	rootCmd.AddCommand(envCmd)

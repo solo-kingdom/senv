@@ -241,7 +241,6 @@ func (m *Manager) AddGroup(name string) error {
 
 	// Create new group
 	envGroup := storage.NewEnvGroup(name)
-
 	if m.key != nil {
 		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
 	} else {

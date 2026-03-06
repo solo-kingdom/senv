@@ -39,7 +39,7 @@ func (m *Manager) GetDataPath() string {
 // Initialize creates the necessary directory structure and files
 func (m *Manager) Initialize(password string) error {
 	// Create data directory if it doesn't exist
-	if err := os.MkdirAll(m.dataPath, 0700); err != nil {
+	if err := os.MkdirAll(m.dataPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
@@ -149,7 +149,7 @@ func (m *Manager) SaveMetadata(metadata *Metadata) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // LoadSettings loads the settings file
@@ -176,7 +176,7 @@ func (m *Manager) SaveSettings(settings *Settings) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // LoadEnvGroup loads an environment variable group
@@ -259,7 +259,7 @@ func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 	filename := fmt.Sprintf("%s%s%s", EnvFilePrefix, envGroup.Name, EnvFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
 
-	return os.WriteFile(path, []byte(encryptedData), 0600)
+	return os.WriteFile(path, []byte(encryptedData), 0o600)
 }
 
 // LoadConfigIndex loads the config file index
@@ -286,7 +286,7 @@ func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // SaveConfigFile saves an encrypted configuration file
@@ -314,7 +314,7 @@ func (m *Manager) SaveConfigFile(name string, content []byte, password string) e
 	filename := fmt.Sprintf("%s%s", name, ConfigFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
 
-	return os.WriteFile(path, []byte(encryptedData), 0600)
+	return os.WriteFile(path, []byte(encryptedData), 0o600)
 }
 
 // LoadConfigFile loads and decrypts a configuration file
