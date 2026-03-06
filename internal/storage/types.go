@@ -16,9 +16,16 @@ type Metadata struct {
 
 // Settings represents the user settings
 type Settings struct {
-	ActiveGroups []string `json:"active_groups"` // Groups that are activated (besides default)
-	DefaultGroup string   `json:"default_group"` // Default group name (usually "default")
-	UpdatedAt    string   `json:"updated_at"`
+	ActiveGroups []string      `json:"active_groups"` // Groups that are activated (besides default)
+	DefaultGroup string        `json:"default_group"` // Default group name (usually "default")
+	Session      SessionConfig `json:"session"`       // Session cache configuration
+	UpdatedAt    string        `json:"updated_at"`
+}
+
+// SessionConfig represents session cache configuration
+type SessionConfig struct {
+	Enabled bool   `json:"enabled"` // Whether session cache is enabled
+	Timeout string `json:"timeout"` // Default session timeout (e.g., "8h", "1d", "restart", "never")
 }
 
 // EnvGroup represents an environment variable group
@@ -60,7 +67,11 @@ func NewSettings() *Settings {
 	return &Settings{
 		ActiveGroups: []string{},
 		DefaultGroup: "default",
-		UpdatedAt:    time.Now().Format(time.RFC3339),
+		Session: SessionConfig{
+			Enabled: true,
+			Timeout: "8h",
+		},
+		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 }
 

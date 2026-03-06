@@ -194,6 +194,11 @@ func (m *Manager) LoadEnvGroup(group string, password string) (*EnvGroup, error)
 
 	key := crypto.DeriveKey(password, salt)
 
+	return m.LoadEnvGroupWithKey(group, key)
+}
+
+// LoadEnvGroupWithKey loads an environment variable group using a derived key
+func (m *Manager) LoadEnvGroupWithKey(group string, key []byte) (*EnvGroup, error) {
 	// Read encrypted file
 	filename := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
@@ -233,6 +238,11 @@ func (m *Manager) SaveEnvGroup(envGroup *EnvGroup, password string) error {
 
 	key := crypto.DeriveKey(password, salt)
 
+	return m.SaveEnvGroupWithKey(envGroup, key)
+}
+
+// SaveEnvGroupWithKey saves an environment variable group using a derived key
+func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 	// Convert to JSON
 	data, err := ToJSON(envGroup)
 	if err != nil {
