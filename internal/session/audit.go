@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sync"
 	"time"
@@ -17,8 +18,17 @@ type AuditLogger struct {
 }
 
 // NewAuditLogger creates a new audit logger
-func NewAuditLogger(dataPath string) (*AuditLogger, error) {
-	logDir := filepath.Join(dataPath, "logs")
+func NewAuditLogger(configPath string) (*AuditLogger, error) {
+	// Use ~/.log/senv for log files
+	var logDir string
+	usr, err := user.Current()
+	if err != nil {
+		// Fallback to config path
+		logDir = filepath.Join(configPath, "logs")
+	} else {
+		logDir = filepath.Join(usr.HomeDir, ".log", "senv")
+	}
+
 	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}

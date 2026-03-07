@@ -21,14 +21,21 @@ const (
 
 // Manager handles storage operations
 type Manager struct {
-	dataPath string
+	configPath string // Path for configuration files (metadata, settings, etc.)
+	dataPath   string // Path for encrypted data files (env vars, config files)
 }
 
 // NewManager creates a new storage manager
-func NewManager(dataPath string) *Manager {
+func NewManager(configPath string, dataPath string) *Manager {
 	return &Manager{
-		dataPath: dataPath,
+		configPath: configPath,
+		dataPath:   dataPath,
 	}
+}
+
+// GetConfigPath returns the config path
+func (m *Manager) GetConfigPath() string {
+	return m.configPath
 }
 
 // GetDataPath returns the data path
@@ -38,6 +45,11 @@ func (m *Manager) GetDataPath() string {
 
 // Initialize creates the necessary directory structure and files
 func (m *Manager) Initialize(password string) error {
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(m.configPath, 0o700); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
 	// Create data directory if it doesn't exist
 	if err := os.MkdirAll(m.dataPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
@@ -45,7 +57,7 @@ func (m *Manager) Initialize(password string) error {
 
 	// Check if already initialized
 	if m.IsInitialized() {
-		return fmt.Errorf("project already initialized at %s", m.dataPath)
+		return fmt.Errorf("project already initialized at %s", m.configPath)
 	}
 
 	// Generate salt
@@ -98,7 +110,7 @@ func (m *Manager) Initialize(password string) error {
 
 // IsInitialized checks if the project is initialized
 func (m *Manager) IsInitialized() bool {
-	metadataPath := filepath.Join(m.dataPath, MetadataFile)
+	metadataPath := filepath.Join(m.configPath, MetadataFile)
 	_, err := os.Stat(metadataPath)
 	return err == nil
 }
@@ -127,7 +139,7 @@ func (m *Manager) VerifyPassword(password string) (bool, error) {
 
 // LoadMetadata loads the metadata file
 func (m *Manager) LoadMetadata() (*Metadata, error) {
-	path := filepath.Join(m.dataPath, MetadataFile)
+	path := filepath.Join(m.configPath, MetadataFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -143,7 +155,7 @@ func (m *Manager) LoadMetadata() (*Metadata, error) {
 
 // SaveMetadata saves the metadata file
 func (m *Manager) SaveMetadata(metadata *Metadata) error {
-	path := filepath.Join(m.dataPath, MetadataFile)
+	path := filepath.Join(m.configPath, MetadataFile)
 	data, err := ToJSON(metadata)
 	if err != nil {
 		return err
@@ -154,7 +166,7 @@ func (m *Manager) SaveMetadata(metadata *Metadata) error {
 
 // LoadSettings loads the settings file
 func (m *Manager) LoadSettings() (*Settings, error) {
-	path := filepath.Join(m.dataPath, SettingsFile)
+	path := filepath.Join(m.configPath, SettingsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -170,7 +182,7 @@ func (m *Manager) LoadSettings() (*Settings, error) {
 
 // SaveSettings saves the settings file
 func (m *Manager) SaveSettings(settings *Settings) error {
-	path := filepath.Join(m.dataPath, SettingsFile)
+	path := filepath.Join(m.configPath, SettingsFile)
 	data, err := ToJSON(settings)
 	if err != nil {
 		return err
@@ -264,7 +276,7 @@ func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 
 // LoadConfigIndex loads the config file index
 func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
-	path := filepath.Join(m.dataPath, ConfigIndexFile)
+	path := filepath.Join(m.configPath, ConfigIndexFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -280,7 +292,7 @@ func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
 
 // SaveConfigIndex saves the config file index
 func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
-	path := filepath.Join(m.dataPath, ConfigIndexFile)
+	path := filepath.Join(m.configPath, ConfigIndexFile)
 	data, err := ToJSON(configIndex)
 	if err != nil {
 		return err

@@ -24,8 +24,9 @@ func init() {
 }
 
 func getConfigManager() (*config.Manager, error) {
-	path := getDataPath()
-	manager := storage.NewManager(path)
+	configPath := getConfigPath()
+	dataPath := getDataPath()
+	manager := storage.NewManager(configPath, dataPath)
 
 	if !manager.IsInitialized() {
 		return nil, fmt.Errorf("project not initialized. Run 'senv init' first")

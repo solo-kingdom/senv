@@ -36,6 +36,14 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dataPath, "path", defaultPath, "data storage path")
 }
 
+func getDefaultConfigPath() string {
+	usr, err := user.Current()
+	if err != nil {
+		return filepath.Join(os.Getenv("HOME"), ".config", "senv")
+	}
+	return filepath.Join(usr.HomeDir, ".config", "senv")
+}
+
 func getDefaultDataPath() string {
 	usr, err := user.Current()
 	if err != nil {
@@ -44,9 +52,13 @@ func getDefaultDataPath() string {
 	return filepath.Join(usr.HomeDir, ".config", "senv", "data")
 }
 
+func getConfigPath() string {
+	return getDefaultConfigPath()
+}
+
 func getDataPath() string {
 	// Expand home directory if needed
-	if dataPath[:2] == "~/" {
+	if len(dataPath) >= 2 && dataPath[:2] == "~/" {
 		usr, err := user.Current()
 		if err != nil {
 			return dataPath

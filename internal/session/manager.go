@@ -11,14 +11,16 @@ import (
 
 // Manager handles session management
 type Manager struct {
+	configPath  string
 	dataPath    string
 	auditLogger *AuditLogger
 }
 
 // NewManager creates a new session manager
-func NewManager(dataPath string) *Manager {
-	auditLogger, _ := NewAuditLogger(dataPath)
+func NewManager(configPath string, dataPath string) *Manager {
+	auditLogger, _ := NewAuditLogger(configPath)
 	return &Manager{
+		configPath:  configPath,
 		dataPath:    dataPath,
 		auditLogger: auditLogger,
 	}
@@ -27,7 +29,7 @@ func NewManager(dataPath string) *Manager {
 // StartSession creates a new session with the given password and timeout
 func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 	// Verify password
-	storageManager := storage.NewManager(m.dataPath)
+	storageManager := storage.NewManager(m.configPath, m.dataPath)
 	valid, err := storageManager.VerifyPassword(password)
 	if err != nil {
 		return fmt.Errorf("failed to verify password: %w", err)

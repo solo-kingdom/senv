@@ -23,15 +23,16 @@ func init() {
 }
 
 func getEnvManager() (*env.Manager, error) {
-	path := getDataPath()
-	manager := storage.NewManager(path)
+	configPath := getConfigPath()
+	dataPath := getDataPath()
+	manager := storage.NewManager(configPath, dataPath)
 
 	if !manager.IsInitialized() {
 		return nil, fmt.Errorf("project not initialized. Run 'senv init' first")
 	}
 
 	// Try to get cached key from session
-	sessionManager := session.NewManager(path)
+	sessionManager := session.NewManager(configPath, dataPath)
 	key, err := sessionManager.GetCachedKey()
 	if err == nil {
 		// Cache is valid, use it
