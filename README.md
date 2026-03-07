@@ -27,10 +27,12 @@ sudo mv senv /usr/local/bin/
 ### 1. 初始化项目
 
 ```bash
-# 使用默认路径 ~/.config/senv/data
+# 使用默认路径
+# 配置文件: ~/.config/senv
+# 数据文件: ~/.config/senv/data
 senv init
 
-# 或指定自定义路径
+# 或指定自定义数据路径
 senv init --path /path/to/data
 ```
 
@@ -131,13 +133,18 @@ senv config delete database
 ### 数据存储
 
 ```
-~/.config/senv/data/
-├── metadata.json          # 项目元数据（盐值、加密的密码哈希）
-├── settings.json          # 用户设置（激活的分组）
-├── config_index.json      # 配置文件索引
-├── env_default.json.enc   # default 分组的环境变量（加密）
-├── env_prod.json.enc      # prod 分组的环境变量（加密）
-└── database.enc           # 配置文件（加密）
+~/.config/senv/                 # 配置目录
+├── metadata.json              # 项目元数据（盐值、加密的密码哈希）
+├── settings.json              # 用户设置（激活的分组）
+└── config_index.json          # 配置文件索引
+
+~/.config/senv/data/            # 数据目录（默认，可自定义）
+├── env_default.json.enc       # default 分组的环境变量（加密）
+├── env_prod.json.enc          # prod 分组的环境变量（加密）
+└── database.enc               # 配置文件（加密）
+
+~/.log/senv/                    # 日志目录
+└── audit.log                  # 审计日志
 ```
 
 ## 使用场景
@@ -220,7 +227,15 @@ A: 你可以：
 
 ### Q: 数据存储在哪里？
 
-A: 默认存储在 `~/.config/senv/data/`，可以通过 `--path` 参数指定其他位置。
+A: 
+- **配置文件**：存储在 `~/.config/senv/`（包括 metadata.json, settings.json, config_index.json）
+- **数据文件**：默认存储在 `~/.config/senv/data/`，可以通过 `--path` 参数指定其他位置
+- **日志文件**：存储在 `~/.log/senv/audit.log`
+
+这种分离设计使得：
+1. 配置文件和数据文件分开管理，更易于备份和迁移
+2. 数据路径可以自定义，支持在不同的项目或机器间共享数据
+3. 日志文件独立存储，便于审计和问题排查
 
 ### Q: 如何更改密码？
 
@@ -235,6 +250,8 @@ A: 目前不支持直接更改密码。你需要：
 
 ```
 --path string   数据存储路径（默认 ~/.config/senv/data）
+               配置文件始终存储在 ~/.config/senv
+               日志文件始终存储在 ~/.log/senv
 ```
 
 ### 命令列表

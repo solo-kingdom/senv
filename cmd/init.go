@@ -24,12 +24,13 @@ func init() {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
-	path := getDataPath()
+	configPath := getConfigPath()
+	dataPath := getDataPath()
 
 	// Check if already initialized
-	manager := storage.NewManager(path)
+	manager := storage.NewManager(configPath, dataPath)
 	if manager.IsInitialized() {
-		return fmt.Errorf("project already initialized at %s", path)
+		return fmt.Errorf("project already initialized at %s", configPath)
 	}
 
 	// Prompt for password
@@ -50,7 +51,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize
-	fmt.Printf("Initializing senv project at %s...\n", path)
+	fmt.Printf("Initializing senv project...\n")
+	fmt.Printf("  Config path: %s\n", configPath)
+	fmt.Printf("  Data path: %s\n", dataPath)
 	if err := manager.Initialize(password); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}

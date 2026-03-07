@@ -49,8 +49,9 @@ Examples:
   # Start session with 1 day timeout
   senv session start --timeout 1d`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := getDataPath()
-		storageManager := storage.NewManager(path)
+		configPath := getConfigPath()
+		dataPath := getDataPath()
+		storageManager := storage.NewManager(configPath, dataPath)
 
 		if !storageManager.IsInitialized() {
 			return fmt.Errorf("project not initialized. Run 'senv init' first")
@@ -85,7 +86,7 @@ Examples:
 		}
 
 		// Start session
-		sessionManager := session.NewManager(path)
+		sessionManager := session.NewManager(configPath, dataPath)
 		if err := sessionManager.StartSession(password, timeout); err != nil {
 			return err
 		}
@@ -109,8 +110,9 @@ var sessionStatusCmd = &cobra.Command{
 	Short: "Show session status",
 	Long:  `Display information about the current session cache.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := getDataPath()
-		sessionManager := session.NewManager(path)
+		configPath := getConfigPath()
+		dataPath := getDataPath()
+		sessionManager := session.NewManager(configPath, dataPath)
 
 		cache, err := sessionManager.LoadCache()
 		if err != nil {
@@ -167,13 +169,14 @@ var sessionClearCmd = &cobra.Command{
 	Short: "Clear session cache",
 	Long: `Clear the session cache, requiring password re-entry on next command.
 
-This is useful when:
+	This is useful when:
   - You want to ensure your credentials are cleared
   - You suspect the cache may be compromised
   - You're switching between different projects`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := getDataPath()
-		sessionManager := session.NewManager(path)
+		configPath := getConfigPath()
+		dataPath := getDataPath()
+		sessionManager := session.NewManager(configPath, dataPath)
 
 		err := sessionManager.ClearSession()
 		if err != nil {
