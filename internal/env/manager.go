@@ -13,7 +13,7 @@ import (
 type Manager struct {
 	storage  *storage.Manager
 	password string
-	key      []byte // Derived key (alternative to password)
+	key      []byte
 }
 
 // NewManager creates a new environment variable manager
@@ -32,17 +32,25 @@ func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
 	}
 }
 
+// loadEnvGroup loads an environment variable group using key or password
+func (m *Manager) loadEnvGroup(group string) (*storage.EnvGroup, error) {
+	if m.key != nil {
+		return m.storage.LoadEnvGroupWithKey(group, m.key)
+	}
+	return m.storage.LoadEnvGroup(group, m.password)
+}
+
+// saveEnvGroup saves an environment variable group using key or password
+func (m *Manager) saveEnvGroup(envGroup *storage.EnvGroup) error {
+	if m.key != nil {
+		return m.storage.SaveEnvGroupWithKey(envGroup, m.key)
+	}
+	return m.storage.SaveEnvGroup(envGroup, m.password)
+}
+
 // Get retrieves an environment variable from a group
 func (m *Manager) Get(group string, key string) (string, error) {
-	var envGroup *storage.EnvGroup
-	var err error
-
-	if m.key != nil {
-		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
-	} else {
-		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
-	}
-
+	envGroup, err := m.loadEnvGroup(group)
 	if err != nil {
 		return "", fmt.Errorf("failed to load group %s: %w", group, err)
 	}
@@ -57,17 +65,8 @@ func (m *Manager) Get(group string, key string) (string, error) {
 
 // Set sets an environment variable in a group
 func (m *Manager) Set(group string, key string, value string) error {
-	var envGroup *storage.EnvGroup
-	var err error
-
-	if m.key != nil {
-		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
-	} else {
-		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
-	}
-
+	envGroup, err := m.loadEnvGroup(group)
 	if err != nil {
-		// If group doesn't exist, create it
 		envGroup = storage.NewEnvGroup(group)
 	}
 
@@ -78,13 +77,7 @@ func (m *Manager) Set(group string, key string, value string) error {
 	envGroup.Variables[key] = value
 	envGroup.UpdatedAt = time.Now()
 
-	if m.key != nil {
-		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
-	} else {
-		err = m.storage.SaveEnvGroup(envGroup, m.password)
-	}
-
-	if err != nil {
+	if err := m.saveEnvGroup(envGroup); err != nil {
 		return fmt.Errorf("failed to save group %s: %w", group, err)
 	}
 
@@ -93,15 +86,7 @@ func (m *Manager) Set(group string, key string, value string) error {
 
 // Delete deletes an environment variable from a group
 func (m *Manager) Delete(group string, key string) error {
-	var envGroup *storage.EnvGroup
-	var err error
-
-	if m.key != nil {
-		envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
-	} else {
-		envGroup, err = m.storage.LoadEnvGroup(group, m.password)
-	}
-
+	envGroup, err := m.loadEnvGroup(group)
 	if err != nil {
 		return fmt.Errorf("failed to load group %s: %w", group, err)
 	}
@@ -113,13 +98,7 @@ func (m *Manager) Delete(group string, key string) error {
 	delete(envGroup.Variables, key)
 	envGroup.UpdatedAt = time.Now()
 
-	if m.key != nil {
-		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
-	} else {
-		err = m.storage.SaveEnvGroup(envGroup, m.password)
-	}
-
-	if err != nil {
+	if err := m.saveEnvGroup(envGroup); err != nil {
 		return fmt.Errorf("failed to save group %s: %w", group, err)
 	}
 
@@ -131,36 +110,21 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string)
 
 	if group != "" {
-		// List specific group
-		var envGroup *storage.EnvGroup
-		var err error
-
-		if m.key != nil {
-			envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
-		} else {
-			envGroup, err = m.storage.LoadEnvGroup(group, m.password)
-		}
-
+		envGroup, err := m.loadEnvGroup(group)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load group %s: %w", group, err)
 		}
 		result[group] = envGroup.Variables
 	} else {
-		// List all groups
 		groups, err := m.storage.ListEnvGroups()
 		if err != nil {
 			return nil, fmt.Errorf("failed to list groups: %w", err)
 		}
 
 		for _, g := range groups {
-			var envGroup *storage.EnvGroup
-			if m.key != nil {
-				envGroup, err = m.storage.LoadEnvGroupWithKey(g, m.key)
-			} else {
-				envGroup, err = m.storage.LoadEnvGroup(g, m.password)
-			}
+			envGroup, err := m.loadEnvGroup(g)
 			if err != nil {
-				continue // Skip groups that can't be loaded
+				continue
 			}
 			result[g] = envGroup.Variables
 		}
@@ -171,33 +135,23 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 
 // Export exports environment variables from active groups
 func (m *Manager) Export() (string, error) {
-	// Load settings to get active groups
 	settings, err := m.storage.LoadSettings()
 	if err != nil {
 		return "", fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	// Always include default group
 	activeGroups := []string{settings.DefaultGroup}
-
-	// Add other active groups
 	for _, g := range settings.ActiveGroups {
 		if g != settings.DefaultGroup {
 			activeGroups = append(activeGroups, g)
 		}
 	}
 
-	// Collect all variables
 	allVars := make(map[string]string)
 	for _, group := range activeGroups {
-		var envGroup *storage.EnvGroup
-		if m.key != nil {
-			envGroup, err = m.storage.LoadEnvGroupWithKey(group, m.key)
-		} else {
-			envGroup, err = m.storage.LoadEnvGroup(group, m.password)
-		}
+		envGroup, err := m.loadEnvGroup(group)
 		if err != nil {
-			continue // Skip groups that can't be loaded
+			continue
 		}
 
 		for k, v := range envGroup.Variables {
@@ -205,10 +159,7 @@ func (m *Manager) Export() (string, error) {
 		}
 	}
 
-	// Generate export statements
 	var lines []string
-
-	// Sort keys for consistent output
 	keys := make([]string, 0, len(allVars))
 	for k := range allVars {
 		keys = append(keys, k)
@@ -217,7 +168,6 @@ func (m *Manager) Export() (string, error) {
 
 	for _, key := range keys {
 		value := allVars[key]
-		// Escape single quotes in value
 		escapedValue := strings.ReplaceAll(value, "'", "'\\''")
 		lines = append(lines, fmt.Sprintf("export %s='%s'", key, escapedValue))
 	}
@@ -227,7 +177,6 @@ func (m *Manager) Export() (string, error) {
 
 // AddGroup creates a new environment variable group
 func (m *Manager) AddGroup(name string) error {
-	// Check if group already exists
 	groups, err := m.storage.ListEnvGroups()
 	if err != nil {
 		return fmt.Errorf("failed to list groups: %w", err)
@@ -239,15 +188,8 @@ func (m *Manager) AddGroup(name string) error {
 		}
 	}
 
-	// Create new group
 	envGroup := storage.NewEnvGroup(name)
-	if m.key != nil {
-		err = m.storage.SaveEnvGroupWithKey(envGroup, m.key)
-	} else {
-		err = m.storage.SaveEnvGroup(envGroup, m.password)
-	}
-
-	if err != nil {
+	if err := m.saveEnvGroup(envGroup); err != nil {
 		return fmt.Errorf("failed to create group %s: %w", name, err)
 	}
 
@@ -261,7 +203,6 @@ func (m *Manager) ActivateGroup(name string) error {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	// Check if group exists
 	groups, err := m.storage.ListEnvGroups()
 	if err != nil {
 		return fmt.Errorf("failed to list groups: %w", err)
@@ -279,19 +220,16 @@ func (m *Manager) ActivateGroup(name string) error {
 		return fmt.Errorf("group %s does not exist", name)
 	}
 
-	// Don't add default group (it's always active)
 	if name == settings.DefaultGroup {
 		return nil
 	}
 
-	// Check if already active
 	for _, g := range settings.ActiveGroups {
 		if g == name {
-			return nil // Already active
+			return nil
 		}
 	}
 
-	// Add to active groups
 	settings.ActiveGroups = append(settings.ActiveGroups, name)
 	settings.UpdatedAt = time.Now().Format(time.RFC3339)
 
@@ -309,12 +247,10 @@ func (m *Manager) DeactivateGroup(name string) error {
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 
-	// Can't deactivate default group
 	if name == settings.DefaultGroup {
 		return fmt.Errorf("cannot deactivate default group")
 	}
 
-	// Remove from active groups
 	newActiveGroups := []string{}
 	for _, g := range settings.ActiveGroups {
 		if g != name {
@@ -356,12 +292,7 @@ func (m *Manager) ListGroups() ([]GroupInfo, error) {
 			}
 		}
 
-		var envGroup *storage.EnvGroup
-		if m.key != nil {
-			envGroup, err = m.storage.LoadEnvGroupWithKey(name, m.key)
-		} else {
-			envGroup, err = m.storage.LoadEnvGroup(name, m.password)
-		}
+		envGroup, err := m.loadEnvGroup(name)
 
 		varCount := 0
 		if err == nil {
