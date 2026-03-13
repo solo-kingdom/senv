@@ -7,11 +7,14 @@ import (
 
 // gitMenu displays the git operations menu
 func (is *interactiveSession) gitMenu() {
+	gitPath := is.storageManager.GetGitPath()
 	if !is.gitManager.IsGitRepo() {
-		fmt.Println("\n❌ 数据路径不是 git 仓库")
+		fmt.Println("\n❌ 路径不是 git 仓库")
+		fmt.Printf("Git 路径: %s\n", gitPath)
+		fmt.Printf("配置路径: %s\n", is.storageManager.GetConfigPath())
 		fmt.Printf("数据路径: %s\n", is.storageManager.GetDataPath())
 		fmt.Println("\n要使用 git 功能，请先初始化 git 仓库:")
-		fmt.Printf("  cd %s\n", is.storageManager.GetDataPath())
+		fmt.Printf("  cd %s\n", gitPath)
 		fmt.Println("  git init")
 		fmt.Println("  git remote add origin <repository-url>")
 		is.prompt("\n按回车键返回...")
@@ -19,8 +22,9 @@ func (is *interactiveSession) gitMenu() {
 	}
 
 	if !is.gitManager.IsGitRoot() {
-		fmt.Println("\n❌ 数据路径不是 git 仓库的根目录")
-		fmt.Println("请使用 git 仓库的根目录作为数据路径")
+		fmt.Println("\n❌ 路径不是 git 仓库的根目录")
+		fmt.Printf("Git 路径: %s\n", gitPath)
+		fmt.Println("请使用包含配置和数据的共同父目录作为 git 仓库根目录")
 		is.prompt("\n按回车键返回...")
 		return
 	}
@@ -131,7 +135,9 @@ func (is *interactiveSession) gitStatus() {
 		return
 	}
 
-	fmt.Printf("\n数据路径: %s\n", info.Path)
+	fmt.Printf("\nGit 路径: %s\n", info.Path)
+	fmt.Printf("配置路径: %s\n", is.storageManager.GetConfigPath())
+	fmt.Printf("数据路径: %s\n", is.storageManager.GetDataPath())
 	fmt.Printf("是否为 git 仓库: %v\n", info.IsGitRepo)
 	fmt.Printf("是否为根目录: %v\n", info.IsGitRoot)
 

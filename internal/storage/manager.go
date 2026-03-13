@@ -43,6 +43,41 @@ func (m *Manager) GetDataPath() string {
 	return m.dataPath
 }
 
+// GetGitPath returns the path that should be used for git operations
+// This is the common parent directory of config and data paths
+func (m *Manager) GetGitPath() string {
+	absConfig, err := filepath.Abs(m.configPath)
+	if err != nil {
+		return m.dataPath
+	}
+	absData, err := filepath.Abs(m.dataPath)
+	if err != nil {
+		return m.dataPath
+	}
+
+	// If config and data are in the same directory, use that
+	configDir := filepath.Dir(absConfig)
+	dataDir := filepath.Dir(absData)
+
+	if configDir == dataDir {
+		return configDir
+	}
+
+	// Otherwise find common ancestor
+	for len(absConfig) > len(absData) {
+		absConfig = filepath.Dir(absConfig)
+	}
+	for len(absData) > len(absConfig) {
+		absData = filepath.Dir(absData)
+	}
+	for absConfig != absData {
+		absConfig = filepath.Dir(absConfig)
+		absData = filepath.Dir(absData)
+	}
+
+	return absConfig
+}
+
 // Initialize creates the necessary directory structure and files
 func (m *Manager) Initialize(password string) error {
 	// Create config directory if it doesn't exist

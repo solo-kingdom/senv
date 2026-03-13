@@ -54,7 +54,7 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 
 	envManager := env.NewManager(storageManager, password)
 	configManager := config.NewManager(storageManager, password)
-	gitManager := git.NewManager(dataPath)
+	gitManager := git.NewManager(storageManager.GetGitPath())
 	sessionManager := session.NewManager(configPath, dataPath)
 
 	is := &interactiveSession{
