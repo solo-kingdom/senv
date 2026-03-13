@@ -29,7 +29,7 @@ func TestDeriveKey(t *testing.T) {
 	}
 
 	// Different salt should produce different key
-	salt2 := GenerateSaltFixed()
+	salt2 := GenerateSaltFixed2()
 	key4 := DeriveKey(password, salt2)
 	if bytes.Equal(key, key4) {
 		t.Error("Different salts should produce different keys")
@@ -155,8 +155,9 @@ func TestHashPassword(t *testing.T) {
 		t.Error("Hash should not equal the original password")
 	}
 
-	if len(hash1) != 64 { // SHA-256 produces 64 hex characters
-		t.Errorf("Expected hash length 64, got %d", len(hash1))
+	// SHA-256 produces 32 bytes, base64 encoded = 44 characters
+	if len(hash1) != 44 {
+		t.Errorf("Expected hash length 44, got %d", len(hash1))
 	}
 }
 
@@ -169,11 +170,20 @@ func TestHashPasswordDifferent(t *testing.T) {
 	}
 }
 
-// GenerateSaltFixed generates a fixed salt for testing
+// GenerateSaltFixed generates a deterministic salt for testing
 func GenerateSaltFixed() []byte {
 	salt := make([]byte, SaltSize)
 	for i := range salt {
-		salt[i] = byte(i)
+		salt[i] = byte(i % 256)
+	}
+	return salt
+}
+
+// GenerateSaltFixed2 generates a different deterministic salt for testing
+func GenerateSaltFixed2() []byte {
+	salt := make([]byte, SaltSize)
+	for i := range salt {
+		salt[i] = byte((i + 128) % 256)
 	}
 	return salt
 }

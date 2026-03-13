@@ -1,7 +1,6 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"

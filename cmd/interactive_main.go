@@ -77,7 +77,7 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\n✓ 登录成功")
 	fmt.Println("欢迎使用 senv 交互模式")
-	fmt.Println("输入 'q' 或 'quit' 退出，输入 'h' 或 'help' 查看帮助\n")
+	fmt.Println("输入 'q' 或 'quit' 退出，输入 'h' 或 'help' 查看帮助")
 
 	return is.mainMenu()
 }

@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/wii/senv/internal/config"
@@ -44,12 +43,4 @@ func (is *interactiveSession) promptWithDefault(prompt, defaultVal string) strin
 		return defaultVal
 	}
 	return input
-}
-
-// promptPassword reads a password without echo
-func promptPassword(prompt string) (string, error) {
-	fmt.Print(prompt)
-	password, err := readPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	return string(password), err
 }
