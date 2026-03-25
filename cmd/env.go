@@ -40,7 +40,7 @@ func getEnvManager() (*env.Manager, error) {
 	}
 
 	// Cache is invalid or doesn't exist, prompt for password
-	password, err := promptPassword("Enter password: ")
+	password, err := promptPassword("Senv - Enter password: ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

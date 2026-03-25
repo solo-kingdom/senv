@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 )
 
-// getCachePath returns the path to the session cache file
-func getCachePath() string {
+// getTempCachePath returns the path to the temporary session cache file
+// (used for "restart" and "duration" timeout types)
+func getTempCachePath() string {
 	// Prefer XDG_RUNTIME_DIR
 	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
 		cacheDir := filepath.Join(runtimeDir, "senv")
@@ -21,6 +22,39 @@ func getCachePath() string {
 
 	// Fallback to /tmp
 	return filepath.Join("/tmp", fmt.Sprintf("senv-session-%d", os.Getuid()))
+}
+
+// getPersistentCachePath returns the path to the persistent session cache file
+// (used for "never" timeout type to survive system reboots)
+func getPersistentCachePath() string {
+	// Use user's data directory for persistent storage
+	if dataDir, err := os.UserHomeDir(); err == nil {
+		cacheDir := filepath.Join(dataDir, ".local", "share", "senv", "session")
+		os.MkdirAll(cacheDir, 0700)
+		return filepath.Join(cacheDir, fmt.Sprintf("session-%d", os.Getuid()))
+	}
+
+	// Fallback to temp directory if home directory is not available
+	return getTempCachePath()
+}
+
+// getCachePathForType returns the appropriate cache path based on timeout type
+func getCachePathForType(timeoutType TimeoutType) string {
+	switch timeoutType {
+	case TimeoutNever:
+		return getPersistentCachePath()
+	default:
+		// For "restart" and "duration" types, use temp directory
+		return getTempCachePath()
+	}
+}
+
+// getAllCachePaths returns all possible cache paths for loading
+func getAllCachePaths() []string {
+	return []string{
+		getPersistentCachePath(),
+		getTempCachePath(),
+	}
 }
 
 // generateSessionID generates a unique session ID
@@ -38,7 +72,9 @@ func hashDataPath(dataPath string) string {
 
 // saveCache saves the session cache to disk
 func saveCache(cache *SessionCache) error {
-	cachePath := getCachePath()
+	// Determine cache path based on timeout type
+	timeoutType := TimeoutType(cache.TimeoutType)
+	cachePath := getCachePathForType(timeoutType)
 
 	// Ensure parent directory exists
 	cacheDir := filepath.Dir(cachePath)
@@ -57,37 +93,57 @@ func saveCache(cache *SessionCache) error {
 		return fmt.Errorf("failed to write cache file: %w", err)
 	}
 
+	// Clear cache from other locations to avoid conflicts
+	clearOtherCacheLocations(timeoutType)
+
 	return nil
 }
 
 // loadCache loads the session cache from disk
+// It searches both persistent and temporary cache locations
 func loadCache() (*SessionCache, error) {
-	cachePath := getCachePath()
-
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // No cache file exists
+	// Try all possible cache paths
+	for _, cachePath := range getAllCachePaths() {
+		data, err := os.ReadFile(cachePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // Try next location
+			}
+			return nil, fmt.Errorf("failed to read cache file: %w", err)
 		}
-		return nil, fmt.Errorf("failed to read cache file: %w", err)
+
+		var cache SessionCache
+		if err := json.Unmarshal(data, &cache); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal cache: %w", err)
+		}
+
+		return &cache, nil
 	}
 
-	var cache SessionCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal cache: %w", err)
-	}
-
-	return &cache, nil
+	return nil, nil // No cache file exists in any location
 }
 
-// clearCache removes the session cache file
+// clearCache removes all session cache files
 func clearCache() error {
-	cachePath := getCachePath()
-
-	err := os.Remove(cachePath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove cache file: %w", err)
+	var lastErr error
+	for _, cachePath := range getAllCachePaths() {
+		err := os.Remove(cachePath)
+		if err != nil && !os.IsNotExist(err) {
+			lastErr = err
+		}
 	}
-
+	if lastErr != nil {
+		return fmt.Errorf("failed to remove cache file: %w", lastErr)
+	}
 	return nil
+}
+
+// clearOtherCacheLocations removes cache files from locations other than the current one
+func clearOtherCacheLocations(currentType TimeoutType) {
+	currentPath := getCachePathForType(currentType)
+	for _, cachePath := range getAllCachePaths() {
+		if cachePath != currentPath {
+			os.Remove(cachePath)
+		}
+	}
 }

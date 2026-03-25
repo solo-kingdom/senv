@@ -34,13 +34,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Prompt for password
-	password, err := promptPassword("Enter password for encryption: ")
+	password, err := promptPassword("Senv - Enter password for encryption: ")
 	if err != nil {
 		return fmt.Errorf("failed to read password: %w", err)
 	}
 
 	// Confirm password
-	confirmPassword, err := promptPassword("Confirm password: ")
+	confirmPassword, err := promptPassword("Senv - Confirm password: ")
 	if err != nil {
 		return fmt.Errorf("failed to read password: %w", err)
 	}

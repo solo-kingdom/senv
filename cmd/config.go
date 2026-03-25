@@ -33,7 +33,7 @@ func getConfigManager() (*config.Manager, error) {
 	}
 
 	// Prompt for password
-	password, err := promptPassword("Enter password: ")
+	password, err := promptPassword("Senv - Enter password: ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)
 	}

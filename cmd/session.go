@@ -80,7 +80,7 @@ Examples:
 		}
 
 		// Prompt for password
-		password, err := promptPassword("Enter password: ")
+		password, err := promptPassword("Senv - Enter password: ")
 		if err != nil {
 			return fmt.Errorf("failed to read password: %w", err)
 		}

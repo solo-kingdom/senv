@@ -38,7 +38,7 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	password, err := promptPassword("请输入密码: ")
+	password, err := promptPassword("Senv - 请输入密码: ")
 	if err != nil {
 		return fmt.Errorf("读取密码失败: %w", err)
 	}
