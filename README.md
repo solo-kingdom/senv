@@ -5,11 +5,13 @@
 ## 功能特性
 
 - ✅ **环境变量管理** - 按分组管理环境变量，支持 get/set/list/export
+- ✅ **文本块管理** - 加密存储长文本（密钥、证书、模板等），支持编辑器编辑
+- ✅ **交叉引用** - env ↔ text 支持 `{{env:group:key}}` / `{{text:group:key}}` 引用
 - ✅ **配置文件管理** - 加密存储配置文件，支持 create/edit/export
 - ✅ **加密存储** - 使用 AES-256-GCM + PBKDF2 加密
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
 - ✅ **Shell 集成** - 支持 `eval $(senv env export)` 快速导入
-- ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件
+- ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 
 ## 安装
 
@@ -89,7 +91,74 @@ echo 'eval $(senv env export)' >> ~/.bashrc
 
 **注意**：`default` 分组默认激活，无需手动激活。
 
-### 5. 管理配置文件
+### 5. 管理文本块
+
+```bash
+# 设置文本（直接传值）
+senv text -g secrets set SSH_KEY "ssh-rsa AAAA..."
+
+# 设置文本（从文件导入）
+senv text -g keys set TLS_CERT --file /path/to/cert.pem
+
+# 设置文本（从 stdin 管道读取）
+cat ~/.ssh/id_rsa | senv text -g keys set SSH_PRIVATE_KEY
+
+# 设置文本（打开编辑器，适合长文本编辑）
+senv text -g templates set CLAUDE_MD
+# 打开 $VISUAL/$EDITOR/nano/vim，已有内容会预填
+
+# 获取文本
+senv text -g secrets get SSH_KEY
+
+# 获取文本并写入文件
+senv text -g keys get TLS_CERT -o /tmp/cert.pem
+
+# 获取文本并复制到剪贴板
+senv text -g secrets get SSH_KEY --copy
+
+# 列出文本块（显示 key 名、大小、更新时间）
+senv text -g secrets list
+
+# 删除文本块
+senv text -g secrets delete SSH_KEY
+
+# 管理文本分组
+senv text group list
+senv text group add templates
+senv text group delete templates  # 需确认
+```
+
+### 6. 交叉引用
+
+env 和 text 之间支持通过 `{{type:group:key}}` 语法互相引用：
+
+```bash
+# 在 env 中引用 text
+senv env -g prod set DB_URL "postgres://user:{{text:secrets:DB_PASS}}@host/db"
+
+# 在 text 中引用 env
+senv text -g configs set APP_YAML "database:\n  url: {{env:prod:DATABASE_URL}}"
+
+# 引用语法
+# {{env:key}}           → 当前分组优先，default 兜底
+# {{env:group:key}}     → 指定 env 分组
+# {{text:key}}          → 当前分组优先，default 兜底
+# {{text:group:key}}    → 指定 text 分组
+# \{{env:key}}          → 转义，输出字面 {{env:key}}
+
+# 获取时解引用
+senv env get DB_URL                # 原样输出（含 {{...}}）
+senv env get DB_URL -d             # 解引用后输出
+senv env get DB_URL -d --loose     # 宽松模式（未解析的保留原样）
+
+# env export 自动解引用
+eval $(senv env export)
+
+# text get 也支持解引用
+senv text -g configs get APP_YAML -d
+```
+
+### 7. 管理配置文件
 
 ```bash
 # 创建配置文件（从现有文件导入）
@@ -141,6 +210,13 @@ senv config delete database
 ~/.config/senv/data/            # 数据目录（默认，可自定义）
 ├── env_default.json.enc       # default 分组的环境变量（加密）
 ├── env_prod.json.enc          # prod 分组的环境变量（加密）
+├── texts/                     # 文本块（加密，每个 key 独立文件）
+│   ├── secrets/               # secrets 分组
+│   │   ├── DB_PASS.enc
+│   │   └── API_KEY.enc
+│   └── keys/                  # keys 分组
+│       ├── SSH.enc
+│       └── TLS.enc
 └── database.enc               # 配置文件（加密）
 
 ~/.log/senv/                    # 日志目录
@@ -258,15 +334,22 @@ A: 目前不支持直接更改密码。你需要：
 
 ```
 senv init                          初始化项目
-senv env get <key>                 获取环境变量
+senv env get <key> [-d]            获取环境变量（-d 解引用）
 senv env set <key> <value>         设置环境变量
 senv env delete <key>              删除环境变量
-senv env list [group]              列出环境变量
-senv env export                    导出环境变量到 shell
+senv env list [group] [-d]         列出环境变量（-d 解引用）
+senv env export                    导出环境变量到 shell（自动解引用）
 senv env group list                列出所有分组
 senv env group add <name>          创建分组
 senv env group activate <name>     激活分组
 senv env group deactivate <name>   停用分组
+senv text set <key> [value]        设置文本块（无值打开编辑器）
+senv text get <key> [-d]           获取文本块（-d 解引用）
+senv text delete <key>             删除文本块
+senv text list [group]             列出文本块
+senv text group list               列出所有文本分组
+senv text group add <name>         创建文本分组
+senv text group delete <name>      删除文本分组
 senv config create <name>          创建配置文件
 senv config edit <name>            编辑配置文件
 senv config export <name>          导出配置文件

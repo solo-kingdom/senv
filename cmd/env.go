@@ -72,10 +72,17 @@ func getEnvManager() (*env.Manager, error) {
 }
 
 // envGetCmd represents the env get command
+var (
+	envGetDecode bool
+	envGetLoose  bool
+)
+
 var envGetCmd = &cobra.Command{
 	Use:   "get <key>",
 	Short: "Get an environment variable",
-	Args:  cobra.ExactArgs(1),
+	Long: `Get an environment variable value. By default outputs the raw value.
+Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envManager, err := getEnvManager()
 		if err != nil {
@@ -86,6 +93,15 @@ var envGetCmd = &cobra.Command{
 		value, err := envManager.Get(envGroup, key)
 		if err != nil {
 			return err
+		}
+
+		// Resolve references if -d flag is set
+		if envGetDecode {
+			resolved, err := resolveValue(value, envGetLoose, envGroup)
+			if err != nil {
+				return err
+			}
+			value = resolved
 		}
 
 		fmt.Println(value)
@@ -139,11 +155,17 @@ var envDeleteCmd = &cobra.Command{
 }
 
 // envListCmd represents the env list command
+var (
+	envListDecode bool
+	envListLoose  bool
+)
+
 var envListCmd = &cobra.Command{
 	Use:   "list [group]",
 	Short: "List environment variables",
 	Long: `List environment variables. If group is specified, list only that group.
-Otherwise, list all groups.`,
+Otherwise, list all groups.
+Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envManager, err := getEnvManager()
@@ -174,10 +196,19 @@ Otherwise, list all groups.`,
 				continue
 			}
 			for key, value := range variables {
-				// Mask long values
+				// Resolve references if -d flag is set
 				displayValue := value
-				if len(value) > 50 {
-					displayValue = value[:47] + "..."
+				if envListDecode {
+					resolved, err := resolveValue(value, envListLoose, group)
+					if err != nil {
+						displayValue = fmt.Sprintf("[ERROR: %v]", err)
+					} else {
+						displayValue = resolved
+					}
+				}
+				// Mask long values
+				if len(displayValue) > 50 {
+					displayValue = displayValue[:47] + "..."
 				}
 				fmt.Printf("  %s=%s\n", key, displayValue)
 			}
@@ -193,6 +224,7 @@ var envExportCmd = &cobra.Command{
 	Short: "Export environment variables for shell",
 	Long: `Export environment variables from active groups.
 This command outputs shell-compatible export statements.
+References ({{env:...}} and {{text:...}}) are automatically resolved.
 	
 Usage:
   eval $(senv env export)`,
@@ -211,7 +243,13 @@ Usage:
 			return nil
 		}
 
-		fmt.Println(exports)
+		// Auto-resolve references in export
+		resolved, err := resolveValue(exports, false, envGroup)
+		if err != nil {
+			return fmt.Errorf("failed to resolve references in export: %w", err)
+		}
+
+		fmt.Println(resolved)
 		return nil
 	},
 }
@@ -338,4 +376,10 @@ func init() {
 	envGroupCmd.AddCommand(envGroupAddCmd)
 	envGroupCmd.AddCommand(envGroupActivateCmd)
 	envGroupCmd.AddCommand(envGroupDeactivateCmd)
+
+	// Add -d/--decode and --loose flags to env get and list
+	envGetCmd.Flags().BoolVarP(&envGetDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
+	envGetCmd.Flags().BoolVar(&envGetLoose, "loose", false, "keep unresolved references as-is instead of erroring")
+	envListCmd.Flags().BoolVarP(&envListDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
+	envListCmd.Flags().BoolVar(&envListLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 }

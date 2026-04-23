@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/git"
+	"github.com/wii/senv/internal/storage"
 )
 
 var gitCmd = &cobra.Command{
@@ -22,19 +23,23 @@ func init() {
 	rootCmd.AddCommand(gitCmd)
 }
 
-// getGitManager creates a git manager for the data path
+// getGitManager creates a git manager for the git path (common parent of config and data)
 func getGitManager() (*git.Manager, error) {
+	configPath := getConfigPath()
 	dataPath := getDataPath()
-	manager := git.NewManager(dataPath)
+	storageManager := storage.NewManager(configPath, dataPath)
+	gitPath := storageManager.GetGitPath()
+
+	manager := git.NewManager(gitPath)
 
 	// Check if it's a git repository
 	if !manager.IsGitRepo() {
-		return nil, fmt.Errorf("数据路径 '%s' 不是 git 仓库。\n请先初始化 git 仓库:\n  cd %s\n  git init", dataPath, dataPath)
+		return nil, fmt.Errorf("数据路径 '%s' 不是 git 仓库。\n请先初始化 git 仓库:\n  cd %s\n  git init", gitPath, gitPath)
 	}
 
 	// Check if it's the git root
 	if !manager.IsGitRoot() {
-		return nil, fmt.Errorf("数据路径 '%s' 不是 git 仓库的根目录。\n请使用 git 仓库的根目录作为数据路径", dataPath)
+		return nil, fmt.Errorf("数据路径 '%s' 不是 git 仓库的根目录。\n请使用 git 仓库的根目录作为数据路径", gitPath)
 	}
 
 	return manager, nil
@@ -149,8 +154,11 @@ var gitStatusCmd = &cobra.Command{
 	Short: "Show git status",
 	Long:  `Show the current git status of the data repository.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		configPath := getConfigPath()
 		dataPath := getDataPath()
-		manager := git.NewManager(dataPath)
+		storageManager := storage.NewManager(configPath, dataPath)
+		gitPath := storageManager.GetGitPath()
+		manager := git.NewManager(gitPath)
 
 		// Get status info
 		info, err := manager.GetStatusInfo()
