@@ -36,6 +36,28 @@ type EnvGroup struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
+// TextEntry represents a single text block stored in encrypted file
+type TextEntry struct {
+	Value     string    `json:"value"`
+	Size      int       `json:"size"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// MaxTextSize is the maximum allowed size for a text value (512KB)
+const MaxTextSize = 512 * 1024
+
+// NewTextEntry creates a new TextEntry from a value string
+func NewTextEntry(value string) *TextEntry {
+	now := time.Now()
+	return &TextEntry{
+		Value:     value,
+		Size:      len(value),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 // ConfigFile represents a configuration file entry
 type ConfigFile struct {
 	Name          string    `json:"name"`

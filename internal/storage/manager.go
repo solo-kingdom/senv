@@ -17,6 +17,8 @@ const (
 	EnvFilePrefix    = "env_"
 	EnvFileSuffix    = ".json.enc"
 	ConfigFileSuffix = ".enc"
+	TextFileSuffix   = ".enc"
+	TextDirName      = "texts"
 )
 
 // Manager handles storage operations
@@ -406,6 +408,155 @@ func (m *Manager) ListEnvGroups() ([]string, error) {
 			name := strings.TrimPrefix(file.Name(), EnvFilePrefix)
 			name = strings.TrimSuffix(name, EnvFileSuffix)
 			groups = append(groups, name)
+		}
+	}
+
+	return groups, nil
+}
+
+// --- Text file storage methods ---
+
+// textFilePath returns the full path for a text entry file
+func (m *Manager) textFilePath(group, key string) string {
+	return filepath.Join(m.dataPath, TextDirName, group, key+TextFileSuffix)
+}
+
+// textGroupPath returns the full path for a text group directory
+func (m *Manager) textGroupPath(group string) string {
+	return filepath.Join(m.dataPath, TextDirName, group)
+}
+
+// SaveTextFile saves an encrypted text entry
+func (m *Manager) SaveTextFile(group, key string, entry *TextEntry, password string) error {
+	metadata, err := m.LoadMetadata()
+	if err != nil {
+		return err
+	}
+
+	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
+	if err != nil {
+		return err
+	}
+
+	key_ := crypto.DeriveKey(password, salt)
+	return m.SaveTextFileWithKey(group, key, entry, key_)
+}
+
+// SaveTextFileWithKey saves an encrypted text entry using a derived key
+func (m *Manager) SaveTextFileWithKey(group, key string, entry *TextEntry, cryptoKey []byte) error {
+	// Ensure group directory exists
+	groupDir := m.textGroupPath(group)
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create text group directory: %w", err)
+	}
+
+	// Serialize to JSON
+	data, err := ToJSON(entry)
+	if err != nil {
+		return fmt.Errorf("failed to serialize text entry: %w", err)
+	}
+
+	// Encrypt
+	encryptedData, err := crypto.Encrypt(cryptoKey, data)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt text entry: %w", err)
+	}
+
+	// Write to file
+	path := m.textFilePath(group, key)
+	return os.WriteFile(path, []byte(encryptedData), 0o600)
+}
+
+// LoadTextFile loads and decrypts a text entry
+func (m *Manager) LoadTextFile(group, key string, password string) (*TextEntry, error) {
+	metadata, err := m.LoadMetadata()
+	if err != nil {
+		return nil, err
+	}
+
+	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
+	if err != nil {
+		return nil, err
+	}
+
+	cryptoKey := crypto.DeriveKey(password, salt)
+	return m.LoadTextFileWithKey(group, key, cryptoKey)
+}
+
+// LoadTextFileWithKey loads and decrypts a text entry using a derived key
+func (m *Manager) LoadTextFileWithKey(group, key string, cryptoKey []byte) (*TextEntry, error) {
+	path := m.textFilePath(group, key)
+
+	encryptedData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("text '%s' not found in group '%s': %w", key, group, err)
+	}
+
+	// Decrypt
+	decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt text entry: %w", err)
+	}
+
+	// Parse JSON
+	var entry TextEntry
+	if err := FromJSON(decryptedData, &entry); err != nil {
+		return nil, fmt.Errorf("failed to parse text entry: %w", err)
+	}
+
+	return &entry, nil
+}
+
+// DeleteTextFile deletes a text entry file
+func (m *Manager) DeleteTextFile(group, key string) error {
+	path := m.textFilePath(group, key)
+
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete text '%s': %w", key, err)
+	}
+
+	return nil
+}
+
+// ListTextFiles lists all text keys in a group
+func (m *Manager) ListTextFiles(group string) ([]string, error) {
+	groupDir := m.textGroupPath(group)
+
+	entries, err := os.ReadDir(groupDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to list text group '%s': %w", group, err)
+	}
+
+	var keys []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), TextFileSuffix) {
+			name := strings.TrimSuffix(entry.Name(), TextFileSuffix)
+			keys = append(keys, name)
+		}
+	}
+
+	return keys, nil
+}
+
+// ListTextGroups lists all text group directories
+func (m *Manager) ListTextGroups() ([]string, error) {
+	textsDir := filepath.Join(m.dataPath, TextDirName)
+
+	entries, err := os.ReadDir(textsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to list text groups: %w", err)
+	}
+
+	var groups []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			groups = append(groups, entry.Name())
 		}
 	}
 

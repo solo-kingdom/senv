@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewMetadata(t *testing.T) {
-	salt := "dGVzdC1zYWx0" // base64 encoded "test-salt"
+	salt := "dGVzdC1zYWx0"        // base64 encoded "test-salt"
 	passwordKey := "dGVzdC1rZXk=" // base64 encoded "test-key"
 
 	metadata := NewMetadata(salt, passwordKey)

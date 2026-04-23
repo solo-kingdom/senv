@@ -1,0 +1,65 @@
+schema: spec-driven
+
+context: |
+  ## 项目概述
+  Senv 是一个安全的私密配置和环境变量加密存储管理 CLI 工具。
+
+  ## 技术栈
+  - 语言: Go 1.24
+  - CLI 框架: github.com/spf13/cobra
+  - 加密: AES-256-GCM + PBKDF2 (golang.org/x/crypto)
+  - 终端: golang.org/x/term
+
+  ## 项目结构
+  - main.go — 入口
+  - cmd/ — CLI 命令 (cobra)
+  - internal/crypto/ — 加密/密钥派生
+  - internal/env/ — 环境变量管理
+  - internal/config/ — 配置文件管理
+  - internal/storage/ — 存储层
+  - internal/session/ — 会话管理(缓存、超时、审计)
+  - internal/git/ — Git 凭证管理
+  - internal/errors/ — 错误定义
+  - docs/ — 设计文档
+  - specs/ — 人类规约文档 (AI 只读)
+
+  ## 代码规范
+  - 保持简洁，避免过度设计，优先简单直接的方案
+  - 错误信息清晰明确，便于定位问题
+  - 关键逻辑必须有注释说明
+  - 遵循 Go 标准项目布局和命名规范
+  - 考虑边界情况和异常处理
+  - 按 module 分步实现，每步完成一个完整功能
+  - 测试脚本/文件及时清理
+
+  ## 加密相关
+  - AES-256-GCM 认证加密
+  - PBKDF2 密钥派生 (100,000 次迭代, SHA-256)
+  - 32 字节随机 Salt, 12 字节随机 Nonce
+  - 文件权限: 目录 700, 文件 600
+
+  ## 构建与测试
+  - 构建: make build
+  - 测试: make test (go test -v -race ./...)
+  - 检查: make check (fmt + vet + lint + test)
+  - 版本注入: -ldflags "-X main.Version=... -X main.BuildTime=..."
+
+  ## 文档规范
+  - 文档简洁，只写必要内容
+  - 设计文档放 docs/
+  - specs/ 为人类规约，AI 只读不修改
+
+rules:
+  proposal:
+    - 提案必须包含"非目标"(Non-goals)章节
+    - 涉及加密/安全变更时必须包含安全性分析
+    - 提案保持在 500 字以内，聚焦核心变更
+  design:
+    - 设计文档需包含数据流图和错误处理策略
+    - 涉及存储格式变更时需说明向后兼容方案
+    - 命令行接口变更需给出使用示例
+  tasks:
+    - 每个任务控制在 2 小时以内
+    - 安全相关任务标记为高优先级
+    - 每个任务必须包含验证步骤
+    - 测试任务与实现任务配对出现
