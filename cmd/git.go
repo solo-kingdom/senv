@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +20,7 @@ var gitCmd = &cobra.Command{
 
 var (
 	gitCommitMessage string
+	gitPushOnly      bool
 )
 
 func init() {
@@ -68,21 +72,83 @@ This command will fail if there are uncommitted changes or merge conflicts.`,
 }
 
 // gitPushCmd represents the git push command
+// Supports three modes:
+//   - senv git push          → auto-generate commit message, confirm, then add+commit+push
+//   - senv git push -m "msg" → use specified message to add+commit+push
+//   - senv git push --only   → pure push (only push existing commits)
 var gitPushCmd = &cobra.Command{
-	Use:   "push",
+	Use:   "push [-m <message> | --only]",
 	Short: "Push changes to remote repository",
-	Long:  `Push committed changes to the remote repository.`,
+	Long: `Push changes to the remote repository.
+
+Without flags: auto-generate a commit message from changed files and ask for
+confirmation before add + commit + push.
+
+  -m, --message   Provide a commit message to skip confirmation (add+commit+push)
+      --only      Only push existing commits, do not add or commit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := getGitManager()
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("正在推送到远程仓库...\n")
-		if err := manager.Push(); err != nil {
-			return err
+		// --only: pure push (original behavior)
+		if gitPushOnly {
+			fmt.Printf("正在推送到远程仓库...\n")
+			if err := manager.Push(); err != nil {
+				return err
+			}
+			fmt.Printf("✓ 成功推送更改\n")
+			return nil
 		}
 
+		// -m provided: use specified message, add+commit+push directly
+		if gitCommitMessage != "" {
+			fmt.Printf("正在同步更改到远程仓库...\n")
+			if err := manager.AddCommitPush(gitCommitMessage); err != nil {
+				return err
+			}
+			fmt.Printf("✓ 成功推送更改 (commit: %s)\n", gitCommitMessage)
+			return nil
+		}
+
+		// No flags: auto-generate message and ask for confirmation
+		status, err := manager.Status()
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(status) == "" {
+			// No changes, just push
+			fmt.Printf("没有待提交的更改，直接推送...\n")
+			if err := manager.Push(); err != nil {
+				return err
+			}
+			fmt.Printf("✓ 成功推送更改\n")
+			return nil
+		}
+
+		// Build auto-generated commit message
+		autoMessage := fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
+
+		// Show changes and ask for confirmation
+		fmt.Printf("\n将提交以下更改:\n")
+		fmt.Print(status)
+		fmt.Printf("\nCommit message:\n  %s\n", autoMessage)
+		fmt.Printf("\n确认推送？(y/N): ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToLower(input))
+
+		if input != "y" && input != "yes" {
+			fmt.Printf("已取消推送\n")
+			return nil
+		}
+
+		fmt.Printf("\n正在同步更改到远程仓库...\n")
+		if err := manager.AddCommitPush(autoMessage); err != nil {
+			return err
+		}
 		fmt.Printf("✓ 成功推送更改\n")
 		return nil
 	},
@@ -204,6 +270,14 @@ var gitStatusCmd = &cobra.Command{
 	},
 }
 
+// pushShortcutCmd is a top-level shortcut: senv push == senv git push
+var pushShortcutCmd = &cobra.Command{
+	Use:   "push [-m <message> | --only]",
+	Short: "Shortcut for 'senv git push'",
+	Long:  `Equivalent to 'senv git push'. See 'senv git push --help' for details.`,
+	RunE:  gitPushCmd.RunE,
+}
+
 func init() {
 	gitCmd.AddCommand(gitPullCmd)
 	gitCmd.AddCommand(gitPushCmd)
@@ -211,6 +285,13 @@ func init() {
 	gitCmd.AddCommand(gitSyncCmd)
 	gitCmd.AddCommand(gitStatusCmd)
 
+	// Top-level shortcut
+	rootCmd.AddCommand(pushShortcutCmd)
+
 	gitCommitCmd.Flags().StringVarP(&gitCommitMessage, "message", "m", "", "commit message")
 	gitSyncCmd.Flags().StringVarP(&gitCommitMessage, "message", "m", "", "commit message (default: auto-generated)")
+	gitPushCmd.Flags().StringVarP(&gitCommitMessage, "message", "m", "", "commit message (add+commit+push)")
+	gitPushCmd.Flags().BoolVar(&gitPushOnly, "only", false, "only push existing commits without add/commit")
+	pushShortcutCmd.Flags().StringVarP(&gitCommitMessage, "message", "m", "", "commit message (add+commit+push)")
+	pushShortcutCmd.Flags().BoolVar(&gitPushOnly, "only", false, "only push existing commits without add/commit")
 }
