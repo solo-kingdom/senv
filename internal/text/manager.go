@@ -52,6 +52,13 @@ func (m *Manager) loadTextFile(group, key string) (*storage.TextEntry, error) {
 
 // Set sets a text entry in a group
 func (m *Manager) Set(group, key, value string) error {
+	if err := storage.ValidateName(group); err != nil {
+		return fmt.Errorf("invalid group: %w", err)
+	}
+	if err := storage.ValidateName(key); err != nil {
+		return fmt.Errorf("invalid key: %w", err)
+	}
+
 	// Size check
 	if len(value) > storage.MaxTextSize {
 		return fmt.Errorf("text value exceeds %d bytes limit (%d bytes)", storage.MaxTextSize, len(value))

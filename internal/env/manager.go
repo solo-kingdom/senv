@@ -65,6 +65,13 @@ func (m *Manager) Get(group string, key string) (string, error) {
 
 // Set sets an environment variable in a group
 func (m *Manager) Set(group string, key string, value string) error {
+	if err := storage.ValidateName(group); err != nil {
+		return fmt.Errorf("invalid group: %w", err)
+	}
+	if err := storage.ValidateName(key); err != nil {
+		return fmt.Errorf("invalid key: %w", err)
+	}
+
 	envGroup, err := m.loadEnvGroup(group)
 	if err != nil {
 		envGroup = storage.NewEnvGroup(group)

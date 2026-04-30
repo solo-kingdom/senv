@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	dataPath string
+	dataPath          string
+	rootShorthandFile string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -19,6 +20,17 @@ var rootCmd = &cobra.Command{
 	Short: "Secure environment variable and configuration manager",
 	Long: `Senv is a secure tool for managing environment variables and configuration files.
 It provides encrypted storage for sensitive data with group-based organization.`,
+	Args: cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		group, key, ok := parseAddress(args[0])
+		if !ok {
+			return cmd.Help()
+		}
+		return runTextShorthand(group, key, rootShorthandFile, args[1:])
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -34,6 +46,7 @@ func init() {
 	defaultPath := getDefaultDataPath()
 
 	rootCmd.PersistentFlags().StringVar(&dataPath, "path", defaultPath, "data storage path")
+	rootCmd.Flags().StringVar(&rootShorthandFile, "file", "", "read value from file (shorthand)")
 }
 
 func getDefaultConfigPath() string {

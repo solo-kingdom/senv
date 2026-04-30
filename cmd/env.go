@@ -13,6 +13,17 @@ var envCmd = &cobra.Command{
 	Use:   "env",
 	Short: "Manage environment variables",
 	Long:  `Manage encrypted environment variables organized by groups.`,
+	Args:  cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		group, key, ok := parseAddress(args[0])
+		if !ok {
+			return cmd.Help()
+		}
+		return runEnvShorthand(group, key, args[1:])
+	},
 }
 
 var envGroup string

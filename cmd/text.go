@@ -12,10 +12,23 @@ import (
 	"github.com/wii/senv/internal/text"
 )
 
+var textShorthandFile string
+
 var textCmd = &cobra.Command{
 	Use:   "text",
 	Short: "Manage text blocks",
 	Long:  `Manage encrypted text blocks organized by groups. Supports long text, multi-line content, and cross-references with env.`,
+	Args:  cobra.ArbitraryArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		group, key, ok := parseAddress(args[0])
+		if !ok {
+			return cmd.Help()
+		}
+		return runTextShorthand(group, key, textShorthandFile, args[1:])
+	},
 }
 
 var textGroup string
@@ -23,6 +36,7 @@ var textGroup string
 func init() {
 	rootCmd.AddCommand(textCmd)
 	textCmd.PersistentFlags().StringVarP(&textGroup, "group", "g", "default", "text block group")
+	textCmd.Flags().StringVar(&textShorthandFile, "file", "", "read value from file (shorthand)")
 }
 
 // getTextManager creates a text manager, reusing session cache when available
