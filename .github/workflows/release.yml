@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+          BUILD_TIME: ${{ github.event.repository.updated_at }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-X github.com/wii/senv/cmd.Version=${VERSION} -X github.com/wii/senv/cmd.BuildTime=${BUILD_TIME}" \
+            -o dist/senv .
+          tar -czf "dist/senv_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C dist senv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: senv-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/senv_*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum senv_*.tar.gz > checksums.txt
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if echo "$tag" | grep -qE '(-rc|-beta)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ steps.prerelease.outputs.prerelease == 'true' }}
+          files: dist/*

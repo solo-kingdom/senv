@@ -16,13 +16,39 @@
 
 ## 安装
 
+### 一键安装（推荐）
+
+使用安装脚本自动下载并安装对应平台的预编译二进制（支持 macOS / Linux，amd64 / arm64）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/solo-kingdom/senv/main/scripts/install.sh | bash
+```
+
+脚本默认安装到 `~/.local/bin`，可通过环境变量自定义：
+
+```bash
+# 指定安装目录
+curl -fsSL https://raw.githubusercontent.com/solo-kingdom/senv/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin bash
+
+# 安装指定版本
+curl -fsSL https://raw.githubusercontent.com/solo-kingdom/senv/main/scripts/install.sh | VERSION=v0.1.0 bash
+```
+
+> 安装脚本会自动校验 SHA256 校验和，确保下载内容完整可信。
+
 ### 从源码编译
 
 ```bash
-git clone https://github.com/yourname/senv.git
+git clone https://github.com/solo-kingdom/senv.git
 cd senv
-go build -o senv
+make build
 sudo mv senv /usr/local/bin/
+```
+
+安装完成后，可通过以下命令查看版本：
+
+```bash
+senv version
 ```
 
 ## 快速开始

@@ -4,7 +4,7 @@ BINARY_NAME=senv
 # 版本信息
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
-LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+LDFLAGS=-ldflags "-X github.com/wii/senv/cmd.Version=$(VERSION) -X github.com/wii/senv/cmd.BuildTime=$(BUILD_TIME)"
 
 # 安装目录
 PREFIX?=$(HOME)/.local
