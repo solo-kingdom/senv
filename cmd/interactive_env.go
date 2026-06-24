@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"strings"
+
+	"github.com/wii/senv/internal/env"
 )
 
 // envMenu displays the environment variable management menu
@@ -89,7 +91,24 @@ func (is *interactiveSession) listEnvVars() {
 		return
 	}
 
+	// 默认分组名，用于保留空的默认分组。
+	defaultGroup := ""
+	if infos, err := is.envManager.ListGroups(); err == nil {
+		for _, gi := range infos {
+			if gi.IsDefault {
+				defaultGroup = gi.Name
+				break
+			}
+		}
+	}
+
+	hasVisible := false
 	for groupName, variables := range vars {
+		// 隐藏没有变量的分组，但默认分组始终显示。
+		if len(variables) == 0 && groupName != defaultGroup {
+			continue
+		}
+		hasVisible = true
 		fmt.Printf("\n[%s]\n", groupName)
 		if len(variables) == 0 {
 			fmt.Println("  (空)")
@@ -102,6 +121,10 @@ func (is *interactiveSession) listEnvVars() {
 			}
 			fmt.Printf("  %s=%s\n", key, displayValue)
 		}
+	}
+
+	if !hasVisible {
+		fmt.Println("\n没有找到环境变量")
 	}
 
 	is.prompt("\n按回车键继续...")
@@ -153,13 +176,22 @@ func (is *interactiveSession) listEnvGroups() {
 		return
 	}
 
-	if len(groups) == 0 {
+	// 隐藏没有变量的分组，但默认分组始终显示。
+	visible := make([]env.GroupInfo, 0, len(groups))
+	for _, group := range groups {
+		if group.VarCount == 0 && !group.IsDefault {
+			continue
+		}
+		visible = append(visible, group)
+	}
+
+	if len(visible) == 0 {
 		fmt.Println("\n没有找到分组")
 		return
 	}
 
 	fmt.Println("\n环境变量分组:")
-	for _, group := range groups {
+	for _, group := range visible {
 		status := "未激活"
 		if group.IsActive {
 			status = "已激活"

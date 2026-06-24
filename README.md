@@ -12,6 +12,7 @@
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
 - ✅ **Shell 集成** - 支持 `eval $(senv env export)` 快速导入
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
+- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
 
 ## 安装
 
@@ -183,6 +184,46 @@ senv config get database
 senv config delete database
 ```
 
+### 8. TUI 模式（全屏界面）
+
+通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑所有 env/text/config 数据，无需记忆子命令。
+
+```bash
+senv tui   # 启动 TUI（复用密码校验与 session 缓存）
+```
+
+启动时同样需要项目已初始化并输入正确密码（或 session 缓存有效）。TUI 是纯交互层，所有持久化仍走现有加密存储。
+
+#### 快捷键
+
+| 按键 | 作用 |
+| --- | --- |
+| `Tab` / `1` `2` `3` | 切换 Env / Text / Config 标签（导航状态各自保留） |
+| `↑` `↓` / `j` `k` | 列表导航 |
+| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text Tab） |
+| `enter` | 查看详情（Config）/ 解开当前 env 明文 |
+| `v` | 单条切换当前 env 值明文/遮蔽（光标移开自动重新遮蔽） |
+| `e` | 编辑（env=内联输入框，text/config=vim） |
+| `n` | 新建条目 |
+| `d` | 删除（需确认） |
+| `a` / `x` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
+| `+` | 新建分组（Env / Text Tab） |
+| `D` | 切换解引用视图（Env Tab；Text 列表仅元数据） |
+| `y` | 复制值到剪贴板 |
+| `o` | 导出 text 到文件 |
+| `/` | 当前 Tab 内过滤（仅匹配 key/name，忽略大小写） |
+| `S` | 全局跨类型搜索 overlay（只搜 key/name，绝不搜值） |
+| `esc` | 关闭 overlay / 取消操作 |
+| `q` | 退出 TUI |
+
+#### 安全设计
+
+- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。
+- **搜索不泄漏**：全局搜索（`S`）与 Tab 内过滤（`/`）**只匹配 key/name，绝不匹配值**，避免结果列表批量暴露秘密。
+- **vim 闭环复用**：text/config 的编辑复用现有「解密 → 临时文件(600) → 编辑 → 重新加密 → 删除临时文件」流程，无新攻击面。
+
+> 注：TUI 内不提供 `env export`（其服务于 shell 启动注入 `eval $(...)`，TUI 作为子进程无法反向 eval 父 shell）。export 请继续使用命令行。
+
 ## 工作原理
 
 ### 加密方案
@@ -334,6 +375,7 @@ A: 目前不支持直接更改密码。你需要：
 
 ```
 senv init                          初始化项目
+senv tui                           启动全屏 TUI（浏览/搜索/编辑 env·text·config）
 senv env get <key> [-d]            获取环境变量（-d 解引用）
 senv env set <key> <value>         设置环境变量
 senv env delete <key>              删除环境变量
@@ -375,6 +417,9 @@ go test ./...
 ### 依赖
 
 - [github.com/spf13/cobra](https://github.com/spf13/cobra) - CLI 框架
+- [github.com/charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) - TUI 框架（Elm 架构）
+- [github.com/charmbracelet/bubbles](https://github.com/charmbracelet/bubbles) - TUI 组件（textinput 等）
+- [github.com/charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) - TUI 样式
 - [golang.org/x/crypto](https://golang.org/x/crypto) - 加密算法（PBKDF2）
 - [golang.org/x/term](https://golang.org/x/term) - 终端密码输入
 

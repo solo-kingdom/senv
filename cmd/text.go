@@ -260,13 +260,22 @@ var textGroupListCmd = &cobra.Command{
 			return err
 		}
 
-		if len(groups) == 0 {
+		// Hide groups that have no keys, except "default".
+		visible := make([]text.GroupInfo, 0, len(groups))
+		for _, g := range groups {
+			if g.KeyCount == 0 && g.Name != "default" {
+				continue
+			}
+			visible = append(visible, g)
+		}
+
+		if len(visible) == 0 {
 			fmt.Println("No text groups found")
 			return nil
 		}
 
 		fmt.Println("Text groups:")
-		for _, g := range groups {
+		for _, g := range visible {
 			fmt.Printf("  %s (%d keys)\n", g.Name, g.KeyCount)
 		}
 

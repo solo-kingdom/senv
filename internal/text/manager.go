@@ -152,62 +152,104 @@ func (m *Manager) SetFromReader(group, key string, reader io.Reader) error {
 	return m.Set(group, key, string(data))
 }
 
-// SetViaEditor opens an editor for creating or editing a text entry
-func (m *Manager) SetViaEditor(group, key string) error {
-	// Check if entry exists (to pre-fill content)
-	var existingContent string
-	entry, err := m.loadTextFile(group, key)
-	if err == nil {
-		existingContent = entry.Value
+// EditorSession holds the state of a pending editor invocation: the temp file
+// path and the original content (to detect whether anything changed).
+//
+// The flow is split into PrepareEditor -> (run editor on TmpPath) -> FinishEditor
+// so the TUI can run the editor through bubbletea's tea.ExecProcess (which
+// suspends and restores the TUI) instead of blocking the program loop. The
+// legacy CLI keeps using SetViaEditor which wraps both steps.
+type EditorSession struct {
+	Group    string
+	Key      string
+	TmpPath  string
+	Original string
+}
+
+// PrepareEditor decrypts the entry (or starts empty) into a 0600 temp file and
+// returns the session. The caller runs the editor on TmpPath, then calls
+// FinishEditor to persist.
+func (m *Manager) PrepareEditor(group, key string) (*EditorSession, error) {
+	var original string
+	if entry, err := m.loadTextFile(group, key); err == nil {
+		original = entry.Value
 	}
 
-	// Create temp file
 	tmpFile, err := os.CreateTemp("", "senv-text-*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
 
-	// Write existing content
-	if existingContent != "" {
-		if _, err := tmpFile.WriteString(existingContent); err != nil {
+	if original != "" {
+		if _, err := tmpFile.WriteString(original); err != nil {
 			tmpFile.Close()
-			return fmt.Errorf("failed to write temp file: %w", err)
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("failed to write temp file: %w", err)
 		}
 	}
 	tmpFile.Close()
 
-	// Set restrictive permissions
-	os.Chmod(tmpPath, 0o600)
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to set temp file permissions: %w", err)
+	}
 
-	// Get editor
-	editor := getEditor()
+	return &EditorSession{Group: group, Key: key, TmpPath: tmpPath, Original: original}, nil
+}
 
-	// Open editor
-	cmd := exec.Command(editor, tmpPath)
+// FinishEditor reads the edited temp file, re-encrypts when the content changed,
+// and removes the temp file. It returns changed=true when a new value was
+// persisted.
+func (m *Manager) FinishEditor(s *EditorSession) (bool, error) {
+	defer os.Remove(s.TmpPath)
+
+	editedContent, err := os.ReadFile(s.TmpPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read edited file: %w", err)
+	}
+
+	if string(editedContent) == s.Original {
+		return false, nil
+	}
+
+	if err := m.Set(s.Group, s.Key, string(editedContent)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// EditorCommand builds the exec.Cmd for the configured editor on the session's
+// temp file, wired to the real stdio. The TUI passes this to tea.ExecProcess.
+func (s *EditorSession) EditorCommand() *exec.Cmd {
+	cmd := exec.Command(getEditor(), s.TmpPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	return cmd
+}
 
-	if err := cmd.Run(); err != nil {
+// SetViaEditor opens an editor for creating or editing a text entry. It is the
+// one-shot wrapper around PrepareEditor/FinishEditor used by the CLI.
+func (m *Manager) SetViaEditor(group, key string) error {
+	s, err := m.PrepareEditor(group, key)
+	if err != nil {
+		return err
+	}
+
+	if err := s.EditorCommand().Run(); err != nil {
+		os.Remove(s.TmpPath)
 		return fmt.Errorf("failed to run editor: %w", err)
 	}
 
-	// Read edited content
-	editedContent, err := os.ReadFile(tmpPath)
+	changed, err := m.FinishEditor(s)
 	if err != nil {
-		return fmt.Errorf("failed to read edited file: %w", err)
+		return err
 	}
-
-	// Check if content changed
-	if string(editedContent) == existingContent {
+	if !changed {
 		fmt.Println("No changes detected")
-		return nil
 	}
-
-	// Save
-	return m.Set(group, key, string(editedContent))
+	return nil
 }
 
 // GetToFile writes a text entry's value to a file

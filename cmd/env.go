@@ -200,7 +200,25 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 			return nil
 		}
 
+		// Determine the default group name so empty non-default groups can be
+		// hidden from the listing.
+		defaultGroup := ""
+		if infos, err := envManager.ListGroups(); err == nil {
+			for _, gi := range infos {
+				if gi.IsDefault {
+					defaultGroup = gi.Name
+					break
+				}
+			}
+		}
+
+		hasVisible := false
 		for group, variables := range vars {
+			// Hide groups that have no keys, except the default group.
+			if len(variables) == 0 && group != defaultGroup {
+				continue
+			}
+			hasVisible = true
 			fmt.Printf("\n[%s]\n", group)
 			if len(variables) == 0 {
 				fmt.Println("  (empty)")
@@ -223,6 +241,10 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 				}
 				fmt.Printf("  %s=%s\n", key, displayValue)
 			}
+		}
+
+		if !hasVisible {
+			fmt.Println("No environment variables found")
 		}
 
 		return nil
@@ -286,13 +308,22 @@ var envGroupListCmd = &cobra.Command{
 			return err
 		}
 
-		if len(groups) == 0 {
+		// Hide groups that have no keys, except the default group.
+		visible := make([]env.GroupInfo, 0, len(groups))
+		for _, group := range groups {
+			if group.VarCount == 0 && !group.IsDefault {
+				continue
+			}
+			visible = append(visible, group)
+		}
+
+		if len(visible) == 0 {
 			fmt.Println("No groups found")
 			return nil
 		}
 
 		fmt.Println("Environment variable groups:")
-		for _, group := range groups {
+		for _, group := range visible {
 			status := "inactive"
 			if group.IsActive {
 				status = "active"

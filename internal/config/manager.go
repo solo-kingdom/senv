@@ -65,81 +65,114 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string) erro
 	return nil
 }
 
-// Edit opens a configuration file in the default editor
-func (m *Manager) Edit(name string) error {
-	// Check if config exists
+// ConfigEditSession holds the state of a pending config editor invocation.
+//
+// The flow is split into PrepareEdit -> (run editor on TmpPath) -> FinishEdit so
+// the TUI can run the editor through bubbletea's tea.ExecProcess (which
+// suspends/restores the TUI) instead of blocking the program loop. The legacy
+// CLI keeps using Edit which wraps both steps.
+type ConfigEditSession struct {
+	Name     string
+	TmpPath  string
+	Original []byte
+}
+
+// PrepareEdit decrypts the config into a temp file and returns the session.
+func (m *Manager) PrepareEdit(name string) (*ConfigEditSession, error) {
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
-		return fmt.Errorf("failed to load config index: %w", err)
+		return nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	if _, exists := configIndex.Configs[name]; !exists {
+		return nil, fmt.Errorf("config %s not found", name)
 	}
 
-	config, exists := configIndex.Configs[name]
-	if !exists {
-		return fmt.Errorf("config %s not found", name)
-	}
-
-	// Load and decrypt
 	content, err := m.storage.LoadConfigFile(name, m.password)
 	if err != nil {
-		return fmt.Errorf("failed to load config file: %w", err)
+		return nil, fmt.Errorf("failed to load config file: %w", err)
 	}
 
-	// Create temporary file
 	tmpFile, err := os.CreateTemp("", "senv-config-*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 
-	// Ensure cleanup
-	defer os.Remove(tmpPath)
-
-	// Write content to temp file
 	if _, err := tmpFile.Write(content); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("failed to write temp file: %w", err)
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("failed to write temp file: %w", err)
 	}
 	tmpFile.Close()
 
-	// Get editor from environment
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim" // Default to vim
+	return &ConfigEditSession{Name: name, TmpPath: tmpPath, Original: content}, nil
+}
+
+// FinishEdit reads the edited temp file, re-encrypts when content changed,
+// updates the index UpdatedAt, and removes the temp file. Returns changed=true
+// when a new value was persisted.
+func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
+	defer os.Remove(s.TmpPath)
+
+	editedContent, err := os.ReadFile(s.TmpPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read edited file: %w", err)
 	}
 
-	// Open editor
-	cmd := exec.Command(editor, tmpPath)
+	if string(editedContent) == string(s.Original) {
+		return false, nil
+	}
+
+	if err := m.storage.SaveConfigFile(s.Name, editedContent, m.password); err != nil {
+		return false, fmt.Errorf("failed to save config file: %w", err)
+	}
+
+	// Update index UpdatedAt.
+	if configIndex, err := m.storage.LoadConfigIndex(); err == nil {
+		if cfg, ok := configIndex.Configs[s.Name]; ok {
+			cfg.UpdatedAt = time.Now()
+			configIndex.Configs[s.Name] = cfg
+			_ = m.storage.SaveConfigIndex(configIndex)
+		}
+	}
+
+	return true, nil
+}
+
+// EditorCommand builds the exec.Cmd for the configured editor on the session's
+// temp file, wired to the real stdio. The TUI passes this to tea.ExecProcess.
+func (s *ConfigEditSession) EditorCommand() *exec.Cmd {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
+	cmd := exec.Command(editor, s.TmpPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	return cmd
+}
 
-	if err := cmd.Run(); err != nil {
+// Edit opens a configuration file in the default editor. It is the one-shot
+// wrapper around PrepareEdit/FinishEdit used by the CLI.
+func (m *Manager) Edit(name string) error {
+	s, err := m.PrepareEdit(name)
+	if err != nil {
+		return err
+	}
+
+	if err := s.EditorCommand().Run(); err != nil {
+		os.Remove(s.TmpPath)
 		return fmt.Errorf("failed to run editor: %w", err)
 	}
 
-	// Read edited content
-	editedContent, err := os.ReadFile(tmpPath)
+	changed, err := m.FinishEdit(s)
 	if err != nil {
-		return fmt.Errorf("failed to read edited file: %w", err)
+		return err
 	}
-
-	// Check if content changed
-	if string(editedContent) == string(content) {
+	if !changed {
 		fmt.Println("No changes detected")
 		return nil
-	}
-
-	// Encrypt and save
-	if err := m.storage.SaveConfigFile(name, editedContent, m.password); err != nil {
-		return fmt.Errorf("failed to save config file: %w", err)
-	}
-
-	// Update index
-	config.UpdatedAt = time.Now()
-	configIndex.Configs[name] = config
-
-	if err := m.storage.SaveConfigIndex(configIndex); err != nil {
-		return fmt.Errorf("failed to save config index: %w", err)
 	}
 
 	fmt.Printf("Config %s updated successfully\n", name)
