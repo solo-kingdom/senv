@@ -364,14 +364,18 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		}
 		return t, t.doExport(t.currentGroup(), it.key, path)
 	case textModeNewKey:
-		key := t.input.Value()
+		group, key := parseKeyAddress(t.input.Value(), t.currentGroup())
 		t.mode = textModeNormal
 		t.input.Blur()
 		if key == "" {
 			t.flash = "key cannot be empty"
 			return t, nil
 		}
-		return t.editKey(t.currentGroup(), key)
+		if group == "" {
+			t.flash = "select a group or use group:key"
+			return t, nil
+		}
+		return t.editKey(group, key)
 	case textModeAddGroup:
 		name := t.input.Value()
 		t.mode = textModeNormal
@@ -389,13 +393,9 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 // --- modal entry points ---
 
 func (t *textTab) enterNewKeyMode() (Tab, tea.Cmd) {
-	if t.currentGroup() == "" {
-		t.flash = "select a group first"
-		return t, nil
-	}
 	t.mode = textModeNewKey
 	t.input.SetValue("")
-	t.input.Placeholder = "key (will open vim)"
+	t.input.Placeholder = "key or group:key"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -636,7 +636,7 @@ func (t *textTab) renderModal() string {
 	case textModeExportPath:
 		return modalBox("Export to file", t.input.View(), "enter export · esc cancel")
 	case textModeNewKey:
-		return modalBox("New text block — key", t.input.View(), "enter to open vim · esc cancel")
+		return modalBox("New text block — key or group:key", t.input.View(), "enter to open vim · esc cancel")
 	case textModeAddGroup:
 		return modalBox("New group name", t.input.View(), "enter create · esc cancel")
 	case textModeFilter:

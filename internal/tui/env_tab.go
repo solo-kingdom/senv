@@ -33,7 +33,8 @@ type envTab struct {
 
 	input         textinput.Model
 	mode          envMode
-	pendingNewKey string // staging the key during the two-step "new" flow
+	pendingNewGroup string // staging the group during the two-step "new" flow
+	pendingNewKey   string // staging the key during the two-step "new" flow
 	flash         string // transient success hint
 }
 
@@ -470,11 +471,16 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 		return t, t.doSet(group, key, value)
 
 	case envModeNewKey:
-		key := t.input.Value()
+		group, key := parseKeyAddress(t.input.Value(), t.currentGroup())
 		if key == "" {
 			t.flash = "key cannot be empty"
 			return t, nil
 		}
+		if group == "" {
+			t.flash = "select a group or use group:key"
+			return t, nil
+		}
+		t.pendingNewGroup = group
 		t.pendingNewKey = key
 		t.input.SetValue("")
 		t.mode = envModeNewValue
@@ -484,9 +490,10 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 
 	case envModeNewValue:
 		value := t.input.Value()
-		group := t.currentGroup()
+		group := t.pendingNewGroup
 		key := t.pendingNewKey
 		t.mode = envModeNormal
+		t.pendingNewGroup = ""
 		t.pendingNewKey = ""
 		t.input.Blur()
 		return t, t.doSet(group, key, value)
@@ -522,14 +529,11 @@ func (t *envTab) enterEditMode() (Tab, tea.Cmd) {
 }
 
 func (t *envTab) enterNewKeyMode() (Tab, tea.Cmd) {
-	if t.currentGroup() == "" {
-		t.flash = "select a group first"
-		return t, nil
-	}
 	t.mode = envModeNewKey
+	t.pendingNewGroup = ""
 	t.pendingNewKey = ""
 	t.input.SetValue("")
-	t.input.Placeholder = "key"
+	t.input.Placeholder = "key or group:key"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -768,9 +772,9 @@ func (t *envTab) renderModal() string {
 	case envModeEditValue:
 		return modalBox("Edit "+t.currentItemKeyLabel(), t.input.View(), "enter save · esc cancel")
 	case envModeNewKey:
-		return modalBox("New variable — key", t.input.View(), "enter next · esc cancel")
+		return modalBox("New variable — key or group:key", t.input.View(), "enter next · esc cancel")
 	case envModeNewValue:
-		return modalBox("New value for "+t.pendingNewKey, t.input.View(), "enter save · esc cancel")
+		return modalBox("New value for "+t.pendingNewGroup+"/"+t.pendingNewKey, t.input.View(), "enter save · esc cancel")
 	case envModeDeleteConfirm:
 		it, _ := t.currentItem()
 		return modalBox("Delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")

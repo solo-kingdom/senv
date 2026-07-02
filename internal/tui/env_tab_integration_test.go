@@ -172,6 +172,41 @@ func TestEnvNewVarModalFlow(t *testing.T) {
 	}
 }
 
+// TestEnvNewVarGroupKey adds a variable to a non-default group via group:key
+// without selecting that group in the left pane (empty groups are hidden).
+func TestEnvNewVarGroupKey(t *testing.T) {
+	envMgr := newTestEnvManager(t)
+	tab := newEnvTab(Managers{Env: envMgr})
+	tab.SetSize(80, 20)
+	tab = flush(tab, tab.load())
+	tab.groupIndex = 0 // cursor on default
+
+	tab = driveKey(tab, "n")
+	for _, r := range "prod:SECRET" {
+		tab = driveKey(tab, string(r))
+	}
+	tab = driveKey(tab, "enter")
+	if tab.mode != envModeNewValue {
+		t.Fatalf("expected envModeNewValue, got %v", tab.mode)
+	}
+	if tab.pendingNewGroup != "prod" || tab.pendingNewKey != "SECRET" {
+		t.Fatalf("pending = %q/%q, want prod/SECRET", tab.pendingNewGroup, tab.pendingNewKey)
+	}
+
+	for _, r := range "top-secret" {
+		tab = driveKey(tab, string(r))
+	}
+	next, cmd := tab.Update(runeKey("enter"))
+	tab = flush(next.(*envTab), cmd)
+
+	if groupIndexByName(tab, "prod") < 0 {
+		t.Fatal("prod group should appear after adding a key via group:key")
+	}
+	if !hasEnvItem(tab, "prod", "SECRET", "top-secret") {
+		t.Errorf("SECRET not persisted in prod: %#v", tab.itemsByGroup["prod"])
+	}
+}
+
 // driveKey applies a key, ignoring any returned (blink) command. Used for
 // keystrokes whose command is just cursor-animation and has no side effect to
 // resolve in the test.
