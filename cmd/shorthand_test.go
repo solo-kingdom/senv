@@ -34,3 +34,28 @@ func TestParseAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveAddressKey(t *testing.T) {
+	tests := []struct {
+		arg       string
+		flagGroup string
+		wantGroup string
+		wantKey   string
+	}{
+		{":key", "other", "default", "key"},
+		{"group:key", "other", "group", "key"},
+		{"plainkey", "default", "default", "plainkey"},
+		{"plainkey", "feg", "feg", "plainkey"},
+		{"feg:ACCOUNT", "other", "feg", "ACCOUNT"},
+	}
+
+	for _, tt := range tests {
+		group, key := resolveAddressKey(tt.arg, tt.flagGroup)
+		if group != tt.wantGroup {
+			t.Errorf("resolveAddressKey(%q, %q): group=%q, want %q", tt.arg, tt.flagGroup, group, tt.wantGroup)
+		}
+		if key != tt.wantKey {
+			t.Errorf("resolveAddressKey(%q, %q): key=%q, want %q", tt.arg, tt.flagGroup, key, tt.wantKey)
+		}
+	}
+}

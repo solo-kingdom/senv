@@ -94,11 +94,12 @@ func isPipe() bool {
 var textSetFile string
 
 var textSetCmd = &cobra.Command{
-	Use:   "set <key> [value]",
+	Use:   "set <key|group:key> [value]",
 	Short: "Set a text block",
 	Long: `Set a text block. Input priority: --file > stdin pipe > argument > editor.
 When no value is provided and stdin is a terminal, opens an editor.
-If the key already exists, the editor will be pre-filled with the existing content.`,
+If the key already exists, the editor will be pre-filled with the existing content.
+The key may be a group:key address (e.g. feg:ACCOUNT); address group takes precedence over -g/--group.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		textManager, err := getTextManager()
@@ -106,23 +107,23 @@ If the key already exists, the editor will be pre-filled with the existing conte
 			return err
 		}
 
-		key := args[0]
+		group, key := resolveAddressKey(args[0], textGroup)
 
 		// Priority: --file > stdin > args > editor
 		if textSetFile != "" {
-			return textManager.SetFromFile(textGroup, key, textSetFile)
+			return textManager.SetFromFile(group, key, textSetFile)
 		}
 
 		if isPipe() {
-			return textManager.SetFromReader(textGroup, key, os.Stdin)
+			return textManager.SetFromReader(group, key, os.Stdin)
 		}
 
 		if len(args) >= 2 {
-			return textManager.Set(textGroup, key, args[1])
+			return textManager.Set(group, key, args[1])
 		}
 
 		// Open editor
-		return textManager.SetViaEditor(textGroup, key)
+		return textManager.SetViaEditor(group, key)
 	},
 }
 
@@ -136,10 +137,11 @@ var (
 )
 
 var textGetCmd = &cobra.Command{
-	Use:   "get <key>",
+	Use:   "get <key|group:key>",
 	Short: "Get a text block",
 	Long: `Get a text block value. By default outputs the raw value.
-Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
+Use -d/--decode to resolve {{env:...}} and {{text:...}} references.
+The key may be a group:key address (e.g. feg:ACCOUNT); address group takes precedence over -g/--group.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		textManager, err := getTextManager()
@@ -147,15 +149,15 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 			return err
 		}
 
-		key := args[0]
-		value, err := textManager.Get(textGroup, key)
+		group, key := resolveAddressKey(args[0], textGroup)
+		value, err := textManager.Get(group, key)
 		if err != nil {
 			return err
 		}
 
 		// Resolve references if -d flag is set
 		if textGetDecode {
-			resolved, err := resolveValue(value, textGetLoose, textGroup)
+			resolved, err := resolveValue(value, textGetLoose, group)
 			if err != nil {
 				return err
 			}
@@ -164,11 +166,11 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 
 		// Output
 		if textGetCopy {
-			return textManager.GetToClipboard(textGroup, key)
+			return textManager.GetToClipboard(group, key)
 		}
 
 		if textGetOutput != "" {
-			return textManager.GetToFile(textGroup, key, textGetOutput)
+			return textManager.GetToFile(group, key, textGetOutput)
 		}
 
 		fmt.Print(value)
@@ -179,8 +181,9 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 // --- text delete ---
 
 var textDeleteCmd = &cobra.Command{
-	Use:   "delete <key>",
+	Use:   "delete <key|group:key>",
 	Short: "Delete a text block",
+	Long:  `Delete a text block. The key may be a group:key address; address group takes precedence over -g/--group.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		textManager, err := getTextManager()
@@ -188,12 +191,12 @@ var textDeleteCmd = &cobra.Command{
 			return err
 		}
 
-		key := args[0]
-		if err := textManager.Delete(textGroup, key); err != nil {
+		group, key := resolveAddressKey(args[0], textGroup)
+		if err := textManager.Delete(group, key); err != nil {
 			return err
 		}
 
-		fmt.Printf("✓ Deleted text %s from group %s\n", key, textGroup)
+		fmt.Printf("✓ Deleted text %s from group %s\n", key, group)
 		return nil
 	},
 }

@@ -1,4 +1,4 @@
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: group:key 地址语法作为 set 快捷方式
 系统 SHALL 支持 `group:key` 地址格式作为 env/text 操作的快捷寻址方式。地址中 `:` 为必要分隔符，左侧为 group，右侧为 key；左侧为空时 group 默认为 `default`，右侧为空时 key 默认为 `__default`。该语法适用于：根命令与 `text`/`env` 父命令的 set 快捷方式，以及 `text get`/`text delete`/`text set`、`env get`/`env delete`/`env set` 子命令的位置参数。
@@ -67,23 +67,7 @@
 - **WHEN** 用户先通过 `senv mygroup: value1` 写入，再通过 `senv text get mygroup:__default` 读取
 - **THEN** 读取结果为 `value1`
 
-### Requirement: 快捷方式支持 --file 选项（text 类型）
-text 类型的快捷方式 SHALL 支持 `--file` 选项，从文件中读取内容写入。
-
-#### Scenario: 根命令快捷方式使用 --file
-- **WHEN** 用户运行 `senv mygroup:mykey --file /path/to/cert.pem`
-- **THEN** 系统读取文件内容并写入 text group `mygroup` 的 key `mykey`
-
-#### Scenario: text 子命令快捷方式使用 --file
-- **WHEN** 用户运行 `senv text mygroup:mykey --file /path/to/cert.pem`
-- **THEN** 系统读取文件内容并写入 text group `mygroup` 的 key `mykey`
-
-### Requirement: __default key 无特殊保留语义
-`__default` SHALL 是普通 key 名，快捷方式（`group:`）与完整命令（`senv text set -g group __default`）访问同一存储 entry。
-
-#### Scenario: 快捷方式与完整命令访问同一 entry
-- **WHEN** 用户先通过 `senv mygroup: value1` 写入，再通过 `senv text get -g mygroup __default` 读取
-- **THEN** 读取结果为 `value1`
+## ADDED Requirements
 
 ### Requirement: address 参数优先于 -g flag
 当位置参数含 `:` 并被解析为 address 时，系统 SHALL 使用 address 中的 group，忽略同时指定的 `-g`/`--group` flag。
