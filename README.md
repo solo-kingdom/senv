@@ -225,10 +225,10 @@ senv config delete database
 通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑所有 env/text/config 数据，无需记忆子命令。
 
 ```bash
-senv tui   # 启动 TUI（复用密码校验与 session 缓存）
+senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
 ```
 
-启动时同样需要项目已初始化并输入正确密码（或 session 缓存有效）。TUI 是纯交互层，所有持久化仍走现有加密存储。
+启动时需要项目已初始化。有有效 session 则免密进入；否则提示密码（仅本次有效，不写入 session）。TUI 是纯交互层，所有持久化仍走现有加密存储。
 
 #### 快捷键
 

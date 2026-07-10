@@ -66,19 +66,6 @@ func getEnvManager() (*env.Manager, error) {
 		return nil, fmt.Errorf("invalid password")
 	}
 
-	// Check if session cache is enabled and save cache
-	settings, err := manager.LoadSettings()
-	if err == nil && settings.Session.Enabled {
-		timeout, err := session.ParseTimeout(settings.Session.Timeout)
-		if err == nil && timeout != nil {
-			// Start session with configured timeout
-			if err := sessionManager.StartSession(password, timeout); err == nil {
-				// Session started successfully, show message only for export command
-				// (to avoid cluttering other command outputs)
-			}
-		}
-	}
-
 	return env.NewManager(manager, password), nil
 }
 

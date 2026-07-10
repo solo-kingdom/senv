@@ -71,15 +71,6 @@ func getTextManager() (*text.Manager, error) {
 		return nil, fmt.Errorf("invalid password")
 	}
 
-	// Save session cache if enabled
-	settings, err := manager.LoadSettings()
-	if err == nil && settings.Session.Enabled {
-		timeout, err := session.ParseTimeout(settings.Session.Timeout)
-		if err == nil && timeout != nil {
-			sessionManager.StartSession(password, timeout)
-		}
-	}
-
 	return text.NewManager(manager, password), nil
 }
 
