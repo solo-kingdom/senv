@@ -340,7 +340,6 @@ func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 
 // SaveConfigFile saves an encrypted configuration file
 func (m *Manager) SaveConfigFile(name string, content []byte, password string) error {
-	// Get encryption key
 	metadata, err := m.LoadMetadata()
 	if err != nil {
 		return err
@@ -352,14 +351,16 @@ func (m *Manager) SaveConfigFile(name string, content []byte, password string) e
 	}
 
 	key := crypto.DeriveKey(password, salt)
+	return m.SaveConfigFileWithKey(name, content, key)
+}
 
-	// Encrypt
+// SaveConfigFileWithKey saves an encrypted configuration file using a derived key
+func (m *Manager) SaveConfigFileWithKey(name string, content []byte, key []byte) error {
 	encryptedData, err := crypto.Encrypt(key, content)
 	if err != nil {
 		return err
 	}
 
-	// Save to file
 	filename := fmt.Sprintf("%s%s", name, ConfigFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
 
@@ -368,7 +369,6 @@ func (m *Manager) SaveConfigFile(name string, content []byte, password string) e
 
 // LoadConfigFile loads and decrypts a configuration file
 func (m *Manager) LoadConfigFile(name string, password string) ([]byte, error) {
-	// Get encryption key
 	metadata, err := m.LoadMetadata()
 	if err != nil {
 		return nil, err
@@ -380,8 +380,11 @@ func (m *Manager) LoadConfigFile(name string, password string) ([]byte, error) {
 	}
 
 	key := crypto.DeriveKey(password, salt)
+	return m.LoadConfigFileWithKey(name, key)
+}
 
-	// Read encrypted file
+// LoadConfigFileWithKey loads and decrypts a configuration file using a derived key
+func (m *Manager) LoadConfigFileWithKey(name string, key []byte) ([]byte, error) {
 	filename := fmt.Sprintf("%s%s", name, ConfigFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
 
@@ -390,7 +393,6 @@ func (m *Manager) LoadConfigFile(name string, password string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Decrypt
 	return crypto.Decrypt(key, string(encryptedData))
 }
 
