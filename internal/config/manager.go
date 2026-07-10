@@ -15,6 +15,7 @@ import (
 type Manager struct {
 	storage  *storage.Manager
 	password string
+	key      []byte
 }
 
 // NewManager creates a new configuration file manager
@@ -23,6 +24,30 @@ func NewManager(storage *storage.Manager, password string) *Manager {
 		storage:  storage,
 		password: password,
 	}
+}
+
+// NewManagerWithKey creates a new configuration file manager with a derived key
+func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
+	return &Manager{
+		storage: storage,
+		key:     key,
+	}
+}
+
+// loadConfigFile loads a configuration file using key or password
+func (m *Manager) loadConfigFile(name string) ([]byte, error) {
+	if m.key != nil {
+		return m.storage.LoadConfigFileWithKey(name, m.key)
+	}
+	return m.storage.LoadConfigFile(name, m.password)
+}
+
+// saveConfigFile saves a configuration file using key or password
+func (m *Manager) saveConfigFile(name string, content []byte) error {
+	if m.key != nil {
+		return m.storage.SaveConfigFileWithKey(name, content, m.key)
+	}
+	return m.storage.SaveConfigFile(name, content, m.password)
 }
 
 // Create creates a new configuration file from a source path
@@ -44,7 +69,7 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string) erro
 	}
 
 	// Encrypt and save
-	if err := m.storage.SaveConfigFile(name, content, m.password); err != nil {
+	if err := m.saveConfigFile(name, content); err != nil {
 		return fmt.Errorf("failed to save config file: %w", err)
 	}
 
@@ -87,7 +112,7 @@ func (m *Manager) PrepareEdit(name string) (*ConfigEditSession, error) {
 		return nil, fmt.Errorf("config %s not found", name)
 	}
 
-	content, err := m.storage.LoadConfigFile(name, m.password)
+	content, err := m.loadConfigFile(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config file: %w", err)
 	}
@@ -123,7 +148,7 @@ func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
 		return false, nil
 	}
 
-	if err := m.storage.SaveConfigFile(s.Name, editedContent, m.password); err != nil {
+	if err := m.saveConfigFile(s.Name, editedContent); err != nil {
 		return false, fmt.Errorf("failed to save config file: %w", err)
 	}
 
@@ -205,7 +230,7 @@ func (m *Manager) Export(name string, targetPath string) error {
 	targetPath = expandHome(targetPath)
 
 	// Load and decrypt
-	content, err := m.storage.LoadConfigFile(name, m.password)
+	content, err := m.loadConfigFile(name)
 	if err != nil {
 		return fmt.Errorf("failed to load config file: %w", err)
 	}
