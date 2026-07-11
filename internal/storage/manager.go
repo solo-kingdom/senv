@@ -152,6 +152,24 @@ func (m *Manager) IsInitialized() bool {
 	return err == nil
 }
 
+// VerifyKey checks whether a derived key still matches the current metadata.
+func (m *Manager) VerifyKey(key []byte) (bool, error) {
+	if len(key) != crypto.KeySize {
+		return false, nil
+	}
+
+	metadata, err := m.LoadMetadata()
+	if err != nil {
+		return false, fmt.Errorf("failed to load metadata: %w", err)
+	}
+
+	if _, err := crypto.Decrypt(key, metadata.PasswordKey); err != nil {
+		return false, nil
+	}
+
+	return true, nil
+}
+
 // VerifyPassword verifies if the provided password is correct
 func (m *Manager) VerifyPassword(password string) (bool, error) {
 	metadata, err := m.LoadMetadata()

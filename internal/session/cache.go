@@ -99,12 +99,27 @@ func saveCache(cache *SessionCache) error {
 	return nil
 }
 
+// readCacheFile reads and parses a session cache from the given path.
+func readCacheFile(cachePath string) (*SessionCache, error) {
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var cache SessionCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal cache: %w", err)
+	}
+
+	return &cache, nil
+}
+
 // loadCache loads the session cache from disk
 // It searches both persistent and temporary cache locations
 func loadCache() (*SessionCache, error) {
 	// Try all possible cache paths
 	for _, cachePath := range getAllCachePaths() {
-		data, err := os.ReadFile(cachePath)
+		cache, err := readCacheFile(cachePath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue // Try next location
@@ -112,15 +127,32 @@ func loadCache() (*SessionCache, error) {
 			return nil, fmt.Errorf("failed to read cache file: %w", err)
 		}
 
-		var cache SessionCache
-		if err := json.Unmarshal(data, &cache); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal cache: %w", err)
-		}
-
-		return &cache, nil
+		return cache, nil
 	}
 
 	return nil, nil // No cache file exists in any location
+}
+
+// loadCacheForDataPath loads the session cache for the given data path.
+// When multiple cache files exist, only the one matching dataPathHash is returned.
+func loadCacheForDataPath(dataPath string) (*SessionCache, error) {
+	expectedHash := hashDataPath(dataPath)
+
+	for _, cachePath := range getAllCachePaths() {
+		cache, err := readCacheFile(cachePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to read cache file: %w", err)
+		}
+
+		if cache.DataPathHash == expectedHash {
+			return cache, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // clearCache removes all session cache files

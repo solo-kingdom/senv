@@ -104,7 +104,7 @@ func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 
 // GetCachedKey retrieves the cached key if the session is still valid
 func (m *Manager) GetCachedKey() ([]byte, error) {
-	cache, err := loadCache()
+	cache, err := loadCacheForDataPath(m.dataPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load cache: %w", err)
 	}
@@ -122,6 +122,7 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 			}
 			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, reason)
 		}
+		_ = clearCache()
 		return nil, fmt.Errorf("session expired or invalid")
 	}
 
@@ -129,6 +130,33 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 	key, err := base64.StdEncoding.DecodeString(cache.Key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode key: %w", err)
+	}
+
+	storageManager := storage.NewManager(m.configPath, m.dataPath)
+	metadata, err := storageManager.LoadMetadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load metadata: %w", err)
+	}
+
+	// Reject stale sessions when metadata changed (e.g. git pull, re-init).
+	if cache.Salt != metadata.Salt {
+		if m.auditLogger != nil {
+			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, "Session stale: salt mismatch")
+		}
+		_ = clearCache()
+		return nil, fmt.Errorf("session stale")
+	}
+
+	keyValid, err := storageManager.VerifyKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if !keyValid {
+		if m.auditLogger != nil {
+			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, "Session stale: key invalid")
+		}
+		_ = clearCache()
+		return nil, fmt.Errorf("session stale")
 	}
 
 	// Log successful validation
@@ -177,7 +205,7 @@ func (m *Manager) ClearSession() error {
 
 // LoadCache loads the session cache (public method for status command)
 func (m *Manager) LoadCache() (*SessionCache, error) {
-	return loadCache()
+	return loadCacheForDataPath(m.dataPath)
 }
 
 // IsCacheValid checks if the cache is valid (public method for status command)
