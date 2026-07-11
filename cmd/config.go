@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -32,7 +33,14 @@ func getConfigManager() (*config.Manager, error) {
 		return nil, fmt.Errorf("project not initialized. Run 'senv init' first")
 	}
 
-	// Prompt for password
+	// Try to get cached key from session
+	sessionManager := session.NewManager(configPath, dataPath)
+	key, err := sessionManager.GetCachedKey()
+	if err == nil {
+		return config.NewManagerWithKey(manager, key), nil
+	}
+
+	// Cache is invalid or doesn't exist, prompt for password (temporary auth only)
 	password, err := promptPassword("Senv - Enter password: ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read password: %w", err)

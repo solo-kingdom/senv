@@ -19,8 +19,9 @@ var tuiCmd = &cobra.Command{
 	Short: "Launch the full-screen TUI",
 	Long: `Launch the full-screen TUI to browse, search and edit env, text and config.
 
-Reuses the same password validation and session cache mechanism as the other
-commands. See "TUI mode" in the README for the keybinding reference.`,
+Reuses a valid session cache when available; otherwise prompts for a one-time
+password (does not write session). See "TUI mode" in the README for the
+keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envMgr, textMgr, configMgr, err := getManagers()
@@ -47,18 +48,11 @@ func init() {
 
 // getManagers authenticates the user and returns all three domain managers.
 //
-// Startup validation (task 2.2):
+// Startup validation:
 //   - project not initialized -> error, the command exits without entering TUI
-//   - wrong password          -> error, the command exits without entering TUI
-//   - success                 -> managers are returned for the TUI to use
-//
-// Note: unlike the individual CLI commands which can use the derived-key
-// session cache to avoid prompting, the TUI authenticates once with the
-// password for all three managers. This is because config.Manager only accepts
-// a password (it has no NewManagerWithKey), and the session cache stores only
-// the derived key (which cannot be reversed back to the password). After a
-// successful authentication a session is still started when enabled, so that
-// subsequent CLI commands benefit from the cache.
+//   - valid session cache     -> reuse derived key, no password prompt
+//   - no session + wrong pwd  -> error, the command exits without entering TUI
+//   - no session + correct pwd -> temporary auth only (does not write session cache)
 func getManagers() (*env.Manager, *text.Manager, *config.Manager, error) {
 	return getManagersAt(getConfigPath(), getDataPath(), promptPassword)
 }
@@ -76,6 +70,15 @@ func getManagersAt(configPath, dataPath string, prompt passwordPrompter) (*env.M
 		return nil, nil, nil, errNotInitialized
 	}
 
+	sessionManager := session.NewManager(configPath, dataPath)
+	key, err := sessionManager.GetCachedKey()
+	if err == nil {
+		return env.NewManagerWithKey(storageMgr, key),
+			text.NewManagerWithKey(storageMgr, key),
+			config.NewManagerWithKey(storageMgr, key),
+			nil
+	}
+
 	password, err := prompt("Senv - Enter password: ")
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to read password: %w", err)
@@ -87,15 +90,6 @@ func getManagersAt(configPath, dataPath string, prompt passwordPrompter) (*env.M
 	}
 	if !valid {
 		return nil, nil, nil, errInvalidPassword
-	}
-
-	// Start a session cache if enabled in settings, so that CLI commands run
-	// after the TUI exits can reuse the cache.
-	sessionManager := session.NewManager(configPath, dataPath)
-	if settings, err := storageMgr.LoadSettings(); err == nil && settings.Session.Enabled {
-		if timeout, err := session.ParseTimeout(settings.Session.Timeout); err == nil && timeout != nil {
-			_ = sessionManager.StartSession(password, timeout)
-		}
 	}
 
 	return env.NewManager(storageMgr, password),

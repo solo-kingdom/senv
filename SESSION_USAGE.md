@@ -57,18 +57,23 @@ senv session start --timeout never
 
 ### 3. 使用缓存的会话
 
-启动会话后，所有后续的 `senv` 命令都会自动使用缓存的密钥：
+**仅** `senv session start` 会写入或刷新 session cache。功能命令（`env` / `text` / `config` / `tui` / `interactive`）在有有效 session 时复用 derived key；无 session 时提示密码仅作本次临时认证，**不会**自动开 session。
 
 ```bash
-# 首次运行，输入密码并启动会话
-senv env export
+# 显式启动会话（唯一落盘方式）
+senv session start
 # Enter password: ****
 # ✓ Session started (expires in 8h0m0s)
 
-# 后续运行，无需密码
+# 后续任意入口免密
 senv env list
 senv env get DATABASE_URL
-senv env set API_KEY "new-key"
+senv config list
+senv tui
+
+# 未 start 时：用一次要一次密码，且不留下 session
+senv env get FOO          # 要密码
+senv session status       # 仍无 active session
 ```
 
 ### 4. 清除会话
@@ -95,18 +100,22 @@ senv session clear
 
 ### 禁用会话缓存
 
+功能命令本身不会自动创建 session。若不需要免密，只需不要运行 `senv session start`（或用 `senv session clear` 清除已有 cache）。
+
+settings 中的 `session.timeout` 仅作为 `senv session start`（未传 `--timeout`）的默认值：
+
 ```json
 {
   "session": {
-    "enabled": false,
+    "enabled": true,
     "timeout": "8h"
   }
 }
 ```
 
-或使用命令：
+也可用命令行临时禁用本次 start：
+
 ```bash
-# 暂时禁用（使用 false 作为超时）
 senv session start --timeout false
 ```
 
@@ -226,8 +235,11 @@ ls -la ~/.config/senv/data/logs/
 
 ### 缓存文件位置
 
-- **Linux/macOS**: `$XDG_RUNTIME_DIR/senv/session-<uid>`
-- **后备**: `/tmp/senv-session-<uid>`
+- **duration / restart**（临时）:
+  - `$XDG_RUNTIME_DIR/senv/session-<uid>`（优先）
+  - 后备: `/tmp/senv-session-<uid>`
+- **never**（持久，重启后仍在）:
+  - `~/.local/share/senv/session/session-<uid>`
 
 ### 缓存文件结构
 

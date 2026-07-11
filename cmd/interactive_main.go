@@ -38,24 +38,35 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	password, err := promptPassword("Senv - 请输入密码: ")
-	if err != nil {
-		return fmt.Errorf("读取密码失败: %w", err)
-	}
-
-	valid, err := storageManager.VerifyPassword(password)
-	if err != nil {
-		return fmt.Errorf("验证密码失败: %w", err)
-	}
-
-	if !valid {
-		return fmt.Errorf("密码错误")
-	}
-
-	envManager := env.NewManager(storageManager, password)
-	configManager := config.NewManager(storageManager, password)
-	gitManager := git.NewManager(storageManager.GetGitPath())
 	sessionManager := session.NewManager(configPath, dataPath)
+	var envManager *env.Manager
+	var configManager *config.Manager
+	var password string
+
+	key, err := sessionManager.GetCachedKey()
+	if err == nil {
+		envManager = env.NewManagerWithKey(storageManager, key)
+		configManager = config.NewManagerWithKey(storageManager, key)
+	} else {
+		password, err = promptPassword("Senv - 请输入密码: ")
+		if err != nil {
+			return fmt.Errorf("读取密码失败: %w", err)
+		}
+
+		valid, err := storageManager.VerifyPassword(password)
+		if err != nil {
+			return fmt.Errorf("验证密码失败: %w", err)
+		}
+
+		if !valid {
+			return fmt.Errorf("密码错误")
+		}
+
+		envManager = env.NewManager(storageManager, password)
+		configManager = config.NewManager(storageManager, password)
+	}
+
+	gitManager := git.NewManager(storageManager.GetGitPath())
 
 	is := &interactiveSession{
 		reader:         bufio.NewReader(os.Stdin),
@@ -65,14 +76,6 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 		gitManager:     gitManager,
 		sessionManager: sessionManager,
 		password:       password,
-	}
-
-	settings, err := storageManager.LoadSettings()
-	if err == nil && settings.Session.Enabled {
-		timeout, err := session.ParseTimeout(settings.Session.Timeout)
-		if err == nil && timeout != nil {
-			sessionManager.StartSession(password, timeout)
-		}
 	}
 
 	fmt.Println("\n✓ 登录成功")

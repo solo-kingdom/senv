@@ -66,19 +66,6 @@ func getEnvManager() (*env.Manager, error) {
 		return nil, fmt.Errorf("invalid password")
 	}
 
-	// Check if session cache is enabled and save cache
-	settings, err := manager.LoadSettings()
-	if err == nil && settings.Session.Enabled {
-		timeout, err := session.ParseTimeout(settings.Session.Timeout)
-		if err == nil && timeout != nil {
-			// Start session with configured timeout
-			if err := sessionManager.StartSession(password, timeout); err == nil {
-				// Session started successfully, show message only for export command
-				// (to avoid cluttering other command outputs)
-			}
-		}
-	}
-
 	return env.NewManager(manager, password), nil
 }
 
@@ -89,10 +76,11 @@ var (
 )
 
 var envGetCmd = &cobra.Command{
-	Use:   "get <key>",
+	Use:   "get <key|group:key>",
 	Short: "Get an environment variable",
 	Long: `Get an environment variable value. By default outputs the raw value.
-Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
+Use -d/--decode to resolve {{env:...}} and {{text:...}} references.
+The key may be a group:key address (e.g. prod:API_KEY); address group takes precedence over -g/--group.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envManager, err := getEnvManager()
@@ -100,15 +88,15 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 			return err
 		}
 
-		key := args[0]
-		value, err := envManager.Get(envGroup, key)
+		group, key := resolveAddressKey(args[0], envGroup)
+		value, err := envManager.Get(group, key)
 		if err != nil {
 			return err
 		}
 
 		// Resolve references if -d flag is set
 		if envGetDecode {
-			resolved, err := resolveValue(value, envGetLoose, envGroup)
+			resolved, err := resolveValue(value, envGetLoose, group)
 			if err != nil {
 				return err
 			}
@@ -122,8 +110,9 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 
 // envSetCmd represents the env set command
 var envSetCmd = &cobra.Command{
-	Use:   "set <key> <value>",
+	Use:   "set <key|group:key> <value>",
 	Short: "Set an environment variable",
+	Long:  `Set an environment variable. The key may be a group:key address; address group takes precedence over -g/--group.`,
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envManager, err := getEnvManager()
@@ -131,22 +120,23 @@ var envSetCmd = &cobra.Command{
 			return err
 		}
 
-		key := args[0]
+		group, key := resolveAddressKey(args[0], envGroup)
 		value := args[1]
 
-		if err := envManager.Set(envGroup, key, value); err != nil {
+		if err := envManager.Set(group, key, value); err != nil {
 			return err
 		}
 
-		fmt.Printf("✓ Set %s in group %s\n", key, envGroup)
+		fmt.Printf("✓ Set %s in group %s\n", key, group)
 		return nil
 	},
 }
 
 // envDeleteCmd represents the env delete command
 var envDeleteCmd = &cobra.Command{
-	Use:   "delete <key>",
+	Use:   "delete <key|group:key>",
 	Short: "Delete an environment variable",
+	Long:  `Delete an environment variable. The key may be a group:key address; address group takes precedence over -g/--group.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		envManager, err := getEnvManager()
@@ -154,13 +144,13 @@ var envDeleteCmd = &cobra.Command{
 			return err
 		}
 
-		key := args[0]
+		group, key := resolveAddressKey(args[0], envGroup)
 
-		if err := envManager.Delete(envGroup, key); err != nil {
+		if err := envManager.Delete(group, key); err != nil {
 			return err
 		}
 
-		fmt.Printf("✓ Deleted %s from group %s\n", key, envGroup)
+		fmt.Printf("✓ Deleted %s from group %s\n", key, group)
 		return nil
 	},
 }

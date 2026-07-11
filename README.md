@@ -81,6 +81,11 @@ senv env set --group staging DATABASE_URL "postgresql://staging-server/db"
 # 获取环境变量
 senv env get DATABASE_URL              # 从 default 分组获取
 senv env get --group prod DATABASE_URL # 从 prod 分组获取
+senv env get prod:DATABASE_URL         # group:key 地址，等价于上一行
+
+# 快捷写入（group:key 地址）
+senv prod:API_KEY "sk-xxx"             # 等价于 senv env set -g prod API_KEY "sk-xxx"
+senv env prod:API_KEY "sk-xxx"         # env 子命令快捷方式
 
 # 列出所有环境变量
 senv env list              # 列出所有分组
@@ -136,6 +141,11 @@ senv text -g templates set CLAUDE_MD
 
 # 获取文本
 senv text -g secrets get SSH_KEY
+senv text get secrets:SSH_KEY          # group:key 地址，等价于上一行
+
+# 快捷写入（group:key 地址）
+senv secrets:SSH_KEY "ssh-rsa AAAA..." # 等价于 senv text set -g secrets SSH_KEY "..."
+senv text secrets:SSH_KEY "ssh-rsa..." # text 子命令快捷方式
 
 # 获取文本并写入文件
 senv text -g keys get TLS_CERT -o /tmp/cert.pem
@@ -215,10 +225,10 @@ senv config delete database
 通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑所有 env/text/config 数据，无需记忆子命令。
 
 ```bash
-senv tui   # 启动 TUI（复用密码校验与 session 缓存）
+senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
 ```
 
-启动时同样需要项目已初始化并输入正确密码（或 session 缓存有效）。TUI 是纯交互层，所有持久化仍走现有加密存储。
+启动时需要项目已初始化。有有效 session 则免密进入；否则提示密码（仅本次有效，不写入 session）。TUI 是纯交互层，所有持久化仍走现有加密存储。
 
 #### 快捷键
 
@@ -402,18 +412,18 @@ A: 目前不支持直接更改密码。你需要：
 ```
 senv init                          初始化项目
 senv tui                           启动全屏 TUI（浏览/搜索/编辑 env·text·config）
-senv env get <key> [-d]            获取环境变量（-d 解引用）
-senv env set <key> <value>         设置环境变量
-senv env delete <key>              删除环境变量
+senv env get <key|group:key> [-d]    获取环境变量（-d 解引用）
+senv env set <key|group:key> <value> 设置环境变量
+senv env delete <key|group:key>      删除环境变量
 senv env list [group] [-d]         列出环境变量（-d 解引用）
 senv env export                    导出环境变量到 shell（自动解引用）
 senv env group list                列出所有分组
 senv env group add <name>          创建分组
 senv env group activate <name>     激活分组
 senv env group deactivate <name>   停用分组
-senv text set <key> [value]        设置文本块（无值打开编辑器）
-senv text get <key> [-d]           获取文本块（-d 解引用）
-senv text delete <key>             删除文本块
+senv text set <key|group:key> [value]  设置文本块（无值打开编辑器）
+senv text get <key|group:key> [-d]       获取文本块（-d 解引用）
+senv text delete <key|group:key>         删除文本块
 senv text list [group]             列出文本块
 senv text group list               列出所有文本分组
 senv text group add <name>         创建文本分组

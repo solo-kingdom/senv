@@ -30,6 +30,15 @@ func parseAddress(arg string) (group, key string, ok bool) {
 	return group, key, true
 }
 
+// resolveAddressKey resolves the first positional arg to a group and key.
+// When arg contains ':', parseAddress wins over flagGroup; otherwise flagGroup is used.
+func resolveAddressKey(arg, flagGroup string) (group, key string) {
+	if group, key, ok := parseAddress(arg); ok {
+		return group, key
+	}
+	return flagGroup, arg
+}
+
 // runTextShorthand performs a text set via the group:key shorthand.
 // file overrides stdin/editor when non-empty. valueArgs are remaining positional args.
 func runTextShorthand(group, key, file string, valueArgs []string) error {

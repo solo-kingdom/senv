@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -14,6 +15,14 @@ func stubPrompter(password string) passwordPrompter {
 	return func(string) (string, error) {
 		return password, nil
 	}
+}
+
+// isolateSessionCache redirects session cache paths into temp dirs so tests
+// neither read nor overwrite the developer's real session files.
+func isolateSessionCache(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 }
 
 // newInitializedProject creates a temporary initialized project rooted at dir
@@ -36,6 +45,7 @@ func newInitializedProject(t *testing.T, dir, password string) (configPath, data
 }
 
 func TestTuiStartupNotInitialized(t *testing.T) {
+	isolateSessionCache(t)
 	// Point at an empty temp dir: no metadata.json present.
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "cfg")
@@ -48,6 +58,7 @@ func TestTuiStartupNotInitialized(t *testing.T) {
 }
 
 func TestTuiStartupWrongPassword(t *testing.T) {
+	isolateSessionCache(t)
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 
@@ -58,6 +69,7 @@ func TestTuiStartupWrongPassword(t *testing.T) {
 }
 
 func TestTuiStartupCorrectPassword(t *testing.T) {
+	isolateSessionCache(t)
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 
@@ -67,5 +79,53 @@ func TestTuiStartupCorrectPassword(t *testing.T) {
 	}
 	if envMgr == nil || textMgr == nil || configMgr == nil {
 		t.Fatalf("managers must not be nil")
+	}
+}
+
+func TestTuiStartupReusesSessionWithoutPrompt(t *testing.T) {
+	isolateSessionCache(t)
+	dir := t.TempDir()
+	cfg, data := newInitializedProject(t, dir, "correct-secret")
+
+	timeout, err := session.ParseTimeout("1h")
+	if err != nil || timeout == nil {
+		t.Fatalf("parse timeout: %v", err)
+	}
+	sm := session.NewManager(cfg, data)
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	promptCalled := false
+	failPrompter := func(string) (string, error) {
+		promptCalled = true
+		return "", errors.New("prompter should not be called when session is valid")
+	}
+
+	envMgr, textMgr, configMgr, err := getManagersAt(cfg, data, failPrompter)
+	if err != nil {
+		t.Fatalf("expected success with session, got %v", err)
+	}
+	if promptCalled {
+		t.Fatal("password prompter must not be called when session cache is valid")
+	}
+	if envMgr == nil || textMgr == nil || configMgr == nil {
+		t.Fatal("managers must not be nil")
+	}
+}
+
+func TestTuiStartupPasswordDoesNotWriteSession(t *testing.T) {
+	isolateSessionCache(t)
+	dir := t.TempDir()
+	cfg, data := newInitializedProject(t, dir, "correct-secret")
+
+	_, _, _, err := getManagersAt(cfg, data, stubPrompter("correct-secret"))
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	sm := session.NewManager(cfg, data)
+	if _, err := sm.GetCachedKey(); err == nil {
+		t.Fatal("password auth must not create session cache")
 	}
 }
