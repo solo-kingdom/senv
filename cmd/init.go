@@ -33,6 +33,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("project already initialized at %s", configPath)
 	}
 
+	// Guard: if encrypted data files already exist without metadata, refuse to
+	// avoid minting a new key that would render them undecryptable.
+	if manager.HasOrphanedData() {
+		return fmt.Errorf("%w\n\nData directory %q already contains encrypted files but no metadata.json.\n"+
+			"Re-running init will generate a new key and make them undecryptable.\n"+
+			"Restore metadata.json from version control, or back up and remove the\n"+
+			"existing data before initializing.",
+			storage.ErrOrphanedData, dataPath)
+	}
+
 	// Prompt for password
 	password, err := promptPassword("Senv - Enter password for encryption: ")
 	if err != nil {

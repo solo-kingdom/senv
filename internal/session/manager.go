@@ -102,17 +102,25 @@ func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 	return nil
 }
 
-// GetCachedKey retrieves the cached key if the session is still valid
+// GetCachedKey retrieves the cached key if the session is still valid.
+//
+// Non-destructive contract: the stale branches (ErrSessionStaleMetadata /
+// ErrSessionStaleKey) MUST NOT clear the cache. The cached key may be the only
+// remaining credential able to decrypt the user's data files when metadata has
+// diverged from them, so callers must keep it until a recovery path is
+// confirmed (see cmd-layer diagnosis). Only the genuinely-expired branch
+// (ErrSessionExpired) clears, because an expired cache is not a desync recovery
+// key and simply forces re-authentication.
 func (m *Manager) GetCachedKey() ([]byte, error) {
 	cache, err := loadCacheForDataPath(m.dataPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load cache: %w", err)
 	}
 	if cache == nil {
-		return nil, fmt.Errorf("no active session")
+		return nil, ErrNoSession
 	}
 
-	// Validate cache
+	// Validate cache timeout / boot binding.
 	valid, err := m.isCacheValid(cache)
 	if err != nil || !valid {
 		if m.auditLogger != nil {
@@ -122,8 +130,9 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 			}
 			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, reason)
 		}
+		// Expired caches are not desync recovery keys; safe to clear.
 		_ = clearCache()
-		return nil, fmt.Errorf("session expired or invalid")
+		return nil, ErrSessionExpired
 	}
 
 	// Decode key
@@ -138,13 +147,13 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	// Reject stale sessions when metadata changed (e.g. git pull, re-init).
+	// Detect metadata divergence (e.g. git pull, re-init) WITHOUT clearing:
+	// the cached key may still be the only key that decrypts the data files.
 	if cache.Salt != metadata.Salt {
 		if m.auditLogger != nil {
 			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, "Session stale: salt mismatch")
 		}
-		_ = clearCache()
-		return nil, fmt.Errorf("session stale")
+		return nil, ErrSessionStaleMetadata
 	}
 
 	keyValid, err := storageManager.VerifyKey(key)
@@ -155,8 +164,7 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 		if m.auditLogger != nil {
 			m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, "Session stale: key invalid")
 		}
-		_ = clearCache()
-		return nil, fmt.Errorf("session stale")
+		return nil, ErrSessionStaleKey
 	}
 
 	// Log successful validation
@@ -165,6 +173,26 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 	}
 
 	return key, nil
+}
+
+// PeekCachedKey returns the raw cached key and cache without any validation or
+// clearing. It is intended for diagnosis: when GetCachedKey reports a stale
+// session, the caller can use PeekCachedKey to probe whether the cached key
+// still decrypts the data files (recovery possible) or not. It does not touch
+// the cache on disk.
+func (m *Manager) PeekCachedKey() ([]byte, *SessionCache, error) {
+	cache, err := loadCacheForDataPath(m.dataPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load cache: %w", err)
+	}
+	if cache == nil {
+		return nil, nil, ErrNoSession
+	}
+	key, err := base64.StdEncoding.DecodeString(cache.Key)
+	if err != nil {
+		return nil, cache, fmt.Errorf("failed to decode key: %w", err)
+	}
+	return key, cache, nil
 }
 
 // isCacheValid checks if the cache is still valid

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -161,4 +162,155 @@ func TestLoadCacheForDataPathIgnoresOtherProject(t *testing.T) {
 func sessionManagerForTest(t *testing.T, configPath, dataPath string) *Manager {
 	t.Helper()
 	return NewManager(configPath, dataPath)
+}
+
+// --- Error classification (task 1.3) ---
+// Each state must map to a distinct sentinel so the cmd layer can tell
+// "just re-authenticate" apart from "your data may be desynced".
+
+func TestErrorClass_NoCache(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, cfg, data)
+
+	_, err := sm.GetCachedKey()
+	if !errors.Is(err, ErrNoSession) {
+		t.Fatalf("expected ErrNoSession, got %v", err)
+	}
+}
+
+func TestErrorClass_Expired(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, cfg, data)
+
+	// Plant a duration cache that already expired.
+	cache := &SessionCache{
+		Key:          base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize)),
+		Salt:         "stale",
+		CreatedAt:    time.Now().Add(-2 * time.Hour),
+		ExpiresAt:    time.Now().Add(-time.Hour),
+		TimeoutType:  string(TimeoutDuration),
+		DataPathHash: hashDataPath(data),
+		SessionID:    "sess-expired",
+	}
+	if err := saveCache(cache); err != nil {
+		t.Fatalf("save cache: %v", err)
+	}
+
+	_, err := sm.GetCachedKey()
+	if !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected ErrSessionExpired, got %v", err)
+	}
+}
+
+func TestErrorClass_StaleMetadata(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	to, _ := ParseTimeout("never")
+	sm := sessionManagerForTest(t, cfg, data)
+	if err := sm.StartSession("correct-secret", to); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	// Rotate metadata salt -> cache salt no longer matches.
+	storeMgr := storage.NewManager(cfg, data)
+	md, _ := storeMgr.LoadMetadata()
+	newSalt, _ := crypto.GenerateSalt()
+	md.Salt = base64.StdEncoding.EncodeToString(newSalt)
+	if err := storeMgr.SaveMetadata(md); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+
+	_, err := sm.GetCachedKey()
+	if !errors.Is(err, ErrSessionStaleMetadata) {
+		t.Fatalf("expected ErrSessionStaleMetadata, got %v", err)
+	}
+}
+
+func TestErrorClass_StaleKey(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	to, _ := ParseTimeout("never")
+	sm := sessionManagerForTest(t, cfg, data)
+	if err := sm.StartSession("correct-secret", to); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	// Keep salt identical but replace password_key with one for a different key,
+	// so VerifyKey fails while salt still matches.
+	storeMgr := storage.NewManager(cfg, data)
+	md, _ := storeMgr.LoadMetadata()
+	otherSalt, _ := crypto.GenerateSalt()
+	otherKey := crypto.DeriveKey("other-password", otherSalt)
+	pk, err := crypto.Encrypt(otherKey, []byte(crypto.HashPassword("other-password")))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	md.PasswordKey = pk
+	if err := storeMgr.SaveMetadata(md); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+
+	_, err = sm.GetCachedKey()
+	if !errors.Is(err, ErrSessionStaleKey) {
+		t.Fatalf("expected ErrSessionStaleKey, got %v", err)
+	}
+}
+
+// --- Non-destructive stale handling (task 2.3) ---
+// A stale cache must survive a failed GetCachedKey so it can still serve as a
+// recovery key. Only the expired branch is allowed to clear.
+
+func TestStaleNoClear_MetadataMismatchKeepsCache(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	to, _ := ParseTimeout("never")
+	sm := sessionManagerForTest(t, cfg, data)
+	if err := sm.StartSession("correct-secret", to); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	storeMgr := storage.NewManager(cfg, data)
+	md, _ := storeMgr.LoadMetadata()
+	newSalt, _ := crypto.GenerateSalt()
+	md.Salt = base64.StdEncoding.EncodeToString(newSalt)
+	_ = storeMgr.SaveMetadata(md)
+
+	if _, err := sm.GetCachedKey(); err == nil {
+		t.Fatal("expected stale error")
+	}
+
+	// Cache must still be on disk and peekable.
+	key, cache, err := sm.PeekCachedKey()
+	if err != nil {
+		t.Fatalf("PeekCachedKey after stale failure: %v", err)
+	}
+	if cache == nil || len(key) == 0 {
+		t.Fatal("stale cache must remain readable as recovery key")
+	}
+}
+
+func TestStaleNoClear_KeyInvalidKeepsCache(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := setupProject(t, "correct-secret")
+	to, _ := ParseTimeout("never")
+	sm := sessionManagerForTest(t, cfg, data)
+	if err := sm.StartSession("correct-secret", to); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	storeMgr := storage.NewManager(cfg, data)
+	md, _ := storeMgr.LoadMetadata()
+	otherKey := crypto.DeriveKey("other", make([]byte, crypto.SaltSize))
+	pk, _ := crypto.Encrypt(otherKey, []byte(crypto.HashPassword("other")))
+	md.PasswordKey = pk
+	_ = storeMgr.SaveMetadata(md)
+
+	if _, err := sm.GetCachedKey(); err == nil {
+		t.Fatal("expected stale error")
+	}
+	if _, cache, err := sm.PeekCachedKey(); err != nil || cache == nil {
+		t.Fatalf("stale cache must survive key-invalid failure: err=%v cache=%v", err, cache)
+	}
 }

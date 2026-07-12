@@ -5,8 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
-	"github.com/wii/senv/internal/session"
-	"github.com/wii/senv/internal/storage"
 )
 
 var configCmd = &cobra.Command{
@@ -25,38 +23,14 @@ func init() {
 }
 
 func getConfigManager() (*config.Manager, error) {
-	configPath := getConfigPath()
-	dataPath := getDataPath()
-	manager := storage.NewManager(configPath, dataPath)
-
-	if !manager.IsInitialized() {
-		return nil, fmt.Errorf("project not initialized. Run 'senv init' first")
-	}
-
-	// Try to get cached key from session
-	sessionManager := session.NewManager(configPath, dataPath)
-	key, err := sessionManager.GetCachedKey()
-	if err == nil {
-		return config.NewManagerWithKey(manager, key), nil
-	}
-
-	// Cache is invalid or doesn't exist, prompt for password (temporary auth only)
-	password, err := promptPassword("Senv - Enter password: ")
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), promptPassword)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read password: %w", err)
+		return nil, err
 	}
-
-	// Verify password
-	valid, err := manager.VerifyPassword(password)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify password: %w", err)
+	if auth.hasKey() {
+		return config.NewManagerWithKey(auth.storage, auth.key), nil
 	}
-
-	if !valid {
-		return nil, fmt.Errorf("invalid password")
-	}
-
-	return config.NewManager(manager, password), nil
+	return config.NewManager(auth.storage, auth.password), nil
 }
 
 // configCreateCmd represents the config create command

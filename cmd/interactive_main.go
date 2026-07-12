@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/git"
 	"github.com/wii/senv/internal/session"
-	"github.com/wii/senv/internal/storage"
 )
 
 var interactiveCmd = &cobra.Command{
@@ -30,52 +30,37 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 	configPath := getConfigPath()
 	dataPath := getDataPath()
 
-	storageManager := storage.NewManager(configPath, dataPath)
-
-	if !storageManager.IsInitialized() {
-		fmt.Println("❌ 项目未初始化")
-		fmt.Println("请先运行: senv init")
-		return nil
+	auth, err := resolveAuth(configPath, dataPath, promptPassword)
+	if err != nil {
+		if errors.Is(err, errNotInitialized) {
+			// Preserve the friendly interactive UX for the not-initialized case.
+			fmt.Println("❌ 项目未初始化")
+			fmt.Println("请先运行: senv init")
+			return nil
+		}
+		return err
 	}
 
-	sessionManager := session.NewManager(configPath, dataPath)
 	var envManager *env.Manager
 	var configManager *config.Manager
-	var password string
-
-	key, err := sessionManager.GetCachedKey()
-	if err == nil {
-		envManager = env.NewManagerWithKey(storageManager, key)
-		configManager = config.NewManagerWithKey(storageManager, key)
+	if auth.hasKey() {
+		envManager = env.NewManagerWithKey(auth.storage, auth.key)
+		configManager = config.NewManagerWithKey(auth.storage, auth.key)
 	} else {
-		password, err = promptPassword("Senv - 请输入密码: ")
-		if err != nil {
-			return fmt.Errorf("读取密码失败: %w", err)
-		}
-
-		valid, err := storageManager.VerifyPassword(password)
-		if err != nil {
-			return fmt.Errorf("验证密码失败: %w", err)
-		}
-
-		if !valid {
-			return fmt.Errorf("密码错误")
-		}
-
-		envManager = env.NewManager(storageManager, password)
-		configManager = config.NewManager(storageManager, password)
+		envManager = env.NewManager(auth.storage, auth.password)
+		configManager = config.NewManager(auth.storage, auth.password)
 	}
 
-	gitManager := git.NewManager(storageManager.GetGitPath())
+	gitManager := git.NewManager(auth.storage.GetGitPath())
 
 	is := &interactiveSession{
 		reader:         bufio.NewReader(os.Stdin),
-		storageManager: storageManager,
+		storageManager: auth.storage,
 		envManager:     envManager,
 		configManager:  configManager,
 		gitManager:     gitManager,
-		sessionManager: sessionManager,
-		password:       password,
+		sessionManager: session.NewManager(configPath, dataPath),
+		password:       auth.password,
 	}
 
 	fmt.Println("\n✓ 登录成功")

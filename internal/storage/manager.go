@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,18 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 )
+
+// ErrDataDesync indicates that metadata.json and the encrypted data files do
+// not share the same key (e.g. metadata was replaced via git pull while the
+// data files kept the old key, or vice versa). The cmd layer uses this to
+// report the real cause instead of a misleading "invalid password".
+var ErrDataDesync = errors.New("metadata and encrypted data are out of sync")
+
+// ErrOrphanedData is returned by Initialize when the data directory already
+// contains encrypted files but no metadata.json exists. Initializing in this
+// state would mint a brand-new key and render the existing ciphertext
+// permanently undecryptable.
+var ErrOrphanedData = errors.New("encrypted data files exist without metadata")
 
 const (
 	MetadataFile     = "metadata.json"
@@ -82,6 +95,17 @@ func (m *Manager) GetGitPath() string {
 
 // Initialize creates the necessary directory structure and files
 func (m *Manager) Initialize(password string) error {
+	// Guard against orphaned data: if encrypted files already exist but no
+	// metadata is present, initializing would mint a new key and make the
+	// existing ciphertext undecryptable. Refuse and explain.
+	if m.HasOrphanedData() {
+		return fmt.Errorf("%w: data directory %q already contains encrypted files. "+
+			"Re-running init will generate a new key and make them undecryptable. "+
+			"Restore metadata.json from git/version control, or back up and remove "+
+			"the existing data before initializing",
+			ErrOrphanedData, m.dataPath)
+	}
+
 	// Create config directory if it doesn't exist
 	if err := os.MkdirAll(m.configPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)

@@ -3,12 +3,14 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/git"
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -67,6 +69,9 @@ This command will fail if there are uncommitted changes or merge conflicts.`,
 		}
 
 		fmt.Printf("✓ 成功拉取更新\n")
+		// Best-effort consistency self-check: only when a session key is already
+		// available, so we never force a password prompt after a pull.
+		postPullSelfCheck(getConfigPath(), getDataPath(), os.Stdout)
 		return nil
 	},
 }
@@ -294,4 +299,28 @@ func init() {
 	gitPushCmd.Flags().BoolVar(&gitPushOnly, "only", false, "only push existing commits without add/commit")
 	pushShortcutCmd.Flags().StringVarP(&gitCommitMessage, "message", "m", "", "commit message (add+commit+push)")
 	pushShortcutCmd.Flags().BoolVar(&gitPushOnly, "only", false, "only push existing commits without add/commit")
+}
+
+// postPullSelfCheck runs a best-effort consistency check after `git pull`.
+//
+// It probes with the cached session key (via PeekCachedKey, which does not
+// validate or clear) so it can detect a desync even though GetCachedKey would
+// refuse the now-stale key. It NEVER prompts for a password: when no cache
+// exists it stays silent. It only prints a warning pointing at `senv doctor`;
+// it never modifies or deletes files and never returns an error (the pull
+// already succeeded).
+func postPullSelfCheck(configPath, dataPath string, out io.Writer) {
+	sm := session.NewManager(configPath, dataPath)
+	key, _, err := sm.PeekCachedKey()
+	if err != nil {
+		// No session cache: stay silent rather than prompting.
+		return
+	}
+	store := storage.NewManager(configPath, dataPath)
+	report, err := store.CheckConsistency(key)
+	if err != nil || report.AllOK() {
+		return
+	}
+	fmt.Fprintln(out, "⚠ 拉取后检测到 metadata 与部分数据文件不同步（可能无法解密）。")
+	fmt.Fprintln(out, "  运行 `senv doctor` 查看详情。本命令未修改或删除任何文件。")
 }

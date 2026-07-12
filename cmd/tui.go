@@ -7,8 +7,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
-	"github.com/wii/senv/internal/session"
-	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 	"github.com/wii/senv/internal/tui"
 )
@@ -64,37 +62,19 @@ type passwordPrompter func(prompt string) (string, error)
 // getManagersAt is the path/prompter-injectable core of getManagers, used by
 // tests to drive the startup-validation paths deterministically.
 func getManagersAt(configPath, dataPath string, prompt passwordPrompter) (*env.Manager, *text.Manager, *config.Manager, error) {
-	storageMgr := storage.NewManager(configPath, dataPath)
-
-	if !storageMgr.IsInitialized() {
-		return nil, nil, nil, errNotInitialized
+	auth, err := resolveAuth(configPath, dataPath, prompt)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-
-	sessionManager := session.NewManager(configPath, dataPath)
-	key, err := sessionManager.GetCachedKey()
-	if err == nil {
-		return env.NewManagerWithKey(storageMgr, key),
-			text.NewManagerWithKey(storageMgr, key),
-			config.NewManagerWithKey(storageMgr, key),
+	if auth.hasKey() {
+		return env.NewManagerWithKey(auth.storage, auth.key),
+			text.NewManagerWithKey(auth.storage, auth.key),
+			config.NewManagerWithKey(auth.storage, auth.key),
 			nil
 	}
-
-	password, err := prompt("Senv - Enter password: ")
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to read password: %w", err)
-	}
-
-	valid, err := storageMgr.VerifyPassword(password)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to verify password: %w", err)
-	}
-	if !valid {
-		return nil, nil, nil, errInvalidPassword
-	}
-
-	return env.NewManager(storageMgr, password),
-		text.NewManager(storageMgr, password),
-		config.NewManager(storageMgr, password),
+	return env.NewManager(auth.storage, auth.password),
+		text.NewManager(auth.storage, auth.password),
+		config.NewManager(auth.storage, auth.password),
 		nil
 }
 

@@ -378,6 +378,8 @@ A: 你可以：
 2. 手动复制整个数据目录
 3. 确保使用相同的密码
 
+同步后若提示 `metadata and encrypted data are out of sync`（metadata 与数据不同步），通常是 git/同步覆盖了 `metadata.json` 但未同步数据文件（或反之）。运行 `senv doctor` 定位脱节文件，并从版本控制恢复与之匹配的 `metadata.json`。
+
 ### Q: 数据存储在哪里？
 
 A: 
@@ -396,6 +398,15 @@ A: 目前不支持直接更改密码。你需要：
 1. 导出所有环境变量和配置文件
 2. 删除数据目录
 3. 重新初始化并导入数据
+
+> 注意：若 data 目录已有加密文件但删除了 `metadata.json`，`senv init` 会拒绝执行，以免生成新密钥导致旧密文无法解密。请先从备份/git 恢复 `metadata.json`。
+
+### Q: 提示"密码错误"但密码没错怎么办？
+
+A: 多半是 `metadata.json` 与加密数据文件不是同一套密钥（多机 git 同步、误跑 `senv init`、merge 冲突解决不当等都可能触发）。此时系统会报告 `metadata and encrypted data are out of sync`，而非笼统的密码错误。排查步骤：
+1. 运行 `senv doctor` 体检，查看哪些文件脱节。
+2. 从版本控制恢复与数据文件匹配的 `metadata.json`。
+3. 切勿在未恢复前运行 `senv session clear`——会话缓存里的 key 可能是唯一能解密数据的恢复钥匙。
 
 ## 命令参考
 
@@ -434,6 +445,7 @@ senv config export <name>          导出配置文件
 senv config list                   列出所有配置文件
 senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
+senv doctor                        体检 metadata 与数据文件的一致性
 ```
 
 ## 开发
