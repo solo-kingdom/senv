@@ -2,6 +2,7 @@ package env
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +71,11 @@ func (m *Manager) Set(group string, key string, value string) error {
 	}
 	if err := storage.ValidateName(key); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
+	}
+	// Env keys are emitted as `export <key>=...` by env export, so they must
+	// be valid POSIX shell variable names to avoid breaking `eval $(...)`.
+	if err := storage.ValidateEnvKey(key); err != nil {
+		return fmt.Errorf("invalid env key: %w", err)
 	}
 
 	envGroup, err := m.loadEnvGroup(group)
@@ -162,6 +168,12 @@ func (m *Manager) Export() (string, error) {
 		}
 
 		for k, v := range envGroup.Variables {
+			// Tolerate historical invalid keys: skip them and warn on stderr
+			// so a single bad key does not break the whole export.
+			if err := storage.ValidateEnvKey(k); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping invalid env key %q in group %q (rename or delete it)\n", k, group)
+				continue
+			}
 			allVars[k] = v
 		}
 	}
