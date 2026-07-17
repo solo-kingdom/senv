@@ -30,7 +30,7 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 	configPath := getConfigPath()
 	dataPath := getDataPath()
 
-	auth, err := resolveAuth(configPath, dataPath, promptPassword)
+	auth, err := resolveAuth(configPath, dataPath, authPrompt)
 	if err != nil {
 		if errors.Is(err, errNotInitialized) {
 			// Preserve the friendly interactive UX for the not-initialized case.

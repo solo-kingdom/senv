@@ -65,8 +65,11 @@ func getDefaultDataPath() string {
 	return filepath.Join(usr.HomeDir, ".config", "senv", "data")
 }
 
+// configPathFn is the source for getConfigPath; tests may replace it.
+var configPathFn = getDefaultConfigPath
+
 func getConfigPath() string {
-	return getDefaultConfigPath()
+	return configPathFn()
 }
 
 func getDataPath() string {

@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/session"
 )
 
 var envCmd = &cobra.Command{
@@ -32,7 +34,7 @@ func init() {
 }
 
 func getEnvManager() (*env.Manager, error) {
-	auth, err := resolveAuth(getConfigPath(), getDataPath(), promptPassword)
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +216,10 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 	},
 }
 
+// envExportIfSession, when set, makes `env export` succeed with empty stdout
+// when there is no valid session (for shell rc files).
+var envExportIfSession bool
+
 // envExportCmd represents the env export command
 var envExportCmd = &cobra.Command{
 	Use:   "export",
@@ -221,12 +227,32 @@ var envExportCmd = &cobra.Command{
 	Long: `Export environment variables from active groups.
 This command outputs shell-compatible export statements.
 References ({{env:...}} and {{text:...}}) are automatically resolved.
-	
+
+When stdout is not a TTY (e.g. eval $(senv env export)) and there is no
+active session, export refuses to prompt and asks you to run
+senv session start. Use --if-session in shell rc files to skip silently.
+
 Usage:
-  eval $(senv env export)`,
+  senv session start -t never
+  eval "$(senv env export --if-session)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if envExportIfSession {
+			sm := session.NewManager(getConfigPath(), getDataPath())
+			if _, err := sm.GetCachedKey(); err != nil {
+				return nil
+			}
+		}
+
+		// Captured stdout (eval / pipes) must not prompt for a password.
+		prev := activeAuthOpts
+		activeAuthOpts = authOptions{requireStdoutTTY: true}
+		defer func() { activeAuthOpts = prev }()
+
 		envManager, err := getEnvManager()
 		if err != nil {
+			if envExportIfSession && errors.Is(err, ErrNeedSession) {
+				return nil
+			}
 			return err
 		}
 
@@ -387,4 +413,6 @@ func init() {
 	envGetCmd.Flags().BoolVar(&envGetLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 	envListCmd.Flags().BoolVarP(&envListDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
 	envListCmd.Flags().BoolVar(&envListLoose, "loose", false, "keep unresolved references as-is instead of erroring")
+	envExportCmd.Flags().BoolVar(&envExportIfSession, "if-session", false,
+		"if no active session, print nothing and exit 0 (for shell rc files)")
 }

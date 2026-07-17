@@ -57,7 +57,9 @@ senv session start --timeout never
 
 ### 3. 使用缓存的会话
 
-**仅** `senv session start` 会写入或刷新 session cache。功能命令（`env` / `text` / `config` / `tui` / `interactive`）在有有效 session 时复用 derived key；无 session 时提示密码仅作本次临时认证，**不会**自动开 session。
+**仅** `senv session start` 会写入或刷新 session cache。功能命令（`env` / `text` / `config` / `tui` / `interactive`）在有有效 session 时复用 derived key；无 session 时，**交互式**终端可提示一次密码作本次临时认证（同进程内复用，**不会**自动开 session）。
+
+无 session 时，`eval $(senv env export)` 因 stdout 被捕获**不会**弹密码，而是提示先 `senv session start`。Shell rc 请使用 `--if-session`。
 
 ```bash
 # 显式启动会话（唯一落盘方式）
@@ -71,7 +73,7 @@ senv env get DATABASE_URL
 senv config list
 senv tui
 
-# 未 start 时：用一次要一次密码，且不留下 session
+# 未 start 时：交互式命令用一次要一次密码（同进程内只问一次），且不留下 session
 senv env get FOO          # 要密码
 senv session status       # 仍无 active session
 ```
@@ -161,13 +163,22 @@ cat ~/.config/senv/data/logs/audit.log | jq
 ### 场景 1: 日常开发
 
 ```bash
-# 早上启动会话
+# 早上 / 登录后启动会话
 senv session start --timeout 8h
+# 或：senv session start -t never
 
 # 工作期间无需重复输入密码
-eval $(senv env export)
+eval "$(senv env export --if-session)"
 senv env list
 senv env get DATABASE_URL
+```
+
+推荐写入 `~/.zshrc`（无 session 时静默跳过，不弹密码）：
+
+```bash
+# ~/.zshrc
+# senv session start -t never   # 登录后手动执行一次
+eval "$(senv env export --if-session)"
 ```
 
 ### 场景 2: 演示/会议
@@ -272,18 +283,22 @@ A: 不会。会话到期后需要重新启动。
 
 A: 可以。会话缓存在文件中，所有终端窗口共享同一个会话。
 
-### Q: 如何在脚本中使用会话？
+### Q: 如何在脚本 / shell rc 中使用会话？
 
-A: 先启动会话，然后在脚本中运行命令：
+A: 先启动会话，再用 `--if-session` 导出（无 session 时不会弹密码、也不失败）：
 
 ```bash
 #!/bin/bash
-# 启动会话（假设已设置密码）
 senv session start --timeout 1h
 
-# 运行命令（无需密码）
+# shell rc 推荐写法
+eval "$(senv env export --if-session)"
+
+# 或写入文件
 senv env export > .env
 ```
+
+无 session 时直接 `eval $(senv env export)` 会失败并提示 `senv session start`，不再交互要密码。
 
 ### Q: 会话缓存会占用多少磁盘空间？
 
@@ -302,7 +317,7 @@ Enter password: ****
 ✓ Session started (expires in 8h0m0s)
 
 # 3. 使用会话
-$ senv env export
+$ eval "$(senv env export --if-session)"
 export DATABASE_URL='postgresql://localhost/mydb'
 export API_KEY='sk-1234567890'
 

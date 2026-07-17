@@ -10,7 +10,7 @@
 - ✅ **配置文件管理** - 加密存储配置文件，支持 create/edit/export
 - ✅ **加密存储** - 使用 AES-256-GCM + PBKDF2 加密
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
-- ✅ **Shell 集成** - 支持 `eval $(senv env export)` 快速导入
+- ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
 
@@ -113,13 +113,21 @@ senv env group deactivate production
 
 ### 4. 导出环境变量到 Shell
 
+先显式启动 session（唯一写盘入口），再在 shell 中注入：
+
 ```bash
+# 登录后启动一次（推荐永不过期或按需超时）
+senv session start -t never
+
 # 导出所有激活分组的环境变量
-eval $(senv env export)
+eval "$(senv env export --if-session)"
 
 # 添加到 shell 配置文件（例如 ~/.bashrc 或 ~/.zshrc）
-echo 'eval $(senv env export)' >> ~/.bashrc
+# 无 session 时 --if-session 静默跳过，不会弹密码
+echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 ```
+
+无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘）。
 
 **注意**：`default` 分组默认激活，无需手动激活。
 
@@ -188,8 +196,8 @@ senv env get DB_URL                # 原样输出（含 {{...}}）
 senv env get DB_URL -d             # 解引用后输出
 senv env get DB_URL -d --loose     # 宽松模式（未解析的保留原样）
 
-# env export 自动解引用
-eval $(senv env export)
+# env export 自动解引用（需先 session start；shell rc 用 --if-session）
+eval "$(senv env export --if-session)"
 
 # text get 也支持解引用
 senv text -g configs get APP_YAML -d
@@ -318,8 +326,8 @@ senv env set --group prod DATABASE_URL "postgresql://prod-server/db"
 senv env set --group prod REDIS_URL "redis://prod-server:6379"
 
 # 添加到 shell 配置
-echo 'eval $(senv env export)' >> ~/.bashrc
-source ~/.bashrc
+echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ### 场景 2: 配置文件加密管理
@@ -350,8 +358,8 @@ cd ../project-b
 senv init --path ./.senv-data
 senv env set DATABASE_URL "postgres://localhost/project_b"
 
-# 在各自项目中使用
-eval $(senv env export)
+# 在各自项目中使用（需先 senv session start）
+eval "$(senv env export --if-session)"
 ```
 
 ## 安全建议
@@ -427,7 +435,7 @@ senv env get <key|group:key> [-d]    获取环境变量（-d 解引用）
 senv env set <key|group:key> <value> 设置环境变量
 senv env delete <key|group:key>      删除环境变量
 senv env list [group] [-d]         列出环境变量（-d 解引用）
-senv env export                    导出环境变量到 shell（自动解引用）
+senv env export [--if-session]     导出环境变量到 shell（自动解引用；--if-session 无 session 时静默跳过）
 senv env group list                列出所有分组
 senv env group add <name>          创建分组
 senv env group activate <name>     激活分组

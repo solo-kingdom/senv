@@ -39,7 +39,7 @@ func init() {
 
 // getTextManager creates a text manager, reusing session cache when available
 func getTextManager() (*text.Manager, error) {
-	auth, err := resolveAuth(getConfigPath(), getDataPath(), promptPassword)
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
 	if err != nil {
 		return nil, err
 	}

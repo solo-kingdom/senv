@@ -19,10 +19,23 @@ func stubPrompter(password string) passwordPrompter {
 
 // isolateSessionCache redirects session cache paths into temp dirs so tests
 // neither read nor overwrite the developer's real session files.
+// It also resets the process-local auth memo and treats stdin/stdout as
+// interactive so password-path unit tests work under non-TTY CI.
 func isolateSessionCache(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	clearAuthMemo()
+	stdinIsTerminal = func() bool { return true }
+	stdoutIsTerminal = func() bool { return true }
+	prevPrompt := authPrompt
+	t.Cleanup(func() {
+		clearAuthMemo()
+		stdinIsTerminal = defaultStdinIsTerminal
+		stdoutIsTerminal = defaultStdoutIsTerminal
+		authPrompt = prevPrompt
+		activeAuthOpts = authOptions{}
+	})
 }
 
 // newInitializedProject creates a temporary initialized project rooted at dir

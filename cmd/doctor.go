@@ -23,7 +23,7 @@ var doctorCmd = &cobra.Command{
 		"the cached session key as a recovery key to pinpoint which files are affected.\n\n" +
 		"Run this when you see a desync error or after a `senv git pull` that touched metadata.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDoctorAt(getConfigPath(), getDataPath(), promptPassword, nil)
+		return runDoctorAt(getConfigPath(), getDataPath(), authPrompt, nil)
 	},
 }
 

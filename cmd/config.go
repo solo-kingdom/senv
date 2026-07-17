@@ -23,7 +23,7 @@ func init() {
 }
 
 func getConfigManager() (*config.Manager, error) {
-	auth, err := resolveAuth(getConfigPath(), getDataPath(), promptPassword)
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
 	if err != nil {
 		return nil, err
 	}

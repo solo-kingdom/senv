@@ -52,7 +52,7 @@ func init() {
 //   - no session + wrong pwd  -> error, the command exits without entering TUI
 //   - no session + correct pwd -> temporary auth only (does not write session cache)
 func getManagers() (*env.Manager, *text.Manager, *config.Manager, error) {
-	return getManagersAt(getConfigPath(), getDataPath(), promptPassword)
+	return getManagersAt(getConfigPath(), getDataPath(), authPrompt)
 }
 
 // passwordPrompter returns a password for the given prompt. Tests inject a
