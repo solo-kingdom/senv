@@ -31,11 +31,11 @@ type envTab struct {
 	filter       string
 	filtering    bool
 
-	input         textinput.Model
-	mode          envMode
+	input           textinput.Model
+	mode            envMode
 	pendingNewGroup string // staging the group during the two-step "new" flow
 	pendingNewKey   string // staging the key during the two-step "new" flow
-	flash         string // transient success hint
+	flash           string // transient success hint
 }
 
 type envGroupRow struct {

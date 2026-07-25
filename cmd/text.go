@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/text"
 )
@@ -304,25 +305,34 @@ var textGroupDeleteCmd = &cobra.Command{
 	},
 }
 
-// resolveValue resolves references in a value using the ref package
+// resolveValue resolves references in a value using the ref package. It resolves
+// via the CLI's auth-backed managers (getConfigPath/getDataPath). MCP and other
+// callers that already hold managers should use resolveValueWith instead.
 func resolveValue(value string, loose bool, currentGroup string) (string, error) {
-	// We need both env and text getters
-	// Create a combined getter using the current session
-	getter, err := newCombinedGetter()
+	envMgr, err := getEnvManager()
 	if err != nil {
 		return "", err
 	}
+	textMgr, err := getTextManager()
+	if err != nil {
+		return "", err
+	}
+	return resolveValueWith(value, loose, currentGroup, envMgr, textMgr)
+}
 
+// resolveValueWith resolves references using explicitly-provided managers,
+// avoiding a re-auth round trip. Used by the MCP server (which authenticates
+// once at startup) and tests.
+func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env.Manager, textMgr *text.Manager) (string, error) {
+	getter := &combinedGetter{envManager: envMgr, textManager: textMgr}
 	opts := ref.ResolveOptions{
 		Loose:        loose,
 		CurrentGroup: currentGroup,
 	}
-
 	result, warnings, err := ref.ResolveWithWarnings(value, getter, opts)
 	if err != nil {
 		return "", err
 	}
-
 	ref.PrintWarnings(warnings)
 	return result, nil
 }
@@ -333,23 +343,6 @@ type combinedGetter struct {
 		Get(group, key string) (string, error)
 	}
 	textManager *text.Manager
-}
-
-func newCombinedGetter() (*combinedGetter, error) {
-	envMgr, err := getEnvManager()
-	if err != nil {
-		return nil, err
-	}
-
-	textMgr, err := getTextManager()
-	if err != nil {
-		return nil, err
-	}
-
-	return &combinedGetter{
-		envManager:  envMgr,
-		textManager: textMgr,
-	}, nil
 }
 
 func (g *combinedGetter) GetEnvValue(group, key string) (string, error) {

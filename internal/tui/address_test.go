@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseKeyAddress(t *testing.T) {
 	tests := []struct {
-		input, fallback string
+		input, fallback    string
 		wantGroup, wantKey string
 	}{
 		{"API_KEY", "default", "default", "API_KEY"},

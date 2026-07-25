@@ -268,6 +268,35 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 > 注：TUI 内不提供 `env export`（其服务于 shell 启动注入 `eval $(...)`，TUI 作为子进程无法反向 eval 父 shell）。export 请继续使用命令行。
 
+### 9. MCP 集成（让 AI agent 调用 senv）
+
+senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
+
+**工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session，server 进程内缓存密钥，后续工具调用不再鉴权。
+
+```bash
+# 1) 终端里鉴权一次（默认 30 分钟超时；-t never 永不过期）
+senv session start
+
+# 2) 把 senv 写入目标 agent 的配置（保留其它 server，自动备份 .bak）
+senv mcp install claude-code     # 或 cursor / codex / claude-desktop / zcode / kimi / pi
+senv mcp install --all           # 一次性写入全部受支持 agent
+
+# 3) 重启 agent，senv_* 工具即可用
+```
+
+常用选项：
+
+```bash
+senv mcp install cursor --scope project   # Cursor 项目级：写到 .cursor/mcp.json
+senv mcp install codex --print            # 只打印可粘贴的配置片段，不写文件
+senv mcp list-tools                       # 查看 MCP 暴露的工具清单
+```
+
+暴露的工具（共 16 个）：`senv_env_get/set/delete/list/export`、`senv_text_get/set/delete/list`、`senv_config_list/get/export`、`senv_group_list/add/activate/deactivate`。键支持 `group:key` 简写地址；`get` 支持 `decode=true` 解引用 `{{env:...}}`/`{{text:...}}`。
+
+> 安全提示：写入 agent 配置会把 senv 的读/写能力交给该 agent 上下文中的模型。按需使用；敏感写入建议结合审计日志（`~/.log/senv/audit.log`）核查。
+
 ## 工作原理
 
 ### 加密方案
@@ -454,6 +483,9 @@ senv config list                   列出所有配置文件
 senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
 senv doctor                        体检 metadata 与数据文件的一致性
+senv mcp serve                     以 stdio MCP server 运行（供本地 agent 调用）
+senv mcp install <agent>           把 senv MCP server 写入 agent 配置（claude-code/claude-desktop/cursor/codex/zcode/kimi/pi）
+senv mcp list-tools                列出 MCP 暴露的工具
 ```
 
 ## 开发
