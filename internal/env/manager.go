@@ -1,12 +1,14 @@
 package env
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -49,19 +51,45 @@ func (m *Manager) saveEnvGroup(envGroup *storage.EnvGroup) error {
 	return m.storage.SaveEnvGroup(envGroup, m.password)
 }
 
+func (m *Manager) resolveCryptoKey() ([]byte, error) {
+	if m.key != nil {
+		return m.key, nil
+	}
+	md, err := m.storage.LoadMetadata()
+	if err != nil {
+		return nil, err
+	}
+	salt, err := base64.StdEncoding.DecodeString(md.Salt)
+	if err != nil {
+		return nil, err
+	}
+	return crypto.DeriveKey(m.password, salt), nil
+}
+
 // Get retrieves an environment variable from a group
 func (m *Manager) Get(group string, key string) (string, error) {
-	envGroup, err := m.loadEnvGroup(group)
+	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
-		return "", fmt.Errorf("failed to load group %s: %w", group, err)
+		return "", err
 	}
 
-	value, exists := envGroup.Variables[key]
-	if !exists {
-		return "", fmt.Errorf("variable %s not found in group %s", key, group)
+	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("variable %s not found in group %s", key, group)
+		}
+		// Fall back to group load (handles old-format groups not yet migrated)
+		envGroup, loadErr := m.loadEnvGroup(group)
+		if loadErr != nil {
+			return "", fmt.Errorf("failed to load group %s: %w", group, loadErr)
+		}
+		value, exists := envGroup.Variables[key]
+		if !exists {
+			return "", fmt.Errorf("variable %s not found in group %s", key, group)
+		}
+		return value, nil
 	}
-
-	return value, nil
+	return entry.Value, nil
 }
 
 // Set sets an environment variable in a group
@@ -72,50 +100,67 @@ func (m *Manager) Set(group string, key string, value string) error {
 	if err := storage.ValidateName(key); err != nil {
 		return fmt.Errorf("invalid key: %w", err)
 	}
-	// Env keys are emitted as `export <key>=...` by env export, so they must
-	// be valid POSIX shell variable names to avoid breaking `eval $(...)`.
 	if err := storage.ValidateEnvKey(key); err != nil {
 		return fmt.Errorf("invalid env key: %w", err)
 	}
 
-	envGroup, err := m.loadEnvGroup(group)
+	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
-		envGroup = storage.NewEnvGroup(group)
+		return err
 	}
 
-	if envGroup.Variables == nil {
-		envGroup.Variables = make(map[string]string)
+	// Ensure group exists (migrate old format if needed)
+	if !m.storage.EnvGroupExists(group) {
+		envGroup := storage.NewEnvGroup(group)
+		if err := m.saveEnvGroup(envGroup); err != nil {
+			return fmt.Errorf("failed to create group %s: %w", group, err)
+		}
+	} else if _, err := m.storage.LoadEnvGroupMetaWithKey(group, cryptoKey); err != nil {
+		// Old format exists but not yet migrated — trigger migration
+		if _, err := m.loadEnvGroup(group); err != nil {
+			return fmt.Errorf("failed to load group %s: %w", group, err)
+		}
 	}
 
-	envGroup.Variables[key] = value
-	envGroup.UpdatedAt = time.Now()
+	now := time.Now()
+	entry := &storage.EnvVarEntry{Value: value, CreatedAt: now, UpdatedAt: now}
 
-	if err := m.saveEnvGroup(envGroup); err != nil {
-		return fmt.Errorf("failed to save group %s: %w", group, err)
+	// Preserve CreatedAt if the variable already exists
+	if existing, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey); err == nil {
+		entry.CreatedAt = existing.CreatedAt
 	}
 
+	if err := m.storage.SaveEnvVarWithKey(group, key, entry, cryptoKey); err != nil {
+		return fmt.Errorf("failed to save variable %s: %w", key, err)
+	}
 	return nil
 }
 
 // Delete deletes an environment variable from a group
 func (m *Manager) Delete(group string, key string) error {
-	envGroup, err := m.loadEnvGroup(group)
+	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
-		return fmt.Errorf("failed to load group %s: %w", group, err)
+		return err
 	}
 
-	if _, exists := envGroup.Variables[key]; !exists {
-		return fmt.Errorf("variable %s not found in group %s", key, group)
+	// Check existence (triggers migration if old format)
+	if _, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey); err != nil {
+		if os.IsNotExist(err) {
+			// Maybe old format not yet migrated
+			envGroup, loadErr := m.loadEnvGroup(group)
+			if loadErr != nil {
+				return fmt.Errorf("failed to load group %s: %w", group, loadErr)
+			}
+			if _, exists := envGroup.Variables[key]; !exists {
+				return fmt.Errorf("variable %s not found in group %s", key, group)
+			}
+			// Migration happened via loadEnvGroup, try delete again
+			return m.storage.DeleteEnvVar(group, key)
+		}
+		return fmt.Errorf("failed to check variable %s: %w", key, err)
 	}
 
-	delete(envGroup.Variables, key)
-	envGroup.UpdatedAt = time.Now()
-
-	if err := m.saveEnvGroup(envGroup); err != nil {
-		return fmt.Errorf("failed to save group %s: %w", group, err)
-	}
-
-	return nil
+	return m.storage.DeleteEnvVar(group, key)
 }
 
 // List lists all environment variables in a group (or all groups if group is empty)

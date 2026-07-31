@@ -55,8 +55,9 @@ func getGitManager() (*git.Manager, error) {
 var gitPullCmd = &cobra.Command{
 	Use:   "pull",
 	Short: "Pull changes from remote repository",
-	Long: `Pull changes from the remote repository.
-This command will fail if there are uncommitted changes or merge conflicts.`,
+	Long: `Pull changes from the remote repository using rebase.
+This command will fail if there are uncommitted changes.
+If rebase encounters conflicts, it is automatically aborted and you must resolve manually.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := getGitManager()
 		if err != nil {

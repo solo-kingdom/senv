@@ -160,10 +160,11 @@ func (m *Manager) PullWithContext(ctx context.Context) error {
 	}
 
 	if strings.Contains(string(output), "behind") {
-		output, err = m.runCommand(ctx, "pull", "--ff-only")
+		output, err = m.runCommand(ctx, "pull", "--rebase")
 		if err != nil {
-			if strings.Contains(string(output), "CONFLICT") || strings.Contains(string(output), "diverged") {
-				return fmt.Errorf("pull 失败：本地和远程分支存在冲突。\n请手动解决冲突后重试。\n详细信息: %s", string(output))
+			if strings.Contains(string(output), "CONFLICT") || strings.Contains(string(output), "could not apply") {
+				m.runCommand(ctx, "rebase", "--abort")
+				return fmt.Errorf("pull 失败：rebase 过程中存在冲突，已自动中止 rebase。\n请手动解决冲突后重试。\n详细信息: %s", string(output))
 			}
 			return fmt.Errorf("pull 失败: %w\n%s", err, string(output))
 		}

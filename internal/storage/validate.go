@@ -13,10 +13,17 @@ import (
 // errors like `not valid in this context`.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// ValidateName checks that a group or key name does not contain ':'.
+// ValidateName checks that a group or key name is safe for use as a path
+// segment: no ':', no path separators, no ".." traversal.
 func ValidateName(name string) error {
 	if strings.Contains(name, ":") {
 		return fmt.Errorf("%q must not contain ':'", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("%q must not contain path separators", name)
+	}
+	if name == ".." {
+		return fmt.Errorf("%q is not a valid name", name)
 	}
 	return nil
 }

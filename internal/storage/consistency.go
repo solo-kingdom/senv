@@ -52,18 +52,41 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 	}
 	report.MetadataKeyOK = canDecrypt(key, md.PasswordKey)
 
-	// Env files: env_<group>.json.enc
+	// Env files: new format (envs/<group>/<key>.enc) + old format (env_<group>.json.enc)
 	envGroups, err := m.ListEnvGroups()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list env groups: %w", err)
 	}
 	for _, group := range envGroups {
-		name := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
-		report.EnvFiles.Total++
-		if m.probeFile(name, key) {
-			report.EnvFiles.OK++
+		groupDir := m.envGroupDir(group)
+		if info, statErr := os.Stat(groupDir); statErr == nil && info.IsDir() {
+			// New format: probe each variable file + .meta.enc
+			files, readErr := os.ReadDir(groupDir)
+			if readErr != nil {
+				continue
+			}
+			for _, f := range files {
+				if f.IsDir() || !isEncFile(f.Name()) {
+					continue
+				}
+				rel := filepath.Join(EnvDirName, group, f.Name())
+				report.EnvFiles.Total++
+				path := filepath.Join(groupDir, f.Name())
+				if m.probeFilePath(path, key) {
+					report.EnvFiles.OK++
+				} else {
+					report.EnvFiles.Failed = append(report.EnvFiles.Failed, rel)
+				}
+			}
 		} else {
-			report.EnvFiles.Failed = append(report.EnvFiles.Failed, name)
+			// Old format
+			name := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
+			report.EnvFiles.Total++
+			if m.probeFile(name, key) {
+				report.EnvFiles.OK++
+			} else {
+				report.EnvFiles.Failed = append(report.EnvFiles.Failed, name)
+			}
 		}
 	}
 
@@ -118,6 +141,15 @@ func (m *Manager) probeFile(name string, key []byte) bool {
 	return canDecrypt(key, string(data))
 }
 
+// probeFilePath reports whether the key decrypts the file at an absolute path.
+func (m *Manager) probeFilePath(path string, key []byte) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return canDecrypt(key, string(data))
+}
+
 // probeText reports whether the key decrypts the given text entry.
 func (m *Manager) probeText(group, keyName string, key []byte) bool {
 	path := m.textFilePath(group, keyName)
@@ -161,6 +193,11 @@ func (m *Manager) HasOrphanedData() bool {
 					return true
 				}
 			}
+			if name == EnvDirName {
+				if hasEnvVarFiles(m.dataPath) {
+					return true
+				}
+			}
 			continue
 		}
 		// env_*.json.enc, *.enc config files
@@ -192,6 +229,31 @@ func hasTextFiles(dataPath string) bool {
 		}
 		for _, f := range sub {
 			if strings.HasSuffix(f.Name(), TextFileSuffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasEnvVarFiles reports whether the envs/ directory under dataPath contains any
+// .enc entry in group subdirectories.
+func hasEnvVarFiles(dataPath string) bool {
+	envsDir := filepath.Join(dataPath, EnvDirName)
+	groups, err := os.ReadDir(envsDir)
+	if err != nil {
+		return false
+	}
+	for _, g := range groups {
+		if !g.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(envsDir, g.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !f.IsDir() && isEncFile(f.Name()) {
 				return true
 			}
 		}

@@ -36,6 +36,19 @@ type EnvGroup struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
+// EnvVarEntry represents a single environment variable stored in its own file.
+type EnvVarEntry struct {
+	Value     string    `json:"value"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// EnvGroupMeta represents group-level metadata in per-variable storage.
+type EnvGroupMeta struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // TextEntry represents a single text block stored in encrypted file
 type TextEntry struct {
 	Value     string    `json:"value"`

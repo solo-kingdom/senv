@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"sync"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"golang.org/x/term"
@@ -25,6 +27,23 @@ type authResult struct {
 }
 
 func (a *authResult) hasKey() bool { return a.key != nil }
+
+// resolveKeyForAuth returns the derived crypto key from an authResult,
+// either directly from a session cache or by deriving from the password.
+func resolveKeyForAuth(auth *authResult) ([]byte, error) {
+	if auth.hasKey() {
+		return auth.key, nil
+	}
+	md, err := auth.storage.LoadMetadata()
+	if err != nil {
+		return nil, err
+	}
+	salt, err := base64.StdEncoding.DecodeString(md.Salt)
+	if err != nil {
+		return nil, err
+	}
+	return crypto.DeriveKey(auth.password, salt), nil
+}
 
 // authOptions controls prompt eligibility beyond the default stdin-TTY check.
 type authOptions struct {

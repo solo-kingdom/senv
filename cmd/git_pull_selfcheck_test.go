@@ -16,7 +16,7 @@ func TestGitPullSelfCheck_WarnsOnDesyncWithoutModifyingFiles(t *testing.T) {
 	startNeverSession(t, cfg, data, "correct-secret")
 
 	// Snapshot data files before the check.
-	envPath := filepath.Join(data, "env_default.json.enc")
+	envPath := filepath.Join(data, "envs", "default", ".meta.enc")
 	before, err := os.ReadFile(envPath)
 	if err != nil {
 		t.Fatalf("read env file: %v", err)

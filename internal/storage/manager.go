@@ -32,6 +32,9 @@ const (
 	ConfigFileSuffix = ".enc"
 	TextFileSuffix   = ".enc"
 	TextDirName      = "texts"
+	EnvDirName       = "envs"
+	EnvVarSuffix     = ".enc"
+	EnvMetaFileName  = ".meta.enc"
 )
 
 // Manager handles storage operations
@@ -288,30 +291,51 @@ func (m *Manager) LoadEnvGroup(group string, password string) (*EnvGroup, error)
 	return m.LoadEnvGroupWithKey(group, key)
 }
 
-// LoadEnvGroupWithKey loads an environment variable group using a derived key
+// LoadEnvGroupWithKey loads an environment variable group using a derived key.
+// It reads from the new per-variable format, transparently migrating old-format
+// files on first access.
 func (m *Manager) LoadEnvGroupWithKey(group string, key []byte) (*EnvGroup, error) {
-	// Read encrypted file
-	filename := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
-	path := filepath.Join(m.dataPath, filename)
+	groupDir := m.envGroupDir(group)
+	if info, err := os.Stat(groupDir); err == nil && info.IsDir() {
+		return m.loadEnvGroupNewFormat(group, key)
+	}
 
-	encryptedData, err := os.ReadFile(path)
+	oldPath := filepath.Join(m.dataPath, fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix))
+	if _, err := os.Stat(oldPath); err == nil {
+		if _, err := m.MigrateEnvGroupIfNeeded(group, key); err != nil {
+			return nil, fmt.Errorf("migration failed for group %s: %w", group, err)
+		}
+		return m.loadEnvGroupNewFormat(group, key)
+	}
+
+	return nil, fmt.Errorf("group %s not found", group)
+}
+
+func (m *Manager) loadEnvGroupNewFormat(group string, key []byte) (*EnvGroup, error) {
+	envGroup := &EnvGroup{
+		Name:      group,
+		Variables: make(map[string]string),
+	}
+
+	if meta, err := m.LoadEnvGroupMetaWithKey(group, key); err == nil {
+		envGroup.Name = meta.Name
+		envGroup.CreatedAt = meta.CreatedAt
+	}
+
+	vars, err := m.ListEnvVars(group)
 	if err != nil {
 		return nil, err
 	}
-
-	// Decrypt
-	decryptedData, err := crypto.Decrypt(key, string(encryptedData))
-	if err != nil {
-		return nil, err
+	for _, k := range vars {
+		entry, err := m.LoadEnvVarWithKey(group, k, key)
+		if err != nil {
+			return nil, fmt.Errorf("load var %s/%s: %w", group, k, err)
+		}
+		envGroup.Variables[k] = entry.Value
+		envGroup.UpdatedAt = entry.UpdatedAt
 	}
 
-	// Parse JSON
-	var envGroup EnvGroup
-	if err := FromJSON(decryptedData, &envGroup); err != nil {
-		return nil, err
-	}
-
-	return &envGroup, nil
+	return envGroup, nil
 }
 
 // SaveEnvGroup saves an environment variable group
@@ -334,23 +358,187 @@ func (m *Manager) SaveEnvGroup(envGroup *EnvGroup, password string) error {
 
 // SaveEnvGroupWithKey saves an environment variable group using a derived key
 func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
-	// Convert to JSON
-	data, err := ToJSON(envGroup)
-	if err != nil {
+	groupDir := m.envGroupDir(envGroup.Name)
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
 		return err
 	}
 
-	// Encrypt
-	encryptedData, err := crypto.Encrypt(key, data)
-	if err != nil {
+	meta := &EnvGroupMeta{Name: envGroup.Name, CreatedAt: envGroup.CreatedAt}
+	if err := m.SaveEnvGroupMetaWithKey(envGroup.Name, meta, key); err != nil {
 		return err
 	}
 
-	// Save to file
-	filename := fmt.Sprintf("%s%s%s", EnvFilePrefix, envGroup.Name, EnvFileSuffix)
-	path := filepath.Join(m.dataPath, filename)
+	for k, v := range envGroup.Variables {
+		entry := &EnvVarEntry{Value: v, CreatedAt: envGroup.CreatedAt, UpdatedAt: envGroup.UpdatedAt}
+		if err := m.SaveEnvVarWithKey(envGroup.Name, k, entry, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return os.WriteFile(path, []byte(encryptedData), 0o600)
+// --- Per-variable env storage methods ---
+
+func (m *Manager) envGroupDir(group string) string {
+	return filepath.Join(m.dataPath, EnvDirName, group)
+}
+
+func (m *Manager) envVarPath(group, key string) string {
+	return filepath.Join(m.dataPath, EnvDirName, group, key+EnvVarSuffix)
+}
+
+func (m *Manager) envMetaPath(group string) string {
+	return filepath.Join(m.dataPath, EnvDirName, group, EnvMetaFileName)
+}
+
+// SaveEnvVarWithKey saves a single environment variable.
+func (m *Manager) SaveEnvVarWithKey(group, key string, entry *EnvVarEntry, cryptoKey []byte) error {
+	varPath := m.envVarPath(group, key)
+	if err := os.MkdirAll(filepath.Dir(varPath), 0o700); err != nil {
+		return err
+	}
+
+	data, err := ToJSON(entry)
+	if err != nil {
+		return err
+	}
+	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(varPath, []byte(encrypted), 0o600)
+}
+
+// SaveEnvVar saves a single environment variable using password.
+func (m *Manager) SaveEnvVar(group, key string, entry *EnvVarEntry, password string) error {
+	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err != nil {
+		return err
+	}
+	return m.SaveEnvVarWithKey(group, key, entry, cryptoKey)
+}
+
+// LoadEnvVarWithKey loads a single environment variable.
+func (m *Manager) LoadEnvVarWithKey(group, key string, cryptoKey []byte) (*EnvVarEntry, error) {
+	data, err := os.ReadFile(m.envVarPath(group, key))
+	if err != nil {
+		return nil, err
+	}
+	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	if err != nil {
+		return nil, err
+	}
+	var entry EnvVarEntry
+	if err := FromJSON(decrypted, &entry); err != nil {
+		return nil, err
+	}
+	return &entry, nil
+}
+
+// LoadEnvVar loads a single environment variable using password.
+func (m *Manager) LoadEnvVar(group, key string, password string) (*EnvVarEntry, error) {
+	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	return m.LoadEnvVarWithKey(group, key, cryptoKey)
+}
+
+// DeleteEnvVar removes a single environment variable file.
+func (m *Manager) DeleteEnvVar(group, key string) error {
+	path := m.envVarPath(group, key)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete env var '%s': %w", key, err)
+	}
+	return nil
+}
+
+// ListEnvVars lists all variable keys in a group (skips dotfiles like .meta.enc).
+// Keys containing path separators are stored in subdirectories and returned
+// with their relative path (e.g. "openviking/root_api_key").
+func (m *Manager) ListEnvVars(group string) ([]string, error) {
+	groupDir := m.envGroupDir(group)
+	if _, err := os.Stat(groupDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	var keys []string
+	err := filepath.WalkDir(groupDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || strings.HasPrefix(d.Name(), ".") || !strings.HasSuffix(d.Name(), EnvVarSuffix) {
+			return nil
+		}
+		rel, err := filepath.Rel(groupDir, path)
+		if err != nil {
+			return nil
+		}
+		keys = append(keys, strings.TrimSuffix(rel, EnvVarSuffix))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list env vars for group '%s': %w", group, err)
+	}
+	return keys, nil
+}
+
+// SaveEnvGroupMetaWithKey saves group metadata.
+func (m *Manager) SaveEnvGroupMetaWithKey(group string, meta *EnvGroupMeta, cryptoKey []byte) error {
+	groupDir := m.envGroupDir(group)
+	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+		return err
+	}
+	data, err := ToJSON(meta)
+	if err != nil {
+		return err
+	}
+	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.envMetaPath(group), []byte(encrypted), 0o600)
+}
+
+// LoadEnvGroupMetaWithKey loads group metadata.
+func (m *Manager) LoadEnvGroupMetaWithKey(group string, cryptoKey []byte) (*EnvGroupMeta, error) {
+	data, err := os.ReadFile(m.envMetaPath(group))
+	if err != nil {
+		return nil, err
+	}
+	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	if err != nil {
+		return nil, err
+	}
+	var meta EnvGroupMeta
+	if err := FromJSON(decrypted, &meta); err != nil {
+		return nil, err
+	}
+	return &meta, nil
+}
+
+// EnvGroupExists checks whether a group exists in either new or old format.
+func (m *Manager) EnvGroupExists(group string) bool {
+	if info, err := os.Stat(m.envGroupDir(group)); err == nil && info.IsDir() {
+		return true
+	}
+	oldPath := filepath.Join(m.dataPath, fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix))
+	if _, err := os.Stat(oldPath); err == nil {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) deriveKeyFromPassword(password string) ([]byte, error) {
+	metadata, err := m.LoadMetadata()
+	if err != nil {
+		return nil, err
+	}
+	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
+	if err != nil {
+		return nil, err
+	}
+	return crypto.DeriveKey(password, salt), nil
 }
 
 // LoadConfigIndex loads the config file index
@@ -440,18 +628,33 @@ func (m *Manager) LoadConfigFileWithKey(name string, key []byte) ([]byte, error)
 
 // ListEnvGroups lists all environment variable groups
 func (m *Manager) ListEnvGroups() ([]string, error) {
-	files, err := os.ReadDir(m.dataPath)
-	if err != nil {
-		return nil, err
+	seen := map[string]bool{}
+	var groups []string
+
+	envsDir := filepath.Join(m.dataPath, EnvDirName)
+	if entries, err := os.ReadDir(envsDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				seen[e.Name()] = true
+				groups = append(groups, e.Name())
+			}
+		}
 	}
 
-	var groups []string
+	files, err := os.ReadDir(m.dataPath)
+	if err != nil {
+		if len(groups) > 0 {
+			return groups, nil
+		}
+		return nil, err
+	}
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), EnvFilePrefix) && strings.HasSuffix(file.Name(), EnvFileSuffix) {
-			// Extract group name from filename
 			name := strings.TrimPrefix(file.Name(), EnvFilePrefix)
 			name = strings.TrimSuffix(name, EnvFileSuffix)
-			groups = append(groups, name)
+			if !seen[name] {
+				groups = append(groups, name)
+			}
 		}
 	}
 
