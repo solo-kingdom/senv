@@ -55,6 +55,9 @@ func setupRemotePair(t *testing.T) (remote, machineA, machineB string) {
 		t.Fatal(err)
 	}
 	runGit(t, machineA, "init", "-b", "main")
+	// Local identity so Manager.Commit works on CI (no global git user).
+	runGit(t, machineA, "config", "user.name", "senv-test")
+	runGit(t, machineA, "config", "user.email", "senv-test@example.com")
 	runGit(t, machineA, "remote", "add", "origin", remote)
 	if err := os.WriteFile(filepath.Join(machineA, "base.txt"), []byte("base\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -64,6 +67,8 @@ func setupRemotePair(t *testing.T) (remote, machineA, machineB string) {
 	runGit(t, machineA, "push", "-u", "origin", "main")
 
 	runGit(t, root, "clone", remote, machineB)
+	runGit(t, machineB, "config", "user.name", "senv-test")
+	runGit(t, machineB, "config", "user.email", "senv-test@example.com")
 	return remote, machineA, machineB
 }
 

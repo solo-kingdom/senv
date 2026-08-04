@@ -242,9 +242,9 @@ func (m *Manager) CommitWithContext(ctx context.Context, message string) (err er
 	}
 
 	// There are staged changes, proceed with commit
-	_, err = m.runCommand(ctx, "commit", "-m", message)
+	commitOut, err := m.runCommand(ctx, "commit", "-m", message)
 	if err != nil {
-		return fmt.Errorf("commit 失败: %w", err)
+		return fmt.Errorf("commit 失败: %w\n%s", err, string(commitOut))
 	}
 
 	_ = output // output is not used, we only care about the exit code
