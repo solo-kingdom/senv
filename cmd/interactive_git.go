@@ -47,7 +47,7 @@ func (is *interactiveSession) gitMenu() {
 		fmt.Println("\n1. 拉取更新 (pull)")
 		fmt.Println("2. 提交更改 (commit)")
 		fmt.Println("3. 推送更改 (push)")
-		fmt.Println("4. 同步更改 (add + commit + push)")
+		fmt.Println("4. 同步 (commit → pull --rebase → push)")
 		fmt.Println("5. 查看详细状态")
 		fmt.Println("0. 返回主菜单")
 
@@ -115,17 +115,17 @@ func (is *interactiveSession) gitPush() {
 }
 
 func (is *interactiveSession) gitSync() {
-	message := is.prompt("提交信息: ")
+	message := is.prompt("提交信息 (无本地改动可回车): ")
 	if message == "" {
 		message = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
 	}
 
-	fmt.Println("\n正在同步...")
-	if err := is.gitManager.AddCommitPush(message); err != nil {
+	fmt.Println("\n正在同步（commit → pull --rebase → push）...")
+	if err := is.gitManager.Sync(message); err != nil {
 		fmt.Printf("❌ 同步失败: %v\n", err)
 		return
 	}
-	fmt.Println("✓ 成功同步更改")
+	fmt.Println("✓ 同步完成")
 }
 
 func (is *interactiveSession) gitStatus() {

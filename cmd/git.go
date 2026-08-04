@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -124,9 +125,13 @@ confirmation before add + commit + push.
 			return err
 		}
 		if strings.TrimSpace(status) == "" {
-			// No changes, just push
+			// No working-tree changes: try push; already-synced is success.
 			fmt.Printf("没有待提交的更改，直接推送...\n")
 			if err := manager.Push(); err != nil {
+				if errors.Is(err, git.ErrNothingToPush) {
+					fmt.Printf("✓ 已与远程对齐，无需推送\n")
+					return nil
+				}
 				return err
 			}
 			fmt.Printf("✓ 成功推送更改\n")
@@ -193,29 +198,45 @@ You must provide a commit message with -m flag.`,
 	},
 }
 
-// gitSyncCmd represents the git sync command (add + commit + push)
+// gitSyncCmd represents bidirectional sync: commit (if dirty) → pull --rebase → push.
 var gitSyncCmd = &cobra.Command{
-	Use:   "sync -m <message>",
-	Short: "Add, commit, and push changes",
-	Long: `Add all changes, create a commit, and push to remote repository.
-This is a convenience command that combines add, commit, and push.`,
+	Use:   "sync [-m <message>]",
+	Short: "Commit local changes, pull --rebase, then push",
+	Long: `Bidirectional sync for multi-machine use:
+
+  1. If the working tree has changes: add + commit
+  2. fetch + pull --rebase (abort on conflict; never force-push)
+  3. push if there are local commits ahead of upstream
+
+Already up to date is success. Use 'senv git push' when you only want to upload
+without pulling first.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := getGitManager()
 		if err != nil {
 			return err
 		}
 
-		if gitCommitMessage == "" {
-			// Generate default message with timestamp
-			gitCommitMessage = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
+		message := gitCommitMessage
+		if message == "" {
+			message = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
 		}
 
-		fmt.Printf("正在同步更改到远程仓库...\n")
-		if err := manager.AddCommitPush(gitCommitMessage); err != nil {
+		hasChanges, err := manager.HasChanges()
+		if err != nil {
+			return err
+		}
+		if hasChanges {
+			status, _ := manager.Status()
+			fmt.Printf("将提交本地更改:\n%s\n", status)
+		}
+
+		fmt.Printf("正在同步（commit → pull --rebase → push）...\n")
+		if err := manager.Sync(message); err != nil {
 			return err
 		}
 
-		fmt.Printf("✓ 成功同步更改\n")
+		fmt.Printf("✓ 同步完成\n")
+		postPullSelfCheck(getConfigPath(), getDataPath(), os.Stdout)
 		return nil
 	},
 }

@@ -56,20 +56,28 @@ senv git push
 - 如果没有需要推送的提交，会提示
 - 如果是第一次推送，会自动设置上游分支
 
-#### 5. 同步更改
+#### 5. 双向同步（多机推荐）
 ```bash
 senv git sync -m "提交信息"
 ```
-一次性执行 add + commit + push。
+按顺序执行：**有本地改动则 commit → pull --rebase → push**。  
+适合多台机器改同一数据仓；已与远程对齐时视为成功。
+
+**与 `push` 的区别：**
+- `senv git sync`：先接上远程再推送（双向）
+- `senv git push`：只做本地提交并上传（不 pull）
+- `senv git push --only`：只推已有提交
 
 **示例：**
 ```bash
 # 使用自定义提交信息
 senv git sync -m "更新生产环境配置"
 
-# 使用自动生成的提交信息（时间戳）
+# 使用自动生成的提交信息（时间戳）；无本地改动时跳过 commit
 senv git sync
 ```
+
+rebase 冲突时会自动中止，并提示到数据仓路径手动处理（不要 force push；`.enc` 文件通常无法自动合并）。
 
 ### 使用场景
 
@@ -89,15 +97,15 @@ senv git commit -m "Initial commit"
 senv git push
 ```
 
-#### 场景 2：日常更新
+#### 场景 2：多机日常同步（推荐）
 ```bash
-# 修改了一些环境变量或配置文件后
+# 任意机器改完配置后一条命令对齐远程
 senv git sync -m "更新 API 密钥"
 ```
 
-#### 场景 3：从远程拉取更新
+#### 场景 3：只拉取、不提交
 ```bash
-# 在另一台机器上，拉取最新配置
+# 工作区须干净
 senv git pull
 ```
 
@@ -176,7 +184,7 @@ senv interactive
 - 拉取更新
 - 提交更改
 - 推送更改
-- 同步更改（add + commit + push）
+- 同步（commit → pull --rebase → push）
 - 查看详细状态
 
 #### 4. 会话管理
@@ -294,8 +302,9 @@ senv git sync -m "添加新的 API 配置"
 
 **团队成员 B：**
 ```bash
-# 1. 拉取最新配置
-senv git pull
+# 1. 同步（或仅拉取）
+senv git sync
+# 或: senv git pull
 
 # 2. 使用配置
 senv env export | source

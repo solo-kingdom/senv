@@ -2,13 +2,18 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// ErrNothingToPush indicates the local branch has no commits to push to its upstream.
+var ErrNothingToPush = errors.New("没有需要推送的提交")
 
 // DefaultTimeout is the default timeout for git operations
 const DefaultTimeout = 60 * time.Second
@@ -38,6 +43,19 @@ func NewManagerWithTimeout(repoPath string, timeout time.Duration) *Manager {
 // SetTimeout sets the timeout for git operations
 func (m *Manager) SetTimeout(timeout time.Duration) {
 	m.timeout = timeout
+}
+
+// withDataDir appends the repository path to an error for diagnostics.
+// Idempotent: nested public calls (e.g. Sync → Pull) do not duplicate the suffix.
+func (m *Manager) withDataDir(err error) error {
+	if err == nil {
+		return nil
+	}
+	suffix := "\n数据目录: " + m.repoPath
+	if strings.Contains(err.Error(), suffix) {
+		return err
+	}
+	return fmt.Errorf("%w%s", err, suffix)
 }
 
 // runCommand executes a git command with context and timeout
@@ -109,7 +127,8 @@ func (m *Manager) Status() (string, error) {
 }
 
 // StatusWithContext returns the git status with context
-func (m *Manager) StatusWithContext(ctx context.Context) (string, error) {
+func (m *Manager) StatusWithContext(ctx context.Context) (status string, err error) {
+	defer func() { err = m.withDataDir(err) }()
 	output, err := m.runCommand(ctx, "status", "--porcelain")
 	if err != nil {
 		return "", fmt.Errorf("failed to get git status: %w", err)
@@ -137,7 +156,9 @@ func (m *Manager) Pull() error {
 }
 
 // PullWithContext performs a git pull operation with context
-func (m *Manager) PullWithContext(ctx context.Context) error {
+func (m *Manager) PullWithContext(ctx context.Context) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+
 	hasChanges, err := m.HasChangesWithContext(ctx)
 	if err != nil {
 		return err
@@ -147,31 +168,43 @@ func (m *Manager) PullWithContext(ctx context.Context) error {
 		return fmt.Errorf("无法 pull：存在未提交的更改。请先提交或暂存您的更改")
 	}
 
-	// Fetch first
-	_, err = m.runCommand(ctx, "fetch")
+	output, err := m.runCommand(ctx, "fetch")
 	if err != nil {
-		return fmt.Errorf("fetch 失败: %w", err)
+		return fmt.Errorf("fetch 失败: %w\n%s", err, string(output))
 	}
 
-	// Check if we're behind the remote
-	output, err := m.runCommand(ctx, "status", "-uno")
+	// Rebase when remote has commits we lack (behind or diverged).
+	needsRebase, err := m.remoteHasNewCommits(ctx)
 	if err != nil {
-		return fmt.Errorf("检查状态失败: %w", err)
+		// No upstream yet: nothing to pull.
+		return nil
 	}
-
-	if strings.Contains(string(output), "behind") {
-		output, err = m.runCommand(ctx, "pull", "--rebase")
-		if err != nil {
-			if strings.Contains(string(output), "CONFLICT") || strings.Contains(string(output), "could not apply") {
-				m.runCommand(ctx, "rebase", "--abort")
-				return fmt.Errorf("pull 失败：rebase 过程中存在冲突，已自动中止 rebase。\n请手动解决冲突后重试。\n详细信息: %s", string(output))
-			}
-			return fmt.Errorf("pull 失败: %w\n%s", err, string(output))
-		}
+	if !needsRebase {
 		return nil
 	}
 
+	output, err = m.runCommand(ctx, "pull", "--rebase")
+	if err != nil {
+		if strings.Contains(string(output), "CONFLICT") || strings.Contains(string(output), "could not apply") {
+			m.runCommand(ctx, "rebase", "--abort")
+			return fmt.Errorf("pull 失败：rebase 过程中存在冲突，已自动中止 rebase。\n请到数据仓路径手动解决冲突后重试（不要 force push）。\n详细信息: %s", string(output))
+		}
+		return fmt.Errorf("pull 失败: %w\n%s", err, string(output))
+	}
 	return nil
+}
+
+// remoteHasNewCommits reports whether upstream has commits not in HEAD.
+func (m *Manager) remoteHasNewCommits(ctx context.Context) (bool, error) {
+	output, err := m.runCommandOutput(ctx, "rev-list", "--count", "HEAD..@{u}")
+	if err != nil {
+		return false, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return false, fmt.Errorf("解析远程提交数失败: %w", err)
+	}
+	return n > 0, nil
 }
 
 // Add adds all changes to the staging area
@@ -180,8 +213,9 @@ func (m *Manager) Add() error {
 }
 
 // AddWithContext adds all changes to the staging area with context
-func (m *Manager) AddWithContext(ctx context.Context) error {
-	_, err := m.runCommand(ctx, "add", ".")
+func (m *Manager) AddWithContext(ctx context.Context) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+	_, err = m.runCommand(ctx, "add", ".")
 	if err != nil {
 		return fmt.Errorf("git add 失败: %w", err)
 	}
@@ -195,7 +229,9 @@ func (m *Manager) Commit(message string) error {
 }
 
 // CommitWithContext creates a commit with the given message and context
-func (m *Manager) CommitWithContext(ctx context.Context, message string) error {
+func (m *Manager) CommitWithContext(ctx context.Context, message string) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+
 	// Check if there are staged changes
 	// git diff --cached --quiet returns exit code 0 if no staged changes, 1 if there are staged changes
 	output, err := m.runCommand(ctx, "diff", "--cached", "--quiet")
@@ -221,7 +257,9 @@ func (m *Manager) Push() error {
 }
 
 // PushWithContext pushes commits to the remote repository with context
-func (m *Manager) PushWithContext(ctx context.Context) error {
+func (m *Manager) PushWithContext(ctx context.Context) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+
 	// Check if there's a remote
 	output, err := m.runCommandOutput(ctx, "remote")
 	if err != nil {
@@ -243,21 +281,20 @@ func (m *Manager) PushWithContext(ctx context.Context) error {
 	output, err = m.runCommandOutput(ctx, "log", "@{u}..HEAD", "--oneline")
 	if err != nil {
 		// Maybe no upstream set, try to push anyway
-		_, err = m.runCommand(ctx, "push", "-u", "origin", currentBranch)
-		if err != nil {
-			return fmt.Errorf("push 失败: %w", err)
+		pushOut, pushErr := m.runCommand(ctx, "push", "-u", "origin", currentBranch)
+		if pushErr != nil {
+			return fmt.Errorf("push 失败: %w\n%s", pushErr, string(pushOut))
 		}
 		return nil
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
-		return fmt.Errorf("没有需要推送的提交")
+		return ErrNothingToPush
 	}
 
-	// Push
-	_, err = m.runCommand(ctx, "push")
+	pushOut, err := m.runCommand(ctx, "push")
 	if err != nil {
-		return fmt.Errorf("push 失败: %w", err)
+		return fmt.Errorf("push 失败: %w\n%s", err, string(pushOut))
 	}
 
 	return nil
@@ -269,7 +306,9 @@ func (m *Manager) AddCommitPush(message string) error {
 }
 
 // AddCommitPushWithContext performs add, commit, and push in one operation with context
-func (m *Manager) AddCommitPushWithContext(ctx context.Context, message string) error {
+func (m *Manager) AddCommitPushWithContext(ctx context.Context, message string) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+
 	if err := m.AddWithContext(ctx); err != nil {
 		return err
 	}
@@ -285,13 +324,53 @@ func (m *Manager) AddCommitPushWithContext(ctx context.Context, message string) 
 	return nil
 }
 
+// Sync commits local changes (if any), pulls with rebase, then pushes.
+// Already-up-to-date (nothing to push) is success. Never force-pushes.
+func (m *Manager) Sync(message string) error {
+	return m.SyncWithContext(context.Background(), message)
+}
+
+// SyncWithContext is Sync with an explicit context.
+func (m *Manager) SyncWithContext(ctx context.Context, message string) (err error) {
+	defer func() { err = m.withDataDir(err) }()
+
+	hasChanges, err := m.HasChangesWithContext(ctx)
+	if err != nil {
+		return err
+	}
+	if hasChanges {
+		if strings.TrimSpace(message) == "" {
+			return fmt.Errorf("有未提交更改时必须提供提交信息")
+		}
+		if err := m.AddWithContext(ctx); err != nil {
+			return err
+		}
+		if err := m.CommitWithContext(ctx, message); err != nil {
+			return err
+		}
+	}
+
+	if err := m.PullWithContext(ctx); err != nil {
+		return err
+	}
+
+	if err := m.PushWithContext(ctx); err != nil {
+		if errors.Is(err, ErrNothingToPush) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // GetCurrentBranch returns the current branch name
 func (m *Manager) GetCurrentBranch() (string, error) {
 	return m.GetCurrentBranchWithContext(context.Background())
 }
 
 // GetCurrentBranchWithContext returns the current branch name with context
-func (m *Manager) GetCurrentBranchWithContext(ctx context.Context) (string, error) {
+func (m *Manager) GetCurrentBranchWithContext(ctx context.Context) (branch string, err error) {
+	defer func() { err = m.withDataDir(err) }()
 	output, err := m.runCommandOutput(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("获取当前分支失败: %w", err)
@@ -305,7 +384,8 @@ func (m *Manager) GetRemoteURL() (string, error) {
 }
 
 // GetRemoteURLWithContext returns the remote URL with context
-func (m *Manager) GetRemoteURLWithContext(ctx context.Context) (string, error) {
+func (m *Manager) GetRemoteURLWithContext(ctx context.Context) (url string, err error) {
+	defer func() { err = m.withDataDir(err) }()
 	output, err := m.runCommandOutput(ctx, "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("获取远程仓库 URL 失败: %w", err)
@@ -319,8 +399,10 @@ func (m *Manager) GetStatusInfo() (*StatusInfo, error) {
 }
 
 // GetStatusInfoWithContext returns detailed status information with context
-func (m *Manager) GetStatusInfoWithContext(ctx context.Context) (*StatusInfo, error) {
-	info := &StatusInfo{
+func (m *Manager) GetStatusInfoWithContext(ctx context.Context) (info *StatusInfo, err error) {
+	defer func() { err = m.withDataDir(err) }()
+
+	info = &StatusInfo{
 		Path: m.repoPath,
 	}
 
@@ -332,11 +414,11 @@ func (m *Manager) GetStatusInfoWithContext(ctx context.Context) (*StatusInfo, er
 	info.IsGitRepo = true
 	info.IsGitRoot = m.IsGitRoot()
 
-	if branch, err := m.GetCurrentBranchWithContext(ctx); err == nil {
+	if branch, branchErr := m.GetCurrentBranchWithContext(ctx); branchErr == nil {
 		info.CurrentBranch = branch
 	}
 
-	if url, err := m.GetRemoteURLWithContext(ctx); err == nil {
+	if url, urlErr := m.GetRemoteURLWithContext(ctx); urlErr == nil {
 		info.RemoteURL = url
 	}
 
