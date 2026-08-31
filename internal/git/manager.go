@@ -196,13 +196,22 @@ func (m *Manager) PullWithContext(ctx context.Context) (err error) {
 
 // remoteHasNewCommits reports whether upstream has commits not in HEAD.
 func (m *Manager) remoteHasNewCommits(ctx context.Context) (bool, error) {
-	output, err := m.runCommandOutput(ctx, "rev-list", "--count", "HEAD..@{u}")
+	return m.revListHasCommits(ctx, "HEAD..@{u}", "解析远程提交数失败")
+}
+
+// localHasUnpushedCommits reports whether HEAD has commits not in upstream.
+func (m *Manager) localHasUnpushedCommits(ctx context.Context) (bool, error) {
+	return m.revListHasCommits(ctx, "@{u}..HEAD", "解析本地未推送提交数失败")
+}
+
+func (m *Manager) revListHasCommits(ctx context.Context, rangeSpec, parseErrPrefix string) (bool, error) {
+	output, err := m.runCommandOutput(ctx, "rev-list", "--count", rangeSpec)
 	if err != nil {
 		return false, err
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(output)))
 	if err != nil {
-		return false, fmt.Errorf("解析远程提交数失败: %w", err)
+		return false, fmt.Errorf("%s: %w", parseErrPrefix, err)
 	}
 	return n > 0, nil
 }
@@ -251,7 +260,9 @@ func (m *Manager) CommitWithContext(ctx context.Context, message string) (err er
 	return nil
 }
 
-// Push pushes commits to the remote repository
+// Push pushes commits to the remote repository.
+// If upstream has new commits, they are merged (not rebased) before push.
+// Merge conflicts abort the merge and do not push. Never force-pushes.
 func (m *Manager) Push() error {
 	return m.PushWithContext(context.Background())
 }
@@ -277,8 +288,7 @@ func (m *Manager) PushWithContext(ctx context.Context) (err error) {
 	}
 	currentBranch := strings.TrimSpace(string(branchOutput))
 
-	// Check if there are commits to push
-	output, err = m.runCommandOutput(ctx, "log", "@{u}..HEAD", "--oneline")
+	hasLocal, err := m.localHasUnpushedCommits(ctx)
 	if err != nil {
 		// Maybe no upstream set, try to push anyway
 		pushOut, pushErr := m.runCommand(ctx, "push", "-u", "origin", currentBranch)
@@ -287,9 +297,30 @@ func (m *Manager) PushWithContext(ctx context.Context) (err error) {
 		}
 		return nil
 	}
-
-	if strings.TrimSpace(string(output)) == "" {
+	if !hasLocal {
 		return ErrNothingToPush
+	}
+
+	fetchOut, err := m.runCommand(ctx, "fetch")
+	if err != nil {
+		return fmt.Errorf("fetch 失败: %w\n%s", err, string(fetchOut))
+	}
+
+	needsMerge, err := m.remoteHasNewCommits(ctx)
+	if err != nil {
+		return fmt.Errorf("检查远程更新失败: %w", err)
+	}
+	if needsMerge {
+		dirty, dirtyErr := m.HasChangesWithContext(ctx)
+		if dirtyErr != nil {
+			return dirtyErr
+		}
+		if dirty {
+			return fmt.Errorf("无法 merge：存在未提交的更改。请先提交或清理后再推送")
+		}
+		if err := m.mergeUpstream(ctx); err != nil {
+			return err
+		}
 	}
 
 	pushOut, err := m.runCommand(ctx, "push")
@@ -298,6 +329,25 @@ func (m *Manager) PushWithContext(ctx context.Context) (err error) {
 	}
 
 	return nil
+}
+
+// mergeUpstream merges @{u} into HEAD (fast-forward when possible). On conflict, abort.
+func (m *Manager) mergeUpstream(ctx context.Context) error {
+	output, err := m.runCommand(ctx, "merge", "--no-edit", "@{u}")
+	if err != nil {
+		if isMergeConflict(string(output)) {
+			m.runCommand(ctx, "merge", "--abort")
+			return fmt.Errorf("push 失败：merge 过程中存在冲突，已自动中止 merge。\n请到数据仓路径手动解决冲突后重试（不要 force push）。\n详细信息: %s", string(output))
+		}
+		return fmt.Errorf("merge 失败: %w\n%s", err, string(output))
+	}
+	return nil
+}
+
+func isMergeConflict(output string) bool {
+	return strings.Contains(output, "CONFLICT") ||
+		strings.Contains(output, "Automatic merge failed") ||
+		strings.Contains(output, "Merge conflict")
 }
 
 // AddCommitPush performs add, commit, and push in one operation

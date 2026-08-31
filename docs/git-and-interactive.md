@@ -48,13 +48,16 @@ senv git commit -m "更新数据库配置"
 #### 4. 推送更改
 ```bash
 senv git push
+senv push          # 等价快捷命令
 ```
-推送提交到远程仓库。
+提交（如有）并推送到远程。若远程已有新提交，会先 **merge**（可快进）再 push；冲突则中止 merge 并停止，不会 force push。
 
 **注意事项：**
 - 需要先配置远程仓库
 - 如果没有需要推送的提交，会提示
 - 如果是第一次推送，会自动设置上游分支
+- `--only` 只推已有提交，但仍会在远程领先时 merge；工作区有未提交更改且需要 merge 时会拒绝
+- merge 冲突时仓库回到 merge 前，到数据仓路径手动处理后重试（不要 force push）
 
 #### 5. 双向同步（多机推荐）
 ```bash
@@ -64,9 +67,9 @@ senv git sync -m "提交信息"
 适合多台机器改同一数据仓；已与远程对齐时视为成功。
 
 **与 `push` 的区别：**
-- `senv git sync`：先接上远程再推送（双向）
-- `senv git push`：只做本地提交并上传（不 pull）
-- `senv git push --only`：只推已有提交
+- `senv git sync`：先 rebase 接上远程再推送（线性历史）
+- `senv git push` / `senv push`：本地提交后上传；远程有更新时 **merge** 再推
+- `senv git push --only`：只推已有提交（远程领先时同样会 merge）
 
 **示例：**
 ```bash
@@ -152,6 +155,14 @@ git add .
 git commit -m "解决冲突"
 senv git push
 ```
+
+#### 错误：push 时 merge 冲突
+```
+❌ push 失败：merge 过程中存在冲突，已自动中止 merge。
+请到数据仓路径手动解决冲突后重试（不要 force push）。
+```
+
+**解决方法：** 到数据仓路径手动 merge 并解决冲突后，再 `senv git push --only`（或 `senv git sync` 走 rebase）。`.enc` 文件通常无法自动合并。
 
 ## 交互式功能
 

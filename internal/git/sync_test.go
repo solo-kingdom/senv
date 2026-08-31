@@ -166,15 +166,119 @@ func TestSync_ConflictAborts(t *testing.T) {
 	}
 }
 
-func TestPush_IncludesOutputOnFailure(t *testing.T) {
+func TestPush_RemoteAheadMergesAndPushes(t *testing.T) {
 	_, machineA, machineB := setupRemotePair(t)
 
-	if err := os.WriteFile(filepath.Join(machineB, "x.txt"), []byte("x\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(machineB, "from-b.txt"), []byte("b\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, machineB, "add", ".")
-	runGit(t, machineB, "commit", "-m", "x")
+	runGit(t, machineB, "commit", "-m", "from b")
 	runGit(t, machineB, "push")
+
+	if err := os.WriteFile(filepath.Join(machineA, "from-a.txt"), []byte("a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineA, "add", ".")
+	runGit(t, machineA, "commit", "-m", "from a")
+
+	mgr := NewManager(machineA)
+	if err := mgr.Push(); err != nil {
+		t.Fatalf("Push should merge remote ahead then succeed: %v", err)
+	}
+
+	ls := exec.Command("git", "ls-tree", "-r", "--name-only", "HEAD")
+	ls.Dir = machineA
+	out, err := ls.CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := string(out)
+	if !strings.Contains(names, "from-a.txt") || !strings.Contains(names, "from-b.txt") {
+		t.Fatalf("expected both files after merge push, got:\n%s", names)
+	}
+	assertNoMergeInProgress(t, machineA)
+	if err := mgr.Push(); !errors.Is(err, ErrNothingToPush) {
+		t.Fatalf("expected ErrNothingToPush after successful push, got %v", err)
+	}
+}
+
+func TestPush_MergeConflictAborts(t *testing.T) {
+	_, machineA, machineB := setupRemotePair(t)
+
+	if err := os.WriteFile(filepath.Join(machineB, "conflict.txt"), []byte("b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineB, "add", ".")
+	runGit(t, machineB, "commit", "-m", "b conflict")
+	runGit(t, machineB, "push")
+
+	if err := os.WriteFile(filepath.Join(machineA, "conflict.txt"), []byte("a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineA, "add", ".")
+	runGit(t, machineA, "commit", "-m", "a conflict")
+
+	err := NewManager(machineA).Push()
+	if err == nil {
+		t.Fatal("expected merge conflict error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "冲突") {
+		t.Fatalf("expected conflict message, got: %v", err)
+	}
+	if !strings.Contains(msg, "数据目录: "+machineA) {
+		t.Fatalf("expected data dir in error, got: %v", err)
+	}
+	if strings.Count(msg, "数据目录:") != 1 {
+		t.Fatalf("data dir should appear once, got: %v", err)
+	}
+	assertNoMergeInProgress(t, machineA)
+
+	// Local commit must still be present; remote must not have received the push.
+	show := exec.Command("git", "log", "--oneline", "-1")
+	show.Dir = machineA
+	logOut, logErr := show.CombinedOutput()
+	if logErr != nil {
+		t.Fatal(logErr)
+	}
+	if !strings.Contains(string(logOut), "a conflict") {
+		t.Fatalf("local commit should remain after abort, got: %s", logOut)
+	}
+}
+
+func TestPush_DirtyWorktreeRefusesMerge(t *testing.T) {
+	_, machineA, machineB := setupRemotePair(t)
+
+	if err := os.WriteFile(filepath.Join(machineB, "from-b.txt"), []byte("b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineB, "add", ".")
+	runGit(t, machineB, "commit", "-m", "from b")
+	runGit(t, machineB, "push")
+
+	if err := os.WriteFile(filepath.Join(machineA, "from-a.txt"), []byte("a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineA, "add", ".")
+	runGit(t, machineA, "commit", "-m", "from a")
+	if err := os.WriteFile(filepath.Join(machineA, "dirty.txt"), []byte("dirty\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := NewManager(machineA).Push()
+	if err == nil {
+		t.Fatal("expected dirty worktree to refuse merge")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "未提交") {
+		t.Fatalf("expected dirty-worktree message, got: %v", err)
+	}
+	assertNoMergeInProgress(t, machineA)
+}
+
+func TestPush_IncludesOutputOnFailure(t *testing.T) {
+	remote, machineA, _ := setupRemotePair(t)
 
 	if err := os.WriteFile(filepath.Join(machineA, "y.txt"), []byte("y\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -182,19 +286,33 @@ func TestPush_IncludesOutputOnFailure(t *testing.T) {
 	runGit(t, machineA, "add", ".")
 	runGit(t, machineA, "commit", "-m", "y")
 
+	hook := filepath.Join(remote, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'hook rejected the push'\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
 	err := NewManager(machineA).Push()
 	if err == nil {
-		t.Fatal("expected push failure when remote ahead")
+		t.Fatal("expected push failure when remote hook rejects")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "push 失败") {
 		t.Fatalf("expected push 失败 prefix, got: %v", err)
 	}
-	// Must surface git's rejection text, not only exit status.
 	if strings.TrimSpace(msg) == "push 失败: exit status 1" {
 		t.Fatalf("error should include git output, got: %q", msg)
 	}
+	if !strings.Contains(msg, "hook rejected the push") {
+		t.Fatalf("error should include hook output, got: %q", msg)
+	}
 	if !strings.Contains(msg, "数据目录: "+machineA) {
 		t.Fatalf("expected data dir in error, got: %q", msg)
+	}
+}
+
+func assertNoMergeInProgress(t *testing.T, repo string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(repo, ".git", "MERGE_HEAD")); err == nil {
+		t.Fatal("MERGE_HEAD should not exist")
 	}
 }

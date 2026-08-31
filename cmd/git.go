@@ -91,6 +91,9 @@ var gitPushCmd = &cobra.Command{
 Without flags: auto-generate a commit message from changed files and ask for
 confirmation before add + commit + push.
 
+If the remote has new commits, they are merged (not rebased) before push.
+On merge conflict the merge is aborted and push stops; never force-pushes.
+
   -m, --message   Provide a commit message to skip confirmation (add+commit+push)
       --only      Only push existing commits, do not add or commit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -208,8 +211,8 @@ var gitSyncCmd = &cobra.Command{
   2. fetch + pull --rebase (abort on conflict; never force-push)
   3. push if there are local commits ahead of upstream
 
-Already up to date is success. Use 'senv git push' when you only want to upload
-without pulling first.`,
+Already up to date is success. Use 'senv git push' to upload (merges remote
+updates if needed). Use sync when you want rebase-based bidirectional sync.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manager, err := getGitManager()
 		if err != nil {
