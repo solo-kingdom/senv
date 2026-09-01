@@ -58,7 +58,7 @@ func flushConfig(t *configTab, cmd tea.Cmd) *configTab {
 func TestConfigLoadAndOps(t *testing.T) {
 	mgr := newTestConfigManager(t)
 	src := writeSourceFile(t, "a=1\n")
-	if err := mgr.Create("app", src, "/etc/app.conf"); err != nil {
+	if err := mgr.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("create app: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestConfigLoadAndOps(t *testing.T) {
 
 	// Create another config via doCreate.
 	src2 := writeSourceFile(t, "b=2\n")
-	tab = flushConfig(tab, tab.doCreate("web", src2, "/etc/web.conf"))
+	tab = flushConfig(tab, tab.doCreate("web", src2, "/etc/web.conf", "", ""))
 	if !hasConfigItem(tab, "web") {
 		t.Fatal("web config not created")
 	}

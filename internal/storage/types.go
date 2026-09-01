@@ -74,10 +74,23 @@ func NewTextEntry(value string) *TextEntry {
 // ConfigFile represents a configuration file entry
 type ConfigFile struct {
 	Name          string    `json:"name"`
-	EncryptedFile string    `json:"encrypted_file"` // Encrypted file name
-	TargetPath    string    `json:"target_path"`    // Path to restore the file
+	EncryptedFile string    `json:"encrypted_file"`        // Encrypted file name
+	TargetPath    string    `json:"target_path"`           // Path to restore the file (supports ~ and env vars)
+	Group         string    `json:"group,omitempty"`       // Group name; empty means "default"
+	Description   string    `json:"description,omitempty"` // Human-readable description
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// ConfigDefaultGroup is the group assigned when none is specified.
+const ConfigDefaultGroup = "default"
+
+// NormalizedGroup returns the effective group name (empty falls back to default).
+func (c ConfigFile) NormalizedGroup() string {
+	if c.Group == "" {
+		return ConfigDefaultGroup
+	}
+	return c.Group
 }
 
 // ConfigIndex represents the config file index

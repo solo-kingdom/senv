@@ -113,7 +113,7 @@ func (s *searchTab) gather() tea.Cmd {
 		}
 		// Config: flat list of names (preview = target path, not content).
 		if mgr.Config != nil {
-			if cfgs, err := mgr.Config.List(); err == nil {
+			if cfgs, err := mgr.Config.List(""); err == nil {
 				for _, c := range cfgs {
 					all = append(all, searchResult{
 						resultType: typeConfig, key: c.Name, preview: truncPath(c.TargetPath),

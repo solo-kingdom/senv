@@ -11,8 +11,9 @@ import (
 	"github.com/wii/senv/internal/config"
 )
 
-// configTab renders Config data as a single-column list (no group concept).
-// Shows name / target path / updated time; content only via vim edit or detail.
+// configTab renders Config data as a single-column list grouped by group.
+// Shows group/name / description / target path / updated time; content only
+// via vim edit or detail.
 type configTab struct {
 	mgr           Managers
 	width, height int
@@ -27,22 +28,41 @@ type configTab struct {
 	input         textinput.Model
 	mode          configMode
 	flash         string
-	pendingName   string // staging create: name then source then target
+	pendingName   string // staging create: name, source, target, group, description
 	pendingSource string
+	pendingTarget string
+	pendingGroup  string
 	detail        *configDetail // set when viewing details
+
+	plan *planState // pending install/uninstall plan awaiting confirmation
+}
+
+// planState holds a computed install/uninstall plan while the user confirms
+// it, plus per-item decisions for changed uninstall targets.
+type planState struct {
+	kind           string // "install" | "uninstall"
+	scope          config.Scope
+	installPlan    *config.InstallPlan
+	uninstallPlan  *config.UninstallPlan
+	changedIdx     int             // iteration pointer over changed uninstall items
+	changedAllowed map[string]bool // name -> user decision
 }
 
 type configRow struct {
-	name       string
-	targetPath string
-	updatedAt  string
+	name        string
+	group       string
+	description string
+	targetPath  string
+	updatedAt   string
 }
 
 type configDetail struct {
-	name       string
-	targetPath string
-	createdAt  string
-	updatedAt  string
+	name        string
+	group       string
+	description string
+	targetPath  string
+	createdAt   string
+	updatedAt   string
 }
 
 type configMode int
@@ -55,7 +75,11 @@ const (
 	configModeCreateName
 	configModeCreateSource
 	configModeCreateTarget
+	configModeCreateGroup
+	configModeCreateDesc
 	configModeFilter
+	configModePlan
+	configModeChangedConfirm
 )
 
 func newConfigTab(mgr Managers) *configTab {
@@ -67,13 +91,14 @@ func newConfigTab(mgr Managers) *configTab {
 func (t *configTab) Title() string { return "Config" }
 
 func (t *configTab) Help() string {
-	return "↑↓/jk move · enter details · e vim edit · n new · x export · d del · / filter"
+	return "↑↓/jk move · enter details · e vim edit · n new · i/I install · u/U uninstall · x export · d del · / filter"
 }
 
 func (t *configTab) InputMode() bool {
 	switch t.mode {
 	case configModeFilter, configModeExportPath, configModeCreateName,
-		configModeCreateSource, configModeCreateTarget:
+		configModeCreateSource, configModeCreateTarget,
+		configModeCreateGroup, configModeCreateDesc:
 		return true
 	}
 	return false
@@ -122,15 +147,20 @@ func (t *configTab) load() tea.Cmd {
 		if mgr == nil {
 			return configLoadedMsg{err: fmt.Errorf("config manager unavailable")}
 		}
-		cfgs, err := mgr.List()
+		cfgs, err := mgr.List("")
 		if err != nil {
 			return configLoadedMsg{err: err}
 		}
 		rows := make([]configRow, 0, len(cfgs))
 		for _, c := range cfgs {
-			rows = append(rows, configRow{name: c.Name, targetPath: c.TargetPath, updatedAt: c.UpdatedAt})
+			rows = append(rows, configRow{name: c.Name, group: c.Group, description: c.Description, targetPath: c.TargetPath, updatedAt: c.UpdatedAt})
 		}
-		sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].group != rows[j].group {
+				return rows[i].group < rows[j].group
+			}
+			return rows[i].name < rows[j].name
+		})
 		return configLoadedMsg{items: rows}
 	}
 }
@@ -141,7 +171,7 @@ func (t *configTab) filteredItems() []configRow {
 	}
 	out := make([]configRow, 0, len(t.items))
 	for _, it := range t.items {
-		if matchKey(it.name, t.filter) {
+		if matchKey(it.name, t.filter) || matchKey(it.group, t.filter) || matchKey(it.description, t.filter) {
 			out = append(out, it)
 		}
 	}
@@ -183,8 +213,26 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.mode = configModeDetail
 		return t, nil
 
+	case configPlanLoadedMsg:
+		if msg.err != nil {
+			err := msg.err
+			return t, func() tea.Msg { return errMsg{err: err} }
+		}
+		t.plan = &planState{
+			kind:          msg.kind,
+			scope:         msg.scope,
+			installPlan:   msg.installPlan,
+			uninstallPlan: msg.uninstallPlan,
+		}
+		t.mode = configModePlan
+		return t, nil
+
 	case tea.KeyMsg:
 		t.flash = ""
+
+		if t.mode == configModePlan || t.mode == configModeChangedConfirm {
+			return t.handlePlanKey(msg)
+		}
 
 		if t.mode != configModeNormal && t.mode != configModeDetail {
 			return t.handleModalKey(msg)
@@ -214,6 +262,14 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t.enterCreateName()
 		case "x":
 			return t.doExportCurrent()
+		case "i":
+			return t.enterPlan("install", false)
+		case "I":
+			return t.enterPlan("install", true)
+		case "u":
+			return t.enterPlan("uninstall", false)
+		case "U":
+			return t.enterPlan("uninstall", true)
 		case "d":
 			return t.enterDeleteConfirm()
 		case "/":
@@ -311,17 +367,36 @@ func (t *configTab) submitModal() (Tab, tea.Cmd) {
 		return t, textinput.Blink
 	case configModeCreateTarget:
 		target := t.input.Value()
-		name := t.pendingName
-		src := t.pendingSource
-		t.mode = configModeNormal
-		t.pendingName = ""
-		t.pendingSource = ""
-		t.input.Blur()
 		if target == "" {
 			t.flash = "target path cannot be empty"
 			return t, nil
 		}
-		return t, t.doCreate(name, src, target)
+		t.pendingTarget = target
+		t.input.SetValue("")
+		t.input.Placeholder = "group (optional, default: default)"
+		t.mode = configModeCreateGroup
+		t.input.Focus()
+		return t, textinput.Blink
+	case configModeCreateGroup:
+		t.pendingGroup = t.input.Value()
+		t.input.SetValue("")
+		t.input.Placeholder = "description (optional)"
+		t.mode = configModeCreateDesc
+		t.input.Focus()
+		return t, textinput.Blink
+	case configModeCreateDesc:
+		desc := t.input.Value()
+		name := t.pendingName
+		src := t.pendingSource
+		target := t.pendingTarget
+		group := t.pendingGroup
+		t.mode = configModeNormal
+		t.pendingName = ""
+		t.pendingSource = ""
+		t.pendingTarget = ""
+		t.pendingGroup = ""
+		t.input.Blur()
+		return t, t.doCreate(name, src, target, group, desc)
 	}
 	t.mode = configModeNormal
 	return t, nil
@@ -343,7 +418,7 @@ func (t *configTab) showDetail() (Tab, tea.Cmd) {
 			return configDetailLoadedMsg{name: name, err: err}
 		}
 		return configDetailLoadedMsg{name: name, det: &configDetail{
-			name: ci.Name, targetPath: ci.TargetPath,
+			name: ci.Name, group: ci.Group, description: ci.Description, targetPath: ci.TargetPath,
 			createdAt: ci.CreatedAt, updatedAt: ci.UpdatedAt,
 		}}
 	}
@@ -388,6 +463,8 @@ func (t *configTab) enterCreateName() (Tab, tea.Cmd) {
 	t.mode = configModeCreateName
 	t.pendingName = ""
 	t.pendingSource = ""
+	t.pendingTarget = ""
+	t.pendingGroup = ""
 	t.input.SetValue("")
 	t.input.Placeholder = "config name"
 	t.input.Focus()
@@ -407,6 +484,115 @@ func (t *configTab) enterFilterMode() (Tab, tea.Cmd) {
 	t.mode = configModeFilter
 	t.filter = ""
 	return t, nil
+}
+
+// --- install / uninstall plan flow ---
+
+// configPlanLoadedMsg carries a computed install/uninstall plan.
+type configPlanLoadedMsg struct {
+	kind          string
+	scope         config.Scope
+	installPlan   *config.InstallPlan
+	uninstallPlan *config.UninstallPlan
+	err           error
+}
+
+// enterPlan computes an install/uninstall plan for the current item (or its
+// whole group when groupScope is true) and switches to the plan preview.
+func (t *configTab) enterPlan(kind string, groupScope bool) (Tab, tea.Cmd) {
+	it, ok := t.currentItem()
+	if !ok {
+		t.flash = "no item selected"
+		return t, nil
+	}
+	mgr := t.mgr.Config
+	if mgr == nil {
+		return t, func() tea.Msg { return errMsg{err: fmt.Errorf("config manager unavailable")} }
+	}
+	scope := config.Scope{Name: it.name}
+	if groupScope {
+		scope = config.Scope{Group: it.group}
+	}
+	return t, func() tea.Msg {
+		msg := configPlanLoadedMsg{kind: kind, scope: scope}
+		if kind == "install" {
+			plan, err := mgr.PlanInstall(scope)
+			msg.installPlan, msg.err = plan, err
+		} else {
+			plan, err := mgr.PlanUninstall(scope)
+			msg.uninstallPlan, msg.err = plan, err
+		}
+		return msg
+	}
+}
+
+// nextChangedItem advances changedIdx to the next changed uninstall item and
+// reports whether one was found.
+func (t *configTab) nextChangedItem() bool {
+	items := t.plan.uninstallPlan.Items
+	for t.plan.changedIdx < len(items) {
+		if items[t.plan.changedIdx].Action == config.ActionChanged {
+			return true
+		}
+		t.plan.changedIdx++
+	}
+	return false
+}
+
+func (t *configTab) handlePlanKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
+	if t.mode == configModeChangedConfirm {
+		item := t.plan.uninstallPlan.Items[t.plan.changedIdx]
+		t.plan.changedAllowed[item.Name] = msg.String() == "y"
+		t.plan.changedIdx++
+		if t.nextChangedItem() {
+			return t, nil
+		}
+		// All changed items answered: execute.
+		t.mode = configModeNormal
+		plan := t.plan
+		t.plan = nil
+		return t, t.executePlan(plan)
+	}
+
+	// configModePlan
+	switch msg.String() {
+	case "y", "enter":
+		if t.plan.kind == "uninstall" && t.plan.uninstallPlan.HasChanged() {
+			t.plan.changedAllowed = map[string]bool{}
+			t.plan.changedIdx = 0
+			t.nextChangedItem()
+			t.mode = configModeChangedConfirm
+			return t, nil
+		}
+		t.mode = configModeNormal
+		plan := t.plan
+		t.plan = nil
+		return t, t.executePlan(plan)
+	default: // esc / n / anything else cancels
+		t.mode = configModeNormal
+		t.plan = nil
+		t.flash = "cancelled"
+		return t, nil
+	}
+}
+
+// executePlan runs a confirmed plan and reloads the list afterwards.
+func (t *configTab) executePlan(ps *planState) tea.Cmd {
+	mgr := t.mgr.Config
+	return func() tea.Msg {
+		var err error
+		if ps.kind == "install" {
+			err = mgr.ExecuteInstall(ps.installPlan)
+		} else {
+			err = mgr.ExecuteUninstall(ps.uninstallPlan, func(item config.UninstallItem) bool {
+				return ps.changedAllowed[item.Name]
+			})
+		}
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return configReloadMsg{}
+	}
 }
 
 // --- operations ---
@@ -442,10 +628,10 @@ func (t *configTab) doExport(name, path string) tea.Cmd {
 	}
 }
 
-func (t *configTab) doCreate(name, source, target string) tea.Cmd {
+func (t *configTab) doCreate(name, source, target, group, description string) tea.Cmd {
 	mgr := t.mgr.Config
 	return func() tea.Msg {
-		if err := mgr.Create(name, source, target); err != nil {
+		if err := mgr.Create(name, source, target, group, description); err != nil {
 			return errMsg{err: err}
 		}
 		return configReloadMsg{}
@@ -457,6 +643,9 @@ func (t *configTab) doCreate(name, source, target string) tea.Cmd {
 func (t *configTab) SetSize(w, h int) { t.width, t.height = w, h }
 
 func (t *configTab) View() string {
+	if (t.mode == configModePlan || t.mode == configModeChangedConfirm) && t.plan != nil {
+		return t.renderPlan()
+	}
 	if t.mode == configModeDetail && t.detail != nil {
 		return t.renderDetail()
 	}
@@ -490,7 +679,8 @@ func (t *configTab) renderList() string {
 	}
 	var lines []string
 	for i, it := range items {
-		line := fmt.Sprintf("%-18s %-24s %s", it.name, truncPath(it.targetPath), it.updatedAt)
+		fullName := it.group + "/" + it.name
+		line := fmt.Sprintf("%-22s %-16s %-24s %s", truncRunes(fullName, 22), truncRunes(it.description, 16), truncPath(it.targetPath), it.updatedAt)
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
@@ -503,11 +693,51 @@ func (t *configTab) renderList() string {
 		lipgloss.JoinVertical(lipgloss.Left, title, body))
 }
 
+// renderPlan renders the install/uninstall plan preview and, during changed
+// confirmation, the per-item prompt.
+func (t *configTab) renderPlan() string {
+	var lines []string
+	title := "Install plan"
+	if t.plan.kind == "uninstall" {
+		title = "Uninstall plan"
+	}
+	if t.plan.installPlan != nil {
+		for _, item := range t.plan.installPlan.Items {
+			lines = append(lines, fmt.Sprintf("  [%s] %s -> %s (%s)", item.Action, item.Name, truncRunes(item.TargetPath, 40), item.Reason))
+		}
+	} else {
+		for _, item := range t.plan.uninstallPlan.Items {
+			marker := item.Action
+			if item.Action == config.ActionChanged {
+				marker = "CHANGED"
+			}
+			lines = append(lines, fmt.Sprintf("  [%s] %s -> %s (%s)", marker, item.Name, truncRunes(item.TargetPath, 40), item.Reason))
+		}
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+
+	if t.mode == configModeChangedConfirm {
+		item := t.plan.uninstallPlan.Items[t.plan.changedIdx]
+		prompt := fmt.Sprintf("目标文件已被本地修改，确认删除 %s? y delete · n keep", item.TargetPath)
+		return modalBox(title, body+"\n\n"+prompt, "")
+	}
+	return modalBox(title, body, "y confirm · esc cancel")
+}
+
+// truncRunes shortens a string to at most n runes with an ellipsis.
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
 func (t *configTab) renderDetail() string {
 	d := t.detail
 	body := fmt.Sprintf(
-		"Name:    %s\nTarget:  %s\nCreated: %s\nUpdated: %s",
-		d.name, d.targetPath, d.createdAt, d.updatedAt)
+		"Name:    %s\nGroup:   %s\nDesc:    %s\nTarget:  %s\nCreated: %s\nUpdated: %s",
+		d.name, d.group, d.description, d.targetPath, d.createdAt, d.updatedAt)
 	box := modalBox("Config details", body, "any key to close")
 	return box
 }
@@ -524,7 +754,11 @@ func (t *configTab) renderModal() string {
 	case configModeCreateSource:
 		return modalBox("Source file path for "+t.pendingName, t.input.View(), "enter next · esc cancel")
 	case configModeCreateTarget:
-		return modalBox("Target file path for "+t.pendingName, t.input.View(), "enter create · esc cancel")
+		return modalBox("Target file path for "+t.pendingName, t.input.View(), "enter next · esc cancel")
+	case configModeCreateGroup:
+		return modalBox("Group for "+t.pendingName+" (optional)", t.input.View(), "enter next · esc cancel")
+	case configModeCreateDesc:
+		return modalBox("Description for "+t.pendingName+" (optional)", t.input.View(), "enter create · esc cancel")
 	case configModeFilter:
 		return modalBox("Filter names (case-insensitive)", "/"+t.filter+"_", "esc to clear")
 	}

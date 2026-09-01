@@ -66,7 +66,7 @@ func TestTextEditorFailureCleansUpAndPreservesValue(t *testing.T) {
 func TestConfigEditorFailureCleansUp(t *testing.T) {
 	mgr := newTestConfigManager(t)
 	src := writeSourceFile(t, "server: 8080\n")
-	if err := mgr.Create("app", src, "/etc/app.conf"); err != nil {
+	if err := mgr.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 

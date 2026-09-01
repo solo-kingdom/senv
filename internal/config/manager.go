@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,8 +51,9 @@ func (m *Manager) saveConfigFile(name string, content []byte) error {
 	return m.storage.SaveConfigFile(name, content, m.password)
 }
 
-// Create creates a new configuration file from a source path
-func (m *Manager) Create(name string, sourcePath string, targetPath string) error {
+// Create creates a new configuration file from a source path.
+// group is optional; an empty group falls back to "default".
+func (m *Manager) Create(name string, sourcePath string, targetPath string, group string, description string) error {
 	// Check if config already exists
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
@@ -79,6 +81,8 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string) erro
 		Name:          name,
 		EncryptedFile: name + storage.ConfigFileSuffix,
 		TargetPath:    targetPath,
+		Group:         group,
+		Description:   description,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -226,8 +230,11 @@ func (m *Manager) Export(name string, targetPath string) error {
 		return fmt.Errorf("no target path specified and no default path configured")
 	}
 
-	// Expand home directory
-	targetPath = expandHome(targetPath)
+	// Expand ~ and environment variables
+	targetPath, err = ResolveTargetPath(targetPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target path: %w", err)
+	}
 
 	// Load and decrypt
 	content, err := m.loadConfigFile(name)
@@ -235,17 +242,15 @@ func (m *Manager) Export(name string, targetPath string) error {
 		return fmt.Errorf("failed to load config file: %w", err)
 	}
 
-	// Create target directory if needed
-	targetDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("failed to create target directory: %w", err)
+	// Shared with install: recursive mkdir, backup before overwriting a
+	// differing target.
+	backupPath, err := installOne(content, targetPath)
+	if err != nil {
+		return err
 	}
-
-	// Write to target
-	if err := os.WriteFile(targetPath, content, 0644); err != nil {
-		return fmt.Errorf("failed to write target file: %w", err)
+	if backupPath != "" {
+		fmt.Printf("Existing file backed up to %s\n", backupPath)
 	}
-
 	fmt.Printf("Config %s exported to %s\n", name, targetPath)
 	return nil
 }
@@ -278,8 +283,8 @@ func (m *Manager) Delete(name string) error {
 	return nil
 }
 
-// List lists all configuration files
-func (m *Manager) List() ([]ConfigInfo, error) {
+// List lists configuration files. An empty groupFilter lists all groups.
+func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
@@ -287,15 +292,60 @@ func (m *Manager) List() ([]ConfigInfo, error) {
 
 	var result []ConfigInfo
 	for name, config := range configIndex.Configs {
+		if groupFilter != "" && config.NormalizedGroup() != groupFilter {
+			continue
+		}
 		result = append(result, ConfigInfo{
-			Name:       name,
-			TargetPath: config.TargetPath,
-			CreatedAt:  config.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:  config.UpdatedAt.Format(time.RFC3339),
+			Name:        name,
+			Group:       config.NormalizedGroup(),
+			Description: config.Description,
+			TargetPath:  config.TargetPath,
+			CreatedAt:   config.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   config.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
 	return result, nil
+}
+
+// Groups returns the sorted list of distinct group names.
+func (m *Manager) Groups() ([]string, error) {
+	configIndex, err := m.storage.LoadConfigIndex()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	seen := map[string]bool{}
+	var groups []string
+	for _, config := range configIndex.Configs {
+		g := config.NormalizedGroup()
+		if !seen[g] {
+			seen[g] = true
+			groups = append(groups, g)
+		}
+	}
+	sort.Strings(groups)
+	return groups, nil
+}
+
+// SetMeta updates the group and description of an existing config.
+// An empty group falls back to "default".
+func (m *Manager) SetMeta(name string, group string, description string) error {
+	configIndex, err := m.storage.LoadConfigIndex()
+	if err != nil {
+		return fmt.Errorf("failed to load config index: %w", err)
+	}
+	cfg, exists := configIndex.Configs[name]
+	if !exists {
+		return fmt.Errorf("config %s not found", name)
+	}
+	if group == "" {
+		group = storage.ConfigDefaultGroup
+	}
+	cfg.Group = group
+	cfg.Description = description
+	cfg.UpdatedAt = time.Now()
+	configIndex.Configs[name] = cfg
+	return m.storage.SaveConfigIndex(configIndex)
 }
 
 // Get retrieves information about a specific config
@@ -311,29 +361,56 @@ func (m *Manager) Get(name string) (*ConfigInfo, error) {
 	}
 
 	return &ConfigInfo{
-		Name:       config.Name,
-		TargetPath: config.TargetPath,
-		CreatedAt:  config.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:  config.UpdatedAt.Format(time.RFC3339),
+		Name:        config.Name,
+		Group:       config.NormalizedGroup(),
+		Description: config.Description,
+		TargetPath:  config.TargetPath,
+		CreatedAt:   config.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   config.UpdatedAt.Format(time.RFC3339),
 	}, nil
 }
 
 // ConfigInfo represents information about a configuration file
 type ConfigInfo struct {
-	Name       string
-	TargetPath string
-	CreatedAt  string
-	UpdatedAt  string
+	Name        string
+	Group       string
+	Description string
+	TargetPath  string
+	CreatedAt   string
+	UpdatedAt   string
 }
 
-// expandHome expands ~ to the home directory
-func expandHome(path string) string {
+// ResolveTargetPath expands a stored target path for use: a leading "~/" is
+// expanded to the user home directory and $VAR / ${VAR} environment variables
+// are expanded. Referencing an undefined variable or resolving to an empty
+// path is an error so that mistakes surface before any write happens.
+func ResolveTargetPath(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("target path is empty")
+	}
+	path := raw
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return path
+			return "", fmt.Errorf("failed to resolve home directory: %w", err)
 		}
-		return filepath.Join(home, path[2:])
+		path = filepath.Join(home, path[2:])
 	}
-	return path
+	// os.ExpandEnv silently drops undefined variables; track them explicitly so
+	// a typo in a stored path surfaces as an error instead of a wrong location.
+	var missing []string
+	path = os.Expand(path, func(name string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		missing = append(missing, name)
+		return ""
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("path %q references undefined environment variable(s): %s", raw, strings.Join(missing, ", "))
+	}
+	if path == "" {
+		return "", fmt.Errorf("path %q resolves to empty", raw)
+	}
+	return path, nil
 }

@@ -34,7 +34,7 @@ func TestPrepareFinishEdit_Changed(t *testing.T) {
 	m := newTestManager(t)
 	src := filepath.Join(t.TempDir(), "app.conf")
 	writeFile(t, src, "server: 8080\n")
-	if err := m.Create("app", src, "/etc/app.conf"); err != nil {
+	if err := m.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -77,7 +77,7 @@ func TestPrepareFinishEdit_Unchanged(t *testing.T) {
 	m := newTestManager(t)
 	src := filepath.Join(t.TempDir(), "app.conf")
 	writeFile(t, src, "keep\n")
-	m.Create("app", src, "/etc/app.conf")
+	m.Create("app", src, "/etc/app.conf", "", "")
 
 	s, _ := m.PrepareEdit("app")
 	changed, err := m.FinishEdit(s)
@@ -128,7 +128,7 @@ func TestManagerWithKeyRoundTrip(t *testing.T) {
 	pwMgr := NewManager(sm, "pw")
 	src := filepath.Join(t.TempDir(), "app.conf")
 	writeFile(t, src, "server: 8080\n")
-	if err := pwMgr.Create("app", src, "/etc/app.conf"); err != nil {
+	if err := pwMgr.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
