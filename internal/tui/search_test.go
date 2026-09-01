@@ -45,7 +45,7 @@ func TestSearchGathersKeysAndNamesOnly(t *testing.T) {
 		t.Fatalf("text set: %v", err)
 	}
 	src := writeSourceFile(t, "topsecret-value in config body")
-	if err := mgrs.Config.Create("app", src, "/etc/app.conf"); err != nil {
+	if err := mgrs.Config.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("config create: %v", err)
 	}
 

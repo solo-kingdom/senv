@@ -307,7 +307,7 @@ func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listIn
 }
 
 func (m *managers) configList(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {
-	infos, err := m.config.List()
+	infos, err := m.config.List("")
 	if err != nil {
 		return errResult(err)
 	}
