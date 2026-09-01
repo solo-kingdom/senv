@@ -23,10 +23,11 @@ func TestEmptyStateHintsRender(t *testing.T) {
 		t.Errorf("text empty state hint missing: %q", got)
 	}
 
-	// Config tab with no configs.
+	// Config tab with no configs (only the "All" pseudo-group in the sidebar).
 	ct := newConfigTab(Managers{})
 	ct.loaded = true
-	ct.items = nil
+	ct.groups = []configGroupRow{{name: allConfigsLabel}}
+	ct.itemsByGroup = map[string][]configRow{}
 	ct.SetSize(80, 20)
 	if got := ct.View(); !contains(got, "no configuration files") {
 		t.Errorf("config empty state hint missing: %q", got)

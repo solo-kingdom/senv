@@ -195,7 +195,7 @@ func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 	case typeConfig:
 		m.active = 2
 		if ct, ok := m.tabs[2].(*configTab); ok {
-			ct.focusJump(j.key)
+			ct.focusJump(j.group, j.key)
 		}
 	}
 	return m, nil

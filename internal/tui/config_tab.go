@@ -9,18 +9,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/config"
+	"github.com/wii/senv/internal/storage"
 )
 
-// configTab renders Config data as a single-column list grouped by group.
-// Shows group/name / description / target path / updated time; content only
-// via vim edit or detail.
+// configTab renders Config data as two panes: left = group sidebar (with an
+// "All" pseudo-group on top), right = config entries of the selected group.
+// Shows name / description / target path / updated time; content only via
+// vim edit or detail.
 type configTab struct {
 	mgr           Managers
 	width, height int
 
-	items     []configRow
-	itemIndex int
-	loaded    bool
+	groups       []configGroupRow       // index 0 is always the "All" pseudo-group
+	itemsByGroup map[string][]configRow // cached items per real group
+	groupIndex   int
+	focusLeft    bool
+	itemIndex    int
+	loaded       bool
+
+	// pendingFocus* position the cursor on a freshly created entry once the
+	// reload triggered by configCreatedMsg lands.
+	pendingFocusName  string
+	pendingFocusGroup string
 
 	filter    string
 	filtering bool
@@ -54,6 +64,15 @@ type configRow struct {
 	description string
 	targetPath  string
 	updatedAt   string
+}
+
+// allConfigsLabel is the pseudo-group pinned to the top of the sidebar. It is
+// identified by index (groups[0]), never by name, so a real group literally
+// named "All" stays unambiguous.
+const allConfigsLabel = "All"
+
+type configGroupRow struct {
+	name string // real group name, or allConfigsLabel at index 0
 }
 
 type configDetail struct {
@@ -91,7 +110,7 @@ func newConfigTab(mgr Managers) *configTab {
 func (t *configTab) Title() string { return "Config" }
 
 func (t *configTab) Help() string {
-	return "↑↓/jk move · enter details · e vim edit · n new · i/I install · u/U uninstall · x export · d del · / filter"
+	return "↑↓/jk move · ←→/hl panes · enter details · e vim edit · n new · i/I install · u/U uninstall · x export · d del · / filter"
 }
 
 func (t *configTab) InputMode() bool {
@@ -107,11 +126,19 @@ func (t *configTab) InputMode() bool {
 // --- data loading ---
 
 type configLoadedMsg struct {
-	items []configRow
-	err   error
+	groups       []configGroupRow
+	itemsByGroup map[string][]configRow
+	err          error
 }
 
 type configReloadMsg struct{}
+
+// configCreatedMsg reports a successful Create so the tab can reload and then
+// focus the new entry in its group.
+type configCreatedMsg struct {
+	name  string
+	group string // as normalized by the manager (never empty)
+}
 
 // configDetailLoadedMsg carries the result of Get for the detail panel.
 type configDetailLoadedMsg struct {
@@ -127,16 +154,47 @@ func (t *configTab) Init() tea.Cmd {
 	return t.load()
 }
 
-// focusJump positions the cursor at the given config name for search-result
-// navigation. It also dismisses detail/filter modes.
-func (t *configTab) focusJump(name string) {
+// focusJump positions the cursor at (group, name) for search-result
+// navigation. It also dismisses detail/filter modes. An empty or unknown
+// group falls back to the "All" view so stale/foreign data cannot strand the
+// cursor.
+func (t *configTab) focusJump(group, name string) {
 	t.filter = ""
 	t.mode = configModeNormal
 	t.detail = nil
-	for i, it := range t.items {
+	t.focusLeft = false
+	t.itemIndex = 0
+	t.positionAt(group, name)
+}
+
+// positionAt selects the given group in the sidebar and the named entry in
+// the item list. Falls back to the "All" view when the group is unknown or
+// the entry is not listed under it.
+func (t *configTab) positionAt(group, name string) {
+	t.groupIndex = 0
+	if group != "" {
+		for i := 1; i < len(t.groups); i++ {
+			if t.groups[i].name == group {
+				t.groupIndex = i
+				break
+			}
+		}
+	}
+	items := t.filteredItems()
+	for i, it := range items {
 		if it.name == name {
 			t.itemIndex = i
-			break
+			return
+		}
+	}
+	if t.groupIndex != 0 {
+		t.groupIndex = 0
+		items = t.filteredItems()
+		for i, it := range items {
+			if it.name == name {
+				t.itemIndex = i
+				return
+			}
 		}
 	}
 }
@@ -151,31 +209,95 @@ func (t *configTab) load() tea.Cmd {
 		if err != nil {
 			return configLoadedMsg{err: err}
 		}
-		rows := make([]configRow, 0, len(cfgs))
+		itemsByGroup := make(map[string][]configRow)
 		for _, c := range cfgs {
-			rows = append(rows, configRow{name: c.Name, group: c.Group, description: c.Description, targetPath: c.TargetPath, updatedAt: c.UpdatedAt})
+			itemsByGroup[c.Group] = append(itemsByGroup[c.Group], configRow{
+				name: c.Name, group: c.Group, description: c.Description,
+				targetPath: c.TargetPath, updatedAt: c.UpdatedAt,
+			})
 		}
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].group != rows[j].group {
-				return rows[i].group < rows[j].group
-			}
-			return rows[i].name < rows[j].name
-		})
-		return configLoadedMsg{items: rows}
+		names := make([]string, 0, len(itemsByGroup))
+		for g := range itemsByGroup {
+			names = append(names, g)
+		}
+		sort.Strings(names)
+		// Sidebar: "All" pseudo-group pinned at index 0, then real groups sorted.
+		groups := make([]configGroupRow, 0, len(names)+1)
+		groups = append(groups, configGroupRow{name: allConfigsLabel})
+		for _, g := range names {
+			items := itemsByGroup[g]
+			sort.Slice(items, func(i, j int) bool { return items[i].name < items[j].name })
+			itemsByGroup[g] = items
+			groups = append(groups, configGroupRow{name: g})
+		}
+		return configLoadedMsg{groups: groups, itemsByGroup: itemsByGroup}
 	}
 }
 
-func (t *configTab) filteredItems() []configRow {
-	if t.filter == "" {
-		return t.items
+// currentGroup returns the selected real group, or "" when the "All"
+// pseudo-group (index 0) is selected.
+func (t *configTab) currentGroup() string {
+	if t.groupIndex <= 0 || t.groupIndex >= len(t.groups) {
+		return ""
 	}
-	out := make([]configRow, 0, len(t.items))
-	for _, it := range t.items {
-		if matchKey(it.name, t.filter) || matchKey(it.group, t.filter) || matchKey(it.description, t.filter) {
+	return t.groups[t.groupIndex].name
+}
+
+// baseItems returns the unfiltered entries of the selected view: the chosen
+// group's entries, or every group's entries concatenated in sidebar order
+// (which preserves the previous group-then-name ordering for "All").
+func (t *configTab) baseItems() []configRow {
+	if g := t.currentGroup(); g != "" {
+		return t.itemsByGroup[g]
+	}
+	var out []configRow
+	for i := 1; i < len(t.groups); i++ {
+		out = append(out, t.itemsByGroup[t.groups[i].name]...)
+	}
+	return out
+}
+
+func (t *configTab) matchesFilter(it configRow) bool {
+	if t.filter == "" {
+		return true
+	}
+	return matchKey(it.name, t.filter) || matchKey(it.group, t.filter) || matchKey(it.description, t.filter)
+}
+
+func (t *configTab) filteredItems() []configRow {
+	base := t.baseItems()
+	if t.filter == "" {
+		return base
+	}
+	out := make([]configRow, 0, len(base))
+	for _, it := range base {
+		if t.matchesFilter(it) {
 			out = append(out, it)
 		}
 	}
 	return out
+}
+
+// sidebarCount returns the filter-aware entry count for sidebar row i
+// (0 = "All" totals every real group).
+func (t *configTab) sidebarCount(i int) int {
+	if i == 0 {
+		n := 0
+		for j := 1; j < len(t.groups); j++ {
+			n += t.sidebarCount(j)
+		}
+		return n
+	}
+	if i < 0 || i >= len(t.groups) {
+		return 0
+	}
+	n := 0
+	for _, it := range t.itemsByGroup[t.groups[i].name] {
+		if t.matchesFilter(it) {
+			n++
+		}
+	}
+	return n
 }
 
 func (t *configTab) currentItem() (configRow, bool) {
@@ -195,10 +317,22 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			err := msg.err
 			return t, func() tea.Msg { return errMsg{err: err} }
 		}
-		t.items = msg.items
+		t.groups = msg.groups
+		t.itemsByGroup = msg.itemsByGroup
 		t.loaded = true
-		t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
+		t.clampCursors()
+		if t.pendingFocusName != "" {
+			name, group := t.pendingFocusName, t.pendingFocusGroup
+			t.pendingFocusName, t.pendingFocusGroup = "", ""
+			t.positionAt(group, name)
+		}
 		return t, nil
+
+	case configCreatedMsg:
+		// Reload, then land the cursor on the new entry in its own group.
+		t.pendingFocusName = msg.name
+		t.pendingFocusGroup = msg.group
+		return t, t.load()
 
 	case configReloadMsg:
 		return t, t.load()
@@ -247,13 +381,17 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 		switch msg.String() {
 		case "up", "k":
-			t.itemIndex = clamp(t.itemIndex-1, 0, maxLen(t.filteredItems())-1)
+			t.moveCursor(-1)
 		case "down", "j":
-			t.itemIndex = clamp(t.itemIndex+1, 0, maxLen(t.filteredItems())-1)
+			t.moveCursor(1)
+		case "left", "h":
+			t.focusLeft = true
+		case "right", "l":
+			t.focusLeft = false
 		case "g":
-			t.itemIndex = 0
+			t.jumpCursor(0)
 		case "G":
-			t.itemIndex = clamp(len(t.filteredItems())-1, 0, maxLen(t.filteredItems())-1)
+			t.jumpCursor(t.focusListLen() - 1)
 		case "enter":
 			return t.showDetail()
 		case "e":
@@ -265,10 +403,16 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		case "i":
 			return t.enterPlan("install", false)
 		case "I":
+			if t.focusLeft {
+				return t.enterSidebarPlan("install")
+			}
 			return t.enterPlan("install", true)
 		case "u":
 			return t.enterPlan("uninstall", false)
 		case "U":
+			if t.focusLeft {
+				return t.enterSidebarPlan("uninstall")
+			}
 			return t.enterPlan("uninstall", true)
 		case "d":
 			return t.enterDeleteConfirm()
@@ -277,6 +421,39 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 	}
 	return t, nil
+}
+
+// --- navigation ---
+
+// focusListLen is the cursor list length of the currently focused pane.
+func (t *configTab) focusListLen() int {
+	if t.focusLeft {
+		return len(t.groups)
+	}
+	return len(t.filteredItems())
+}
+
+func (t *configTab) moveCursor(delta int) {
+	if t.focusLeft {
+		t.groupIndex = clamp(t.groupIndex+delta, 0, maxLen(t.groups)-1)
+		t.itemIndex = 0
+		return
+	}
+	t.itemIndex = clamp(t.itemIndex+delta, 0, maxLen(t.filteredItems())-1)
+}
+
+func (t *configTab) jumpCursor(idx int) {
+	if t.focusLeft {
+		t.groupIndex = clamp(idx, 0, maxLen(t.groups)-1)
+		t.itemIndex = 0
+		return
+	}
+	t.itemIndex = clamp(idx, 0, maxLen(t.filteredItems())-1)
+}
+
+func (t *configTab) clampCursors() {
+	t.groupIndex = clamp(t.groupIndex, 0, maxLen(t.groups)-1)
+	t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
 }
 
 // --- modal handling ---
@@ -505,13 +682,31 @@ func (t *configTab) enterPlan(kind string, groupScope bool) (Tab, tea.Cmd) {
 		t.flash = "no item selected"
 		return t, nil
 	}
-	mgr := t.mgr.Config
-	if mgr == nil {
-		return t, func() tea.Msg { return errMsg{err: fmt.Errorf("config manager unavailable")} }
-	}
 	scope := config.Scope{Name: it.name}
 	if groupScope {
 		scope = config.Scope{Group: it.group}
+	}
+	return t.planForScope(kind, scope)
+}
+
+// enterSidebarPlan handles group-scope install/uninstall triggered while the
+// group sidebar has focus: the selected real group is the scope. The "All"
+// pseudo-group has no group scope and only shows a hint.
+func (t *configTab) enterSidebarPlan(kind string) (Tab, tea.Cmd) {
+	g := t.currentGroup()
+	if g == "" {
+		t.flash = "select a concrete group for group-wide " + kind + " (All has no group scope)"
+		return t, nil
+	}
+	return t.planForScope(kind, config.Scope{Group: g})
+}
+
+// planForScope computes an install/uninstall plan for the given scope and
+// switches to the plan preview once loaded.
+func (t *configTab) planForScope(kind string, scope config.Scope) (Tab, tea.Cmd) {
+	mgr := t.mgr.Config
+	if mgr == nil {
+		return t, func() tea.Msg { return errMsg{err: fmt.Errorf("config manager unavailable")} }
 	}
 	return t, func() tea.Msg {
 		msg := configPlanLoadedMsg{kind: kind, scope: scope}
@@ -634,7 +829,12 @@ func (t *configTab) doCreate(name, source, target, group, description string) te
 		if err := mgr.Create(name, source, target, group, description); err != nil {
 			return errMsg{err: err}
 		}
-		return configReloadMsg{}
+		// The manager normalizes an empty group to "default"; mirror that here
+		// so the post-reload focus lands in the entry's real group.
+		if group == "" {
+			group = storage.ConfigDefaultGroup
+		}
+		return configCreatedMsg{name: name, group: group}
 	}
 }
 
@@ -649,7 +849,7 @@ func (t *configTab) View() string {
 	if t.mode == configModeDetail && t.detail != nil {
 		return t.renderDetail()
 	}
-	base := t.renderList()
+	base := t.viewBase()
 	if t.mode == configModeNormal {
 		if t.flash != "" {
 			return lipgloss.JoinVertical(lipgloss.Left, base,
@@ -660,12 +860,63 @@ func (t *configTab) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, base, t.renderModal())
 }
 
-func (t *configTab) renderList() string {
+func (t *configTab) viewBase() string {
+	leftW := t.width / 4
+	if leftW > 26 {
+		leftW = 26
+	}
+	if leftW < 16 {
+		leftW = 16
+	}
+	// Reserve 5 cols for inter-pane chrome: 1 gap + 2 left-pane border +
+	// 2 right-pane border (lipgloss draws borders outside Width).
+	rightW := t.width - leftW - 5
+	if rightW < 4 {
+		rightW = 4
+	}
+
+	left := t.renderGroups(leftW)
+	right := t.renderItems(rightW)
+
+	if t.focusLeft {
+		left = activePaneStyle.Width(leftW).Height(t.height).Render(left)
+		right = paneStyle.Width(rightW).Height(t.height).Render(right)
+	} else {
+		left = paneStyle.Width(leftW).Height(t.height).Render(left)
+		right = activePaneStyle.Width(rightW).Height(t.height).Render(right)
+	}
+	gap := lipgloss.NewStyle().Width(1).Render(" ")
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
+}
+
+func (t *configTab) renderGroups(width int) string {
+	if !t.loaded {
+		return emptyStateStyle.Render("loading groups...")
+	}
+	// Count excludes the "All" pseudo-group.
+	title := paneTitleStyle.Render(fmt.Sprintf("Groups (%d)", len(t.groups)-1))
+	var lines []string
+	for i, g := range t.groups {
+		line := fmt.Sprintf("%s  [%d]", truncRunes(g.name, width-8), t.sidebarCount(i))
+		if i == t.groupIndex && t.focusLeft {
+			line = selectedLineStyle.Render("▸ " + line)
+		}
+		lines = append(lines, line)
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+}
+
+func (t *configTab) renderItems(width int) string {
 	if !t.loaded {
 		return emptyStateStyle.Render("loading configs...")
 	}
 	items := t.filteredItems()
-	header := fmt.Sprintf("Configs (%d)", len(items))
+	label := t.currentGroup()
+	if label == "" {
+		label = allConfigsLabel
+	}
+	header := fmt.Sprintf("%s (%d)", label, len(items))
 	if t.filter != "" {
 		header += "  /" + t.filter
 	}
@@ -677,20 +928,29 @@ func (t *configTab) renderList() string {
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, title, emptyStateStyle.Render(hint))
 	}
+	// Column budget: name 22 + desc 14 + updated 16 + 3 separators; the path
+	// column takes the rest (padding and the cursor marker are extra slack,
+	// matching the pre-existing single-pane behavior).
+	pathW := width - 22 - 14 - 16 - 5
+	if pathW < 8 {
+		pathW = 8
+	}
 	var lines []string
 	for i, it := range items {
-		fullName := it.group + "/" + it.name
-		line := fmt.Sprintf("%-22s %-16s %-24s %s", truncRunes(fullName, 22), truncRunes(it.description, 16), truncPath(it.targetPath), it.updatedAt)
+		displayName := it.name
+		if t.currentGroup() == "" {
+			displayName = it.group + "/" + it.name
+		}
+		line := fmt.Sprintf("%-22s %-14s %-*s %s",
+			truncRunes(displayName, 22), truncRunes(it.description, 14),
+			pathW, truncPathN(it.targetPath, pathW), it.updatedAt)
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	// Width(t.width-2) because lipgloss draws the pane border outside Width;
-	// total rendered width = t.width, fitting the content area exactly.
-	return activePaneStyle.Width(t.width - 2).Height(t.height).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, body))
+	return lipgloss.JoinVertical(lipgloss.Left, title, body)
 }
 
 // renderPlan renders the install/uninstall plan preview and, during changed
@@ -765,13 +1025,17 @@ func (t *configTab) renderModal() string {
 	return ""
 }
 
-// truncPath shortens a long target path for list display.
-func truncPath(p string) string {
+// truncPath shortens a long target path for list display (24 runes).
+func truncPath(p string) string { return truncPathN(p, 24) }
+
+// truncPathN shortens a long target path to at most n runes, keeping the
+// tail (the distinguishing part of a path) with a leading ellipsis.
+func truncPathN(p string, n int) string {
 	r := []rune(p)
-	if len(r) <= 24 {
+	if len(r) <= n {
 		return p
 	}
-	return "…" + string(r[len(r)-23:])
+	return "…" + string(r[len(r)-(n-1):])
 }
 
 // ensure config package is referenced (Manager used via Managers; ConfigInfo

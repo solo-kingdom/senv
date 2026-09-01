@@ -1,8 +1,7 @@
-# config-tui Specification
+# config-tui Delta
 
-## Purpose
-在 TUI 与经典交互菜单中提供 config 的分组视图、meta 展示，以及带计划预览与确认的 install / uninstall 操作入口。
-## Requirements
+## MODIFIED Requirements
+
 ### Requirement: 分组视图与 meta 展示
 TUI config tab 与经典交互菜单 SHALL 展示每条配置的分组、描述与保存位置，SHALL 支持按分组浏览或过滤。TUI config tab SHALL 采用双栏布局：左侧为分组选择栏（顶部为 All 伪组，其下为真实分组，各组显示条目计数），右侧为条目列表。默认选中 All，右侧显示全部分组的所有条目（条目仍展示 group 前缀）；选中真实分组时右侧仅显示该分组条目。TUI config tab SHALL 支持在分组栏与条目列表之间切换焦点，焦点切回条目列表时 SHALL 定位到该分组的第一条条目。
 
@@ -45,12 +44,7 @@ TUI 与经典菜单 SHALL 提供 install 与 uninstall 入口，作用于选中�
 - **WHEN** 在交互菜单选择按组 install
 - **THEN** 展示该组计划，确认后执行
 
-### Requirement: 改动条目的确认
-uninstall 计划中标记为 changed（目标文件被本地改动）的条目 SHALL 需要显式确认后才删除。
-
-#### Scenario: 改动文件需确认
-- **WHEN** uninstall 计划含 changed 条目且用户确认计划
-- **THEN** 对 changed 条目再次单独确认，拒绝则保留文件
+## ADDED Requirements
 
 ### Requirement: 搜索跳转定位分组与条目
 全局搜索跳转到 config 条目时，config tab SHALL 同时选中该条目所属分组（左栏）与条目本身（右栏）。若该条目属于 default 以外的分组，左栏选中对应真实分组而非 All。

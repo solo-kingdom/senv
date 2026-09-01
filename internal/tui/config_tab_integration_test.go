@@ -29,8 +29,16 @@ func writeSourceFile(t *testing.T, content string) string {
 	return p
 }
 
+// allConfigItems returns every entry across groups (the "All" sidebar view).
+func allConfigItems(t *configTab) []configRow {
+	saved := t.groupIndex
+	t.groupIndex = 0
+	defer func() { t.groupIndex = saved }()
+	return t.filteredItems()
+}
+
 func hasConfigItem(t *configTab, name string) bool {
-	for _, it := range t.items {
+	for _, it := range allConfigItems(t) {
 		if it.name == name {
 			return true
 		}
@@ -66,11 +74,12 @@ func TestConfigLoadAndOps(t *testing.T) {
 	tab.SetSize(80, 20)
 	tab = flushConfig(tab, tab.load())
 
-	if len(tab.items) != 1 || tab.items[0].name != "app" {
-		t.Fatalf("expected app, got %#v", tab.items)
+	items := allConfigItems(tab)
+	if len(items) != 1 || items[0].name != "app" {
+		t.Fatalf("expected app, got %#v", items)
 	}
-	if tab.items[0].targetPath != "/etc/app.conf" {
-		t.Errorf("target = %q, want /etc/app.conf", tab.items[0].targetPath)
+	if items[0].targetPath != "/etc/app.conf" {
+		t.Errorf("target = %q, want /etc/app.conf", items[0].targetPath)
 	}
 
 	// Create another config via doCreate.
@@ -111,7 +120,7 @@ func TestConfigLoadAndOps(t *testing.T) {
 
 	// Delete.
 	tab.itemIndex = indexByName(tab, "app")
-	tab = flushConfig(tab, tab.doDelete(tab.items[tab.itemIndex].name))
+	tab = flushConfig(tab, tab.doDelete(allConfigItems(tab)[tab.itemIndex].name))
 	if hasConfigItem(tab, "app") {
 		t.Error("app should be deleted")
 	}
@@ -124,7 +133,7 @@ func TestConfigLoadAndOps(t *testing.T) {
 }
 
 func indexByName(t *configTab, name string) int {
-	for i, it := range t.items {
+	for i, it := range allConfigItems(t) {
 		if it.name == name {
 			return i
 		}

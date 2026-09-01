@@ -1,0 +1,4 @@
+schema: spec-driven
+skip_specs: true
+created: 2026-09-01
+goal: 探索新增 senv-server 的可能性：现在是基于 git + 本地仓库的模式，新增 senv server provider，数据保存在数据库内

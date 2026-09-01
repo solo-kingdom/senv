@@ -26,11 +26,12 @@ func setupPlanTab(t *testing.T, stored, onDisk, kind string, groupScope bool) (*
 	tab := newConfigTab(Managers{Config: mgr})
 	tab.SetSize(100, 30)
 	tab = flushConfig(tab, tab.load())
-	if len(tab.items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(tab.items))
+	items := allConfigItems(tab)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
 	}
-	if tab.items[0].group != "work" || tab.items[0].description != "test config" {
-		t.Errorf("row meta = %q/%q, want work/test config", tab.items[0].group, tab.items[0].description)
+	if items[0].group != "work" || items[0].description != "test config" {
+		t.Errorf("row meta = %q/%q, want work/test config", items[0].group, items[0].description)
 	}
 
 	next, cmd := tab.enterPlan(kind, groupScope)
