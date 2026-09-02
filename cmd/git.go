@@ -32,12 +32,13 @@ func init() {
 
 // getGitManager creates a git manager for the git path (common parent of config and data)
 func getGitManager() (*git.Manager, error) {
-	configPath := getConfigPath()
-	dataPath := getDataPath()
-	storageManager := storage.NewManager(configPath, dataPath)
-	gitPath := storageManager.GetGitPath()
-
-	manager := git.NewManager(gitPath)
+	// 经统一 provider 构造入口获取 git 适配层（git 专属命令当前仅支持 git provider）
+	gitProvider, err := getGitProvider()
+	if err != nil {
+		return nil, err
+	}
+	manager := gitProvider.Manager()
+	gitPath := getStorage().GetGitPath()
 
 	// Check if it's a git repository
 	if !manager.IsGitRepo() {
@@ -250,11 +251,12 @@ var gitStatusCmd = &cobra.Command{
 	Short: "Show git status",
 	Long:  `Show the current git status of the data repository.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		configPath := getConfigPath()
-		dataPath := getDataPath()
-		storageManager := storage.NewManager(configPath, dataPath)
-		gitPath := storageManager.GetGitPath()
-		manager := git.NewManager(gitPath)
+		// 经统一 provider 构造入口获取 git 适配层；status 允许非仓库路径，不做仓库检查
+		gitProvider, err := getGitProvider()
+		if err != nil {
+			return err
+		}
+		manager := gitProvider.Manager()
 
 		// Get status info
 		info, err := manager.GetStatusInfo()

@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-02
+goal: Provider 窄接口抽象 + cmd 统一构造入口 + git 流程接入新抽象（行为不变的纯重构）

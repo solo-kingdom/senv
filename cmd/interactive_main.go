@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
-	"github.com/wii/senv/internal/git"
 	"github.com/wii/senv/internal/session"
 )
 
@@ -51,7 +50,12 @@ func runInteractive(cmd *cobra.Command, args []string) error {
 		configManager = config.NewManager(auth.storage, auth.password)
 	}
 
-	gitManager := git.NewManager(auth.storage.GetGitPath())
+	// 经统一 provider 构造入口获取 git 适配层（交互 Git 菜单当前仅支持 git provider）
+	gitProvider, err := getGitProvider()
+	if err != nil {
+		return err
+	}
+	gitManager := gitProvider.Manager()
 
 	is := &interactiveSession{
 		reader:         bufio.NewReader(os.Stdin),

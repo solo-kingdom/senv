@@ -55,6 +55,12 @@ build-windows:
 	@echo "$(GREEN)Building for Windows...$(NC)"
 	GOOS=windows GOARCH=amd64 $(GOBUILD) -o bin/$(BINARY_NAME)-windows-amd64.exe $(MAIN_PATH)
 
+# 编译 senv-server
+build-server:
+	@echo "$(GREEN)Building senv-server...$(NC)"
+	$(GOCMD) build -o senv-server-bin ./senv-server
+	@echo "$(GREEN)Build complete: senv-server-bin$(NC)"
+
 # 清理编译产物
 clean:
 	@echo "$(YELLOW)Cleaning...$(NC)"

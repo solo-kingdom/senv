@@ -16,10 +16,21 @@ type Metadata struct {
 
 // Settings represents the user settings
 type Settings struct {
-	ActiveGroups []string      `json:"active_groups"` // Groups that are activated (besides default)
-	DefaultGroup string        `json:"default_group"` // Default group name (usually "default")
-	Session      SessionConfig `json:"session"`       // Session cache configuration
-	UpdatedAt    string        `json:"updated_at"`
+	ActiveGroups []string       `json:"active_groups"`      // Groups that are activated (besides default)
+	DefaultGroup string         `json:"default_group"`      // Default group name (usually "default")
+	Session      SessionConfig  `json:"session"`            // Session cache configuration
+	Provider     ProviderConfig `json:"provider,omitempty"` // Remote sync provider configuration (empty = git)
+	UpdatedAt    string         `json:"updated_at"`
+}
+
+// ProviderConfig represents the remote sync provider configuration.
+// Type empty or "git" selects the default git provider; "server" selects
+// senv-server (requires Address and Token). Machine-local, never synced.
+type ProviderConfig struct {
+	Type    string `json:"type"`              // "git" (default) or "server"
+	Address string `json:"address,omitempty"` // senv-server address
+	Token   string `json:"token,omitempty"`   // senv-server credential
+	Vault   string `json:"vault,omitempty"`   // vault name on server (default "main")
 }
 
 // SessionConfig represents session cache configuration

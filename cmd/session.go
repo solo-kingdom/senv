@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/session"
-	"github.com/wii/senv/internal/storage"
 )
 
 var sessionCmd = &cobra.Command{
@@ -49,9 +48,7 @@ Examples:
   # Start session with 1 day timeout
   senv session start --timeout 1d`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		configPath := getConfigPath()
-		dataPath := getDataPath()
-		storageManager := storage.NewManager(configPath, dataPath)
+		storageManager := getStorage()
 
 		if !storageManager.IsInitialized() {
 			return fmt.Errorf("project not initialized. Run 'senv init' first")
@@ -86,7 +83,7 @@ Examples:
 		}
 
 		// Start session
-		sessionManager := session.NewManager(configPath, dataPath)
+		sessionManager := session.NewManager(getConfigPath(), getDataPath())
 		if err := sessionManager.StartSession(password, timeout); err != nil {
 			return err
 		}
