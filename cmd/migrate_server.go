@@ -70,6 +70,9 @@ var migrateToServerCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := provider.ValidateServerAddress(address); err != nil {
+			return err
+		}
 		sp := provider.NewServerProvider(address, token, getConfigPath(), getDataPath(), vault)
 
 		fmt.Printf("正在迁移到 server vault %q（%s）...\n", vault, address)
@@ -95,6 +98,9 @@ var migrateFromServerCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		address, token, vault, err := resolveServerConn()
 		if err != nil {
+			return err
+		}
+		if err := provider.ValidateServerAddress(address); err != nil {
 			return err
 		}
 		sp := provider.NewServerProvider(address, token, getConfigPath(), getDataPath(), vault)

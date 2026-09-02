@@ -26,9 +26,9 @@ type rekeyEntry struct {
 }
 
 // Rekey re-encrypts all data files from oldKey to newKey and updates metadata
-// with newSaltB64 and newPasswordKey. On failure it attempts to restore the
-// original encryption.
-func (m *Manager) Rekey(oldKey, newKey []byte, newSaltB64, newPasswordKey string) (*RekeyResult, error) {
+// with newSaltB64, newPasswordKey and the new KDF iteration count. On failure
+// it attempts to restore the original encryption.
+func (m *Manager) Rekey(oldKey, newKey []byte, newSaltB64, newPasswordKey string, newIterations int) (*RekeyResult, error) {
 	entries, result, err := m.collectAndDecrypt(oldKey)
 	if err != nil {
 		return nil, fmt.Errorf("pre-flight decryption failed: %w", err)
@@ -50,6 +50,7 @@ func (m *Manager) Rekey(oldKey, newKey []byte, newSaltB64, newPasswordKey string
 	}
 	md.Salt = newSaltB64
 	md.PasswordKey = newPasswordKey
+	md.KDFIterations = newIterations
 	md.UpdatedAt = time.Now()
 	if err := m.SaveMetadata(md); err != nil {
 		return nil, fmt.Errorf("failed to update metadata: %w", err)
@@ -152,7 +153,7 @@ func (m *Manager) rekeyEncrypt(entries []rekeyEntry, newKey []byte) error {
 			return fmt.Errorf("encrypt %s: %w", e.path, err)
 		}
 		tmpPath := e.path + ".rekey-tmp"
-		if err := os.WriteFile(tmpPath, []byte(encrypted), 0o600); err != nil {
+		if err := WriteSensitiveFile(tmpPath, []byte(encrypted), 0o700, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", tmpPath, err)
 		}
 	}

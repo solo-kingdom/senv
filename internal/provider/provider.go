@@ -6,6 +6,8 @@ package provider
 
 import (
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 
 	"github.com/wii/senv/internal/git"
@@ -17,6 +19,33 @@ const (
 	// TypeServer 本地文件存储 + senv-server 同步（后续子 change 实现）
 	TypeServer = "server"
 )
+
+// allowInsecureHTTPEnv 显式豁免明文 http server 地址的环境变量。
+// 豁免是机器级决策，故用环境变量而非可同步/可备份的 settings 字段。
+const allowInsecureHTTPEnv = "SENV_ALLOW_INSECURE_HTTP"
+
+// ValidateServerAddress 强制 server 地址使用 https：明文 http 会把 Bearer
+// token 与全部密文未加密地送上链路。可信内网可通过
+// SENV_ALLOW_INSECURE_HTTP=1 显式豁免；豁免生效时向 stderr 输出警告以保持
+// 可审计。
+func ValidateServerAddress(address string) error {
+	u, err := url.Parse(strings.TrimSpace(address))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("provider server: 地址 %q 不是完整的 URL,需要 https://host[:port] 形式", address)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if os.Getenv(allowInsecureHTTPEnv) == "1" {
+			fmt.Fprintf(os.Stderr, "⚠ provider server: %s 使用明文 http(%s=1 豁免),token 与密文未加密传输\n", address, allowInsecureHTTPEnv)
+			return nil
+		}
+		return fmt.Errorf("provider server: 地址 %q 为明文 http,token 与密文将未加密传输;仅接受 https。确认内网可信后可设 %s=1 豁免", address, allowInsecureHTTPEnv)
+	default:
+		return fmt.Errorf("provider server: 地址 %q 的 scheme %q 不受支持,仅接受 https(内网 http 需 %s=1)", address, u.Scheme, allowInsecureHTTPEnv)
+	}
+}
 
 // Config 远端 provider 配置，来源于 settings.json 的 provider 字段
 type Config struct {
@@ -64,6 +93,9 @@ func New(cfg Config) (Provider, error) {
 		// server provider 配置校验：缺参时给出明确错误，绝不静默回退 git
 		if len(missing) > 0 {
 			return nil, fmt.Errorf("provider server: 配置不完整，缺少: %s", strings.Join(missing, ", "))
+		}
+		if err := ValidateServerAddress(cfg.ServerAddress); err != nil {
+			return nil, err
 		}
 		vault := cfg.Vault
 		if vault == "" {

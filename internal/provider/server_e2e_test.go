@@ -67,7 +67,7 @@ func deriveKey(t *testing.T, sm *storage.Manager, password string) []byte {
 	if err != nil {
 		t.Fatalf("decode salt: %v", err)
 	}
-	return crypto.DeriveKey(password, salt)
+	return crypto.DeriveKeyWithIterations(password, salt, md.EffectiveIterations())
 }
 
 // newLocalVault 在临时目录初始化一个本地 vault 并写入一个 env 变量

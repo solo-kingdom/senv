@@ -19,11 +19,13 @@ allowing you to run multiple senv commands without re-entering your password.
 
 Session timeout can be configured as:
   - Duration: 30m, 8h, 1d, 1y
-  - Special: restart (until system restart), never (not recommended)
+  - Special: restart (until system restart), never (no expiry; still cleared
+    on logout/reboot — the key is never written to persistent storage)
 
 Security considerations:
   - Only the derived key is cached, not your password
-  - Cache file has 0600 permissions (only your user can read it)
+  - The cache lives on tmpfs (XDG_RUNTIME_DIR) with 0600 permissions and is
+    never written to persistent storage
   - Cache includes a hash of your data path for validation
   - Use 'session clear' to manually clear the cache`,
 }
@@ -95,7 +97,7 @@ Examples:
 		case session.TimeoutRestart:
 			fmt.Println("✓ Session started (valid until system restart)")
 		case session.TimeoutNever:
-			fmt.Println("✓ Session started (never expires)")
+			fmt.Println("✓ Session started (never expires; cleared on logout/reboot)")
 		}
 
 		return nil
@@ -154,7 +156,7 @@ var sessionStatusCmd = &cobra.Command{
 			fmt.Println("Timeout: until system restart")
 			fmt.Printf("Boot ID: %s\n", cache.BootID)
 		case string(session.TimeoutNever):
-			fmt.Println("Timeout: never expires")
+			fmt.Println("Timeout: never expires (cleared on logout/reboot)")
 		}
 
 		return nil

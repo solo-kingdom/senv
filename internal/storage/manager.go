@@ -110,12 +110,12 @@ func (m *Manager) Initialize(password string) error {
 	}
 
 	// Create config directory if it doesn't exist
-	if err := os.MkdirAll(m.configPath, 0o700); err != nil {
+	if err := EnsurePrivateDir(m.configPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	// Create data directory if it doesn't exist
-	if err := os.MkdirAll(m.dataPath, 0o700); err != nil {
+	if err := EnsurePrivateDir(m.dataPath, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
@@ -130,8 +130,8 @@ func (m *Manager) Initialize(password string) error {
 		return fmt.Errorf("failed to generate salt: %w", err)
 	}
 
-	// Derive key from password
-	key := crypto.DeriveKey(password, salt)
+	// Derive key from password with the vault's KDF parameters
+	key := crypto.DeriveKeyWithIterations(password, salt, crypto.DefaultIterations)
 
 	// Generate a verification key (encrypted hash of the password)
 	passwordHash := crypto.HashPassword(password)
@@ -209,7 +209,7 @@ func (m *Manager) VerifyPassword(password string) (bool, error) {
 		return false, fmt.Errorf("failed to decode salt: %w", err)
 	}
 
-	key := crypto.DeriveKey(password, salt)
+	key := crypto.DeriveKeyWithIterations(password, salt, metadata.EffectiveIterations())
 
 	passwordHash, err := crypto.Decrypt(key, metadata.PasswordKey)
 	if err != nil {
@@ -243,7 +243,7 @@ func (m *Manager) SaveMetadata(metadata *Metadata) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o600)
+	return WriteSensitiveFile(path, data, 0o700, 0o600)
 }
 
 // LoadSettings loads the settings file
@@ -270,23 +270,15 @@ func (m *Manager) SaveSettings(settings *Settings) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o600)
+	return WriteSensitiveFile(path, data, 0o700, 0o600)
 }
 
 // LoadEnvGroup loads an environment variable group
 func (m *Manager) LoadEnvGroup(group string, password string) (*EnvGroup, error) {
-	// Verify password first
-	metadata, err := m.LoadMetadata()
+	key, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return nil, err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return nil, err
-	}
-
-	key := crypto.DeriveKey(password, salt)
 
 	return m.LoadEnvGroupWithKey(group, key)
 }
@@ -340,18 +332,10 @@ func (m *Manager) loadEnvGroupNewFormat(group string, key []byte) (*EnvGroup, er
 
 // SaveEnvGroup saves an environment variable group
 func (m *Manager) SaveEnvGroup(envGroup *EnvGroup, password string) error {
-	// Verify password first
-	metadata, err := m.LoadMetadata()
+	key, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return err
-	}
-
-	key := crypto.DeriveKey(password, salt)
 
 	return m.SaveEnvGroupWithKey(envGroup, key)
 }
@@ -359,7 +343,7 @@ func (m *Manager) SaveEnvGroup(envGroup *EnvGroup, password string) error {
 // SaveEnvGroupWithKey saves an environment variable group using a derived key
 func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 	groupDir := m.envGroupDir(envGroup.Name)
-	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+	if err := EnsurePrivateDir(groupDir, 0o700); err != nil {
 		return err
 	}
 
@@ -394,7 +378,7 @@ func (m *Manager) envMetaPath(group string) string {
 // SaveEnvVarWithKey saves a single environment variable.
 func (m *Manager) SaveEnvVarWithKey(group, key string, entry *EnvVarEntry, cryptoKey []byte) error {
 	varPath := m.envVarPath(group, key)
-	if err := os.MkdirAll(filepath.Dir(varPath), 0o700); err != nil {
+	if err := EnsurePrivateDir(filepath.Dir(varPath), 0o700); err != nil {
 		return err
 	}
 
@@ -406,7 +390,7 @@ func (m *Manager) SaveEnvVarWithKey(group, key string, entry *EnvVarEntry, crypt
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(varPath, []byte(encrypted), 0o600)
+	return WriteSensitiveFile(varPath, []byte(encrypted), 0o700, 0o600)
 }
 
 // SaveEnvVar saves a single environment variable using password.
@@ -486,7 +470,7 @@ func (m *Manager) ListEnvVars(group string) ([]string, error) {
 // SaveEnvGroupMetaWithKey saves group metadata.
 func (m *Manager) SaveEnvGroupMetaWithKey(group string, meta *EnvGroupMeta, cryptoKey []byte) error {
 	groupDir := m.envGroupDir(group)
-	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+	if err := EnsurePrivateDir(groupDir, 0o700); err != nil {
 		return err
 	}
 	data, err := ToJSON(meta)
@@ -497,7 +481,7 @@ func (m *Manager) SaveEnvGroupMetaWithKey(group string, meta *EnvGroupMeta, cryp
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.envMetaPath(group), []byte(encrypted), 0o600)
+	return WriteSensitiveFile(m.envMetaPath(group), []byte(encrypted), 0o700, 0o600)
 }
 
 // LoadEnvGroupMetaWithKey loads group metadata.
@@ -538,7 +522,7 @@ func (m *Manager) deriveKeyFromPassword(password string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKey(password, salt), nil
+	return crypto.DeriveKeyWithIterations(password, salt, metadata.EffectiveIterations()), nil
 }
 
 // LoadConfigIndex loads the config file index
@@ -565,22 +549,15 @@ func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o600)
+	return WriteSensitiveFile(path, data, 0o700, 0o600)
 }
 
 // SaveConfigFile saves an encrypted configuration file
 func (m *Manager) SaveConfigFile(name string, content []byte, password string) error {
-	metadata, err := m.LoadMetadata()
+	key, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return err
-	}
-
-	key := crypto.DeriveKey(password, salt)
 	return m.SaveConfigFileWithKey(name, content, key)
 }
 
@@ -594,22 +571,15 @@ func (m *Manager) SaveConfigFileWithKey(name string, content []byte, key []byte)
 	filename := fmt.Sprintf("%s%s", name, ConfigFileSuffix)
 	path := filepath.Join(m.dataPath, filename)
 
-	return os.WriteFile(path, []byte(encryptedData), 0o600)
+	return WriteSensitiveFile(path, []byte(encryptedData), 0o700, 0o600)
 }
 
 // LoadConfigFile loads and decrypts a configuration file
 func (m *Manager) LoadConfigFile(name string, password string) ([]byte, error) {
-	metadata, err := m.LoadMetadata()
+	key, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return nil, err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return nil, err
-	}
-
-	key := crypto.DeriveKey(password, salt)
 	return m.LoadConfigFileWithKey(name, key)
 }
 
@@ -675,25 +645,18 @@ func (m *Manager) textGroupPath(group string) string {
 
 // SaveTextFile saves an encrypted text entry
 func (m *Manager) SaveTextFile(group, key string, entry *TextEntry, password string) error {
-	metadata, err := m.LoadMetadata()
+	cryptoKey, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return err
-	}
-
-	key_ := crypto.DeriveKey(password, salt)
-	return m.SaveTextFileWithKey(group, key, entry, key_)
+	return m.SaveTextFileWithKey(group, key, entry, cryptoKey)
 }
 
 // SaveTextFileWithKey saves an encrypted text entry using a derived key
 func (m *Manager) SaveTextFileWithKey(group, key string, entry *TextEntry, cryptoKey []byte) error {
 	// Ensure group directory exists
 	groupDir := m.textGroupPath(group)
-	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+	if err := EnsurePrivateDir(groupDir, 0o700); err != nil {
 		return fmt.Errorf("failed to create text group directory: %w", err)
 	}
 
@@ -711,22 +674,15 @@ func (m *Manager) SaveTextFileWithKey(group, key string, entry *TextEntry, crypt
 
 	// Write to file
 	path := m.textFilePath(group, key)
-	return os.WriteFile(path, []byte(encryptedData), 0o600)
+	return WriteSensitiveFile(path, []byte(encryptedData), 0o700, 0o600)
 }
 
 // LoadTextFile loads and decrypts a text entry
 func (m *Manager) LoadTextFile(group, key string, password string) (*TextEntry, error) {
-	metadata, err := m.LoadMetadata()
+	cryptoKey, err := m.deriveKeyFromPassword(password)
 	if err != nil {
 		return nil, err
 	}
-
-	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
-	if err != nil {
-		return nil, err
-	}
-
-	cryptoKey := crypto.DeriveKey(password, salt)
 	return m.LoadTextFileWithKey(group, key, cryptoKey)
 }
 

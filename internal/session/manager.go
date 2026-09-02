@@ -47,15 +47,18 @@ func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 		return fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	// Derive key
+	// Derive key with the vault's KDF parameters
 	salt, err := base64.StdEncoding.DecodeString(metadata.Salt)
 	if err != nil {
 		return fmt.Errorf("failed to decode salt: %w", err)
 	}
-	key := crypto.DeriveKey(password, salt)
+	key := crypto.DeriveKeyWithIterations(password, salt, metadata.EffectiveIterations())
 
 	// Create session cache
-	sessionID := generateSessionID()
+	sessionID, err := generateSessionID()
+	if err != nil {
+		return fmt.Errorf("failed to start session: %w", err)
+	}
 	bootID := ""
 	expiresAt := time.Time{} // Zero time for never/restart
 

@@ -42,7 +42,7 @@ func resolveKeyForAuth(auth *authResult) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKey(auth.password, salt), nil
+	return crypto.DeriveKeyWithIterations(auth.password, salt, md.EffectiveIterations()), nil
 }
 
 // authOptions controls prompt eligibility beyond the default stdin-TTY check.

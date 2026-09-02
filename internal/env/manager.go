@@ -63,7 +63,7 @@ func (m *Manager) resolveCryptoKey() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKey(m.password, salt), nil
+	return crypto.DeriveKeyWithIterations(m.password, salt, md.EffectiveIterations()), nil
 }
 
 // Get retrieves an environment variable from a group

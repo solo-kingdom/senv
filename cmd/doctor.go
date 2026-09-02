@@ -81,7 +81,7 @@ func resolveDiagnosticKey(configPath, dataPath string, prompt passwordPrompter) 
 		if derr != nil {
 			return nil, auth.storage, "", fmt.Errorf("failed to decode salt: %w", derr)
 		}
-		return crypto.DeriveKey(auth.password, salt), auth.storage, "", nil
+		return crypto.DeriveKeyWithIterations(auth.password, salt, md.EffectiveIterations()), auth.storage, "", nil
 	}
 
 	// Desync: use the cached session key to diagnose. Doctor's whole point is to

@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 // setupIntegrationTest creates a full test environment with initialized storage
@@ -300,7 +298,7 @@ func TestIntegrationManagerWithKey(t *testing.T) {
 	// Get the derived key
 	metadata, _ := storeMgr.LoadMetadata()
 	saltBytes, _ := base64.StdEncoding.DecodeString(metadata.Salt)
-	key := pbkdf2.Key([]byte(password), saltBytes, crypto.Iterations, crypto.KeySize, sha256.New)
+	key := crypto.DeriveKeyWithIterations(password, saltBytes, metadata.EffectiveIterations())
 
 	// Create manager using key
 	textMgrWithKey := text.NewManagerWithKey(storeMgr, key)

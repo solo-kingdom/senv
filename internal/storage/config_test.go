@@ -17,7 +17,7 @@ func derivedKey(t *testing.T, mgr *Manager, password string) []byte {
 	if err != nil {
 		t.Fatalf("decode salt: %v", err)
 	}
-	return crypto.DeriveKey(password, salt)
+	return crypto.DeriveKeyWithIterations(password, salt, metadata.EffectiveIterations())
 }
 
 func TestSaveAndLoadConfigFileWithKey(t *testing.T) {

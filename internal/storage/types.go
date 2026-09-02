@@ -3,15 +3,28 @@ package storage
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/wii/senv/internal/crypto"
 )
 
 // Metadata represents the project metadata
 type Metadata struct {
-	Version     string    `json:"version"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	Salt        string    `json:"salt"`         // Base64 encoded salt
-	PasswordKey string    `json:"password_key"` // Base64 encoded encrypted password hash
+	Version       string    `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	Salt          string    `json:"salt"`                     // Base64 encoded salt
+	PasswordKey   string    `json:"password_key"`             // Base64 encoded encrypted password hash
+	KDFIterations int       `json:"kdf_iterations,omitempty"` // PBKDF2 iterations; 0 = legacy (see EffectiveIterations)
+}
+
+// EffectiveIterations returns the PBKDF2 iteration count this metadata was
+// created with. Metadata written before KDF parameter versioning has no
+// kdf_iterations field, which MUST be interpreted as the legacy count.
+func (m *Metadata) EffectiveIterations() int {
+	if m.KDFIterations > 0 {
+		return m.KDFIterations
+	}
+	return crypto.LegacyIterations
 }
 
 // Settings represents the user settings
@@ -109,15 +122,18 @@ type ConfigIndex struct {
 	Configs map[string]ConfigFile `json:"configs"`
 }
 
-// NewMetadata creates a new Metadata instance
+// NewMetadata creates a new Metadata instance with the current default KDF
+// parameters. Callers that re-derive with a different iteration count must
+// update the KDFIterations field accordingly.
 func NewMetadata(salt, passwordKey string) *Metadata {
 	now := time.Now()
 	return &Metadata{
-		Version:     "1.0",
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Salt:        salt,
-		PasswordKey: passwordKey,
+		Version:       "1.0",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Salt:          salt,
+		PasswordKey:   passwordKey,
+		KDFIterations: crypto.DefaultIterations,
 	}
 }
 

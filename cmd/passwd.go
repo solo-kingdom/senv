@@ -56,7 +56,9 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate salt: %w", err)
 	}
-	newKey := crypto.DeriveKey(newPassword, newSalt)
+	// Rekey upgrades the KDF to the current default so old vaults gain the
+	// strengthened iteration count on password change.
+	newKey := crypto.DeriveKeyWithIterations(newPassword, newSalt, crypto.DefaultIterations)
 	passwordHash := crypto.HashPassword(newPassword)
 	newPasswordKey, err := crypto.Encrypt(newKey, []byte(passwordHash))
 	if err != nil {
@@ -64,7 +66,7 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := auth.storage.Rekey(oldKey, newKey,
-		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey)
+		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
 	if err != nil {
 		return fmt.Errorf("password change failed: %w", err)
 	}
@@ -73,7 +75,9 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	sm.ClearSession()
 	clearAuthMemo()
 
-	fmt.Printf("✓ Password changed. Re-encrypted %d file(s).\n", result.Total())
+	fmt.Printf("✓ Password changed. Re-encrypted %d file(s). KDF iterations: %d.\n",
+		result.Total(), crypto.DefaultIterations)
+	fmt.Println("  Note: senv binaries older than this version cannot unlock this vault anymore.")
 	fmt.Println("  Run 'senv session start' to cache the new key.")
 	return nil
 }

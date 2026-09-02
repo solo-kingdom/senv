@@ -22,8 +22,27 @@ const (
 	MaxMetadataBlobSize = 64 * 1024
 )
 
+// 条目标识字段长度上限：server 侧独立防御，防止超长标识膨胀索引、日志与
+// 请求体。客户端的字符集校验（internal/storage/validate.go）与此互补。
+const (
+	MaxKindLen = 32
+	MaxGrpLen  = 128
+	MaxKeyLen  = 256
+)
+
 // ErrNotFound 表示请求的用户/vault/条目不存在（HTTP 层映射为 404）
 var ErrNotFound = errors.New("not found")
+
+// ValidationError 表示请求本身不合法（缺参、超限、格式错误）。HTTP 层把它
+// 映射为 400 并把原因透传给客户端——这类信息是客户端可理解的，与内部错误
+// （一律 500 通用消息，细节仅进服务端日志）严格区分。
+type ValidationError struct{ msg string }
+
+func (e *ValidationError) Error() string { return e.msg }
+
+func validationErrorf(format string, args ...any) *ValidationError {
+	return &ValidationError{msg: fmt.Sprintf(format, args...)}
+}
 
 // Conflict 描述一次乐观锁冲突：条目在 server 端的当前 revision
 type Conflict struct {
@@ -190,10 +209,10 @@ func (s *Store) GetMetadata(ctx context.Context, userID int64, vault string) ([]
 // PutMetadata 写入 vault metadata blob（vault 不存在时自动创建）
 func (s *Store) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
 	if len(blob) == 0 {
-		return fmt.Errorf("metadata blob 不能为空")
+		return validationErrorf("metadata blob 不能为空")
 	}
 	if len(blob) > MaxMetadataBlobSize {
-		return fmt.Errorf("metadata blob 超过大小上限 %d 字节", MaxMetadataBlobSize)
+		return validationErrorf("metadata blob 超过大小上限 %d 字节", MaxMetadataBlobSize)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -224,20 +243,37 @@ func nextRevision(ctx context.Context, tx pgx.Tx, vaultID int64) (int64, error) 
 	return seq, err
 }
 
+// validateEntry 校验单条推送条目的标识字段与大小，返回客户端可理解的错误
+func validateEntry(e Entry) *ValidationError {
+	if len(e.Kind) == 0 {
+		return validationErrorf("条目缺少 kind")
+	}
+	if len(e.Kind) > MaxKindLen {
+		return validationErrorf("条目 kind 长度超过上限 %d 字节", MaxKindLen)
+	}
+	if len(e.Grp) > MaxGrpLen {
+		return validationErrorf("条目 grp 长度超过上限 %d 字节", MaxGrpLen)
+	}
+	if len(e.Key) > MaxKeyLen {
+		return validationErrorf("条目 key 长度超过上限 %d 字节", MaxKeyLen)
+	}
+	if !e.Deleted && len(e.Ciphertext) > MaxEntryCiphertext {
+		return validationErrorf("条目 %s/%s/%s 密文超过大小上限 %d 字节", e.Kind, e.Grp, e.Key, MaxEntryCiphertext)
+	}
+	return nil
+}
+
 // PushEntries 乐观锁批量推送：整批一个事务，任一冲突则整批拒绝
 func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
 	if len(entries) == 0 {
-		return nil, 0, fmt.Errorf("推送批次不能为空")
+		return nil, 0, validationErrorf("推送批次不能为空")
 	}
 	if len(entries) > MaxBatchEntries {
-		return nil, 0, fmt.Errorf("单批条目数超过上限 %d", MaxBatchEntries)
+		return nil, 0, validationErrorf("单批条目数超过上限 %d", MaxBatchEntries)
 	}
 	for _, e := range entries {
-		if e.Kind == "" {
-			return nil, 0, fmt.Errorf("条目缺少 kind")
-		}
-		if !e.Deleted && len(e.Ciphertext) > MaxEntryCiphertext {
-			return nil, 0, fmt.Errorf("条目 %s/%s/%s 密文超过大小上限 %d 字节", e.Kind, e.Grp, e.Key, MaxEntryCiphertext)
+		if verr := validateEntry(e); verr != nil {
+			return nil, 0, verr
 		}
 	}
 

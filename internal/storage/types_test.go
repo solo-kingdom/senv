@@ -1,8 +1,12 @@
 package storage
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/wii/senv/internal/crypto"
 )
 
 func TestNewMetadata(t *testing.T) {
@@ -29,6 +33,49 @@ func TestNewMetadata(t *testing.T) {
 
 	if metadata.UpdatedAt.IsZero() {
 		t.Error("UpdatedAt should not be zero")
+	}
+
+	if metadata.KDFIterations != crypto.DefaultIterations {
+		t.Errorf("Expected KDFIterations %d, got %d", crypto.DefaultIterations, metadata.KDFIterations)
+	}
+}
+
+func TestEffectiveIterations(t *testing.T) {
+	// New-style metadata records the iteration count explicitly.
+	md := &Metadata{KDFIterations: 600000}
+	if got := md.EffectiveIterations(); got != 600000 {
+		t.Errorf("EffectiveIterations() = %d, want 600000", got)
+	}
+
+	// Legacy metadata has no field; MUST be interpreted as 100000.
+	legacyJSON := `{"version":"1.0","salt":"dGVzdC1zYWx0","password_key":"dGVzdC1rZXk="}`
+	var legacy Metadata
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy metadata: %v", err)
+	}
+	if got := legacy.EffectiveIterations(); got != crypto.LegacyIterations {
+		t.Errorf("legacy EffectiveIterations() = %d, want %d", got, crypto.LegacyIterations)
+	}
+}
+
+func TestMetadataKDFIterationsJSONRoundTrip(t *testing.T) {
+	salt := "dGVzdC1zYWx0"
+	md := NewMetadata(salt, "dGVzdC1rZXk=")
+
+	data, err := ToJSON(md)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"kdf_iterations": 600000`) {
+		t.Errorf("expected kdf_iterations in JSON, got: %s", data)
+	}
+
+	var back Metadata
+	if err := FromJSON(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.KDFIterations != crypto.DefaultIterations {
+		t.Errorf("round-trip lost KDFIterations: %d", back.KDFIterations)
 	}
 }
 

@@ -24,7 +24,7 @@ func doctorProbeKey(t *testing.T, store *storage.Manager, password string) []byt
 	if err != nil {
 		t.Fatalf("decode salt: %v", err)
 	}
-	return crypto.DeriveKey(password, salt)
+	return crypto.DeriveKeyWithIterations(password, salt, md.EffectiveIterations())
 }
 
 func TestDoctor_AllOK(t *testing.T) {

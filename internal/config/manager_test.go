@@ -141,7 +141,7 @@ func TestManagerWithKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("salt: %v", err)
 	}
-	key := crypto.DeriveKey("pw", salt)
+	key := crypto.DeriveKeyWithIterations("pw", salt, metadata.EffectiveIterations())
 	keyMgr := NewManagerWithKey(sm, key)
 
 	out := filepath.Join(t.TempDir(), "out.conf")

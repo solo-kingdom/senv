@@ -112,6 +112,9 @@ func runInitServer(manager *storage.Manager, configPath, dataPath string) error 
 		return fmt.Errorf("缺少 server token：请提供 --token 或设置 SENV_SERVER_TOKEN")
 	}
 
+	if err := provider.ValidateServerAddress(initServerAddress); err != nil {
+		return err
+	}
 	sp := provider.NewServerProvider(initServerAddress, token, configPath, dataPath, initServerVault)
 
 	fmt.Printf("正在从 server 拉取 vault %q ...\n", initServerVault)

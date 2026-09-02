@@ -75,6 +75,10 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dsn := dsnFrom(args, fs)
 	addr := fs.String("addr", envOr("SENV_SERVER_ADDR", ":8080"), "listen address")
+	maxBodyMB := fs.Int64("max-body-bytes", 64<<20,
+		"max request body size in bytes (must cover batch pushes; 64MB covers the 1000x512KB maximum)")
+	rateLimit := fs.Int("auth-rate-limit", 30,
+		"allowed auth failures per minute per source IP (negative disables the limiter)")
 	fs.Parse(args)
 	requireDSN(*dsn)
 
@@ -101,9 +105,25 @@ func runServe(args []string) {
 	}
 	defer pool.Close()
 
-	srv := handler.New(store.New(pool))
+	srv := handler.New(store.New(pool), handler.Options{
+		MaxBodyBytes:  *maxBodyMB,
+		AuthRateLimit: *rateLimit,
+	})
+
+	// 显式超时：慢连接（不完整的请求头/请求体）在超时后被回收，
+	// 而不是无限占用连接与内存。64MB 批量推送在慢链路上可能耗时较长，
+	// 读超时因此放宽到 2 分钟。
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	fmt.Printf("senv-server listening on %s\n", *addr)
-	if err := http.ListenAndServe(*addr, srv); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "服务退出: %v\n", err)
 		os.Exit(1)
 	}

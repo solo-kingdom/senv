@@ -13,7 +13,7 @@ import (
 )
 
 // setup 返回 HTTP server 与 alice/bob 两个用户的 token
-func setup(t *testing.T) (*Server, string, string) {
+func setup(t *testing.T, opts ...Options) (*Server, string, string) {
 	t.Helper()
 	pool := testdb.New(t)
 	st := store.New(pool)
@@ -26,7 +26,7 @@ func setup(t *testing.T) (*Server, string, string) {
 	if err != nil {
 		t.Fatalf("CreateUser bob: %v", err)
 	}
-	return New(st), aliceToken, bobToken
+	return New(st, opts...), aliceToken, bobToken
 }
 
 func doRequest(t *testing.T, srv *Server, method, path, token string, body any) *httptest.ResponseRecorder {

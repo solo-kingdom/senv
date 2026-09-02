@@ -23,14 +23,23 @@ func TestRekey_ReEncryptsAllFiles(t *testing.T) {
 	}
 
 	newSalt, _ := crypto.GenerateSalt()
-	newKey := crypto.DeriveKey("new-password", newSalt)
+	newKey := crypto.DeriveKeyWithIterations("new-password", newSalt, crypto.DefaultIterations)
 	newHash := crypto.HashPassword("new-password")
 	newPasswordKey, _ := crypto.Encrypt(newKey, []byte(newHash))
 
 	result, err := mgr.Rekey(oldKey, newKey,
-		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey)
+		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
 	if err != nil {
 		t.Fatalf("Rekey: %v", err)
+	}
+
+	// Metadata must record the upgraded KDF parameters.
+	md, err := mgr.LoadMetadata()
+	if err != nil {
+		t.Fatalf("load metadata after rekey: %v", err)
+	}
+	if md.KDFIterations != crypto.DefaultIterations {
+		t.Errorf("expected KDFIterations %d after rekey, got %d", crypto.DefaultIterations, md.KDFIterations)
 	}
 
 	// default group (.meta.enc) + prod group (.meta.enc + API_KEY.enc) = 3 env files
@@ -84,12 +93,12 @@ func TestRekey_FailsWithWrongOldKey(t *testing.T) {
 
 	wrongKey := crypto.DeriveKey("wrong", []byte("0123456789abcdef0123456789abcdef"))
 	newSalt, _ := crypto.GenerateSalt()
-	newKey := crypto.DeriveKey("new-password", newSalt)
+	newKey := crypto.DeriveKeyWithIterations("new-password", newSalt, crypto.DefaultIterations)
 	newHash := crypto.HashPassword("new-password")
 	newPasswordKey, _ := crypto.Encrypt(newKey, []byte(newHash))
 
 	_, err := mgr.Rekey(wrongKey, newKey,
-		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey)
+		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
 	if err == nil {
 		t.Fatal("Rekey should fail with wrong old key")
 	}
