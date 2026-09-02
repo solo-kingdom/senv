@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-02
+goal: git 与 server provider 之间双向迁移 CLI 子命令

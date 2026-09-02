@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-02
+goal: senv-server 独立二进制：Postgres schema、HTTP API、token 鉴权、per-entry 乐观锁同步协议

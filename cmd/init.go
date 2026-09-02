@@ -2,24 +2,40 @@ package cmd
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/storage"
 	"golang.org/x/term"
+)
+
+var (
+	initServerAddress string
+	initServerToken   string
+	initServerVault   string
 )
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new senv project",
 	Long: `Initialize a new senv project with encrypted storage.
-This will create the necessary directory structure and configuration files.`,
+This will create the necessary directory structure and configuration files.
+
+With --server, join an existing vault hosted on senv-server: pull the hosted
+metadata blob and all entries into a local cache, then unlock with the vault
+password. The vault password is never sent to the server.`,
 	RunE: runInit,
 }
 
 func init() {
+	initCmd.Flags().StringVar(&initServerAddress, "server", "", "senv-server 地址（接入已有 server vault）")
+	initCmd.Flags().StringVar(&initServerToken, "token", "", "server token（默认取环境变量 SENV_SERVER_TOKEN）")
+	initCmd.Flags().StringVar(&initServerVault, "vault", "main", "server 端 vault 名")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -28,9 +44,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 	dataPath := getDataPath()
 
 	// Check if already initialized
-	manager := storage.NewManager(configPath, dataPath)
+	manager := getStorage()
 	if manager.IsInitialized() {
 		return fmt.Errorf("project already initialized at %s", configPath)
+	}
+
+	// server 模式：接入 server 上已有的 vault
+	if initServerAddress != "" {
+		return runInitServer(manager, configPath, dataPath)
 	}
 
 	// Guard: if encrypted data files already exist without metadata, refuse to
@@ -77,6 +98,61 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("  senv session start -t never")
 	fmt.Println("  eval \"$(senv env export --if-session)\"")
 
+	return nil
+}
+
+// runInitServer 以 server 地址 + token 初始化：拉取 metadata 与全部条目建本地缓存，
+// 然后用 vault 口令解锁。口令只在本地派生 key 校验，绝不发往 server。
+func runInitServer(manager *storage.Manager, configPath, dataPath string) error {
+	token := initServerToken
+	if token == "" {
+		token = os.Getenv("SENV_SERVER_TOKEN")
+	}
+	if token == "" {
+		return fmt.Errorf("缺少 server token：请提供 --token 或设置 SENV_SERVER_TOKEN")
+	}
+
+	sp := provider.NewServerProvider(initServerAddress, token, configPath, dataPath, initServerVault)
+
+	fmt.Printf("正在从 server 拉取 vault %q ...\n", initServerVault)
+	if err := sp.Bootstrap(context.Background()); err != nil {
+		if errors.Is(err, provider.ErrVaultNotFound) {
+			return fmt.Errorf("server 上不存在 vault %q（或 token 无权限）\n请先在已有机器上执行 senv migrate to-server，或检查 vault 名与 token", initServerVault)
+		}
+		return err
+	}
+	fmt.Println("✓ 本地缓存已建立")
+
+	// vault 口令解锁：与本地模式一致（PBKDF2 派生 + passwordKey 校验）
+	password, err := promptPassword("Senv - Enter vault password: ")
+	if err != nil {
+		return fmt.Errorf("failed to read password: %w", err)
+	}
+	ok, err := manager.VerifyPassword(password)
+	if err != nil {
+		return fmt.Errorf("校验口令失败: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("vault 口令错误（本地缓存已落盘，修正口令可通过 senv session start 或直接重试命令解锁）")
+	}
+
+	// 写入 provider 配置（机器本地，不同步）
+	settings, err := manager.LoadSettings()
+	if err != nil {
+		settings = storage.NewSettings()
+	}
+	settings.Provider = storage.ProviderConfig{
+		Type:    provider.TypeServer,
+		Address: initServerAddress,
+		Token:   token,
+		Vault:   initServerVault,
+	}
+	if err := manager.SaveSettings(settings); err != nil {
+		return fmt.Errorf("保存 provider 配置失败: %w", err)
+	}
+
+	fmt.Println("✓ 已接入 server vault，口令验证通过")
+	fmt.Println("  同步: senv sync")
 	return nil
 }
 
