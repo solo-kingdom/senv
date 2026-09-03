@@ -88,6 +88,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := manager.Initialize(password); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
+	pushBlockingAfterCriticalWrite(cmd)
 
 	fmt.Println("✓ Project initialized successfully!")
 	fmt.Println()

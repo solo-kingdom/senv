@@ -20,6 +20,7 @@ derived from the new password. On failure the original encryption is preserved.`
 
 func init() {
 	rootCmd.AddCommand(passwdCmd)
+	passwdCmd.Annotations = map[string]string{"senv/skip-auto-push": "true"}
 }
 
 func runPasswd(cmd *cobra.Command, args []string) error {
@@ -79,5 +80,6 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 		result.Total(), crypto.DefaultIterations)
 	fmt.Println("  Note: senv binaries older than this version cannot unlock this vault anymore.")
 	fmt.Println("  Run 'senv session start' to cache the new key.")
+	pushBlockingAfterCriticalWrite(cmd)
 	return nil
 }

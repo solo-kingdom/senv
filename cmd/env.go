@@ -114,6 +114,7 @@ var envDeleteCmd = &cobra.Command{
 	Long:  `Delete an environment variable. The key may be a group:key address; address group takes precedence over -g/--group.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		envManager, err := getEnvManager()
 		if err != nil {
 			return err
@@ -144,6 +145,7 @@ Otherwise, list all groups.
 Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		envManager, err := getEnvManager()
 		if err != nil {
 			return err
@@ -236,6 +238,7 @@ Usage:
   senv session start -t never
   eval "$(senv env export --if-session)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		if envExportIfSession {
 			sm := session.NewManager(getConfigPath(), getDataPath())
 			if _, err := sm.GetCachedKey(); err != nil {
@@ -410,9 +413,12 @@ func init() {
 
 	// Add -d/--decode and --loose flags to env get and list
 	envGetCmd.Flags().BoolVarP(&envGetDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
+	addRefreshFlag(envGetCmd)
 	envGetCmd.Flags().BoolVar(&envGetLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 	envListCmd.Flags().BoolVarP(&envListDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
+	addRefreshFlag(envListCmd)
 	envListCmd.Flags().BoolVar(&envListLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 	envExportCmd.Flags().BoolVar(&envExportIfSession, "if-session", false,
 		"if no active session, print nothing and exit 0 (for shell rc files)")
+	addRefreshFlag(envExportCmd)
 }

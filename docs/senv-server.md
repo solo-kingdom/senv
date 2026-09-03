@@ -44,16 +44,56 @@ senv migrate to-server --server https://senv.example.com --token <token>
 
 # 本机切到 server provider：编辑 ~/.config/senv/settings.json
 #   "provider": {"type": "server", "address": "...", "token": "...", "vault": "main"}
+# 可选自动同步配置：
+#   "auto_sync": false,     # 默认开启；false 时回到仅手动 senv sync
+#   "sync_throttle": "30s"  # 自动 pull 节流窗口；空/非法值回退 30s
 
 # 新机器接入已有 vault（vault 口令绝不发往 server）
 senv init --server https://senv.example.com --token <token>
 
-# 日常同步（断网时本地读写不受影响，恢复后同步收敛）
+# 冲突查看与修复 / 手动全量同步（断网时本地读写不受影响，恢复后同步收敛）
 senv sync
 ```
 
 地址scheme：客户端默认只接受 `https://` 的 server 地址；可信内网要用明文 http 时，
 显式设置环境变量 `SENV_ALLOW_INSECURE_HTTP=1`（构造 provider 时会向 stderr 打警告）。
+
+## 自动同步行为
+
+server provider 默认在命令生命周期内做 best-effort 同步，不启动常驻进程：
+
+- 读取命令（如 `env get/list/export`、`text get/list`、`config get/list`、
+  `session start`、`tui`）先按 `sync_throttle` 增量拉取；窗口内直接使用本地缓存。
+  拉取预算约 2 秒，超时或不可达时静默退回本地数据。
+- 写入命令先完成本地落盘，进程退出前推送待同步更改。推送失败不改变原命令退出码，
+  本地更改保留并显示“待推送”警告；后续任意命令会自动重试。
+- `passwd` 与初始化后的关键写入使用约 10 秒的阻塞确认推送；失败时本地更改仍生效，
+  但会输出强警告并指引执行 `senv sync`。
+- MCP `serve` 的读工具复用同一节流拉取路径，连续请求通常只有一次网络拉取。
+- 同一数据目录的同步段通过 `.senv-sync.lock` 串行化；锁文件与数据目录权限分别为
+  0600/0700。锁被其他进程持有时本次自动同步跳过。
+
+强制绕过节流窗口：
+
+```bash
+senv env get API_KEY --refresh
+senv env list --refresh
+senv env export --refresh
+senv text get TLS_CERT --refresh
+senv text list --refresh
+senv config get app.toml --refresh
+senv config list --refresh
+senv session start --refresh
+senv tui --refresh
+```
+
+乐观锁冲突不会被自动覆盖。自动推送遇到冲突时仅列出冲突条目并提示 `senv sync`；
+随后可按既有语义选择：
+
+```bash
+senv sync --accept-remote   # 放弃本地，采用远端
+senv sync --force-push      # 放弃远端，采用本地
+```
 
 ## 运维要点
 

@@ -22,6 +22,7 @@ password (does not write session). See "TUI mode" in the README for the
 keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		envMgr, textMgr, configMgr, err := getManagers()
 		if err != nil {
 			return err
@@ -42,6 +43,7 @@ keybinding reference.`,
 
 func init() {
 	rootCmd.AddCommand(tuiCmd)
+	addRefreshFlag(tuiCmd)
 }
 
 // getManagers authenticates the user and returns all three domain managers.

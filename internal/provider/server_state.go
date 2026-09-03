@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,9 +28,11 @@ type syncEntryState struct {
 	Hash     string `json:"hash"`
 }
 
-// syncState 本地同步状态：last_synced_revision + 快照（dirty 判定依据）
+// syncState 本地同步状态：last_synced_revision + 快照（dirty 判定依据）。
+// LastPullAt 为读路径自动拉取的节流时间戳（unix 秒，旧文件缺省为 0 = 立即拉取）。
 type syncState struct {
 	LastSyncedRevision int64                     `json:"last_synced_revision"`
+	LastPullAt         int64                     `json:"last_pull_at,omitempty"`
 	MetadataHash       string                    `json:"metadata_hash"`
 	Entries            map[string]syncEntryState `json:"entries"`
 }
@@ -203,7 +206,9 @@ func (c *localCache) writeMetadata(blob []byte) error {
 	return os.WriteFile(c.metadataPath(), blob, 0o600)
 }
 
-// loadState / saveState 读写同步状态文件
+// loadState / saveState 读写同步状态文件。
+// 状态损坏时不重建（空快照会把全部条目当 dirty 以 base_revision=0 推送，
+// 触发整批 409），而是返回错误：自动同步静默跳过，手动 sync 明确报错指引删除重建。
 func (c *localCache) loadState() (*syncState, error) {
 	data, err := os.ReadFile(c.stateFilePath())
 	if os.IsNotExist(err) {
@@ -214,7 +219,7 @@ func (c *localCache) loadState() (*syncState, error) {
 	}
 	var st syncState
 	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("同步状态文件损坏（%s）: %w；删除该文件后执行 senv init 或 senv sync 可重建", c.stateFilePath(), err)
 	}
 	if st.Entries == nil {
 		st.Entries = make(map[string]syncEntryState)

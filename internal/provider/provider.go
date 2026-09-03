@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/wii/senv/internal/git"
 )
@@ -60,6 +61,25 @@ type Config struct {
 	DataPath   string
 	// Vault 为 server 端 vault 名，默认 "main"
 	Vault string
+	// AutoSync / SyncThrottle 透传 settings.json 的 server 自动同步配置。
+	AutoSync     *bool
+	SyncThrottle string
+}
+
+// DefaultSyncThrottle 是自动 pull 的默认节流窗口。
+const DefaultSyncThrottle = 30 * time.Second
+
+// ParseSyncThrottle 解析 settings 的节流窗口；空值与非法值回退默认值，
+// 保证手写 settings 的小错误不会让命令同步路径失效。
+func ParseSyncThrottle(value string) time.Duration {
+	if value == "" {
+		return DefaultSyncThrottle
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return DefaultSyncThrottle
+	}
+	return d
 }
 
 // Provider 是围绕 push/pull 语义的窄同步通道接口
@@ -101,7 +121,10 @@ func New(cfg Config) (Provider, error) {
 		if vault == "" {
 			vault = "main"
 		}
-		return NewServerProvider(cfg.ServerAddress, cfg.ServerToken, cfg.ConfigPath, cfg.DataPath, vault), nil
+		sp := NewServerProvider(cfg.ServerAddress, cfg.ServerToken, cfg.ConfigPath, cfg.DataPath, vault)
+		sp.autoSync = cfg.AutoSync == nil || *cfg.AutoSync
+		sp.syncThrottle = ParseSyncThrottle(cfg.SyncThrottle)
+		return sp, nil
 	default:
 		return nil, fmt.Errorf("provider %q: 未知类型，支持 %s / %s", cfg.Type, TypeGit, TypeServer)
 	}

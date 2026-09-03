@@ -21,6 +21,9 @@ var rootCmd = &cobra.Command{
 	Long: `Senv is a secure tool for managing environment variables and configuration files.
 It provides encrypted storage for sensitive data with group-based organization.`,
 	Args: cobra.ArbitraryArgs,
+	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		postRunAutoPush(cmd)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()

@@ -32,6 +32,8 @@ func getSyncProvider() (provider.Provider, error) {
 		cfg.ServerAddress = settings.Provider.Address
 		cfg.ServerToken = settings.Provider.Token
 		cfg.Vault = settings.Provider.Vault
+		cfg.AutoSync = settings.Provider.AutoSync
+		cfg.SyncThrottle = settings.Provider.SyncThrottle
 	}
 	p, err := provider.New(cfg)
 	if err != nil {

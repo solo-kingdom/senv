@@ -5,22 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ServerProvider 是 server provider：本地缓存（复用 storage.Manager 文件格式）为工作副本，
 // senv-server 为远端。同步 = 增量 pull 落盘 + 收集 dirty 条目乐观锁批量 push。
+// 所有同步入口（Sync/AutoPull/…）在 dataPath 同步锁内串行执行；now 可注入以便测试节流。
 type ServerProvider struct {
-	api   serverAPI
-	cache *localCache
-	vault string
+	api          serverAPI
+	cache        *localCache
+	vault        string
+	now          func() time.Time
+	autoSync     bool
+	syncThrottle time.Duration
 }
 
 // newServerProvider 构造 server provider（接口实现），api 可注入以便测试
 func newServerProvider(api serverAPI, configPath, dataPath, vault string) *ServerProvider {
 	return &ServerProvider{
-		api:   api,
-		cache: &localCache{configPath: configPath, dataPath: dataPath},
-		vault: vault,
+		api:          api,
+		cache:        &localCache{configPath: configPath, dataPath: dataPath},
+		vault:        vault,
+		now:          time.Now,
+		autoSync:     true,
+		syncThrottle: DefaultSyncThrottle,
 	}
 }
 
@@ -67,9 +75,23 @@ func displayKey(kind, key string) string {
 	return key
 }
 
+// lockBlocking 获取阻塞式同步锁（手动同步入口：锁忙时等待而非跳过）。
+func (p *ServerProvider) lockBlocking() (func(), error) {
+	lock, err := acquireSyncLock(p.cache.dataPath, true)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.release() }, nil
+}
+
 // Bootstrap 初始化本地缓存：拉取 metadata 与全部条目落盘，建立同步状态。
 // vault 在 server 端不存在时返回 ErrVaultNotFound。
 func (p *ServerProvider) Bootstrap(ctx context.Context) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
 	blob, err := p.api.GetMetadata(ctx, p.vault)
 	if err != nil {
 		return err
@@ -84,6 +106,7 @@ func (p *ServerProvider) Bootstrap(ctx context.Context) error {
 	st := newSyncState()
 	st.MetadataHash = hashBytes(blob)
 	st.LastSyncedRevision = latest
+	st.LastPullAt = p.now().Unix()
 	for _, e := range entries {
 		if err := p.cache.apply(e); err != nil {
 			return err
@@ -199,6 +222,8 @@ func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
 	}
 
 	st.LastSyncedRevision = latest
+	// 记录本次成功拉取时间（读路径自动拉取的节流依据）；失败路径不落盘即不更新
+	st.LastPullAt = p.now().Unix()
 	if err := p.cache.saveState(st); err != nil {
 		return nil, err
 	}
@@ -285,22 +310,37 @@ func (p *ServerProvider) push(ctx context.Context) (*PushResult, error) {
 
 // Pull 增量拉取并落盘
 func (p *ServerProvider) Pull() error {
-	_, err := p.pull(context.Background())
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = p.pull(context.Background())
 	return err
 }
 
 // Push 推送本地待推送更改
 func (p *ServerProvider) Push(_ string) error {
-	_, err := p.push(context.Background())
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = p.push(context.Background())
 	return err
 }
 
 // Sync 双向同步：先 pull 再 push
 func (p *ServerProvider) Sync(_ string) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if _, err := p.pull(context.Background()); err != nil {
 		return err
 	}
-	_, err := p.push(context.Background())
+	_, err = p.push(context.Background())
 	return err
 }
 
@@ -313,6 +353,12 @@ type SyncResult struct {
 
 // SyncWithReport 执行同步并返回详细结果
 func (p *ServerProvider) SyncWithReport(ctx context.Context) (*SyncResult, error) {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	st, err := p.cache.loadState()
 	if err != nil {
 		return nil, err
@@ -337,6 +383,11 @@ func (p *ServerProvider) SyncWithReport(ctx context.Context) (*SyncResult, error
 // AcceptRemote 放弃本地改动，以远端为准：全量拉取覆盖本地（本地新增文件保留），
 // 之后推送剩余本地新增条目
 func (p *ServerProvider) AcceptRemote(ctx context.Context) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
 	entries, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
 		return err
@@ -370,6 +421,11 @@ func (p *ServerProvider) AcceptRemote(ctx context.Context) error {
 
 // ForcePush 放弃远端改动，以本地为准：先取远端当前 revision 作为 base，强制覆盖推送
 func (p *ServerProvider) ForcePush(ctx context.Context) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
 	remote, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
 		return err
@@ -426,6 +482,12 @@ func (p *ServerProvider) ForcePush(ctx context.Context) error {
 
 // Status 返回本地缓存相对远端的同步状态描述
 func (p *ServerProvider) Status() (string, error) {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	st, err := p.cache.loadState()
 	if err != nil {
 		return "", err

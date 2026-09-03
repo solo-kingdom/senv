@@ -40,7 +40,7 @@ var mcpServeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		srv := newMCPServer(envMgr, textMgr, configMgr)
+		srv := newMCPServerWithAutoPull(envMgr, textMgr, configMgr, newAutoPuller(cmd))
 		return srv.Run(cmd.Context(), &mcp.StdioTransport{})
 	},
 }
@@ -65,9 +65,10 @@ var mcpListToolsCmd = &cobra.Command{
 // managers bundles the three managers a handler needs. Handlers close over a
 // pointer to this struct so the same value is shared by every tool.
 type managers struct {
-	env    *env.Manager
-	text   *text.Manager
-	config *config.Manager
+	env      *env.Manager
+	text     *text.Manager
+	config   *config.Manager
+	autoPull func()
 }
 
 // getManagersForMCP authenticates exactly once at server startup and returns
@@ -99,10 +100,20 @@ func getManagersForMCP() (*env.Manager, *text.Manager, *config.Manager, error) {
 // is a thin adapter around the shared managers; business logic stays in the
 // internal packages (same managers the CLI uses).
 func newMCPServer(envMgr *env.Manager, textMgr *text.Manager, configMgr *config.Manager) *mcp.Server {
+	return newMCPServerWithAutoPull(envMgr, textMgr, configMgr, nil)
+}
+
+func newMCPServerWithAutoPull(envMgr *env.Manager, textMgr *text.Manager, configMgr *config.Manager, autoPull func()) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "senv", Version: Version}, nil)
-	mgrs := &managers{env: envMgr, text: textMgr, config: configMgr}
+	mgrs := &managers{env: envMgr, text: textMgr, config: configMgr, autoPull: autoPull}
 	registerMCPTools(srv, mgrs)
 	return srv
+}
+
+func (m *managers) pullBeforeRead() {
+	if m.autoPull != nil {
+		m.autoPull()
+	}
 }
 
 // --- Input schemas -----------------------------------------------------------
@@ -175,6 +186,7 @@ func errResult(err error) (*mcp.CallToolResult, emptyOut, error) {
 }
 
 func (m *managers) envGet(_ context.Context, _ *mcp.CallToolRequest, in envGetInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
 	value, err := m.env.Get(group, key)
 	if err != nil {
@@ -207,6 +219,7 @@ func (m *managers) envDelete(_ context.Context, _ *mcp.CallToolRequest, in envKe
 }
 
 func (m *managers) envList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	group := orDefault(in.Group, "")
 	vars, err := m.env.List(group)
 	if err != nil {
@@ -228,6 +241,7 @@ func (m *managers) envList(_ context.Context, _ *mcp.CallToolRequest, in listInp
 }
 
 func (m *managers) envExport(_ context.Context, _ *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	exports, err := m.env.Export()
 	if err != nil {
 		return errResult(err)
@@ -240,6 +254,7 @@ func (m *managers) envExport(_ context.Context, _ *mcp.CallToolRequest, in struc
 }
 
 func (m *managers) textGet(_ context.Context, _ *mcp.CallToolRequest, in envGetInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
 	value, err := m.text.Get(group, key)
 	if err != nil {
@@ -272,6 +287,7 @@ func (m *managers) textDelete(_ context.Context, _ *mcp.CallToolRequest, in envK
 }
 
 func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	type entry struct {
 		Group string `json:"group"`
 		Key   string `json:"key"`
@@ -307,6 +323,7 @@ func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listIn
 }
 
 func (m *managers) configList(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	infos, err := m.config.List("")
 	if err != nil {
 		return errResult(err)
@@ -315,6 +332,7 @@ func (m *managers) configList(_ context.Context, _ *mcp.CallToolRequest, _ struc
 }
 
 func (m *managers) configGet(_ context.Context, _ *mcp.CallToolRequest, in configNameInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	info, err := m.config.Get(in.Name)
 	if err != nil {
 		return errResult(err)
@@ -323,6 +341,7 @@ func (m *managers) configGet(_ context.Context, _ *mcp.CallToolRequest, in confi
 }
 
 func (m *managers) configExport(_ context.Context, _ *mcp.CallToolRequest, in configNameInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	// Export to a temp file then read it back, so we never write to a
 	// user-specified path from within an MCP tool. The content is returned as
 	// text; callers that need a file can write it themselves.
@@ -344,6 +363,7 @@ func (m *managers) configExport(_ context.Context, _ *mcp.CallToolRequest, in co
 }
 
 func (m *managers) groupList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
 	switch orDefault(in.Group, "") {
 	// We overload the otherwise-unused Group field with the namespace to avoid a
 	// bespoke input type. Accept "text" (and empty) => text groups; otherwise env.

@@ -44,6 +44,12 @@ func (e *entryConflictError) Error() string {
 // MigrateToServer 把本地缓存（git 模式数据仓）的全部密文条目搬到 server vault。
 // 幂等：两端一致的条目跳过；中断后重跑继续直至完成。不触碰明文、不需要 vault 口令。
 func (p *ServerProvider) MigrateToServer(ctx context.Context, force bool) (*MigrateResult, error) {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	local, err := p.cache.collect()
 	if err != nil {
 		return nil, err
@@ -148,6 +154,12 @@ func (p *ServerProvider) MigrateToServer(ctx context.Context, force bool) (*Migr
 // 幂等；冲突分析先于任何写入（未确认覆盖时目标不变）。
 // 写完后同步状态与远端对齐（之后可直接以 server 模式同步）。
 func (p *ServerProvider) MigrateFromServer(ctx context.Context, force bool) (*MigrateResult, error) {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	remote, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
 		return nil, err

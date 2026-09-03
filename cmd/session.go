@@ -50,6 +50,7 @@ Examples:
   # Start session with 1 day timeout
   senv session start --timeout 1d`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		storageManager := getStorage()
 
 		if !storageManager.IsInitialized() {
@@ -195,6 +196,7 @@ func init() {
 	// Add flags
 	sessionStartCmd.Flags().StringP("timeout", "t", "",
 		"Session timeout (e.g., 30m, 8h, 1d, 1y, restart, never)")
+	addRefreshFlag(sessionStartCmd)
 
 	// Add subcommands
 	sessionCmd.AddCommand(sessionStartCmd)

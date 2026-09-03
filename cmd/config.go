@@ -274,6 +274,7 @@ var configListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configuration files",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		configManager, err := getConfigManager()
 		if err != nil {
 			return err
@@ -309,6 +310,7 @@ var configGetCmd = &cobra.Command{
 	Short: "Get information about a configuration file",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		configManager, err := getConfigManager()
 		if err != nil {
 			return err
@@ -334,6 +336,7 @@ var configGetCmd = &cobra.Command{
 
 func init() {
 	configListCmd.Flags().StringVar(&configListGroup, "group", "", "filter by group")
+	addRefreshFlag(configListCmd)
 
 	configInstallCmd.Flags().StringVar(&configListGroup, "group", "", "install all configs in a group")
 	configInstallCmd.Flags().BoolVar(&configInstallAll, "all", false, "install all configs")
@@ -353,4 +356,5 @@ func init() {
 	configCmd.AddCommand(configInstallCmd)
 	configCmd.AddCommand(configUninstallCmd)
 	configCmd.AddCommand(configGetCmd)
+	addRefreshFlag(configGetCmd)
 }

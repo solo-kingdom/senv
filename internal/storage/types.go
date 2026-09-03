@@ -44,6 +44,10 @@ type ProviderConfig struct {
 	Address string `json:"address,omitempty"` // senv-server address
 	Token   string `json:"token,omitempty"`   // senv-server credential
 	Vault   string `json:"vault,omitempty"`   // vault name on server (default "main")
+	// AutoSync 为 nil 时 server provider 默认开启自动同步；显式 false 关闭。
+	AutoSync *bool `json:"auto_sync,omitempty"`
+	// SyncThrottle 是自动 pull 的节流窗口，空值或非法值回退 30s。
+	SyncThrottle string `json:"sync_throttle,omitempty"`
 }
 
 // SessionConfig represents session cache configuration
@@ -146,6 +150,7 @@ func NewSettings() *Settings {
 			Enabled: true,
 			Timeout: "8h",
 		},
+		Provider:  ProviderConfig{SyncThrottle: "30s"},
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 }

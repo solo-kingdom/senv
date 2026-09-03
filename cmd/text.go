@@ -153,6 +153,7 @@ var textDeleteCmd = &cobra.Command{
 	Long:  `Delete a text block. The key may be a group:key address; address group takes precedence over -g/--group.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		textManager, err := getTextManager()
 		if err != nil {
 			return err
@@ -176,6 +177,7 @@ var textListCmd = &cobra.Command{
 	Long:  `List text blocks in a group. Shows key name, size, and last updated time.`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
 		textManager, err := getTextManager()
 		if err != nil {
 			return err
@@ -359,9 +361,11 @@ func init() {
 
 	// text get flags
 	textGetCmd.Flags().BoolVarP(&textGetDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
+	addRefreshFlag(textGetCmd)
 	textGetCmd.Flags().BoolVar(&textGetLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 	textGetCmd.Flags().StringVarP(&textGetOutput, "output", "o", "", "write output to file")
 	textGetCmd.Flags().BoolVar(&textGetCopy, "copy", false, "copy output to clipboard")
+	addRefreshFlag(textListCmd)
 
 	// Register subcommands
 	textCmd.AddCommand(textSetCmd)
