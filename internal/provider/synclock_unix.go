@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"syscall"
+
+	"github.com/wii/senv/internal/storage"
+	"golang.org/x/sys/unix"
 )
 
 // errSyncLocked 表示同步锁正被其他进程持有（非阻塞获取时）
@@ -24,38 +26,38 @@ type syncLock struct {
 
 // acquireSyncLock 获取同步锁：blocking=true 时等待（手动同步），false 时拿不到立即返回 errSyncLocked（自动同步跳过）。
 func acquireSyncLock(dataPath string, blocking bool) (*syncLock, error) {
-	if err := os.MkdirAll(dataPath, 0o700); err != nil {
+	if err := storage.EnsurePrivateDir(dataPath, 0o700); err != nil {
 		return nil, err
 	}
-	// OpenFile 的 mode 只在创建时生效；旧目录/旧锁文件也需要收敛到安全权限。
-	if err := os.Chmod(dataPath, 0o700); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dataPath, syncLockFileName)
-	before, statErr := os.Lstat(path)
-	if statErr != nil && !os.IsNotExist(statErr) {
-		return nil, statErr
-	}
-	if statErr == nil && !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("sync lock %s is not a regular file", path)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	dirFD, err := unix.Open(dataPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open sync lock directory: %w", err)
 	}
-	after, err := f.Stat()
+	defer unix.Close(dirFD)
+
+	fd, err := unix.Openat(dirFD, syncLockFileName, unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open sync lock: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), syncLockFileName)
+	if f == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open sync lock: invalid file descriptor")
+	}
+	info, err := f.Stat()
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	if !after.Mode().IsRegular() || (statErr == nil && !os.SameFile(before, after)) {
+	if !info.Mode().IsRegular() {
 		f.Close()
-		return nil, fmt.Errorf("sync lock %s changed while opening", path)
+		return nil, fmt.Errorf("sync lock is not a regular file")
 	}
 	if err := f.Chmod(0o600); err != nil {
 		f.Close()
 		return nil, err
 	}
+
 	how := syscall.LOCK_EX
 	if !blocking {
 		how |= syscall.LOCK_NB

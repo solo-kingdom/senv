@@ -298,7 +298,11 @@ func TestIntegrationManagerWithKey(t *testing.T) {
 	// Get the derived key
 	metadata, _ := storeMgr.LoadMetadata()
 	saltBytes, _ := base64.StdEncoding.DecodeString(metadata.Salt)
-	key := crypto.DeriveKeyWithIterations(password, saltBytes, metadata.EffectiveIterations())
+	iterations, err := metadata.ValidatedKDFIterations()
+	if err != nil {
+		t.Fatalf("validate KDF iterations: %v", err)
+	}
+	key := crypto.DeriveKeyWithIterations(password, saltBytes, iterations)
 
 	// Create manager using key
 	textMgrWithKey := text.NewManagerWithKey(storeMgr, key)

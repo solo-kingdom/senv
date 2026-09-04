@@ -49,7 +49,16 @@ func (p *ServerProvider) MigrateToServer(ctx context.Context, force bool) (*Migr
 		return nil, err
 	}
 	defer release()
+	var result *MigrateResult
+	err = p.withVaultMutation(func() error {
+		var innerErr error
+		result, innerErr = p.migrateToServerLocked(ctx, force)
+		return innerErr
+	})
+	return result, err
+}
 
+func (p *ServerProvider) migrateToServerLocked(ctx context.Context, force bool) (*MigrateResult, error) {
 	local, err := p.cache.collect()
 	if err != nil {
 		return nil, err
@@ -64,6 +73,9 @@ func (p *ServerProvider) MigrateToServer(ctx context.Context, force bool) (*Migr
 
 	remote, _, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil && !errors.Is(err, ErrVaultNotFound) {
+		return nil, err
+	}
+	if err := validateRemoteEntries(remote); err != nil {
 		return nil, err
 	}
 	remoteByID := make(map[string]Entry, len(remote))
@@ -159,9 +171,21 @@ func (p *ServerProvider) MigrateFromServer(ctx context.Context, force bool) (*Mi
 		return nil, err
 	}
 	defer release()
+	var result *MigrateResult
+	err = p.withVaultMutation(func() error {
+		var innerErr error
+		result, innerErr = p.migrateFromServerLocked(ctx, force)
+		return innerErr
+	})
+	return result, err
+}
 
+func (p *ServerProvider) migrateFromServerLocked(ctx context.Context, force bool) (*MigrateResult, error) {
 	remote, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRemoteEntries(remote); err != nil {
 		return nil, err
 	}
 	remoteMeta, err := p.api.GetMetadata(ctx, p.vault)
@@ -241,16 +265,12 @@ func (p *ServerProvider) MigrateFromServer(ctx context.Context, force bool) (*Mi
 		return nil, &entryConflictError{lines: conflicts, extra: extra}
 	}
 
-	// 第二阶段：应用写入并建立同步状态
+	// 第二阶段：建立目标快照后统一应用，sync state 最后提交。
 	st := newSyncState()
 	st.LastSyncedRevision = latest
 	for _, e := range toWrite {
-		if err := p.cache.apply(e); err != nil {
-			return res, err
-		}
 		res.Counts[e.Kind]++
 	}
-	// 全部非删除远端条目都进入快照（已写入与幂等跳过的一并与远端对齐）
 	for id, e := range remoteByID {
 		if e.Deleted {
 			continue
@@ -258,13 +278,11 @@ func (p *ServerProvider) MigrateFromServer(ctx context.Context, force bool) (*Mi
 		st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 	}
 	if writeMetadata {
-		if err := p.cache.writeMetadata(remoteMeta); err != nil {
-			return res, err
-		}
 		res.MetadataMoved = true
 	}
 	st.MetadataHash = hashBytes(remoteMeta)
-	if err := p.cache.saveState(st); err != nil {
+	if err := p.cache.applyRemote(toWrite, remoteMeta, writeMetadata, st); err != nil {
+		res.MetadataMoved = false
 		return res, err
 	}
 	return res, nil

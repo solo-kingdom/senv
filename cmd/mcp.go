@@ -12,6 +12,8 @@ import (
 
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 )
 
@@ -28,19 +30,22 @@ Typical flow:
   # restart the agent; the senv_* tools are now available`,
 }
 
-// mcpServeCmd runs the stdio MCP server. It authenticates once at startup via
-// the cached session (see resolveAuth); when no valid session exists it exits
-// with a clear error instead of blocking on a password prompt, because MCP
-// child processes are generally not attached to a TTY.
+// mcpServeCmd runs the stdio MCP server. It validates a cached session at
+// startup but retains only a non-secret fingerprint; every business request
+// reloads and revalidates that exact session before constructing managers.
 var mcpServeCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run the senv MCP server over stdio",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		envMgr, textMgr, configMgr, err := getManagersForMCP()
+		configPath, dataPath := getConfigPath(), getDataPath()
+		authorization, err := getMCPAuthorization(configPath, dataPath)
 		if err != nil {
 			return err
 		}
-		srv := newMCPServerWithAutoPull(envMgr, textMgr, configMgr, newAutoPuller(cmd))
+		srv := newAuthorizedMCPServer(
+			newMCPRequestAuthorizer(configPath, dataPath, authorization),
+			newAutoPuller(cmd),
+		)
 		return srv.Run(cmd.Context(), &mcp.StdioTransport{})
 	},
 }
@@ -62,8 +67,7 @@ var mcpListToolsCmd = &cobra.Command{
 	},
 }
 
-// managers bundles the three managers a handler needs. Handlers close over a
-// pointer to this struct so the same value is shared by every tool.
+// managers exists only for the lifetime of one authorized tool request.
 type managers struct {
 	env      *env.Manager
 	text     *text.Manager
@@ -71,43 +75,73 @@ type managers struct {
 	autoPull func()
 }
 
-// getManagersForMCP authenticates exactly once at server startup and returns
-// the env/text/config managers. It reuses the process auth memo, so it is
-// consistent with the rest of the CLI. An MCP server cannot prompt for a
-// password (its stdin is the JSON-RPC transport), so a missing session surfaces
-// as ErrNeedSession with guidance to run `senv session start`.
-func getManagersForMCP() (*env.Manager, *text.Manager, *config.Manager, error) {
-	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
+type mcpRequestAuthorizer func() (*managers, func(), error)
+
+// getMCPAuthorization validates startup without retaining a password, key, or
+// business manager. Loading metadata first preserves KDF fail-fast behavior.
+func getMCPAuthorization(configPath, dataPath string) (*session.MCPAuthorization, error) {
+	store := storage.NewManager(configPath, dataPath)
+	if !store.IsInitialized() {
+		return nil, errNotInitialized
+	}
+	if _, err := store.LoadMetadata(); err != nil {
+		return nil, fmt.Errorf("failed to load metadata: %w", err)
+	}
+	sessionManager := session.NewManager(configPath, dataPath)
+	defer sessionManager.Close()
+	authorization, err := sessionManager.AuthorizeMCPStartup()
 	if err != nil {
-		if errors.Is(err, ErrNeedSession) {
-			return nil, nil, nil, fmt.Errorf("%w\nMCP servers run non-interactively; start a session first", err)
+		if errors.Is(err, session.ErrNoSession) || errors.Is(err, session.ErrSessionExpired) {
+			return nil, fmt.Errorf("%w\nMCP servers run non-interactively; start a session first", ErrNeedSession)
 		}
-		return nil, nil, nil, err
+		return nil, err
 	}
-	if auth.hasKey() {
-		return env.NewManagerWithKey(auth.storage, auth.key),
-			text.NewManagerWithKey(auth.storage, auth.key),
-			config.NewManagerWithKey(auth.storage, auth.key),
-			nil
-	}
-	return env.NewManager(auth.storage, auth.password),
-		text.NewManager(auth.storage, auth.password),
-		config.NewManager(auth.storage, auth.password),
-		nil
+	return authorization, nil
 }
 
-// newMCPServer builds the MCP server and registers all senv tools. Each handler
-// is a thin adapter around the shared managers; business logic stays in the
-// internal packages (same managers the CLI uses).
-func newMCPServer(envMgr *env.Manager, textMgr *text.Manager, configMgr *config.Manager) *mcp.Server {
-	return newMCPServerWithAutoPull(envMgr, textMgr, configMgr, nil)
+func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session.MCPAuthorization) mcpRequestAuthorizer {
+	return func() (*managers, func(), error) {
+		sessionManager := session.NewManager(configPath, dataPath)
+		key, err := sessionManager.AuthorizeMCPRequest(authorization)
+		_ = sessionManager.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Business managers are constructed only after the centralized guard has
+		// validated the exact startup session.
+		store := storage.NewManager(configPath, dataPath)
+		requestManagers := &managers{
+			env:    env.NewManagerWithKey(store, key),
+			text:   text.NewManagerWithKey(store, key),
+			config: config.NewManagerWithKey(store, key),
+		}
+		release := func() {
+			session.ZeroKey(key)
+			requestManagers.env = nil
+			requestManagers.text = nil
+			requestManagers.config = nil
+		}
+		return requestManagers, release, nil
+	}
 }
 
-func newMCPServerWithAutoPull(envMgr *env.Manager, textMgr *text.Manager, configMgr *config.Manager, autoPull func()) *mcp.Server {
+func newAuthorizedMCPServer(authorize mcpRequestAuthorizer, autoPull func()) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "senv", Version: Version}, nil)
-	mgrs := &managers{env: envMgr, text: textMgr, config: configMgr, autoPull: autoPull}
-	registerMCPTools(srv, mgrs)
+	registerMCPTools(srv, authorize, autoPull)
 	return srv
+}
+
+func guardMCPTool[Input any](authorize mcpRequestAuthorizer, autoPull func(), handler func(*managers, context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error)) func(context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error) {
+	return func(ctx context.Context, request *mcp.CallToolRequest, input Input) (*mcp.CallToolResult, emptyOut, error) {
+		requestManagers, release, err := authorize()
+		if err != nil {
+			return errResult(err)
+		}
+		defer release()
+		requestManagers.autoPull = autoPull
+		return handler(requestManagers, ctx, request, input)
+	}
 }
 
 func (m *managers) pullBeforeRead() {
@@ -441,23 +475,23 @@ type toolDef struct {
 
 // registerMCPTools attaches every senv tool to the server. Keep this list in
 // sync with toolCatalogue below.
-func registerMCPTools(s *mcp.Server, m *managers) {
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_get", Description: "Get an environment variable (secret). Set decode=true to resolve {{env:...}}/{{text:...}} references."}, m.envGet)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret."}, m.envSet)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_delete", Description: "Delete an environment variable."}, m.envDelete)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables, optionally restricted to a group."}, m.envList)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_export", Description: "Export active-group environment variables as shell export statements, with references resolved."}, m.envExport)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_get", Description: "Get a text block (key/cert/template). decode=true resolves references."}, m.textGet)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block."}, m.textSet)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, m.textDelete)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, m.textList)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, m.configList)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, m.configGet)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, m.configExport)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, m.groupList)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, m.groupAdd)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, m.groupActivate)
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, m.groupDeactivate)
+func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull func()) {
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_get", Description: "Get an environment variable (secret). Set decode=true to resolve {{env:...}}/{{text:...}} references."}, guardMCPTool(authorize, autoPull, (*managers).envGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret."}, guardMCPTool(authorize, autoPull, (*managers).envSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_delete", Description: "Delete an environment variable."}, guardMCPTool(authorize, autoPull, (*managers).envDelete))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables, optionally restricted to a group."}, guardMCPTool(authorize, autoPull, (*managers).envList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_export", Description: "Export active-group environment variables as shell export statements, with references resolved."}, guardMCPTool(authorize, autoPull, (*managers).envExport))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_get", Description: "Get a text block (key/cert/template). decode=true resolves references."}, guardMCPTool(authorize, autoPull, (*managers).textGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block."}, guardMCPTool(authorize, autoPull, (*managers).textSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, guardMCPTool(authorize, autoPull, (*managers).textDelete))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, guardMCPTool(authorize, autoPull, (*managers).textList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, guardMCPTool(authorize, autoPull, (*managers).configList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, guardMCPTool(authorize, autoPull, (*managers).configGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, guardMCPTool(authorize, autoPull, (*managers).configExport))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, guardMCPTool(authorize, autoPull, (*managers).groupList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, guardMCPTool(authorize, autoPull, (*managers).groupAdd))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool(authorize, autoPull, (*managers).groupActivate))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool(authorize, autoPull, (*managers).groupDeactivate))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).

@@ -3,19 +3,22 @@ package text
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/storage"
 )
 
 // Manager handles text block operations
 type Manager struct {
-	storage  *storage.Manager
-	password string
-	key      []byte
+	storage        *storage.Manager
+	password       string
+	key            []byte
+	mutationLocked bool
 }
 
 // NewManager creates a new text manager with password
@@ -32,6 +35,35 @@ func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
 		storage: storage,
 		key:     key,
 	}
+}
+
+func (m *Manager) mutate(fn func(*Manager) error) error {
+	if m.mutationLocked {
+		return fn(m)
+	}
+	return m.storage.WithVaultMutation(func(locked *storage.Manager) error {
+		clone := *m
+		clone.storage = locked
+		clone.mutationLocked = true
+		return fn(&clone)
+	})
+}
+
+func validateGroup(group string) error {
+	if err := storage.ValidateName(group); err != nil {
+		return fmt.Errorf("invalid text group %q: %w", group, err)
+	}
+	return nil
+}
+
+func validateIdentity(group, key string) error {
+	if err := validateGroup(group); err != nil {
+		return err
+	}
+	if err := storage.ValidateName(key); err != nil {
+		return fmt.Errorf("invalid text key %q: %w", key, err)
+	}
+	return nil
 }
 
 // saveTextFile saves a text entry using key or password
@@ -52,11 +84,11 @@ func (m *Manager) loadTextFile(group, key string) (*storage.TextEntry, error) {
 
 // Set sets a text entry in a group
 func (m *Manager) Set(group, key, value string) error {
-	if err := storage.ValidateName(group); err != nil {
-		return fmt.Errorf("invalid group: %w", err)
+	if err := validateIdentity(group, key); err != nil {
+		return err
 	}
-	if err := storage.ValidateName(key); err != nil {
-		return fmt.Errorf("invalid key: %w", err)
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Set(group, key, value) })
 	}
 
 	// Size check
@@ -81,6 +113,9 @@ func (m *Manager) Set(group, key, value string) error {
 
 // Get retrieves a text entry's value from a group
 func (m *Manager) Get(group, key string) (string, error) {
+	if err := validateIdentity(group, key); err != nil {
+		return "", err
+	}
 	entry, err := m.loadTextFile(group, key)
 	if err != nil {
 		return "", err
@@ -90,6 +125,12 @@ func (m *Manager) Get(group, key string) (string, error) {
 
 // Delete deletes a text entry from a group
 func (m *Manager) Delete(group, key string) error {
+	if err := validateIdentity(group, key); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Delete(group, key) })
+	}
 	// Verify it exists first
 	_, err := m.loadTextFile(group, key)
 	if err != nil {
@@ -108,6 +149,9 @@ type TextInfo struct {
 
 // List lists all text entries in a group with metadata
 func (m *Manager) List(group string) ([]TextInfo, error) {
+	if err := validateGroup(group); err != nil {
+		return nil, err
+	}
 	keys, err := m.storage.ListTextFiles(group)
 	if err != nil {
 		return nil, err
@@ -117,7 +161,7 @@ func (m *Manager) List(group string) ([]TextInfo, error) {
 	for _, key := range keys {
 		entry, err := m.loadTextFile(group, key)
 		if err != nil {
-			continue // Skip entries that fail to load
+			return nil, fmt.Errorf("failed to load text %q in group %q: %w", key, group, err)
 		}
 		result = append(result, TextInfo{
 			Key:       key,
@@ -131,6 +175,9 @@ func (m *Manager) List(group string) ([]TextInfo, error) {
 
 // SetFromFile sets a text entry from a file
 func (m *Manager) SetFromFile(group, key, filePath string) error {
+	if err := validateIdentity(group, key); err != nil {
+		return err
+	}
 	// Expand home directory
 	filePath = expandHome(filePath)
 
@@ -144,6 +191,9 @@ func (m *Manager) SetFromFile(group, key, filePath string) error {
 
 // SetFromReader sets a text entry from an io.Reader
 func (m *Manager) SetFromReader(group, key string, reader io.Reader) error {
+	if err := validateIdentity(group, key); err != nil {
+		return err
+	}
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return fmt.Errorf("failed to read from input: %w", err)
@@ -170,6 +220,9 @@ type EditorSession struct {
 // returns the session. The caller runs the editor on TmpPath, then calls
 // FinishEditor to persist.
 func (m *Manager) PrepareEditor(group, key string) (*EditorSession, error) {
+	if err := validateIdentity(group, key); err != nil {
+		return nil, err
+	}
 	var original string
 	if entry, err := m.loadTextFile(group, key); err == nil {
 		original = entry.Value
@@ -202,6 +255,12 @@ func (m *Manager) PrepareEditor(group, key string) (*EditorSession, error) {
 // and removes the temp file. It returns changed=true when a new value was
 // persisted.
 func (m *Manager) FinishEditor(s *EditorSession) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("editor session is nil")
+	}
+	if err := validateIdentity(s.Group, s.Key); err != nil {
+		return false, err
+	}
 	defer os.Remove(s.TmpPath)
 
 	editedContent, err := os.ReadFile(s.TmpPath)
@@ -252,28 +311,27 @@ func (m *Manager) SetViaEditor(group, key string) error {
 	return nil
 }
 
-// GetToFile writes a text entry's value to a file
+// GetToFile writes a text entry using the private default export mode.
 func (m *Manager) GetToFile(group, key, outputPath string) error {
+	return m.GetToFileWithMode(group, key, outputPath, exportfile.DefaultMode)
+}
+
+// GetToFileWithMode writes a text entry using a mode selected for this
+// operation only.
+func (m *Manager) GetToFileWithMode(group, key, outputPath string, mode fs.FileMode) error {
 	value, err := m.Get(group, key)
 	if err != nil {
 		return err
 	}
+	return m.ExportValue(value, outputPath, mode)
+}
 
-	// Expand home directory
-	outputPath = expandHome(outputPath)
-
-	// Create parent directory if needed
-	dir := outputPath[:strings.LastIndex(outputPath, "/")]
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", dir, err)
-		}
+// ExportValue securely writes an already-resolved text value. This allows the
+// CLI decode path to export exactly the value it displays.
+func (m *Manager) ExportValue(value, outputPath string, mode fs.FileMode) error {
+	if err := exportfile.WriteFile(outputPath, []byte(value), mode); err != nil {
+		return fmt.Errorf("failed to export text: %w", err)
 	}
-
-	if err := os.WriteFile(outputPath, []byte(value), 0o644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", outputPath, err)
-	}
-
 	return nil
 }
 
@@ -321,50 +379,52 @@ func (m *Manager) GetToClipboard(group, key string) error {
 
 // AddGroup creates a new text group directory
 func (m *Manager) AddGroup(name string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name) })
+	}
 	groups, err := m.storage.ListTextGroups()
 	if err != nil {
 		return fmt.Errorf("failed to list groups: %w", err)
 	}
-
-	for _, g := range groups {
-		if g == name {
+	for _, group := range groups {
+		if group == name {
 			return fmt.Errorf("group %s already exists", name)
 		}
 	}
-
-	// Create the directory by saving a placeholder and removing it
-	groupDir := m.storage.GetDataPath() + "/" + storage.TextDirName + "/" + name
-	if err := os.MkdirAll(groupDir, 0o700); err != nil {
+	if err := m.storage.AddTextGroup(name); err != nil {
 		return fmt.Errorf("failed to create group directory: %w", err)
 	}
-
 	return nil
 }
 
 // DeleteGroup deletes a text group and all its contents
 func (m *Manager) DeleteGroup(name string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.DeleteGroup(name) })
+	}
 	groups, err := m.storage.ListTextGroups()
 	if err != nil {
 		return fmt.Errorf("failed to list groups: %w", err)
 	}
-
 	found := false
-	for _, g := range groups {
-		if g == name {
+	for _, group := range groups {
+		if group == name {
 			found = true
 			break
 		}
 	}
-
 	if !found {
 		return fmt.Errorf("group %s does not exist", name)
 	}
-
-	groupDir := m.storage.GetDataPath() + "/" + storage.TextDirName + "/" + name
-	if err := os.RemoveAll(groupDir); err != nil {
+	if err := m.storage.DeleteTextGroup(name); err != nil {
 		return fmt.Errorf("failed to delete group %s: %w", name, err)
 	}
-
 	return nil
 }
 
@@ -383,13 +443,12 @@ func (m *Manager) ListGroups() ([]GroupInfo, error) {
 	var result []GroupInfo
 	for _, name := range groups {
 		keys, err := m.storage.ListTextFiles(name)
-		count := 0
-		if err == nil {
-			count = len(keys)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list text group %q: %w", name, err)
 		}
 		result = append(result, GroupInfo{
 			Name:     name,
-			KeyCount: count,
+			KeyCount: len(keys),
 		})
 	}
 

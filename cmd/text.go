@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/text"
 )
@@ -100,6 +101,7 @@ var (
 	textGetDecode bool
 	textGetLoose  bool
 	textGetOutput string
+	textGetMode   string
 	textGetCopy   bool
 )
 
@@ -108,9 +110,16 @@ var textGetCmd = &cobra.Command{
 	Short: "Get a text block",
 	Long: `Get a text block value. By default outputs the raw value.
 Use -d/--decode to resolve {{env:...}} and {{text:...}} references.
+With -o/--output, new plaintext files default to 0600. Use --mode 0644 only
+to explicitly share non-secret output; the choice is not saved as a default.
+Existing files with stricter permissions are not widened.
 The key may be a group:key address (e.g. feg:ACCOUNT); address group takes precedence over -g/--group.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		mode, err := exportfile.ParseFileMode(textGetMode)
+		if err != nil {
+			return err
+		}
 		textManager, err := getTextManager()
 		if err != nil {
 			return err
@@ -137,7 +146,7 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 		}
 
 		if textGetOutput != "" {
-			return textManager.GetToFile(group, key, textGetOutput)
+			return textManager.ExportValue(value, textGetOutput, mode)
 		}
 
 		fmt.Print(value)
@@ -364,6 +373,7 @@ func init() {
 	addRefreshFlag(textGetCmd)
 	textGetCmd.Flags().BoolVar(&textGetLoose, "loose", false, "keep unresolved references as-is instead of erroring")
 	textGetCmd.Flags().StringVarP(&textGetOutput, "output", "o", "", "write output to file")
+	textGetCmd.Flags().StringVar(&textGetMode, "mode", "0600", "output file permissions in strict octal form (0000-0777)")
 	textGetCmd.Flags().BoolVar(&textGetCopy, "copy", false, "copy output to clipboard")
 	addRefreshFlag(textListCmd)
 

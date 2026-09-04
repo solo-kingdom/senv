@@ -44,3 +44,12 @@ func TestIterationConstants(t *testing.T) {
 		t.Errorf("LegacyIterations = %d, want 100000", LegacyIterations)
 	}
 }
+
+func TestKDFConstantsIterations(t *testing.T) {
+	if LegacyIterations != 100_000 {
+		t.Fatalf("LegacyIterations = %d, want 100000", LegacyIterations)
+	}
+	if DefaultIterations != 600_000 {
+		t.Fatalf("DefaultIterations = %d, want 600000", DefaultIterations)
+	}
+}

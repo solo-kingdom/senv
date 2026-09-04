@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"os"
@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/wii/senv/internal/provider"
+	"github.com/wii/senv/internal/storage"
 )
 
 func TestProviderAutoSyncSettings(t *testing.T) {
-	settings := NewSettings()
+	settings := storage.NewSettings()
 	if settings.Provider.AutoSync != nil {
 		t.Fatal("new settings should leave AutoSync nil for backward-compatible default-on")
 	}
@@ -19,12 +20,12 @@ func TestProviderAutoSyncSettings(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, SettingsFile)
-	data := []byte(`{"provider":{"type":"server","auto_sync":false,"sync_throttle":"nope"}}`)
+	path := filepath.Join(dir, storage.SettingsFile)
+	data := []byte(`{"default_group":"default","provider":{"type":"server","auto_sync":false,"sync_throttle":"nope"}}`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(dir, filepath.Join(dir, "data"))
+	m := storage.NewManager(dir, filepath.Join(dir, "data"))
 	loaded, err := m.LoadSettings()
 	if err != nil {
 		t.Fatal(err)

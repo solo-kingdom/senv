@@ -5,20 +5,36 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"syscall"
+
+	"github.com/wii/senv/internal/securefs"
 )
 
-// cacheFileName returns the session cache file name for the current user.
+const fallbackDirRandomBytes = 16
+
+// cacheLocation describes a cache relative to an already validated runtime
+// filesystem root. Keeping path segments separate lets securefs reject links.
+type cacheLocation struct {
+	root     string
+	segments []string
+	fallback string
+}
+
 func cacheFileName() string {
 	return fmt.Sprintf("session-%d", os.Getuid())
 }
 
-// legacyPersistentCachePath returns where versions before the tmpfs-only
-// policy stored the "never" session cache (~/.local/share/senv/session).
-// Writing there is forbidden now — it survives reboot and is swept up by
-// home-directory backups — but new versions clean up files left behind.
+func fallbackDirPrefix() string {
+	return fmt.Sprintf("senv-%d-", os.Getuid())
+}
+
 func legacyPersistentCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -27,172 +43,395 @@ func legacyPersistentCachePath() string {
 	return filepath.Join(home, ".local", "share", "senv", "session", cacheFileName())
 }
 
-// removeLegacyPersistentCache deletes the persistent session cache written by
-// older versions. Best effort: absence or removal failures must not block a
-// fresh session.
+// removeLegacyPersistentCache removes only through a trusted home-directory
+// handle. A symlink in any managed component causes a fail-closed best-effort
+// cleanup rather than traversal outside HOME.
 func removeLegacyPersistentCache() {
-	if path := legacyPersistentCachePath(); path != "" {
-		os.Remove(path)
-	}
-}
-
-// getCacheDir returns the user-private directory holding the session cache.
-// The cache contains the base64-encoded derived key, so it MUST live on
-// tmpfs (XDG_RUNTIME_DIR) only, for every timeout mode.
-func getCacheDir() (string, error) {
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		dir := filepath.Join(runtimeDir, "senv")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", err
-		}
-		return dir, nil
-	}
-
-	// XDG_RUNTIME_DIR unset (cron, containers, ...): fall back to a per-uid
-	// directory under /tmp. An existing directory is verified to be private,
-	// so a pre-created or tampered directory cannot hijack the cache.
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("senv-%d", os.Getuid()))
-	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
-		return "", err
-	}
-	info, err := os.Stat(dir)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return "", fmt.Errorf("session cache directory %s exists but is not a private 0700 directory; refusing to store the session key there", dir)
-	}
-	return dir, nil
-}
-
-// getCachePath returns the cache file path inside the private cache dir.
-func getCachePath() (string, error) {
-	dir, err := getCacheDir()
+	root, err := securefs.OpenRoot(home)
 	if err != nil {
-		return "", err
+		return
 	}
-	return filepath.Join(dir, cacheFileName()), nil
+	defer root.Close()
+	err = root.Remove(".local", "share", "senv", "session", cacheFileName())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
 }
 
-// randRead is the randomness source for session identifiers. A variable so
-// tests can inject failures; production code must never replace it.
+// randRead is the single cryptographic-randomness seam used by session IDs and
+// fallback directory names. Tests may inject failures; production never does.
 var randRead = rand.Read
 
-// generateSessionID generates a unique session ID. It fails closed when the
-// randomness source is unavailable instead of falling back to a predictable
-// identifier.
-func generateSessionID() (string, error) {
-	bytes := make([]byte, 16)
-	if _, err := randRead(bytes); err != nil {
-		return "", fmt.Errorf("failed to read random bytes for session id: %w", err)
+func randomHex(byteCount int, purpose string) (string, error) {
+	value := make([]byte, byteCount)
+	n, err := randRead(value)
+	if err != nil {
+		return "", fmt.Errorf("failed to read random bytes for %s: %w", purpose, err)
 	}
-	return fmt.Sprintf("sess-%s", hex.EncodeToString(bytes)[:16]), nil
+	if n != len(value) {
+		return "", fmt.Errorf("failed to read random bytes for %s: %w", purpose, io.ErrUnexpectedEOF)
+	}
+	return hex.EncodeToString(value), nil
 }
 
-// hashDataPath creates a hash of the data path for validation
+func generateSessionID() (string, error) {
+	value, err := randomHex(16, "session id")
+	if err != nil {
+		return "", err
+	}
+	return "sess-" + value, nil
+}
+
+func generateFallbackDirName() (string, error) {
+	value, err := randomHex(fallbackDirRandomBytes, "session cache directory")
+	if err != nil {
+		return "", err
+	}
+	return fallbackDirPrefix() + value, nil
+}
+
 func hashDataPath(dataPath string) string {
 	hash := sha256.Sum256([]byte(dataPath))
 	return hex.EncodeToString(hash[:16])
 }
 
-// saveCache saves the session cache to disk.
-//
-// The file is created exclusively (O_EXCL, 0600) inside a 0700 private
-// directory, refusing to follow symlinks; a leftover cache from a previous
-// session is removed first — safe because only the current user can reach
-// into the private directory. Legacy persistent caches are cleaned up so
-// installations of older versions migrate on the next session start.
-func saveCache(cache *SessionCache) error {
-	cachePath, err := getCachePath()
+// rejectSymlinkComponents rejects an environment-provided runtime path if any
+// existing component is a link. securefs then anchors later operations to the
+// opened final directory handle.
+func rejectSymlinkComponents(path string) error {
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("failed to resolve session cache path: %w", err)
+		return err
 	}
+	current := filepath.VolumeName(absolute) + string(filepath.Separator)
+	remainder := strings.TrimPrefix(absolute, current)
+	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("session runtime path %q contains a symbolic link", current)
+		}
+	}
+	return nil
+}
 
+func validateRuntimeRoot(path string) error {
+	if path == "" {
+		return fmt.Errorf("session runtime path is empty")
+	}
+	if err := rejectSymlinkComponents(path); err != nil {
+		return err
+	}
+	if err := requireMemoryBackedFilesystem(path); err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	return root.Close()
+}
+
+func xdgCacheLocation(create bool) (cacheLocation, error) {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if err := validateRuntimeRoot(runtimeDir); err != nil {
+		return cacheLocation{}, err
+	}
+	location := cacheLocation{root: runtimeDir, segments: []string{"senv", cacheFileName()}}
+	if !create {
+		return location, nil
+	}
+	root, err := securefs.OpenRoot(runtimeDir)
+	if err != nil {
+		return cacheLocation{}, err
+	}
+	defer root.Close()
+	if err := root.EnsureDir([]string{"senv"}, 0o700); err != nil {
+		return cacheLocation{}, err
+	}
+	return location, nil
+}
+
+func fallbackDirectoryOwnedAndPrivate(info os.FileInfo) bool {
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Getuid())
+}
+
+func discoverFallbackLocations() ([]cacheLocation, error) {
+	tempRoot := os.TempDir()
+	if err := validateRuntimeRoot(tempRoot); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		return nil, err
+	}
+	locations := make([]cacheLocation, 0, 1)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), fallbackDirPrefix()) {
+			continue
+		}
+		if err := securefs.ValidateSegment(entry.Name()); err != nil {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(tempRoot, entry.Name()))
+		if err != nil || !fallbackDirectoryOwnedAndPrivate(info) {
+			continue
+		}
+		locations = append(locations, cacheLocation{
+			root: tempRoot, segments: []string{entry.Name(), cacheFileName()}, fallback: entry.Name(),
+		})
+	}
+	sort.Slice(locations, func(i, j int) bool { return locations[i].fallback < locations[j].fallback })
+	return locations, nil
+}
+
+func newFallbackLocation() (cacheLocation, error) {
+	tempRoot := os.TempDir()
+	// The actual backing filesystem is checked before randomness or mkdir, and
+	// therefore before any candidate directory can be written.
+	if err := validateRuntimeRoot(tempRoot); err != nil {
+		return cacheLocation{}, err
+	}
+	name, err := generateFallbackDirName()
+	if err != nil {
+		return cacheLocation{}, err
+	}
+	root, err := securefs.OpenRoot(tempRoot)
+	if err != nil {
+		return cacheLocation{}, err
+	}
+	defer root.Close()
+	if err := root.EnsureDir([]string{name}, 0o700); err != nil {
+		return cacheLocation{}, err
+	}
+	return cacheLocation{root: tempRoot, segments: []string{name, cacheFileName()}, fallback: name}, nil
+}
+
+func locationsForRead() ([]cacheLocation, error) {
+	if os.Getenv("XDG_RUNTIME_DIR") != "" {
+		location, err := xdgCacheLocation(false)
+		if err != nil {
+			return nil, err
+		}
+		return []cacheLocation{location}, nil
+	}
+	return discoverFallbackLocations()
+}
+
+func locationForWrite() (cacheLocation, error) {
+	if os.Getenv("XDG_RUNTIME_DIR") != "" {
+		return xdgCacheLocation(true)
+	}
+	return newFallbackLocation()
+}
+
+func readLocation(location cacheLocation) (*SessionCache, bool, error) {
+	root, err := securefs.OpenRoot(location.root)
+	if err != nil {
+		return nil, false, err
+	}
+	defer root.Close()
+	data, err := root.Read(location.segments...)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var cache SessionCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, false, fmt.Errorf("failed to unmarshal cache: %w", err)
+	}
+	return &cache, true, nil
+}
+
+func saveCache(cache *SessionCache) error {
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
 	}
-
-	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove previous cache file: %w", err)
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		return withFallbackLifecycleLock(tempRoot, func() error {
+			return saveCacheAt(data, true)
+		})
 	}
+	return saveCacheAt(data, false)
+}
 
-	f, err := os.OpenFile(cachePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func saveCacheAt(data []byte, fallback bool) error {
+	location, err := locationForWrite()
 	if err != nil {
-		return fmt.Errorf("failed to create cache file: %w", err)
+		return fmt.Errorf("failed to resolve secure session runtime: %w", err)
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return fmt.Errorf("failed to write cache file: %w", err)
+	if fallback && location.fallback == "" {
+		return fmt.Errorf("fallback session runtime resolved an XDG cache")
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("failed to write cache file: %w", err)
+	root, err := securefs.OpenRoot(location.root)
+	if err != nil {
+		return fmt.Errorf("failed to open session runtime: %w", err)
 	}
-
+	if err := root.AtomicWrite(location.segments, data, 0o600); err != nil {
+		root.Close()
+		if location.fallback != "" {
+			cleanupFallbackDirectory(location.root, location.fallback)
+		}
+		return fmt.Errorf("failed to write session cache: %w", err)
+	}
+	if err := root.Close(); err != nil {
+		return err
+	}
+	if location.fallback != "" {
+		cleanupOtherFallbackDirectories(location.fallback)
+	}
+	removeLegacyRuntimeCache()
 	removeLegacyPersistentCache()
 	return nil
 }
 
-// readCacheFile reads and parses a session cache from the given path.
-func readCacheFile(cachePath string) (*SessionCache, error) {
-	data, err := os.ReadFile(cachePath)
-	if err != nil {
-		return nil, err
-	}
-
-	var cache SessionCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal cache: %w", err)
-	}
-
-	return &cache, nil
-}
-
-// loadCache loads the session cache from disk. Returns (nil, nil) when no
-// cache file exists.
 func loadCache() (*SessionCache, error) {
-	cachePath, err := getCachePath()
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve session cache path: %w", err)
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		var cache *SessionCache
+		err := withFallbackLifecycleLock(tempRoot, func() error {
+			var err error
+			cache, err = loadCacheAt()
+			return err
+		})
+		return cache, err
 	}
-
-	cache, err := readCacheFile(cachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read cache file: %w", err)
-	}
-
-	return cache, nil
+	return loadCacheAt()
 }
 
-// loadCacheForDataPath loads the session cache only if it was created for the
-// given data path. Returns (nil, nil) when no cache exists for it.
+func loadCacheAt() (*SessionCache, error) {
+	locations, err := locationsForRead()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve secure session runtime: %w", err)
+	}
+	var found *SessionCache
+	for _, location := range locations {
+		cache, exists, err := readLocation(location)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read cache file: %w", err)
+		}
+		if !exists {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("multiple session caches found in fallback runtime; clear the session")
+		}
+		found = cache
+	}
+	return found, nil
+}
+
 func loadCacheForDataPath(dataPath string) (*SessionCache, error) {
 	cache, err := loadCache()
 	if err != nil || cache == nil {
 		return nil, err
 	}
-
 	if cache.DataPathHash != hashDataPath(dataPath) {
 		return nil, nil
 	}
-
 	return cache, nil
 }
 
-// clearCache removes the session cache file (and any legacy persistent one).
-func clearCache() error {
-	cachePath, err := getCachePath()
+func cleanupFallbackDirectory(tempRoot, name string) {
+	root, err := securefs.OpenRoot(tempRoot)
 	if err != nil {
-		return fmt.Errorf("failed to resolve session cache path: %w", err)
+		return
 	}
+	defer root.Close()
+	_ = root.RemoveTree(name)
+}
 
-	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove cache file: %w", err)
+func cleanupOtherFallbackDirectories(keep string) {
+	locations, err := discoverFallbackLocations()
+	if err != nil {
+		return
 	}
+	for _, location := range locations {
+		if location.fallback != keep {
+			cleanupFallbackDirectory(location.root, location.fallback)
+		}
+	}
+}
 
+func removeLegacyRuntimeCache() {
+	tempRoot := os.TempDir()
+	if err := validateRuntimeRoot(tempRoot); err != nil {
+		return
+	}
+	name := fmt.Sprintf("senv-%d", os.Getuid())
+	root, err := securefs.OpenRoot(tempRoot)
+	if err != nil {
+		return
+	}
+	defer root.Close()
+	if err := root.RemoveTree(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+}
+
+func clearCache() error {
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		return withFallbackLifecycleLock(tempRoot, clearCacheAt)
+	}
+	return clearCacheAt()
+}
+
+func clearCacheAt() error {
+	locations, err := locationsForRead()
+	if err != nil {
+		return fmt.Errorf("failed to resolve secure session runtime: %w", err)
+	}
+	for _, location := range locations {
+		root, err := securefs.OpenRoot(location.root)
+		if err != nil {
+			return err
+		}
+		if location.fallback != "" {
+			err = root.RemoveTree(location.fallback)
+		} else {
+			err = root.Remove(location.segments...)
+		}
+		closeErr := root.Close()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("failed to remove cache file: %w", err)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	removeLegacyRuntimeCache()
 	removeLegacyPersistentCache()
 	return nil
+}
+
+// getCachePath is retained for same-package diagnostics/tests. It never creates
+// a directory and therefore cannot weaken the pre-write validation policy.
+func getCachePath() (string, error) {
+	locations, err := locationsForRead()
+	if err != nil {
+		return "", err
+	}
+	if len(locations) == 0 {
+		return "", os.ErrNotExist
+	}
+	return filepath.Join(append([]string{locations[0].root}, locations[0].segments...)...), nil
 }

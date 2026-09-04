@@ -18,6 +18,9 @@ import (
 // captured). The error text guides the user to start a session.
 var ErrNeedSession = errors.New("no active session; run: senv session start")
 
+// deriveKeyWithIterations is a package-private seam for entry-boundary tests.
+var deriveKeyWithIterations = crypto.DeriveKeyWithIterations
+
 // authResult holds resolved credentials for a command invocation. Exactly one
 // auth method is populated: key (session reuse) or password (temporary auth).
 type authResult struct {
@@ -42,7 +45,11 @@ func resolveKeyForAuth(auth *authResult) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKeyWithIterations(auth.password, salt, md.EffectiveIterations()), nil
+	iterations, err := md.ValidatedKDFIterations()
+	if err != nil {
+		return nil, err
+	}
+	return deriveKeyWithIterations(auth.password, salt, iterations), nil
 }
 
 // authOptions controls prompt eligibility beyond the default stdin-TTY check.
@@ -135,6 +142,9 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authRes
 	store := storage.NewManager(configPath, dataPath)
 	if !store.IsInitialized() {
 		return nil, errNotInitialized
+	}
+	if _, err := store.LoadMetadata(); err != nil {
+		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 	sm := session.NewManager(configPath, dataPath)
 

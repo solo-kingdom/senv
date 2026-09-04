@@ -29,3 +29,5 @@ data/
 .DS_Store
 Thumbs.db
 .zcode
+
+.kiro

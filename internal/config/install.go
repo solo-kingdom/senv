@@ -2,13 +2,22 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/storage"
+)
+
+var (
+	readPlainFile   = exportfile.ReadFile
+	writePlainFile  = exportfile.WriteFile
+	removePlainFile = exportfile.RemoveFile
+	nowForBackup    = time.Now
 )
 
 // Scope selects which configs an install/uninstall operation applies to.
@@ -48,6 +57,18 @@ type InstallPlan struct {
 // resolveScope validates the scope and returns the matching config names
 // (sorted) together with the loaded index.
 func (m *Manager) resolveScope(scope Scope) ([]string, *storage.ConfigIndex, error) {
+	if scope.Name != "" {
+		if err := validateConfigName(scope.Name); err != nil {
+			return nil, nil, err
+		}
+	}
+	if scope.Group != "" {
+		group, err := normalizeConfigGroup(scope.Group)
+		if err != nil {
+			return nil, nil, err
+		}
+		scope.Group = group
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
@@ -88,9 +109,9 @@ func (m *Manager) resolveScope(scope Scope) ([]string, *storage.ConfigIndex, err
 // planItemState compares the decrypted content with the current target file
 // and returns the install action for it.
 func installActionFor(content []byte, targetPath string) (action string, reason string) {
-	existing, err := os.ReadFile(targetPath)
+	existing, _, err := readPlainFile(targetPath)
 	switch {
-	case os.IsNotExist(err):
+	case errors.Is(err, os.ErrNotExist):
 		return ActionCreate, "target does not exist"
 	case err != nil:
 		return ActionError, err.Error()
@@ -140,62 +161,80 @@ func (m *Manager) PlanInstall(scope Scope) (*InstallPlan, error) {
 }
 
 // backupFile copies the target to "<target>.senv-backup-<timestamp>" and
-// returns the backup path.
-func backupFile(targetPath string) (string, error) {
-	data, err := os.ReadFile(targetPath)
+// returns the backup path. Its mode is no wider than either the source or the
+// requested target contract.
+func backupFile(targetPath string, requestedMode fs.FileMode) (string, error) {
+	data, sourceMode, err := readPlainFile(targetPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read %s for backup: %w", targetPath, err)
 	}
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to stat %s: %w", targetPath, err)
-	}
-	backupPath := fmt.Sprintf("%s.senv-backup-%s", targetPath, time.Now().Format("20060102150405"))
-	if err := os.WriteFile(backupPath, data, info.Mode().Perm()); err != nil {
+	return backupFileData(targetPath, data, sourceMode, requestedMode)
+}
+
+func backupFileData(targetPath string, data []byte, sourceMode, requestedMode fs.FileMode) (string, error) {
+	backupPath := fmt.Sprintf("%s.senv-backup-%s", targetPath, nowForBackup().Format("20060102150405"))
+	backupMode := sourceMode.Perm() & requestedMode.Perm()
+	if err := writePlainFile(backupPath, data, backupMode); err != nil {
 		return "", fmt.Errorf("failed to write backup %s: %w", backupPath, err)
 	}
 	return backupPath, nil
 }
 
-// installOne writes decrypted content to targetPath, creating parent
-// directories recursively and backing up an existing differing file first.
+// installOne writes decrypted content atomically to targetPath, creating only
+// missing parents privately and backing up an existing differing file first.
 // Returns the backup path ("" when no backup was needed).
-func installOne(content []byte, targetPath string) (backupPath string, err error) {
-	action, _ := installActionFor(content, targetPath)
-	if action == ActionSkip {
+func installOne(content []byte, targetPath string, mode fs.FileMode) (backupPath string, err error) {
+	if mode&^fs.ModePerm != 0 {
+		return "", fmt.Errorf("invalid file mode %04o: special bits are not supported", mode)
+	}
+	existing, existingMode, readErr := readPlainFile(targetPath)
+	switch {
+	case errors.Is(readErr, os.ErrNotExist):
+		// New target: no backup.
+	case readErr != nil:
+		return "", fmt.Errorf("failed to read target %s: %w", targetPath, readErr)
+	case bytes.Equal(existing, content):
+		// Still rewrite atomically so a loose existing mode is tightened.
+		if err := writePlainFile(targetPath, content, mode); err != nil {
+			return "", fmt.Errorf("failed to write target file: %w", err)
+		}
 		return "", nil
-	}
-	if action == ActionError {
-		return "", fmt.Errorf("failed to read target %s", targetPath)
-	}
-
-	if action == ActionBackupOverwrite {
-		backupPath, err = backupFile(targetPath)
+	default:
+		backupPath, err = backupFileData(targetPath, existing, existingMode, mode)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	targetDir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", fmt.Errorf("failed to create target directory: %w", err)
-	}
-	if err := os.WriteFile(targetPath, content, 0o644); err != nil {
-		return "", fmt.Errorf("failed to write target file: %w", err)
+	if err := writePlainFile(targetPath, content, mode); err != nil {
+		return backupPath, fmt.Errorf("failed to write target file: %w", err)
 	}
 	return backupPath, nil
 }
 
-// ExecuteInstall runs a previously confirmed plan. Items in error or skip
-// state are not written. Each item re-checks the target right before writing
-// so a file changed between plan and execute is still backed up.
+// ExecuteInstall runs a previously confirmed plan with the private default
+// mode.
 func (m *Manager) ExecuteInstall(plan *InstallPlan) error {
+	return m.ExecuteInstallWithMode(plan, exportfile.DefaultMode)
+}
+
+// ExecuteInstallWithMode runs a confirmed plan using a mode selected for this
+// operation only.
+func (m *Manager) ExecuteInstallWithMode(plan *InstallPlan, mode fs.FileMode) error {
+	if plan == nil {
+		return fmt.Errorf("install plan is nil")
+	}
+	for _, item := range plan.Items {
+		if err := validateConfigName(item.Name); err != nil {
+			return err
+		}
+		if _, err := normalizeConfigGroup(item.Group); err != nil {
+			return err
+		}
+	}
 	var errs []string
 	for _, item := range plan.Items {
 		switch item.Action {
-		case ActionSkip:
-			fmt.Printf("- %s: skipped (%s)\n", item.Name, item.Reason)
-			continue
 		case ActionError:
 			fmt.Printf("- %s: skipped (%s)\n", item.Name, item.Reason)
 			errs = append(errs, fmt.Sprintf("%s: %s", item.Name, item.Reason))
@@ -207,7 +246,7 @@ func (m *Manager) ExecuteInstall(plan *InstallPlan) error {
 			errs = append(errs, fmt.Sprintf("%s: %v", item.Name, err))
 			continue
 		}
-		backupPath, err := installOne(content, item.TargetPath)
+		backupPath, err := installOne(content, item.TargetPath, mode)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", item.Name, err))
 			continue

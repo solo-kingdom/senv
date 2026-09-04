@@ -9,6 +9,9 @@ import (
 	"strings"
 )
 
+// systemBootID is a package-private seam for boot-change authorization tests.
+var systemBootID = GetSystemBootID
+
 // GetSystemBootID returns a unique identifier for the current system boot
 // This is used to invalidate session caches when the system restarts
 func GetSystemBootID() (string, error) {

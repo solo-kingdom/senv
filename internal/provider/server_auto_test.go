@@ -104,7 +104,7 @@ func TestAutoPullThrottledZeroNetwork(t *testing.T) {
 	if res.Applied != 1 {
 		t.Errorf("applied = %d, want 1", res.Applied)
 	}
-	if _, err := os.Stat(cache.entryPath(KindEnv, "default", "R1")); err != nil {
+	if _, err := os.Stat(mustEntryPath(t, cache, KindEnv, "default", "R1")); err != nil {
 		t.Errorf("remote entry not applied: %v", err)
 	}
 }
@@ -246,7 +246,7 @@ func TestAutoPushConflictKeepsDirty(t *testing.T) {
 	if got := srv.entries["main"][entryID(KindEnv, "default", "A")].Ciphertext; string(got) != "remote-v2" {
 		t.Errorf("server entry changed to %q", got)
 	}
-	if data, _ := os.ReadFile(cache.entryPath(KindEnv, "default", "A")); string(data) != "local-v2" {
+	if data, _ := os.ReadFile(mustEntryPath(t, cache, KindEnv, "default", "A")); string(data) != "local-v2" {
 		t.Errorf("local entry changed to %q", data)
 	}
 }
@@ -401,7 +401,7 @@ func TestAutoSyncTwoMachinesConverge(t *testing.T) {
 	if _, _, err := machineB.AutoPull(ctx, time.Hour, false); err != nil {
 		t.Fatalf("machine B pull: %v", err)
 	}
-	if data, err := os.ReadFile(machineB.cache.entryPath(KindEnv, "default", "A_KEY")); err != nil || string(data) != "from-a" {
+	if data, err := os.ReadFile(mustEntryPath(t, machineB.cache, KindEnv, "default", "A_KEY")); err != nil || string(data) != "from-a" {
 		t.Fatalf("machine B A_KEY = %q,%v; want from-a", data, err)
 	}
 	writeEnvVar(t, machineB.cache, "default", "B_KEY", "from-b")
@@ -440,8 +440,8 @@ func TestAutoSyncTwoMachinesConverge(t *testing.T) {
 		t.Fatalf("last_synced_revision A=%d B=%d", stA.LastSyncedRevision, stB.LastSyncedRevision)
 	}
 	for _, key := range []string{"A_KEY", "A_KEY2", "B_KEY"} {
-		_, errA := os.Stat(machineA.cache.entryPath(KindEnv, "default", key))
-		_, errB := os.Stat(machineB.cache.entryPath(KindEnv, "default", key))
+		_, errA := os.Stat(mustEntryPath(t, machineA.cache, KindEnv, "default", key))
+		_, errB := os.Stat(mustEntryPath(t, machineB.cache, KindEnv, "default", key))
 		if errA != nil || errB != nil {
 			t.Fatalf("key %s missing: A=%v B=%v", key, errA, errB)
 		}
@@ -458,7 +458,7 @@ func TestAutoSyncOfflineBacklogDrainsAfterRecovery(t *testing.T) {
 	if out, err := p.AutoPush(ctx, autoSyncBudget); err == nil || out.Dirty != 1 {
 		t.Fatalf("offline AutoPush = %+v,%v; want dirty=1/error", out, err)
 	}
-	if _, err := os.Stat(cache.entryPath(KindEnv, "default", "OFFLINE")); err != nil {
+	if _, err := os.Stat(mustEntryPath(t, cache, KindEnv, "default", "OFFLINE")); err != nil {
 		t.Fatalf("offline write was not retained: %v", err)
 	}
 

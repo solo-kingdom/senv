@@ -37,6 +37,7 @@ const (
 	AuditSessionExpire   AuditEventType = "session_expire"
 	AuditSessionClear    AuditEventType = "session_clear"
 	AuditSessionValidate AuditEventType = "session_validate"
+	AuditMCPRevocation   AuditEventType = "mcp_session_revoked"
 	AuditAuthSuccess     AuditEventType = "auth_success"
 	AuditAuthFailure     AuditEventType = "auth_failure"
 )

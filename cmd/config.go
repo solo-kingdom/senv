@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
+	"github.com/wii/senv/internal/exportfile"
 )
 
 var configCmd = &cobra.Command{
@@ -25,6 +26,8 @@ var (
 	configInstallAll  bool
 	configDryRun      bool
 	configYes         bool
+	configExportMode  string
+	configInstallMode string
 )
 
 func init() {
@@ -109,9 +112,15 @@ var configExportCmd = &cobra.Command{
 	Use:   "export <name> [--path <target>]",
 	Short: "Export a configuration file",
 	Long: `Export a configuration file to its target path.
-You can override the target path with --path flag.`,
+You can override the target path with --path. New plaintext files default to
+0600; use --mode 0644 only to explicitly share non-secret output. Existing
+files with stricter permissions are not widened.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		mode, err := exportfile.ParseFileMode(configExportMode)
+		if err != nil {
+			return err
+		}
 		configManager, err := getConfigManager()
 		if err != nil {
 			return err
@@ -119,12 +128,13 @@ You can override the target path with --path flag.`,
 
 		name := args[0]
 
-		return configManager.Export(name, configTargetPath)
+		return configManager.ExportWithMode(name, configTargetPath, mode)
 	},
 }
 
 func init() {
 	configExportCmd.Flags().StringVar(&configTargetPath, "path", "", "override target path for export")
+	configExportCmd.Flags().StringVar(&configExportMode, "mode", "0600", "output file permissions in strict octal form (0000-0777)")
 }
 
 // configInstallCmd represents the config install command
@@ -133,9 +143,14 @@ var configInstallCmd = &cobra.Command{
 	Short: "Install configuration files to their target paths",
 	Long: `Install configuration files to the target paths recorded in their meta.
 Shows a plan first and asks for confirmation before writing. Use --dry-run to
-only show the plan, --yes to skip the confirmation prompt.`,
+only show the plan, --yes to skip the confirmation prompt. New plaintext files
+default to 0600; --mode is an explicit per-command permission choice.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		mode, err := exportfile.ParseFileMode(configInstallMode)
+		if err != nil {
+			return err
+		}
 		configManager, err := getConfigManager()
 		if err != nil {
 			return err
@@ -161,7 +176,7 @@ only show the plan, --yes to skip the confirmation prompt.`,
 			return nil
 		}
 
-		return configManager.ExecuteInstall(plan)
+		return configManager.ExecuteInstallWithMode(plan, mode)
 	},
 }
 
@@ -342,6 +357,7 @@ func init() {
 	configInstallCmd.Flags().BoolVar(&configInstallAll, "all", false, "install all configs")
 	configInstallCmd.Flags().BoolVar(&configDryRun, "dry-run", false, "show the plan without executing")
 	configInstallCmd.Flags().BoolVar(&configYes, "yes", false, "skip confirmation prompt")
+	configInstallCmd.Flags().StringVar(&configInstallMode, "mode", "0600", "output file permissions in strict octal form (0000-0777)")
 
 	configUninstallCmd.Flags().StringVar(&configListGroup, "group", "", "uninstall all configs in a group")
 	configUninstallCmd.Flags().BoolVar(&configInstallAll, "all", false, "uninstall all configs")

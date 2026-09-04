@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // 推送批量与单条大小上限（见 server-api spec：单条密文不超过 512KB）
@@ -256,6 +257,9 @@ func validateEntry(e Entry) *ValidationError {
 	}
 	if len(e.Key) > MaxKeyLen {
 		return validationErrorf("条目 key 长度超过上限 %d 字节", MaxKeyLen)
+	}
+	if err := syncschema.ValidateIdentity(e.Kind, e.Grp, e.Key); err != nil {
+		return validationErrorf("条目标识无效: %s", err)
 	}
 	if !e.Deleted && len(e.Ciphertext) > MaxEntryCiphertext {
 		return validationErrorf("条目 %s/%s/%s 密文超过大小上限 %d 字节", e.Kind, e.Grp, e.Key, MaxEntryCiphertext)

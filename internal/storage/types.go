@@ -14,17 +14,7 @@ type Metadata struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 	Salt          string    `json:"salt"`                     // Base64 encoded salt
 	PasswordKey   string    `json:"password_key"`             // Base64 encoded encrypted password hash
-	KDFIterations int       `json:"kdf_iterations,omitempty"` // PBKDF2 iterations; 0 = legacy (see EffectiveIterations)
-}
-
-// EffectiveIterations returns the PBKDF2 iteration count this metadata was
-// created with. Metadata written before KDF parameter versioning has no
-// kdf_iterations field, which MUST be interpreted as the legacy count.
-func (m *Metadata) EffectiveIterations() int {
-	if m.KDFIterations > 0 {
-		return m.KDFIterations
-	}
-	return crypto.LegacyIterations
+	KDFIterations int       `json:"kdf_iterations,omitempty"` // PBKDF2 iterations; 0 = legacy
 }
 
 // Settings represents the user settings
@@ -132,7 +122,7 @@ type ConfigIndex struct {
 func NewMetadata(salt, passwordKey string) *Metadata {
 	now := time.Now()
 	return &Metadata{
-		Version:       "1.0",
+		Version:       currentMetadataVersion,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		Salt:          salt,

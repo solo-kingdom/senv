@@ -106,10 +106,19 @@ func newTestProvider(t *testing.T, srv *fakeServer) (*ServerProvider, *localCach
 	return p, p.cache
 }
 
+func mustEntryPath(t testing.TB, cache *localCache, kind, grp, key string) string {
+	t.Helper()
+	path, err := cache.entryPath(kind, grp, key)
+	if err != nil {
+		t.Fatalf("entryPath(%q, %q, %q): %v", kind, grp, key, err)
+	}
+	return path
+}
+
 // writeEnvVar 在缓存中写入一个 env 条目文件
 func writeEnvVar(t *testing.T, cache *localCache, grp, key, content string) {
 	t.Helper()
-	path := cache.entryPath(KindEnv, grp, key)
+	path := mustEntryPath(t, cache, KindEnv, grp, key)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +142,7 @@ func TestSyncBidirectional(t *testing.T) {
 		t.Fatalf("SyncWithReport: %v", err)
 	}
 	// 远端更改落盘
-	if _, err := os.Stat(cache.entryPath(KindEnv, "default", "REMOTE")); err != nil {
+	if _, err := os.Stat(mustEntryPath(t, cache, KindEnv, "default", "REMOTE")); err != nil {
 		t.Errorf("remote entry not applied to local cache: %v", err)
 	}
 	// 本地更改已推送
@@ -181,7 +190,7 @@ func TestSyncConflictKeepsBothSides(t *testing.T) {
 	if got := srv.entries["main"][entryID(KindEnv, "default", "A")].Ciphertext; string(got) != "remote-v2" {
 		t.Errorf("server entry changed to %q, want remote-v2", got)
 	}
-	data, _ := os.ReadFile(cache.entryPath(KindEnv, "default", "A"))
+	data, _ := os.ReadFile(mustEntryPath(t, cache, KindEnv, "default", "A"))
 	if string(data) != "local-v2" {
 		t.Errorf("local entry changed to %q, want local-v2", data)
 	}
@@ -205,7 +214,7 @@ func TestSyncOfflineAndRecover(t *testing.T) {
 		t.Fatal("offline sync should report network failure")
 	}
 	// 本地数据不受影响
-	if _, err := os.Stat(cache.entryPath(KindEnv, "default", "K1")); err != nil {
+	if _, err := os.Stat(mustEntryPath(t, cache, KindEnv, "default", "K1")); err != nil {
 		t.Errorf("local cache must survive offline sync failure: %v", err)
 	}
 
@@ -236,7 +245,7 @@ func TestSyncDeletePropagates(t *testing.T) {
 	}
 
 	// 本地删除 → 推送删除标记
-	os.Remove(cache.entryPath(KindEnv, "default", "GONE"))
+	os.Remove(mustEntryPath(t, cache, KindEnv, "default", "GONE"))
 	if _, err := p.SyncWithReport(ctx); err != nil {
 		t.Fatalf("sync delete: %v", err)
 	}
@@ -252,7 +261,7 @@ func TestSyncDeletePropagates(t *testing.T) {
 	if _, err := p.SyncWithReport(ctx); err != nil {
 		t.Fatalf("sync remote delete: %v", err)
 	}
-	if _, err := os.Stat(cache.entryPath(KindEnv, "default", "GONE2")); !os.IsNotExist(err) {
+	if _, err := os.Stat(mustEntryPath(t, cache, KindEnv, "default", "GONE2")); !os.IsNotExist(err) {
 		t.Error("locally cached file should be removed after remote delete")
 	}
 }
@@ -276,7 +285,7 @@ func TestAcceptRemoteAndForcePush(t *testing.T) {
 	if err := p.AcceptRemote(ctx); err != nil {
 		t.Fatalf("AcceptRemote: %v", err)
 	}
-	data, _ := os.ReadFile(cache.entryPath(KindEnv, "default", "A"))
+	data, _ := os.ReadFile(mustEntryPath(t, cache, KindEnv, "default", "A"))
 	if string(data) != "remote-v2" {
 		t.Errorf("after accept-remote local = %q, want remote-v2", data)
 	}

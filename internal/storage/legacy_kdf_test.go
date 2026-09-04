@@ -22,7 +22,11 @@ func TestLegacyMetadataUnlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMetadata: %v", err)
 	}
-	if md.EffectiveIterations() != crypto.DefaultIterations {
+	iterations, err := md.ValidatedKDFIterations()
+	if err != nil {
+		t.Fatalf("ValidatedKDFIterations: %v", err)
+	}
+	if iterations != crypto.DefaultIterations {
 		t.Fatalf("precondition: fresh vault should use %d iterations", crypto.DefaultIterations)
 	}
 	newSalt, _ := crypto.GenerateSalt()

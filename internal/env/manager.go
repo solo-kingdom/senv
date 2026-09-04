@@ -14,9 +14,10 @@ import (
 
 // Manager handles environment variable operations
 type Manager struct {
-	storage  *storage.Manager
-	password string
-	key      []byte
+	storage        *storage.Manager
+	password       string
+	key            []byte
+	mutationLocked bool
 }
 
 // NewManager creates a new environment variable manager
@@ -33,6 +34,38 @@ func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
 		storage: storage,
 		key:     key,
 	}
+}
+
+func (m *Manager) mutate(fn func(*Manager) error) error {
+	if m.mutationLocked {
+		return fn(m)
+	}
+	return m.storage.WithVaultMutation(func(locked *storage.Manager) error {
+		clone := *m
+		clone.storage = locked
+		clone.mutationLocked = true
+		return fn(&clone)
+	})
+}
+
+func validateGroup(group string) error {
+	if err := storage.ValidateName(group); err != nil {
+		return fmt.Errorf("invalid env group %q: %w", group, err)
+	}
+	return nil
+}
+
+func validateIdentity(group, key string) error {
+	if err := validateGroup(group); err != nil {
+		return err
+	}
+	if err := storage.ValidateName(key); err != nil {
+		return fmt.Errorf("invalid env key %q: %w", key, err)
+	}
+	if err := storage.ValidateEnvKey(key); err != nil {
+		return fmt.Errorf("invalid env key %q: %w", key, err)
+	}
+	return nil
 }
 
 // loadEnvGroup loads an environment variable group using key or password
@@ -63,11 +96,18 @@ func (m *Manager) resolveCryptoKey() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return crypto.DeriveKeyWithIterations(m.password, salt, md.EffectiveIterations()), nil
+	iterations, err := md.ValidatedKDFIterations()
+	if err != nil {
+		return nil, err
+	}
+	return crypto.DeriveKeyWithIterations(m.password, salt, iterations), nil
 }
 
 // Get retrieves an environment variable from a group
 func (m *Manager) Get(group string, key string) (string, error) {
+	if err := validateIdentity(group, key); err != nil {
+		return "", err
+	}
 	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
 		return "", err
@@ -94,14 +134,11 @@ func (m *Manager) Get(group string, key string) (string, error) {
 
 // Set sets an environment variable in a group
 func (m *Manager) Set(group string, key string, value string) error {
-	if err := storage.ValidateName(group); err != nil {
-		return fmt.Errorf("invalid group: %w", err)
+	if err := validateIdentity(group, key); err != nil {
+		return err
 	}
-	if err := storage.ValidateName(key); err != nil {
-		return fmt.Errorf("invalid key: %w", err)
-	}
-	if err := storage.ValidateEnvKey(key); err != nil {
-		return fmt.Errorf("invalid env key: %w", err)
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Set(group, key, value) })
 	}
 
 	cryptoKey, err := m.resolveCryptoKey()
@@ -110,7 +147,11 @@ func (m *Manager) Set(group string, key string, value string) error {
 	}
 
 	// Ensure group exists (migrate old format if needed)
-	if !m.storage.EnvGroupExists(group) {
+	exists, err := m.storage.EnvGroupExists(group)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		envGroup := storage.NewEnvGroup(group)
 		if err := m.saveEnvGroup(envGroup); err != nil {
 			return fmt.Errorf("failed to create group %s: %w", group, err)
@@ -138,6 +179,12 @@ func (m *Manager) Set(group string, key string, value string) error {
 
 // Delete deletes an environment variable from a group
 func (m *Manager) Delete(group string, key string) error {
+	if err := validateIdentity(group, key); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Delete(group, key) })
+	}
 	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
 		return err
@@ -165,6 +212,11 @@ func (m *Manager) Delete(group string, key string) error {
 
 // List lists all environment variables in a group (or all groups if group is empty)
 func (m *Manager) List(group string) (map[string]map[string]string, error) {
+	if group != "" {
+		if err := validateGroup(group); err != nil {
+			return nil, err
+		}
+	}
 	result := make(map[string]map[string]string)
 
 	if group != "" {
@@ -182,7 +234,7 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 		for _, g := range groups {
 			envGroup, err := m.loadEnvGroup(g)
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("failed to load group %s: %w", g, err)
 			}
 			result[g] = envGroup.Variables
 		}
@@ -207,17 +259,17 @@ func (m *Manager) Export() (string, error) {
 
 	allVars := make(map[string]string)
 	for _, group := range activeGroups {
+		if err := validateGroup(group); err != nil {
+			return "", err
+		}
 		envGroup, err := m.loadEnvGroup(group)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("failed to load active group %s: %w", group, err)
 		}
 
 		for k, v := range envGroup.Variables {
-			// Tolerate historical invalid keys: skip them and warn on stderr
-			// so a single bad key does not break the whole export.
-			if err := storage.ValidateEnvKey(k); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skipping invalid env key %q in group %q (rename or delete it)\n", k, group)
-				continue
+			if err := validateIdentity(group, k); err != nil {
+				return "", fmt.Errorf("invalid historical env identity: %w", err)
 			}
 			allVars[k] = v
 		}
@@ -241,6 +293,12 @@ func (m *Manager) Export() (string, error) {
 
 // AddGroup creates a new environment variable group
 func (m *Manager) AddGroup(name string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name) })
+	}
 	groups, err := m.storage.ListEnvGroups()
 	if err != nil {
 		return fmt.Errorf("failed to list groups: %w", err)
@@ -262,6 +320,12 @@ func (m *Manager) AddGroup(name string) error {
 
 // ActivateGroup activates a group by adding it to the active groups list
 func (m *Manager) ActivateGroup(name string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.ActivateGroup(name) })
+	}
 	settings, err := m.storage.LoadSettings()
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
@@ -306,6 +370,12 @@ func (m *Manager) ActivateGroup(name string) error {
 
 // DeactivateGroup deactivates a group by removing it from the active groups list
 func (m *Manager) DeactivateGroup(name string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.DeactivateGroup(name) })
+	}
 	settings, err := m.storage.LoadSettings()
 	if err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
@@ -357,11 +427,10 @@ func (m *Manager) ListGroups() ([]GroupInfo, error) {
 		}
 
 		envGroup, err := m.loadEnvGroup(name)
-
-		varCount := 0
-		if err == nil {
-			varCount = len(envGroup.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load group %s: %w", name, err)
 		}
+		varCount := len(envGroup.Variables)
 
 		result = append(result, GroupInfo{
 			Name:      name,

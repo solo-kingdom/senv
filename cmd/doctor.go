@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -81,7 +80,11 @@ func resolveDiagnosticKey(configPath, dataPath string, prompt passwordPrompter) 
 		if derr != nil {
 			return nil, auth.storage, "", fmt.Errorf("failed to decode salt: %w", derr)
 		}
-		return crypto.DeriveKeyWithIterations(auth.password, salt, md.EffectiveIterations()), auth.storage, "", nil
+		iterations, err := md.ValidatedKDFIterations()
+		if err != nil {
+			return nil, auth.storage, "", err
+		}
+		return deriveKeyWithIterations(auth.password, salt, iterations), auth.storage, "", nil
 	}
 
 	// Desync: use the cached session key to diagnose. Doctor's whole point is to

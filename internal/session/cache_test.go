@@ -5,133 +5,226 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestNeverSessionStaysOnTmpfs(t *testing.T) {
-	isolateSessionCache(t)
+func setRuntimeProbe(t *testing.T, kind runtimeFilesystemKind, probeErr error) {
+	t.Helper()
+	original := runtimeFilesystemProbe
+	runtimeFilesystemProbe = func(string) (runtimeFilesystemKind, error) { return kind, probeErr }
+	t.Cleanup(func() { runtimeFilesystemProbe = original })
+}
+
+func startSessionForCacheTest(t *testing.T, timeoutValue string) (string, string, *Manager) {
+	t.Helper()
 	cfg, data := setupProject(t, "correct-secret")
-	to, err := ParseTimeout("never")
-	if err != nil || to == nil {
-		t.Fatalf("parse timeout: %v", err)
-	}
-
-	sm := sessionManagerForTest(t, cfg, data)
-	if err := sm.StartSession("correct-secret", to); err != nil {
-		t.Fatalf("start never session: %v", err)
-	}
-
-	// No cache file may exist under the persistent user-data location.
-	legacy := filepath.Join(os.Getenv("HOME"), ".local", "share", "senv", "session", cacheFileName())
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("never session must not persist to %s (stat err: %v)", legacy, err)
-	}
-
-	// The cache must live under XDG_RUNTIME_DIR with 0600 permissions.
-	runtimeCache := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "senv", cacheFileName())
-	fi, err := os.Stat(runtimeCache)
+	timeout, err := ParseTimeout(timeoutValue)
 	if err != nil {
-		t.Fatalf("expected cache at %s: %v", runtimeCache, err)
+		t.Fatalf("ParseTimeout(%q): %v", timeoutValue, err)
 	}
-	if got := fi.Mode().Perm(); got != 0o600 {
-		t.Errorf("cache perm = %o, want 600", got)
+	manager := sessionManagerForTest(t, cfg, data)
+	if err := manager.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("StartSession(%q): %v", timeoutValue, err)
+	}
+	return cfg, data, manager
+}
+
+func TestSessionCacheFilesystemRejectsDiskBackedXDG(t *testing.T) {
+	isolateSessionCache(t)
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	setRuntimeProbe(t, runtimeFilesystemDisk, nil)
+	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
+
+	err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout)
+	if !errors.Is(err, errUnsafeRuntimeFilesystem) {
+		t.Fatalf("StartSession error = %v, want unsafe filesystem", err)
+	}
+	if entries, err := os.ReadDir(runtimeDir); err != nil || len(entries) != 0 {
+		t.Fatalf("unsafe XDG runtime changed: entries=%v err=%v", entries, err)
 	}
 }
 
-func TestLegacyPersistentCacheCleanedOnStart(t *testing.T) {
+func TestSessionCacheFilesystemRejectsDiskBackedFallback(t *testing.T) {
 	isolateSessionCache(t)
-	cfg, data := setupProject(t, "correct-secret")
-
-	// Plant a cache file where older versions stored "never" sessions.
-	legacyDir := filepath.Join(os.Getenv("HOME"), ".local", "share", "senv", "session")
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-	legacy := filepath.Join(legacyDir, cacheFileName())
-	if err := os.WriteFile(legacy, []byte(`{"key":"stale"}`), 0o600); err != nil {
-		t.Fatalf("plant legacy cache: %v", err)
-	}
-
-	to, _ := ParseTimeout("never")
-	sm := sessionManagerForTest(t, cfg, data)
-	if err := sm.StartSession("correct-secret", to); err != nil {
-		t.Fatalf("start session: %v", err)
-	}
-
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("legacy persistent cache must be removed on session start (stat err: %v)", err)
-	}
-}
-
-func TestTmpFallbackPrivateDir(t *testing.T) {
-	isolateSessionCache(t)
-	cfg, data := setupProject(t, "correct-secret")
-
-	// Empty XDG_RUNTIME_DIR sends the cache to the /tmp fallback.
+	fallbackRoot := t.TempDir()
+	t.Setenv("TMPDIR", fallbackRoot)
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	fallbackDir := filepath.Join(os.TempDir(), fmt.Sprintf("senv-%d", os.Getuid()))
-	os.RemoveAll(fallbackDir)
-	t.Cleanup(func() { os.RemoveAll(fallbackDir) })
-
-	to, _ := ParseTimeout("never")
-	sm := sessionManagerForTest(t, cfg, data)
-	if err := sm.StartSession("correct-secret", to); err != nil {
-		t.Fatalf("start session with /tmp fallback: %v", err)
-	}
-
-	// Random uid dir: private 0700, cache file 0600.
-	dirInfo, err := os.Stat(fallbackDir)
-	if err != nil {
-		t.Fatalf("stat fallback dir: %v", err)
-	}
-	if !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0o700 {
-		t.Errorf("fallback dir mode = %v, want drwx------", dirInfo.Mode())
-	}
-	fi, err := os.Stat(filepath.Join(fallbackDir, cacheFileName()))
-	if err != nil {
-		t.Fatalf("stat cache file: %v", err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("cache perm = %o, want 600", fi.Mode().Perm())
-	}
-
-	// Restarting the session must succeed (remove + exclusive re-create).
-	if err := sm.StartSession("correct-secret", to); err != nil {
-		t.Fatalf("restarting session must replace the cache: %v", err)
-	}
-}
-
-func TestTmpFallbackRejectsTamperedDir(t *testing.T) {
-	isolateSessionCache(t)
+	setRuntimeProbe(t, runtimeFilesystemDisk, nil)
 	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
 
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	fallbackDir := filepath.Join(os.TempDir(), fmt.Sprintf("senv-%d", os.Getuid()))
-	os.RemoveAll(fallbackDir)
-	t.Cleanup(func() { os.RemoveAll(fallbackDir) })
-
-	// A loose directory (e.g. planted by another local user or a symlink
-	// target) must not be accepted as cache location.
-	if err := os.MkdirAll(fallbackDir, 0o755); err != nil {
-		t.Fatalf("plant loose dir: %v", err)
+	err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout)
+	if !errors.Is(err, errUnsafeRuntimeFilesystem) {
+		t.Fatalf("StartSession error = %v, want unsafe filesystem", err)
 	}
-
-	to, _ := ParseTimeout("never")
-	sm := sessionManagerForTest(t, cfg, data)
-	if err := sm.StartSession("correct-secret", to); err == nil {
-		t.Fatal("session start must fail when the fallback dir is not private")
-	}
-	if _, err := os.Stat(filepath.Join(fallbackDir, cacheFileName())); !os.IsNotExist(err) {
-		t.Error("no cache file may be written into a tampered fallback dir")
+	if entries, err := os.ReadDir(fallbackRoot); err != nil || len(entries) != 0 {
+		t.Fatalf("unsafe fallback changed: entries=%v err=%v", entries, err)
 	}
 }
 
-func TestGenerateSessionIDFailsClosedOnRandError(t *testing.T) {
-	orig := randRead
-	randRead = func(b []byte) (int, error) { return 0, errors.New("boom") }
-	t.Cleanup(func() { randRead = orig })
+func TestSessionCacheFallbackIsRandomAndPrivate(t *testing.T) {
+	isolateSessionCache(t)
+	fallbackRoot := t.TempDir()
+	t.Setenv("TMPDIR", fallbackRoot)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	_, _, manager := startSessionForCacheTest(t, "never")
 
-	if _, err := generateSessionID(); err == nil {
-		t.Fatal("expected error when randomness is unavailable")
+	entries, err := os.ReadDir(fallbackRoot)
+	if err != nil {
+		t.Fatalf("read fallback root: %v", err)
+	}
+	var cacheDir os.DirEntry
+	for _, entry := range entries {
+		if entry.Name() == fallbackLifecycleLockName() {
+			continue
+		}
+		if cacheDir != nil {
+			t.Fatalf("fallback entries=%v, want one cache directory and lock", entries)
+		}
+		cacheDir = entry
+	}
+	if cacheDir == nil {
+		t.Fatal("fallback cache directory is missing")
+	}
+	name := cacheDir.Name()
+	if !strings.HasPrefix(name, fallbackDirPrefix()) || name == fmt.Sprintf("senv-%d", os.Getuid()) {
+		t.Fatalf("fallback directory %q is not randomized", name)
+	}
+	info, err := cacheDir.Info()
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fallback mode=%v err=%v, want 0700", info.Mode(), err)
+	}
+	cacheInfo, err := os.Stat(filepath.Join(fallbackRoot, name, cacheFileName()))
+	if err != nil || cacheInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("cache mode=%v err=%v, want 0600", cacheInfo.Mode(), err)
+	}
+	if _, err := manager.GetCachedKey(); err != nil {
+		t.Fatalf("fallback cache is not discoverable: %v", err)
+	}
+}
+
+func TestSessionCacheFilesystemSupportsAllTimeoutModes(t *testing.T) {
+	for _, timeoutValue := range []string{"never", "restart", "5m"} {
+		t.Run(timeoutValue, func(t *testing.T) {
+			isolateSessionCache(t)
+			setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+			_, _, manager := startSessionForCacheTest(t, timeoutValue)
+			cache, err := manager.LoadCache()
+			if err != nil || cache == nil {
+				t.Fatalf("LoadCache: cache=%v err=%v", cache, err)
+			}
+			if cache.SessionID == "" || cache.Key == "" {
+				t.Fatal("cache omitted session ID or key")
+			}
+		})
+	}
+}
+
+func TestSessionCacheSymlinkTargetRejected(t *testing.T) {
+	isolateSessionCache(t)
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if err := os.Mkdir(filepath.Join(runtimeDir, "senv"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sentinel, filepath.Join(runtimeDir, "senv", cacheFileName())); err != nil {
+		t.Fatal(err)
+	}
+	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
+	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
+		t.Fatal("cache symlink was accepted")
+	}
+	if got, _ := os.ReadFile(sentinel); string(got) != "unchanged" {
+		t.Fatalf("symlink target changed to %q", got)
+	}
+}
+
+func TestSessionCacheSymlinkParentRejected(t *testing.T) {
+	isolateSessionCache(t)
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	realRuntime := t.TempDir()
+	parent := t.TempDir()
+	linkedRuntime := filepath.Join(parent, "runtime")
+	if err := os.Symlink(realRuntime, linkedRuntime); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", linkedRuntime)
+	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
+	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
+		t.Fatal("runtime parent symlink was accepted")
+	}
+	if entries, _ := os.ReadDir(realRuntime); len(entries) != 0 {
+		t.Fatalf("symlink target runtime changed: %v", entries)
+	}
+}
+
+func TestSessionCacheRandomSessionIDFailureLeavesNoCache(t *testing.T) {
+	isolateSessionCache(t)
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	original := randRead
+	randRead = func([]byte) (int, error) { return 0, errors.New("random unavailable") }
+	t.Cleanup(func() { randRead = original })
+	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
+	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
+		t.Fatal("session ID random failure was ignored")
+	}
+	if entries, _ := os.ReadDir(os.Getenv("XDG_RUNTIME_DIR")); len(entries) != 0 {
+		t.Fatalf("random failure wrote runtime entries: %v", entries)
+	}
+}
+
+func TestSessionCacheRandomFallbackFailureLeavesNoCache(t *testing.T) {
+	isolateSessionCache(t)
+	fallbackRoot := t.TempDir()
+	t.Setenv("TMPDIR", fallbackRoot)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	original := randRead
+	calls := 0
+	randRead = func(value []byte) (int, error) {
+		calls++
+		if calls == 2 {
+			return 0, errors.New("random unavailable")
+		}
+		for i := range value {
+			value[i] = byte(i + 1)
+		}
+		return len(value), nil
+	}
+	t.Cleanup(func() { randRead = original })
+	cfg, data := setupProject(t, "correct-secret")
+	timeout, _ := ParseTimeout("never")
+	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
+		t.Fatal("fallback random failure was ignored")
+	}
+	if entries, _ := os.ReadDir(fallbackRoot); len(entries) != 1 || entries[0].Name() != fallbackLifecycleLockName() {
+		t.Fatalf("fallback random failure wrote cache entries: %v", entries)
+	}
+}
+
+func TestSessionCacheFilesystemClearsLegacyPersistentCache(t *testing.T) {
+	isolateSessionCache(t)
+	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
+	legacy := legacyPersistentCachePath()
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte(`{"key":"legacy"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startSessionForCacheTest(t, "never")
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy persistent cache still exists: %v", err)
 	}
 }

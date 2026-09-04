@@ -40,11 +40,15 @@ func TestNewMetadata(t *testing.T) {
 	}
 }
 
-func TestEffectiveIterations(t *testing.T) {
+func TestValidatedKDFIterations(t *testing.T) {
 	// New-style metadata records the iteration count explicitly.
-	md := &Metadata{KDFIterations: 600000}
-	if got := md.EffectiveIterations(); got != 600000 {
-		t.Errorf("EffectiveIterations() = %d, want 600000", got)
+	md := &Metadata{Version: currentMetadataVersion, KDFIterations: 600000}
+	got, err := md.ValidatedKDFIterations()
+	if err != nil {
+		t.Fatalf("ValidatedKDFIterations() error = %v", err)
+	}
+	if got != 600000 {
+		t.Errorf("ValidatedKDFIterations() = %d, want 600000", got)
 	}
 
 	// Legacy metadata has no field; MUST be interpreted as 100000.
@@ -53,8 +57,12 @@ func TestEffectiveIterations(t *testing.T) {
 	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
 		t.Fatalf("unmarshal legacy metadata: %v", err)
 	}
-	if got := legacy.EffectiveIterations(); got != crypto.LegacyIterations {
-		t.Errorf("legacy EffectiveIterations() = %d, want %d", got, crypto.LegacyIterations)
+	got, err = legacy.ValidatedKDFIterations()
+	if err != nil {
+		t.Fatalf("legacy ValidatedKDFIterations() error = %v", err)
+	}
+	if got != crypto.LegacyIterations {
+		t.Errorf("legacy ValidatedKDFIterations() = %d, want %d", got, crypto.LegacyIterations)
 	}
 }
 

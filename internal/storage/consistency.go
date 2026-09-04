@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,54 +44,66 @@ func (r *ConsistencyReport) AllOK() bool {
 // A key whose length is not crypto.KeySize is treated as "decrypts nothing":
 // all files are enumerated and reported as failed, without panicking.
 func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
+	if !m.mutationLocked {
+		return withVaultRead(m, func(locked *Manager) (*ConsistencyReport, error) {
+			return locked.CheckConsistency(key)
+		})
+	}
 	report := &ConsistencyReport{}
 
-	// Metadata verifier.
 	md, err := m.LoadMetadata()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 	report.MetadataKeyOK = canDecrypt(key, md.PasswordKey)
 
-	// Env files: new format (envs/<group>/<key>.enc) + old format (env_<group>.json.enc)
+	dataRoot, err := m.openDataRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer dataRoot.Close()
+
 	envGroups, err := m.ListEnvGroups()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list env groups: %w", err)
 	}
 	for _, group := range envGroups {
-		groupDir := m.envGroupDir(group)
-		if info, statErr := os.Stat(groupDir); statErr == nil && info.IsDir() {
-			// New format: probe each variable file + .meta.enc
-			files, readErr := os.ReadDir(groupDir)
-			if readErr != nil {
-				continue
-			}
-			for _, f := range files {
-				if f.IsDir() || !isEncFile(f.Name()) {
-					continue
+		files, readErr := dataRoot.ReadDir(EnvDirName, group)
+		if readErr == nil {
+			for _, file := range files {
+				if file.IsDir || !isEncFile(file.Name) {
+					return nil, fmt.Errorf("invalid managed env entry %q", filepath.Join(EnvDirName, group, file.Name))
 				}
-				rel := filepath.Join(EnvDirName, group, f.Name())
+				rel := filepath.Join(EnvDirName, group, file.Name)
+				ciphertext, err := dataRoot.Read(EnvDirName, group, file.Name)
+				if err != nil {
+					return nil, err
+				}
 				report.EnvFiles.Total++
-				path := filepath.Join(groupDir, f.Name())
-				if m.probeFilePath(path, key) {
+				if canDecrypt(key, string(ciphertext)) {
 					report.EnvFiles.OK++
 				} else {
 					report.EnvFiles.Failed = append(report.EnvFiles.Failed, rel)
 				}
 			}
+			continue
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return nil, readErr
+		}
+		name := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
+		ciphertext, err := dataRoot.Read(name)
+		if err != nil {
+			return nil, err
+		}
+		report.EnvFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.EnvFiles.OK++
 		} else {
-			// Old format
-			name := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
-			report.EnvFiles.Total++
-			if m.probeFile(name, key) {
-				report.EnvFiles.OK++
-			} else {
-				report.EnvFiles.Failed = append(report.EnvFiles.Failed, name)
-			}
+			report.EnvFiles.Failed = append(report.EnvFiles.Failed, name)
 		}
 	}
 
-	// Text files: texts/<group>/<key>.enc
 	textGroups, err := m.ListTextGroups()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list text groups: %w", err)
@@ -100,10 +113,14 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to list text group %q: %w", group, err)
 		}
-		for _, k := range keys {
-			rel := filepath.Join(TextDirName, group, k+TextFileSuffix)
+		for _, name := range keys {
+			rel := filepath.Join(TextDirName, group, name+TextFileSuffix)
+			ciphertext, err := dataRoot.Read(TextDirName, group, name+TextFileSuffix)
+			if err != nil {
+				return nil, err
+			}
 			report.TextFiles.Total++
-			if m.probeText(group, k, key) {
+			if canDecrypt(key, string(ciphertext)) {
 				report.TextFiles.OK++
 			} else {
 				report.TextFiles.Failed = append(report.TextFiles.Failed, rel)
@@ -111,53 +128,28 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		}
 	}
 
-	// Config files: <name>.enc, enumerated via the config index.
-	idx, err := m.LoadConfigIndex()
-	if err == nil && idx != nil {
-		for name, cf := range idx.Configs {
-			fileName := cf.EncryptedFile
-			if fileName == "" {
-				fileName = name + ConfigFileSuffix
-			}
-			report.ConfigFiles.Total++
-			if m.probeFile(fileName, key) {
-				report.ConfigFiles.OK++
-			} else {
-				report.ConfigFiles.Failed = append(report.ConfigFiles.Failed, fileName)
-			}
+	index, err := m.LoadConfigIndex()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	for name, config := range index.Configs {
+		fileName := config.EncryptedFile
+		if fileName == "" {
+			fileName = name + ConfigFileSuffix
+		}
+		ciphertext, err := dataRoot.Read(fileName)
+		if err != nil {
+			return nil, err
+		}
+		report.ConfigFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.ConfigFiles.OK++
+		} else {
+			report.ConfigFiles.Failed = append(report.ConfigFiles.Failed, fileName)
 		}
 	}
 
 	return report, nil
-}
-
-// probeFile reports whether the key decrypts the given dataPath file.
-func (m *Manager) probeFile(name string, key []byte) bool {
-	path := filepath.Join(m.dataPath, name)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return canDecrypt(key, string(data))
-}
-
-// probeFilePath reports whether the key decrypts the file at an absolute path.
-func (m *Manager) probeFilePath(path string, key []byte) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return canDecrypt(key, string(data))
-}
-
-// probeText reports whether the key decrypts the given text entry.
-func (m *Manager) probeText(group, keyName string, key []byte) bool {
-	path := m.textFilePath(group, keyName)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return canDecrypt(key, string(data))
 }
 
 // canDecrypt reports whether key decrypts the base64 ciphertext. A wrong-length

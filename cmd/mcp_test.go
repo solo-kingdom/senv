@@ -40,6 +40,11 @@ func newManagersForTest(t *testing.T, password string) (*managers, string, strin
 	}, configPath, dataPath
 }
 
+func newMCPServerForTest(m *managers) *mcp.Server {
+	authorize := func() (*managers, func(), error) { return m, func() {}, nil }
+	return newAuthorizedMCPServer(authorize, nil)
+}
+
 // textOf unwraps the single TextContent of a CallToolResult.
 func textOf(t *testing.T, res *mcp.CallToolResult) string {
 	t.Helper()
@@ -250,7 +255,7 @@ func TestMCPServerBuildsAndRegistersAllTools(t *testing.T) {
 	// Building the server panics on duplicate tool names or invalid schemas,
 	// so successful construction asserts the registry is well-formed.
 	m, _, _ := newManagersForTest(t, "pw")
-	srv := newMCPServer(m.env, m.text, m.config)
+	srv := newMCPServerForTest(m)
 	if srv == nil {
 		t.Fatal("nil server")
 	}

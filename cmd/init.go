@@ -24,7 +24,9 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new senv project",
 	Long: `Initialize a new senv project with encrypted storage.
-This will create the necessary directory structure and configuration files.
+This creates the necessary directory structure and configuration files. New
+vaults use PBKDF2-SHA256 with 600,000 iterations; legacy metadata without an
+explicit cost remains readable at 100,000 iterations.
 
 With --server, join an existing vault hosted on senv-server: pull the hosted
 metadata blob and all entries into a local cache, then unlock with the vault

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,14 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/storage"
 )
 
 // Manager handles configuration file operations
 type Manager struct {
-	storage  *storage.Manager
-	password string
-	key      []byte
+	storage        *storage.Manager
+	password       string
+	key            []byte
+	mutationLocked bool
 }
 
 // NewManager creates a new configuration file manager
@@ -33,6 +36,35 @@ func NewManagerWithKey(storage *storage.Manager, key []byte) *Manager {
 		storage: storage,
 		key:     key,
 	}
+}
+
+func (m *Manager) mutate(fn func(*Manager) error) error {
+	if m.mutationLocked {
+		return fn(m)
+	}
+	return m.storage.WithVaultMutation(func(locked *storage.Manager) error {
+		clone := *m
+		clone.storage = locked
+		clone.mutationLocked = true
+		return fn(&clone)
+	})
+}
+
+func validateConfigName(name string) error {
+	if err := storage.ValidateName(name); err != nil {
+		return fmt.Errorf("invalid config name %q: %w", name, err)
+	}
+	return nil
+}
+
+func normalizeConfigGroup(group string) (string, error) {
+	if group == "" {
+		group = storage.ConfigDefaultGroup
+	}
+	if err := storage.ValidateName(group); err != nil {
+		return "", fmt.Errorf("invalid config group %q: %w", group, err)
+	}
+	return group, nil
 }
 
 // loadConfigFile loads a configuration file using key or password
@@ -54,6 +86,19 @@ func (m *Manager) saveConfigFile(name string, content []byte) error {
 // Create creates a new configuration file from a source path.
 // group is optional; an empty group falls back to "default".
 func (m *Manager) Create(name string, sourcePath string, targetPath string, group string, description string) error {
+	if err := validateConfigName(name); err != nil {
+		return err
+	}
+	var err error
+	group, err = normalizeConfigGroup(group)
+	if err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error {
+			return locked.Create(name, sourcePath, targetPath, group, description)
+		})
+	}
 	// Check if config already exists
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
@@ -108,6 +153,9 @@ type ConfigEditSession struct {
 
 // PrepareEdit decrypts the config into a temp file and returns the session.
 func (m *Manager) PrepareEdit(name string) (*ConfigEditSession, error) {
+	if err := validateConfigName(name); err != nil {
+		return nil, err
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
@@ -141,6 +189,21 @@ func (m *Manager) PrepareEdit(name string) (*ConfigEditSession, error) {
 // updates the index UpdatedAt, and removes the temp file. Returns changed=true
 // when a new value was persisted.
 func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("config edit session is nil")
+	}
+	if err := validateConfigName(s.Name); err != nil {
+		return false, err
+	}
+	if !m.mutationLocked {
+		var changed bool
+		err := m.mutate(func(locked *Manager) error {
+			var err error
+			changed, err = locked.FinishEdit(s)
+			return err
+		})
+		return changed, err
+	}
 	defer os.Remove(s.TmpPath)
 
 	editedContent, err := os.ReadFile(s.TmpPath)
@@ -208,8 +271,17 @@ func (m *Manager) Edit(name string) error {
 	return nil
 }
 
-// Export exports a configuration file to a target path
+// Export exports a configuration file using the private default mode.
 func (m *Manager) Export(name string, targetPath string) error {
+	return m.ExportWithMode(name, targetPath, exportfile.DefaultMode)
+}
+
+// ExportWithMode exports a configuration file using a mode selected for this
+// operation only.
+func (m *Manager) ExportWithMode(name string, targetPath string, mode fs.FileMode) error {
+	if err := validateConfigName(name); err != nil {
+		return err
+	}
 	// Check if config exists
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
@@ -244,7 +316,7 @@ func (m *Manager) Export(name string, targetPath string) error {
 
 	// Shared with install: recursive mkdir, backup before overwriting a
 	// differing target.
-	backupPath, err := installOne(content, targetPath)
+	backupPath, err := installOne(content, targetPath, mode)
 	if err != nil {
 		return err
 	}
@@ -257,34 +329,36 @@ func (m *Manager) Export(name string, targetPath string) error {
 
 // Delete deletes a configuration file
 func (m *Manager) Delete(name string) error {
-	// Check if config exists
+	if err := validateConfigName(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Delete(name) })
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
 	}
-
 	if _, exists := configIndex.Configs[name]; !exists {
 		return fmt.Errorf("config %s not found", name)
 	}
-
-	// Delete encrypted file
-	encryptedPath := filepath.Join(m.storage.GetDataPath(), name+storage.ConfigFileSuffix)
-	if err := os.Remove(encryptedPath); err != nil && !os.IsNotExist(err) {
+	if err := m.storage.DeleteConfigFile(name); err != nil {
 		return fmt.Errorf("failed to delete encrypted file: %w", err)
 	}
-
-	// Update index
 	delete(configIndex.Configs, name)
-
 	if err := m.storage.SaveConfigIndex(configIndex); err != nil {
 		return fmt.Errorf("failed to save config index: %w", err)
 	}
-
 	return nil
 }
 
 // List lists configuration files. An empty groupFilter lists all groups.
 func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
+	if groupFilter != "" {
+		if _, err := normalizeConfigGroup(groupFilter); err != nil {
+			return nil, err
+		}
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
@@ -330,6 +404,17 @@ func (m *Manager) Groups() ([]string, error) {
 // SetMeta updates the group and description of an existing config.
 // An empty group falls back to "default".
 func (m *Manager) SetMeta(name string, group string, description string) error {
+	if err := validateConfigName(name); err != nil {
+		return err
+	}
+	var err error
+	group, err = normalizeConfigGroup(group)
+	if err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.SetMeta(name, group, description) })
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
@@ -337,9 +422,6 @@ func (m *Manager) SetMeta(name string, group string, description string) error {
 	cfg, exists := configIndex.Configs[name]
 	if !exists {
 		return fmt.Errorf("config %s not found", name)
-	}
-	if group == "" {
-		group = storage.ConfigDefaultGroup
 	}
 	cfg.Group = group
 	cfg.Description = description
@@ -350,6 +432,9 @@ func (m *Manager) SetMeta(name string, group string, description string) error {
 
 // Get retrieves information about a specific config
 func (m *Manager) Get(name string) (*ConfigInfo, error) {
+	if err := validateConfigName(name); err != nil {
+		return nil, err
+	}
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)

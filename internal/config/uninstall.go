@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -35,9 +36,9 @@ func (p *UninstallPlan) HasChanged() bool {
 // uninstallActionFor compares the decrypted content with the current target
 // file and returns the uninstall action for it.
 func uninstallActionFor(content []byte, targetPath string) (action string, reason string) {
-	existing, err := os.ReadFile(targetPath)
+	existing, _, err := readPlainFile(targetPath)
 	switch {
-	case os.IsNotExist(err):
+	case errors.Is(err, os.ErrNotExist):
 		return ActionNoop, "target already absent"
 	case err != nil:
 		return ActionError, err.Error()
@@ -92,6 +93,17 @@ func (m *Manager) PlanUninstall(scope Scope) (*UninstallPlan, error) {
 // confirmChanged rejects them all. The target is re-compared right before
 // removal so a file changed since planning is not silently deleted.
 func (m *Manager) ExecuteUninstall(plan *UninstallPlan, confirmChanged func(item UninstallItem) bool) error {
+	if plan == nil {
+		return fmt.Errorf("uninstall plan is nil")
+	}
+	for _, item := range plan.Items {
+		if err := validateConfigName(item.Name); err != nil {
+			return err
+		}
+		if _, err := normalizeConfigGroup(item.Group); err != nil {
+			return err
+		}
+	}
 	var errs []string
 	for _, item := range plan.Items {
 		switch item.Action {
@@ -123,7 +135,7 @@ func (m *Manager) ExecuteUninstall(plan *UninstallPlan, confirmChanged func(item
 			continue
 		}
 
-		if err := os.Remove(item.TargetPath); err != nil && !os.IsNotExist(err) {
+		if err := removePlainFile(item.TargetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Sprintf("%s: %v", item.Name, err))
 			continue
 		}

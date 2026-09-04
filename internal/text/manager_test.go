@@ -383,3 +383,143 @@ func TestExpandHome(t *testing.T) {
 		}
 	}
 }
+
+func TestTextExportPathsAndPermissions(t *testing.T) {
+	mgr, _ := setupTestTextManager(t)
+	if err := mgr.Set("notes", "PRIVATE", "secret-data"); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	absolute := filepath.Join(t.TempDir(), "absolute", "secret.txt")
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "basename", raw: "secret.txt", want: filepath.Join(cwd, "secret.txt")},
+		{name: "relative", raw: filepath.Join("relative", "nested", "secret.txt"), want: filepath.Join(cwd, "relative", "nested", "secret.txt")},
+		{name: "absolute", raw: absolute, want: absolute},
+		{name: "home", raw: "~/keys/id.pem", want: filepath.Join(home, "keys", "id.pem")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := mgr.GetToFile("notes", "PRIVATE", tt.raw); err != nil {
+				t.Fatalf("GetToFile(%q): %v", tt.raw, err)
+			}
+			assertTextExport(t, tt.want, "secret-data", 0o600)
+		})
+	}
+	assertTextDirMode(t, filepath.Join(cwd, "relative"), 0o700)
+	assertTextDirMode(t, filepath.Join(cwd, "relative", "nested"), 0o700)
+}
+
+func TestTextExportFileModes(t *testing.T) {
+	mgr, _ := setupTestTextManager(t)
+	if err := mgr.Set("notes", "VALUE", "new"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("explicit 0644 new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "shared.txt")
+		if err := mgr.GetToFileWithMode("notes", "VALUE", path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertTextExport(t, path, "new", 0o644)
+	})
+
+	for _, tt := range []struct {
+		name      string
+		existing  os.FileMode
+		requested os.FileMode
+		want      os.FileMode
+	}{
+		{name: "default tightens loose", existing: 0o644, requested: 0o600, want: 0o600},
+		{name: "default preserves stricter", existing: 0o400, requested: 0o600, want: 0o400},
+		{name: "explicit mode never widens existing", existing: 0o600, requested: 0o644, want: 0o600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "existing.txt")
+			if err := os.WriteFile(path, []byte("old"), tt.existing); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tt.existing); err != nil {
+				t.Fatal(err)
+			}
+			if err := mgr.GetToFileWithMode("notes", "VALUE", path, tt.requested); err != nil {
+				t.Fatal(err)
+			}
+			assertTextExport(t, path, "new", tt.want)
+		})
+	}
+}
+
+func TestTextExportRejectsSymlinks(t *testing.T) {
+	mgr, _ := setupTestTextManager(t)
+	if err := mgr.Set("notes", "VALUE", "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("target", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target")
+		if err := os.Symlink(outside, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.GetToFile("notes", "VALUE", target); err == nil {
+			t.Fatal("export through target symlink succeeded")
+		}
+	})
+
+	t.Run("parent", func(t *testing.T) {
+		dir := t.TempDir()
+		parent := filepath.Join(dir, "linked")
+		if err := os.Symlink(filepath.Dir(outside), parent); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.GetToFile("notes", "VALUE", filepath.Join(parent, "outside")); err == nil {
+			t.Fatal("export through parent symlink succeeded")
+		}
+	})
+
+	data, err := os.ReadFile(outside)
+	if err != nil || string(data) != "outside" {
+		t.Fatalf("outside target changed: data=%q err=%v", data, err)
+	}
+}
+
+func assertTextExport(t *testing.T, path, content string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	if string(data) != content {
+		t.Fatalf("content of %q = %q, want %q", path, data, content)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != mode.Perm() {
+		t.Fatalf("mode of %q = %04o, want %04o", path, info.Mode().Perm(), mode.Perm())
+	}
+}
+
+func assertTextDirMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != mode.Perm() {
+		t.Fatalf("directory mode of %q = %04o, want %04o", path, info.Mode().Perm(), mode.Perm())
+	}
+}

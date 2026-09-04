@@ -17,7 +17,11 @@ func derivedKey(t *testing.T, mgr *Manager, password string) []byte {
 	if err != nil {
 		t.Fatalf("decode salt: %v", err)
 	}
-	return crypto.DeriveKeyWithIterations(password, salt, metadata.EffectiveIterations())
+	iterations, err := metadata.ValidatedKDFIterations()
+	if err != nil {
+		t.Fatalf("validate KDF iterations: %v", err)
+	}
+	return crypto.DeriveKeyWithIterations(password, salt, iterations)
 }
 
 func TestSaveAndLoadConfigFileWithKey(t *testing.T) {

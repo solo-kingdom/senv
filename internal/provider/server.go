@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 // ServerProvider 是 server provider：本地缓存（复用 storage.Manager 文件格式）为工作副本，
@@ -84,6 +86,11 @@ func (p *ServerProvider) lockBlocking() (func(), error) {
 	return func() { _ = lock.release() }, nil
 }
 
+func (p *ServerProvider) withVaultMutation(fn func() error) error {
+	manager := storage.NewManager(p.cache.configPath, p.cache.dataPath)
+	return manager.WithVaultMutation(func(*storage.Manager) error { return fn() })
+}
+
 // Bootstrap 初始化本地缓存：拉取 metadata 与全部条目落盘，建立同步状态。
 // vault 在 server 端不存在时返回 ErrVaultNotFound。
 func (p *ServerProvider) Bootstrap(ctx context.Context) error {
@@ -92,6 +99,10 @@ func (p *ServerProvider) Bootstrap(ctx context.Context) error {
 		return err
 	}
 	defer release()
+	return p.withVaultMutation(func() error { return p.bootstrapLocked(ctx) })
+}
+
+func (p *ServerProvider) bootstrapLocked(ctx context.Context) error {
 	blob, err := p.api.GetMetadata(ctx, p.vault)
 	if err != nil {
 		return err
@@ -100,7 +111,7 @@ func (p *ServerProvider) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := p.cache.writeMetadata(blob); err != nil {
+	if err := validateRemoteEntries(entries); err != nil {
 		return err
 	}
 	st := newSyncState()
@@ -108,12 +119,12 @@ func (p *ServerProvider) Bootstrap(ctx context.Context) error {
 	st.LastSyncedRevision = latest
 	st.LastPullAt = p.now().Unix()
 	for _, e := range entries {
-		if err := p.cache.apply(e); err != nil {
-			return err
+		if e.Deleted {
+			continue
 		}
 		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 	}
-	return p.cache.saveState(st)
+	return p.cache.applyRemote(entries, blob, true, st)
 }
 
 // collectDirty 对比快照与当前本地缓存，返回待推送条目（含删除标记）。
@@ -163,8 +174,30 @@ type PullResult struct {
 
 // pull 增量拉取并落盘；本地 dirty 的条目不被远端覆盖（留给 push 乐观锁判定）
 func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
+	var result *PullResult
+	err := p.withVaultMutation(func() error {
+		var err error
+		result, err = p.pullLocked(ctx)
+		return err
+	})
+	return result, err
+}
+
+func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 	st, err := p.cache.loadState()
 	if err != nil {
+		return nil, err
+	}
+
+	entries, latest, err := p.api.Pull(ctx, p.vault, st.LastSyncedRevision)
+	if errors.Is(err, ErrVaultNotFound) {
+		entries, latest = nil, 0
+	} else if err != nil {
+		return nil, err
+	}
+	// Validate every returned identity, including dirty entries that will be
+	// skipped, before any mutable filesystem operation.
+	if err := validateRemoteEntries(entries); err != nil {
 		return nil, err
 	}
 	current, err := p.cache.collect()
@@ -172,24 +205,15 @@ func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
 		return nil, err
 	}
 	dirty := dirtyIDs(p.collectDirty(st, current))
-
-	entries, latest, err := p.api.Pull(ctx, p.vault, st.LastSyncedRevision)
-	if errors.Is(err, ErrVaultNotFound) {
-		// 远端尚无此 vault（首次从本地推送的场景）：视为空远端
-		entries, latest = nil, 0
-	} else if err != nil {
-		return nil, err
-	}
 	res := &PullResult{LatestRevision: latest}
+	toApply := make([]Entry, 0, len(entries))
 	for _, e := range entries {
 		id := entryID(e.Kind, e.Grp, e.Key)
 		if dirty[id] {
 			res.SkippedDirty++
 			continue
 		}
-		if err := p.cache.apply(e); err != nil {
-			return nil, err
-		}
+		toApply = append(toApply, e)
 		res.Applied++
 		if e.Deleted {
 			delete(st.Entries, id)
@@ -198,7 +222,6 @@ func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
 		}
 	}
 
-	// metadata：本地未改而远端已改 → 接受远端；两端均改 → 标记冲突留待 push 阶段
 	localMeta, err := p.cache.readMetadata()
 	if err != nil {
 		return nil, err
@@ -209,22 +232,20 @@ func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
 	}
 	localHash := hashBytes(localMeta)
 	remoteHash := hashBytes(remoteMeta)
+	updateMetadata := false
 	if remoteHash != localHash {
 		if localHash == st.MetadataHash {
-			if err := p.cache.writeMetadata(remoteMeta); err != nil {
-				return nil, err
-			}
 			st.MetadataHash = remoteHash
 			res.MetadataUpdated = true
+			updateMetadata = true
 		} else {
 			res.MetadataConflict = true
 		}
 	}
 
 	st.LastSyncedRevision = latest
-	// 记录本次成功拉取时间（读路径自动拉取的节流依据）；失败路径不落盘即不更新
 	st.LastPullAt = p.now().Unix()
-	if err := p.cache.saveState(st); err != nil {
+	if err := p.cache.applyRemote(toApply, remoteMeta, updateMetadata, st); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -239,6 +260,16 @@ type PushResult struct {
 
 // push 收集 dirty 条目并乐观锁批量推送；409 时解析为 SyncConflictError
 func (p *ServerProvider) push(ctx context.Context) (*PushResult, error) {
+	var result *PushResult
+	err := p.withVaultMutation(func() error {
+		var err error
+		result, err = p.pushLocked(ctx)
+		return err
+	})
+	return result, err
+}
+
+func (p *ServerProvider) pushLocked(ctx context.Context) (*PushResult, error) {
 	st, err := p.cache.loadState()
 	if err != nil {
 		return nil, err
@@ -388,34 +419,36 @@ func (p *ServerProvider) AcceptRemote(ctx context.Context) error {
 		return err
 	}
 	defer release()
+	return p.withVaultMutation(func() error { return p.acceptRemoteLocked(ctx) })
+}
+
+func (p *ServerProvider) acceptRemoteLocked(ctx context.Context) error {
 	entries, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
 		return err
 	}
-	st := newSyncState()
-	for _, e := range entries {
-		if err := p.cache.apply(e); err != nil {
-			return err
-		}
-		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+	if err := validateRemoteEntries(entries); err != nil {
+		return err
 	}
-	st.LastSyncedRevision = latest
-	// metadata 同样以远端为准
 	blob, err := p.api.GetMetadata(ctx, p.vault)
 	if err != nil && !errors.Is(err, ErrVaultNotFound) {
 		return err
 	}
-	if err == nil {
-		if err := p.cache.writeMetadata(blob); err != nil {
-			return err
+	st := newSyncState()
+	for _, e := range entries {
+		if e.Deleted {
+			continue
 		}
+		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+	}
+	st.LastSyncedRevision = latest
+	if err == nil {
 		st.MetadataHash = hashBytes(blob)
 	}
-	if err := p.cache.saveState(st); err != nil {
+	if err := p.cache.applyRemote(entries, blob, err == nil, st); err != nil {
 		return err
 	}
-	// 本地新增文件（远端没有）作为新条目推送
-	_, err = p.push(ctx)
+	_, err = p.pushLocked(ctx)
 	return err
 }
 
@@ -426,8 +459,15 @@ func (p *ServerProvider) ForcePush(ctx context.Context) error {
 		return err
 	}
 	defer release()
+	return p.withVaultMutation(func() error { return p.forcePushLocked(ctx) })
+}
+
+func (p *ServerProvider) forcePushLocked(ctx context.Context) error {
 	remote, latest, err := p.api.Pull(ctx, p.vault, 0)
 	if err != nil {
+		return err
+	}
+	if err := validateRemoteEntries(remote); err != nil {
 		return err
 	}
 	remoteRev := make(map[string]int64, len(remote))

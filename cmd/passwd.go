@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/storage"
 )
 
 var passwdCmd = &cobra.Command{
@@ -14,7 +15,13 @@ var passwdCmd = &cobra.Command{
 	Short: "Change the encryption password",
 	Long: `Change the password used to encrypt all senv data.
 This re-encrypts every data file (env, text, config) with a new key
-derived from the new password. On failure the original encryption is preserved.`,
+derived with the current 600,000-iteration PBKDF2 setting; legacy vaults are
+upgraded even when the password is unchanged.
+
+Rekey is a recoverable transaction. Later vault access automatically rolls
+back or completes a safely identifiable interrupted transaction. If recovery
+cannot be proven safe, access fails closed, preserves recovery files, and
+reports guidance instead of exposing a mixed-key vault.`,
 	RunE: runPasswd,
 }
 
@@ -58,8 +65,13 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to generate salt: %w", err)
 	}
 	// Rekey upgrades the KDF to the current default so old vaults gain the
-	// strengthened iteration count on password change.
-	newKey := crypto.DeriveKeyWithIterations(newPassword, newSalt, crypto.DefaultIterations)
+	// strengthened iteration count. Validate the target metadata before deriving.
+	targetMetadata := storage.NewMetadata("", "")
+	newIterations, err := targetMetadata.ValidatedKDFIterations()
+	if err != nil {
+		return err
+	}
+	newKey := deriveKeyWithIterations(newPassword, newSalt, newIterations)
 	passwordHash := crypto.HashPassword(newPassword)
 	newPasswordKey, err := crypto.Encrypt(newKey, []byte(passwordHash))
 	if err != nil {
@@ -67,7 +79,7 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := auth.storage.Rekey(oldKey, newKey,
-		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
+		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, newIterations)
 	if err != nil {
 		return fmt.Errorf("password change failed: %w", err)
 	}
@@ -77,7 +89,7 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	clearAuthMemo()
 
 	fmt.Printf("✓ Password changed. Re-encrypted %d file(s). KDF iterations: %d.\n",
-		result.Total(), crypto.DefaultIterations)
+		result.Total(), newIterations)
 	fmt.Println("  Note: senv binaries older than this version cannot unlock this vault anymore.")
 	fmt.Println("  Run 'senv session start' to cache the new key.")
 	pushBlockingAfterCriticalWrite(cmd)

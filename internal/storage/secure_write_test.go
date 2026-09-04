@@ -89,3 +89,29 @@ func TestWriteSensitiveFile_MkdirDeep(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsurePrivateDirRejectsIntermediateSymlink(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := EnsurePrivateDir(filepath.Join(base, "linked", "vault"), 0o700)
+	if err == nil {
+		t.Fatal("EnsurePrivateDir followed an intermediate symlink")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "vault")); !os.IsNotExist(err) {
+		t.Fatalf("outside directory changed through symlink: %v", err)
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("outside mode changed to %04o", info.Mode().Perm())
+	}
+}

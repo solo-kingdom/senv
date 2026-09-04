@@ -16,6 +16,11 @@ func isolateSessionCache(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	originalProbe := runtimeFilesystemProbe
+	runtimeFilesystemProbe = func(string) (runtimeFilesystemKind, error) {
+		return runtimeFilesystemMemory, nil
+	}
+	t.Cleanup(func() { runtimeFilesystemProbe = originalProbe })
 }
 
 func setupProject(t *testing.T, password string) (configPath, dataPath string) {
@@ -312,5 +317,43 @@ func TestStaleNoClear_KeyInvalidKeepsCache(t *testing.T) {
 	}
 	if _, cache, err := sm.PeekCachedKey(); err != nil || cache == nil {
 		t.Fatalf("stale cache must survive key-invalid failure: err=%v cache=%v", err, cache)
+	}
+}
+
+func TestStartSessionRekeyConcurrentLease(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	timeout, err := ParseTimeout("never")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := storage.NewManager(configPath, dataPath)
+	entered, release := make(chan struct{}), make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- store.WithVaultMutation(func(*storage.Manager) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	startDone := make(chan error, 1)
+	manager := sessionManagerForTest(t, configPath, dataPath)
+	go func() { startDone <- manager.StartSession("correct-secret", timeout) }()
+	select {
+	case err := <-startDone:
+		t.Fatalf("StartSession crossed vault mutation lease: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startDone; err != nil {
+		t.Fatalf("StartSession after lease release: %v", err)
+	}
+	if _, err := manager.GetCachedKey(); err != nil {
+		t.Fatalf("successful session cache is not immediately valid: %v", err)
 	}
 }

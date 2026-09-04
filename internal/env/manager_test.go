@@ -2,6 +2,7 @@ package env
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,35 +99,20 @@ func captureStderr(t *testing.T, fn func()) string {
 	return string(buf[:n])
 }
 
-func TestExportSkipsInvalidKeysWithWarning(t *testing.T) {
+func TestExportRejectsInvalidEnvIdentity(t *testing.T) {
 	mgr := newTestManager(t)
-
-	// One valid key and one historical invalid key in the default group.
 	if err := mgr.Set("default", "API_KEY", "secret"); err != nil {
 		t.Fatalf("Set valid: %v", err)
 	}
-	injectRawEnvVar(t, mgr, "default", "openviking/root_api_key", "bad")
-
-	var out string
-	stderr := captureStderr(t, func() {
-		var err error
-		out, err = mgr.Export()
-		if err != nil {
-			t.Fatalf("Export: %v", err)
-		}
-	})
-
-	// Stdout output: only the valid key is exported.
-	if strings.Contains(out, "openviking/root_api_key") {
-		t.Errorf("export output should not contain invalid key, got:\n%s", out)
+	polluted := filepath.Join(mgr.storage.GetDataPath(), storage.EnvDirName, "default", "openviking")
+	if err := os.MkdirAll(polluted, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "export API_KEY='secret'") {
-		t.Errorf("export output should contain valid key, got:\n%s", out)
+	if err := os.WriteFile(filepath.Join(polluted, "root_api_key.enc"), []byte("historical"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-
-	// Stderr: warning about the invalid key.
-	if !strings.Contains(stderr, `skipping invalid env key "openviking/root_api_key" in group "default"`) {
-		t.Errorf("expected warning on stderr, got:\n%s", stderr)
+	if _, err := mgr.Export(); err == nil {
+		t.Fatal("Export succeeded with an invalid historical env identity")
 	}
 }
 

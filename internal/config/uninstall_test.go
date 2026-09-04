@@ -116,3 +116,36 @@ func TestUninstallThenReinstall(t *testing.T) {
 		t.Errorf("reinstalled content = %q, want v1", string(data))
 	}
 }
+
+func TestUninstallRejectsSymlinkTarget(t *testing.T) {
+	m := newTestManager(t)
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.conf")
+	writeFile(t, outside, "stored\n")
+	target := filepath.Join(dir, "linked.conf")
+	if err := os.Symlink(outside, target); err != nil {
+		t.Fatal(err)
+	}
+	createConfigWithTarget(t, m, "linked", "", target, "stored\n")
+
+	plan, err := m.PlanUninstall(Scope{Name: "linked"})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionError {
+		t.Fatalf("symlink plan = %+v, want one error item", plan.Items)
+	}
+	if err := m.ExecuteUninstall(plan, func(UninstallItem) bool { return true }); err == nil {
+		t.Fatal("uninstall accepted a symlink target")
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "stored\n" {
+		t.Fatalf("outside target changed: %q, %v", data, err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("lstat target symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("target mode=%v, want symlink", info.Mode())
+	}
+}

@@ -1,57 +1,60 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/wii/senv/internal/securefs"
 )
 
-// WriteSensitiveFile writes a file that must stay user-private (metadata,
-// settings, config index, session caches). It guarantees the permissions even
-// when the file or its directory already exists with looser ones: plain
-// os.WriteFile never changes permissions of existing files, so vaults created
-// by older versions would keep world-readable settings forever.
-//
-// Order matters: the existing file is tightened BEFORE overwriting so no
-// freshly written content is ever observable under the old loose mode.
+// WriteSensitiveFile atomically writes a private file without following a
+// symlink at the target or its immediate parent. Storage-managed paths use
+// Manager's trusted config/data roots directly; this helper remains for callers
+// that already supply a complete filesystem path.
 func WriteSensitiveFile(path string, data []byte, dirPerm, filePerm os.FileMode) error {
-	if err := EnsurePrivateDir(filepath.Dir(path), dirPerm); err != nil {
+	parent := filepath.Dir(filepath.Clean(path))
+	if err := EnsurePrivateDir(parent, dirPerm); err != nil {
 		return err
 	}
-	if err := tightenFile(path, filePerm); err != nil {
+	root, err := securefs.OpenRoot(parent)
+	if err != nil {
+		return fmt.Errorf("open sensitive-file parent: %w", err)
+	}
+	defer root.Close()
+	if err := securefs.ValidateSegment(filepath.Base(path)); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, filePerm)
+	return root.AtomicWrite([]string{filepath.Base(path)}, data, filePerm)
 }
 
 // EnsurePrivateDir creates dir (and parents) with dirPerm and tightens an
-// existing looser directory to dirPerm. Use for directories holding
-// sensitive content so directories made by older versions converge to 0700.
+// existing loose real directory. Every component is traversed relative to an
+// opened filesystem-root descriptor, so neither an existing nor concurrently
+// substituted intermediate symlink is followed.
 func EnsurePrivateDir(dir string, dirPerm os.FileMode) error {
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return err
+	if dirPerm&^os.FileMode(0o777) != 0 {
+		return fmt.Errorf("private directory mode contains non-permission bits")
 	}
-	info, err := os.Stat(dir)
+	absolute, err := filepath.Abs(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve private directory %q: %w", dir, err)
 	}
-	if !info.IsDir() || info.Mode().Perm()&^dirPerm == 0 {
-		return nil
+	absolute = filepath.Clean(absolute)
+	rootPath := filepath.VolumeName(absolute) + string(filepath.Separator)
+	relative, err := filepath.Rel(rootPath, absolute)
+	if err != nil || relative == "." || relative == "" || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("private directory %q is outside a usable filesystem root", dir)
 	}
-	return os.Chmod(dir, dirPerm)
-}
-
-// tightenFile restricts a regular file to perm when its current mode is
-// looser. Missing files and non-regular files are left alone.
-func tightenFile(path string, perm os.FileMode) error {
-	info, err := os.Lstat(path)
+	segments := strings.Split(relative, string(filepath.Separator))
+	root, err := securefs.OpenRoot(rootPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+		return fmt.Errorf("open private-directory filesystem root: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&^perm == 0 {
-		return nil
+	defer root.Close()
+	if err := root.EnsureDir(segments, dirPerm.Perm()); err != nil {
+		return fmt.Errorf("prepare private directory %q: %w", dir, err)
 	}
-	return os.Chmod(path, perm)
+	return nil
 }

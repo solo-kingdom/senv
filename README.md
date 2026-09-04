@@ -65,7 +65,7 @@ senv init
 senv init --path /path/to/data
 ```
 
-程序会提示你输入加密密码，该密码用于加密所有数据。
+程序会提示你输入加密密码，该密码用于加密所有数据。新建 vault 使用 PBKDF2-SHA256 600,000 次迭代；旧 metadata 缺失或记录 `kdf_iterations: 0` 时继续按 100,000 次兼容读取。
 
 ### 2. 管理环境变量
 
@@ -129,6 +129,8 @@ echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 
 无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘）。
 
+Session cache 只会写入经操作系统确认的 memory-backed 文件系统（Linux 为 tmpfs/ramfs）。`XDG_RUNTIME_DIR` 或系统临时目录若无法验证为内存介质，`session start` 会 fail closed；可继续使用交互式一次性密码，或将 `XDG_RUNTIME_DIR` 指向可信内存挂载。所有 timeout（包括 `never`）都遵守此限制，且不会跨重启保留。
+
 **注意**：`default` 分组默认激活，无需手动激活。
 
 ### 5. 管理文本块
@@ -155,8 +157,11 @@ senv text get secrets:SSH_KEY          # group:key 地址，等价于上一行
 senv secrets:SSH_KEY "ssh-rsa AAAA..." # 等价于 senv text set -g secrets SSH_KEY "..."
 senv text secrets:SSH_KEY "ssh-rsa..." # text 子命令快捷方式
 
-# 获取文本并写入文件
+# 获取文本并写入文件（新文件默认 0600）
 senv text -g keys get TLS_CERT -o /tmp/cert.pem
+
+# 仅对确需共享的非秘密内容显式放宽；不会成为后续默认值
+senv text get public:CERT -o /tmp/cert.pem --mode 0644
 
 # 获取文本并复制到剪贴板
 senv text -g secrets get SSH_KEY --copy
@@ -218,6 +223,9 @@ senv config export database
 # 或导出到自定义路径
 senv config export database --path /tmp/database.json
 
+# 新文件默认 0600；仅在确需共享时显式放宽
+senv config export public-config --path /tmp/config.json --mode 0644
+
 # 列出所有配置文件
 senv config list
 
@@ -272,7 +280,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
 
-**工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session，server 进程内缓存密钥，后续工具调用不再鉴权。
+**工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session；之后每个工具请求都会重新验证 session ID、到期时间、boot ID 与 vault metadata。session 到期、clear、替换或 rekey 后，旧 MCP 进程会拒绝请求，需重启 session 和 MCP server。
 
 ```bash
 # 1) 终端里鉴权一次（默认 30 分钟超时；-t never 永不过期）
@@ -302,7 +310,7 @@ senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 ### 加密方案
 
 - **算法**: AES-256-GCM（认证加密）
-- **密钥派生**: PBKDF2（100,000 次迭代，SHA-256）
+- **密钥派生**: PBKDF2-SHA256（新建 vault 与成功 `senv passwd` 后为 600,000 次；旧 metadata 缺失/0 为 legacy 100,000 次）
 - **盐值**: 每个项目使用 32 字节随机盐
 - **Nonce**: 每次加密使用 12 字节随机 nonce
 
@@ -431,10 +439,9 @@ A:
 
 ### Q: 如何更改密码？
 
-A: 目前不支持直接更改密码。你需要：
-1. 导出所有环境变量和配置文件
-2. 删除数据目录
-3. 重新初始化并导入数据
+A: 运行 `senv passwd`。该命令会换盐并以当前 600,000 次 KDF 参数重新加密全部 env/text/config；即使口令不变，也可用于升级 legacy 100,000 次 vault。升级后，硬编码 100,000 次的旧版 senv 无法解锁，请先升级所有机器上的客户端。
+
+`passwd` 使用可恢复事务。普通访问会先自动回滚或完成可判定的未完成事务；若 journal 损坏或 I/O 状态无法安全判断，则保留 recovery sidecar、阻断普通访问并返回 `unfinished rekey requires recovery`。此时不要删除 `.senv-rekey-*` 文件，按错误提示使用新版 `senv doctor` 排查并从备份恢复。
 
 > 注意：若 data 目录已有加密文件但删除了 `metadata.json`，`senv init` 会拒绝执行，以免生成新密钥导致旧密文无法解密。请先从备份/git 恢复 `metadata.json`。
 
@@ -470,7 +477,7 @@ senv env group add <name>          创建分组
 senv env group activate <name>     激活分组
 senv env group deactivate <name>   停用分组
 senv text set <key|group:key> [value]  设置文本块（无值打开编辑器）
-senv text get <key|group:key> [-d]       获取文本块（-d 解引用）
+senv text get <key|group:key> [-d] [-o path] [--mode 0600]  获取/导出文本块
 senv text delete <key|group:key>         删除文本块
 senv text list [group]             列出文本块
 senv text group list               列出所有文本分组
@@ -478,7 +485,8 @@ senv text group add <name>         创建文本分组
 senv text group delete <name>      删除文本分组
 senv config create <name>          创建配置文件
 senv config edit <name>            编辑配置文件
-senv config export <name>          导出配置文件
+senv config export <name> [--path path] [--mode 0600]  导出配置文件
+senv config install [name] [--mode 0600]              安装配置文件
 senv config list                   列出所有配置文件
 senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
@@ -520,6 +528,10 @@ MIT License
 欢迎提交 Issue 和 Pull Request！
 
 ## 更新日志
+
+### Unreleased
+
+- 🔐 安全与兼容迁移详见 [Release Notes](docs/RELEASE_NOTES.md)：600k/legacy KDF、memory-backed session 限制、可恢复 rekey，以及明文导出默认 `0600`/显式 `--mode`。
 
 ### v1.0.0 (2026-03-06)
 

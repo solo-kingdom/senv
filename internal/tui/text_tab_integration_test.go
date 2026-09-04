@@ -131,3 +131,20 @@ func TestTextEditBuildsExecCommand(t *testing.T) {
 		t.Fatal("editCurrent should return a non-nil exec command")
 	}
 }
+
+func TestTextTUIExportDefaultPermission(t *testing.T) {
+	mgr := newTestTextManager(t)
+	if err := mgr.Set("default", "secret", "private"); err != nil {
+		t.Fatal(err)
+	}
+	tab := newTextTab(Managers{Text: mgr})
+	out := filepath.Join(t.TempDir(), "secret.txt")
+	tab = flushText(tab, tab.doExport("default", "secret", out))
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("TUI export mode = %04o, want 0600", info.Mode().Perm())
+	}
+}

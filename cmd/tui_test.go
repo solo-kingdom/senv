@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/wii/senv/internal/session"
@@ -24,7 +25,19 @@ func stubPrompter(password string) passwordPrompter {
 func isolateSessionCache(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	runtimeDir := t.TempDir()
+	if runtime.GOOS == "linux" {
+		var err error
+		runtimeDir, err = os.MkdirTemp("/dev/shm", "senv-cmd-test-")
+		if err != nil {
+			t.Fatalf("create tmpfs runtime directory: %v", err)
+		}
+		if err := os.Chmod(runtimeDir, 0o700); err != nil {
+			t.Fatalf("chmod tmpfs runtime directory: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	}
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	clearAuthMemo()
 	stdinIsTerminal = func() bool { return true }
 	stdoutIsTerminal = func() bool { return true }

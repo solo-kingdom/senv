@@ -24,8 +24,11 @@ Session timeout can be configured as:
 
 Security considerations:
   - Only the derived key is cached, not your password
-  - The cache lives on tmpfs (XDG_RUNTIME_DIR) with 0600 permissions and is
-    never written to persistent storage
+  - Every runtime candidate is verified as memory-backed before use; Linux
+    accepts tmpfs/ramfs. Unknown or disk-backed filesystems fail closed
+  - XDG_RUNTIME_DIR is preferred; fallback is allowed only on another verified
+    memory-backed filesystem, in a random 0700 directory
+  - The cache is 0600 and never written to persistent storage
   - Cache includes a hash of your data path for validation
   - Use 'session clear' to manually clear the cache`,
 }
@@ -35,7 +38,9 @@ var sessionStartCmd = &cobra.Command{
 	Short: "Start a new session",
 	Long: `Start a new session with a specified timeout.
 
-If no timeout is specified, uses the default from settings (8h).
+If no timeout is specified, uses the default from settings (8h). All timeout
+modes require an operating-system-verified memory-backed runtime filesystem;
+otherwise the command fails without writing the derived key.
 
 Examples:
   # Start session with default timeout

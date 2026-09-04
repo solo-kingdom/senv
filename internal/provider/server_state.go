@@ -4,32 +4,34 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/wii/senv/internal/securefs"
+	"github.com/wii/senv/internal/storage"
+	"github.com/wii/senv/internal/syncschema"
 )
 
-// 同步条目的 kind 取值（与 server schema 一致）
+// Keep the provider constants as aliases for compatibility while making the
+// shared schema package the single source of truth.
 const (
-	KindEnv         = "env"
-	KindEnvMeta     = "env_meta"
-	KindText        = "text"
-	KindConfig      = "config"
-	KindConfigIndex = "config_index"
+	KindEnv         = syncschema.KindEnv
+	KindEnvMeta     = syncschema.KindEnvMeta
+	KindText        = syncschema.KindText
+	KindConfig      = syncschema.KindConfig
+	KindConfigIndex = syncschema.KindConfigIndex
 )
 
-// syncStateFileName 同步状态文件名，存于缓存目录（dataPath）内，不进加密区、不含敏感内容
 const syncStateFileName = ".senv-sync-state.json"
 
-// syncEntryState 记录条目在上次同步后的本地内容哈希与 server revision
 type syncEntryState struct {
 	Revision int64  `json:"revision"`
 	Hash     string `json:"hash"`
 }
 
-// syncState 本地同步状态：last_synced_revision + 快照（dirty 判定依据）。
-// LastPullAt 为读路径自动拉取的节流时间戳（unix 秒，旧文件缺省为 0 = 立即拉取）。
 type syncState struct {
 	LastSyncedRevision int64                     `json:"last_synced_revision"`
 	LastPullAt         int64                     `json:"last_pull_at,omitempty"`
@@ -41,45 +43,116 @@ func newSyncState() *syncState {
 	return &syncState{Entries: make(map[string]syncEntryState)}
 }
 
-// hashBytes 计算内容的 SHA-256 十六进制（dirty 判定用，内容本身就是密文）
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
 
-// localCache 封装 server 模式本地缓存目录的条目 <-> 文件映射。
-// 布局与现有 storage.Manager 文件格式完全一致（缓存即工作副本）。
+type providerRootOpener func(string) (securefs.TrustedRoot, error)
+
 type localCache struct {
 	configPath string
 	dataPath   string
+	// openRoot is a package-private fault seam. Production caches leave it nil.
+	openRoot providerRootOpener
+}
+
+func (c *localCache) rootOpener() providerRootOpener {
+	if c.openRoot != nil {
+		return c.openRoot
+	}
+	return func(path string) (securefs.TrustedRoot, error) { return securefs.OpenRoot(path) }
+}
+
+func (c *localCache) openExistingRoot(path string) (securefs.TrustedRoot, error) {
+	return c.rootOpener()(path)
+}
+
+func (c *localCache) openTrustedRoot(path string) (securefs.TrustedRoot, error) {
+	if err := storage.EnsurePrivateDir(path, 0o700); err != nil {
+		return nil, err
+	}
+	return c.rootOpener()(path)
 }
 
 func (c *localCache) stateFilePath() string {
 	return filepath.Join(c.dataPath, syncStateFileName)
 }
 
-// entryPath 返回条目对应的本地文件路径
-func (c *localCache) entryPath(kind, grp, key string) string {
-	switch kind {
-	case KindEnv:
-		return filepath.Join(c.dataPath, "envs", grp, key+".enc")
-	case KindEnvMeta:
-		return filepath.Join(c.dataPath, "envs", grp, ".meta.enc")
-	case KindText:
-		return filepath.Join(c.dataPath, "texts", grp, key+".enc")
-	case KindConfig:
-		return filepath.Join(c.dataPath, key+".enc")
-	case KindConfigIndex:
-		return filepath.Join(c.configPath, "config_index.json")
-	}
-	return ""
+func (c *localCache) metadataPath() string {
+	return filepath.Join(c.configPath, storage.MetadataFile)
 }
 
-// collect 扫描本地缓存，返回全部条目（id -> Entry，含密文内容与哈希）
+type cacheRootKind uint8
+
+const (
+	cacheDataRoot cacheRootKind = iota
+	cacheConfigRoot
+)
+
+type cacheLocation struct {
+	root     cacheRootKind
+	segments []string
+}
+
+func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error) {
+	if err := syncschema.ValidateIdentity(kind, grp, key); err != nil {
+		return cacheLocation{}, fmt.Errorf("remote entry identity rejected: %w", err)
+	}
+	switch kind {
+	case KindEnv:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.EnvDirName, grp, key + storage.EnvVarSuffix}}, nil
+	case KindEnvMeta:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.EnvDirName, grp, storage.EnvMetaFileName}}, nil
+	case KindText:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TextDirName, grp, key + storage.TextFileSuffix}}, nil
+	case KindConfig:
+		return cacheLocation{root: cacheDataRoot, segments: []string{key + storage.ConfigFileSuffix}}, nil
+	case KindConfigIndex:
+		return cacheLocation{root: cacheConfigRoot, segments: []string{storage.ConfigIndexFile}}, nil
+	default:
+		panic("syncschema accepted unknown kind")
+	}
+}
+
+// entryPath maps a validated entry identity to its compatibility filesystem
+// path. All mutations use entryLocation with trusted roots instead.
+func (c *localCache) entryPath(kind, grp, key string) (string, error) {
+	location, err := c.entryLocation(kind, grp, key)
+	if err != nil {
+		return "", err
+	}
+	base := c.dataPath
+	if location.root == cacheConfigRoot {
+		base = c.configPath
+	}
+	return filepath.Join(append([]string{base}, location.segments...)...), nil
+}
+
+func validateRemoteEntries(entries []Entry) error {
+	for _, entry := range entries {
+		if err := syncschema.ValidateIdentity(entry.Kind, entry.Grp, entry.Key); err != nil {
+			return fmt.Errorf("remote entry identity rejected: %w", err)
+		}
+	}
+	return nil
+}
+
+// collect enumerates the cache through trusted roots. Invalid historical names,
+// symlinks, and special files fail closed rather than being followed or skipped.
 func (c *localCache) collect() (map[string]Entry, error) {
 	entries := make(map[string]Entry)
-	add := func(kind, grp, key, path string) error {
-		data, err := os.ReadFile(path)
+	dataRoot, err := c.openExistingRoot(c.dataPath)
+	if err != nil {
+		return nil, err
+	}
+	defer dataRoot.Close()
+
+	add := func(kind, grp, key string, root securefs.TrustedRoot, segments ...string) error {
+		if err := syncschema.ValidateIdentity(kind, grp, key); err != nil {
+			return fmt.Errorf("local sync entry identity rejected: %w", err)
+		}
+		data, err := root.Read(segments...)
 		if err != nil {
 			return err
 		}
@@ -87,153 +160,351 @@ func (c *localCache) collect() (map[string]Entry, error) {
 		return nil
 	}
 
-	// envs/<grp>/*.enc 与 envs/<grp>/.meta.enc
-	envsDir := filepath.Join(c.dataPath, "envs")
-	if groups, err := os.ReadDir(envsDir); err == nil {
-		for _, g := range groups {
-			if !g.IsDir() {
-				continue
+	if groups, err := dataRoot.ReadDir(storage.EnvDirName); err == nil {
+		for _, group := range groups {
+			if !group.IsDir {
+				return nil, fmt.Errorf("invalid env cache entry type")
 			}
-			files, err := os.ReadDir(filepath.Join(envsDir, g.Name()))
+			files, err := dataRoot.ReadDir(storage.EnvDirName, group.Name)
 			if err != nil {
 				return nil, err
 			}
-			for _, f := range files {
-				name := f.Name()
+			for _, file := range files {
+				if file.IsDir {
+					return nil, fmt.Errorf("invalid env cache entry type")
+				}
 				switch {
-				case name == ".meta.enc":
-					if err := add(KindEnvMeta, g.Name(), "", filepath.Join(envsDir, g.Name(), name)); err != nil {
+				case file.Name == storage.EnvMetaFileName:
+					if err := add(KindEnvMeta, group.Name, "", dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
 						return nil, err
 					}
-				case strings.HasSuffix(name, ".enc"):
-					key := strings.TrimSuffix(name, ".enc")
-					if err := add(KindEnv, g.Name(), key, filepath.Join(envsDir, g.Name(), name)); err != nil {
+				case strings.HasSuffix(file.Name, storage.EnvVarSuffix):
+					key := strings.TrimSuffix(file.Name, storage.EnvVarSuffix)
+					if err := add(KindEnv, group.Name, key, dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
 						return nil, err
 					}
 				}
 			}
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 
-	// texts/<grp>/<key>.enc
-	textsDir := filepath.Join(c.dataPath, "texts")
-	if groups, err := os.ReadDir(textsDir); err == nil {
-		for _, g := range groups {
-			if !g.IsDir() {
-				continue
+	if groups, err := dataRoot.ReadDir(storage.TextDirName); err == nil {
+		for _, group := range groups {
+			if !group.IsDir {
+				return nil, fmt.Errorf("invalid text cache entry type")
 			}
-			files, err := os.ReadDir(filepath.Join(textsDir, g.Name()))
+			files, err := dataRoot.ReadDir(storage.TextDirName, group.Name)
 			if err != nil {
 				return nil, err
 			}
-			for _, f := range files {
-				if strings.HasSuffix(f.Name(), ".enc") {
-					key := strings.TrimSuffix(f.Name(), ".enc")
-					if err := add(KindText, g.Name(), key, filepath.Join(textsDir, g.Name(), f.Name())); err != nil {
+			for _, file := range files {
+				if file.IsDir {
+					return nil, fmt.Errorf("invalid text cache entry type")
+				}
+				if strings.HasSuffix(file.Name, storage.TextFileSuffix) {
+					key := strings.TrimSuffix(file.Name, storage.TextFileSuffix)
+					if err := add(KindText, group.Name, key, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
 						return nil, err
 					}
 				}
 			}
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 
-	// dataPath 根下的 config 密文文件（排除同步状态文件与 env_*.json.enc 旧格式遗留）
-	if files, err := os.ReadDir(c.dataPath); err == nil {
-		for _, f := range files {
-			name := f.Name()
-			if f.IsDir() || name == syncStateFileName {
-				continue
-			}
-			if strings.HasSuffix(name, ".json.enc") && strings.HasPrefix(name, "env_") {
-				continue // 旧格式遗留文件不参与同步
-			}
-			if strings.HasSuffix(name, ".enc") {
-				key := strings.TrimSuffix(name, ".enc")
-				if err := add(KindConfig, "", key, filepath.Join(c.dataPath, name)); err != nil {
-					return nil, err
-				}
+	files, err := dataRoot.ReadDir()
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		name := file.Name
+		if file.IsDir || name == syncStateFileName ||
+			(strings.HasSuffix(name, storage.EnvFileSuffix) && strings.HasPrefix(name, storage.EnvFilePrefix)) {
+			continue
+		}
+		if strings.HasSuffix(name, storage.ConfigFileSuffix) {
+			key := strings.TrimSuffix(name, storage.ConfigFileSuffix)
+			if err := add(KindConfig, "", key, dataRoot, name); err != nil {
+				return nil, err
 			}
 		}
 	}
 
-	// config_index.json（位于 configPath）
-	indexPath := c.entryPath(KindConfigIndex, "", "")
-	if _, err := os.Stat(indexPath); err == nil {
-		if err := add(KindConfigIndex, "", "", indexPath); err != nil {
+	configRoot, err := c.openExistingRoot(c.configPath)
+	if err != nil {
+		return nil, err
+	}
+	defer configRoot.Close()
+	if _, err := configRoot.Read(storage.ConfigIndexFile); err == nil {
+		if err := add(KindConfigIndex, "", "", configRoot, storage.ConfigIndexFile); err != nil {
 			return nil, err
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-
 	return entries, nil
 }
 
-// apply 把拉取到的条目落盘（删除则移除文件）；权限与 storage.Manager 一致（目录 700 文件 600）
-func (c *localCache) apply(e Entry) error {
-	path := c.entryPath(e.Kind, e.Grp, e.Key)
-	if path == "" {
-		return nil
-	}
-	if e.Deleted {
-		err := os.Remove(path)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, e.Ciphertext, 0o600)
+type cacheSnapshot struct {
+	location cacheLocation
+	data     []byte
+	exists   bool
 }
 
-// metadataPath / metadata 读写（vault metadata blob ↔ configPath/metadata.json）
-func (c *localCache) metadataPath() string {
-	return filepath.Join(c.configPath, "metadata.json")
+type cacheTransaction struct {
+	cache      *localCache
+	dataRoot   securefs.TrustedRoot
+	configRoot securefs.TrustedRoot
+	snapshots  map[string]cacheSnapshot
+	order      []string
+}
+
+func newCacheTransaction(cache *localCache) *cacheTransaction {
+	return &cacheTransaction{cache: cache, snapshots: make(map[string]cacheSnapshot)}
+}
+
+func (tx *cacheTransaction) close() {
+	if tx.configRoot != nil {
+		_ = tx.configRoot.Close()
+	}
+	if tx.dataRoot != nil {
+		_ = tx.dataRoot.Close()
+	}
+}
+
+func (tx *cacheTransaction) root(kind cacheRootKind) (securefs.TrustedRoot, error) {
+	if kind == cacheConfigRoot {
+		if tx.configRoot == nil {
+			root, err := tx.cache.openTrustedRoot(tx.cache.configPath)
+			if err != nil {
+				return nil, err
+			}
+			tx.configRoot = root
+		}
+		return tx.configRoot, nil
+	}
+	if tx.dataRoot == nil {
+		root, err := tx.cache.openTrustedRoot(tx.cache.dataPath)
+		if err != nil {
+			return nil, err
+		}
+		tx.dataRoot = root
+	}
+	return tx.dataRoot, nil
+}
+
+func locationID(location cacheLocation) string {
+	return fmt.Sprintf("%d\x00%s", location.root, strings.Join(location.segments, "\x00"))
+}
+
+func (tx *cacheTransaction) snapshot(location cacheLocation) error {
+	id := locationID(location)
+	if _, ok := tx.snapshots[id]; ok {
+		return nil
+	}
+	root, err := tx.root(location.root)
+	if err != nil {
+		return err
+	}
+	data, err := root.Read(location.segments...)
+	snapshot := cacheSnapshot{location: location}
+	switch {
+	case err == nil:
+		snapshot.data = data
+		snapshot.exists = true
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return err
+	}
+	tx.snapshots[id] = snapshot
+	tx.order = append(tx.order, id)
+	return nil
+}
+
+func (tx *cacheTransaction) ensureParent(location cacheLocation) error {
+	if len(location.segments) <= 1 {
+		return nil
+	}
+	root, err := tx.root(location.root)
+	if err != nil {
+		return err
+	}
+	return root.EnsureDir(location.segments[:len(location.segments)-1], 0o700)
+}
+
+func (tx *cacheTransaction) write(location cacheLocation, data []byte) error {
+	if err := tx.snapshot(location); err != nil {
+		return err
+	}
+	if err := tx.ensureParent(location); err != nil {
+		return err
+	}
+	root, err := tx.root(location.root)
+	if err != nil {
+		return err
+	}
+	return root.AtomicWrite(location.segments, data, 0o600)
+}
+
+func (tx *cacheTransaction) remove(location cacheLocation) error {
+	if err := tx.snapshot(location); err != nil {
+		return err
+	}
+	root, err := tx.root(location.root)
+	if err != nil {
+		return err
+	}
+	if err := root.Remove(location.segments...); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (tx *cacheTransaction) apply(entry Entry) error {
+	location, err := tx.cache.entryLocation(entry.Kind, entry.Grp, entry.Key)
+	if err != nil {
+		return err
+	}
+	if entry.Deleted {
+		return tx.remove(location)
+	}
+	return tx.write(location, entry.Ciphertext)
+}
+
+func (tx *cacheTransaction) rollback() error {
+	var rollbackErr error
+	for index := len(tx.order) - 1; index >= 0; index-- {
+		snapshot := tx.snapshots[tx.order[index]]
+		identity := strings.Join(snapshot.location.segments, "/")
+		root, err := tx.root(snapshot.location.root)
+		if err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("open rollback root for %q: %w", identity, err))
+			continue
+		}
+		if snapshot.exists {
+			if err := tx.ensureParent(snapshot.location); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("prepare rollback parent for %q: %w", identity, err))
+				continue
+			}
+			if err := root.AtomicWrite(snapshot.location.segments, snapshot.data, 0o600); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore rollback entry %q: %w", identity, err))
+			}
+			continue
+		}
+		if err := root.Remove(snapshot.location.segments...); err != nil && !errors.Is(err, os.ErrNotExist) {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove rollback entry %q: %w", identity, err))
+		}
+	}
+	return rollbackErr
+}
+
+func (c *localCache) mutate(fn func(*cacheTransaction) error) error {
+	tx := newCacheTransaction(c)
+	defer tx.close()
+	if err := fn(tx); err != nil {
+		if rollbackErr := tx.rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("cache rollback failure: %w", rollbackErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func stateBytes(state *syncState) ([]byte, error) {
+	return json.MarshalIndent(state, "", "  ")
+}
+
+// applyRemote commits a validated pull as one recoverable in-process batch.
+// Sync state is written last and every synchronous failure restores snapshots.
+func (c *localCache) applyRemote(entries []Entry, metadata []byte, updateMetadata bool, state *syncState) error {
+	if err := validateRemoteEntries(entries); err != nil {
+		return err
+	}
+	if updateMetadata {
+		if _, err := storage.ParseMetadata(metadata); err != nil {
+			return fmt.Errorf("invalid synced metadata: %w", err)
+		}
+	}
+	encodedState, err := stateBytes(state)
+	if err != nil {
+		return err
+	}
+	return c.mutate(func(tx *cacheTransaction) error {
+		for _, entry := range entries {
+			if err := tx.apply(entry); err != nil {
+				return err
+			}
+		}
+		if updateMetadata {
+			if err := tx.write(cacheLocation{root: cacheConfigRoot, segments: []string{storage.MetadataFile}}, metadata); err != nil {
+				return err
+			}
+		}
+		return tx.write(cacheLocation{root: cacheDataRoot, segments: []string{syncStateFileName}}, encodedState)
+	})
+}
+
+func (c *localCache) apply(entry Entry) error {
+	if err := validateRemoteEntries([]Entry{entry}); err != nil {
+		return err
+	}
+	return c.mutate(func(tx *cacheTransaction) error { return tx.apply(entry) })
 }
 
 func (c *localCache) readMetadata() ([]byte, error) {
-	data, err := os.ReadFile(c.metadataPath())
-	if os.IsNotExist(err) {
+	root, err := c.openExistingRoot(c.configPath)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	data, err := root.Read(storage.MetadataFile)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	return data, err
 }
 
 func (c *localCache) writeMetadata(blob []byte) error {
-	if err := os.MkdirAll(c.configPath, 0o700); err != nil {
-		return err
+	if _, err := storage.ParseMetadata(blob); err != nil {
+		return fmt.Errorf("invalid synced metadata: %w", err)
 	}
-	return os.WriteFile(c.metadataPath(), blob, 0o600)
+	return c.mutate(func(tx *cacheTransaction) error {
+		return tx.write(cacheLocation{root: cacheConfigRoot, segments: []string{storage.MetadataFile}}, blob)
+	})
 }
 
-// loadState / saveState 读写同步状态文件。
-// 状态损坏时不重建（空快照会把全部条目当 dirty 以 base_revision=0 推送，
-// 触发整批 409），而是返回错误：自动同步静默跳过，手动 sync 明确报错指引删除重建。
 func (c *localCache) loadState() (*syncState, error) {
-	data, err := os.ReadFile(c.stateFilePath())
-	if os.IsNotExist(err) {
+	root, err := c.openExistingRoot(c.dataPath)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	data, err := root.Read(syncStateFileName)
+	if errors.Is(err, os.ErrNotExist) {
 		return newSyncState(), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var st syncState
-	if err := json.Unmarshal(data, &st); err != nil {
+	var state syncState
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("同步状态文件损坏（%s）: %w；删除该文件后执行 senv init 或 senv sync 可重建", c.stateFilePath(), err)
 	}
-	if st.Entries == nil {
-		st.Entries = make(map[string]syncEntryState)
+	if state.Entries == nil {
+		state.Entries = make(map[string]syncEntryState)
 	}
-	return &st, nil
+	return &state, nil
 }
 
-func (c *localCache) saveState(st *syncState) error {
-	if err := os.MkdirAll(c.dataPath, 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(st, "", "  ")
+func (c *localCache) saveState(state *syncState) error {
+	data, err := stateBytes(state)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.stateFilePath(), data, 0o600)
+	return c.mutate(func(tx *cacheTransaction) error {
+		return tx.write(cacheLocation{root: cacheDataRoot, segments: []string{syncStateFileName}}, data)
+	})
 }

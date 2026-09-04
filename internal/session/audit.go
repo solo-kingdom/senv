@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sync"
 	"time"
@@ -19,14 +18,11 @@ type AuditLogger struct {
 
 // NewAuditLogger creates a new audit logger
 func NewAuditLogger(configPath string) (*AuditLogger, error) {
-	// Use ~/.log/senv for log files
-	var logDir string
-	usr, err := user.Current()
-	if err != nil {
-		// Fallback to config path
-		logDir = filepath.Join(configPath, "logs")
-	} else {
-		logDir = filepath.Join(usr.HomeDir, ".log", "senv")
+	// Respect HOME so tests and isolated invocations do not write to an
+	// unrelated account database home directory.
+	logDir := filepath.Join(configPath, "logs")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		logDir = filepath.Join(home, ".log", "senv")
 	}
 
 	if err := os.MkdirAll(logDir, 0700); err != nil {
