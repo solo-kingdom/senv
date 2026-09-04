@@ -885,8 +885,8 @@ func (t *configTab) viewBase() string {
 		rightW = 4
 	}
 
-	left := t.renderGroups(leftW)
-	right := t.renderItems(rightW)
+	left := t.renderGroups(leftW, t.height)
+	right := t.renderItems(rightW, t.height)
 
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(t.height).Render(left)
@@ -899,25 +899,24 @@ func (t *configTab) viewBase() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
 }
 
-func (t *configTab) renderGroups(width int) string {
+func (t *configTab) renderGroups(width, height int) string {
 	if !t.loaded {
 		return emptyStateStyle.Render("loading groups...")
 	}
-	// Count excludes the "All" pseudo-group.
-	title := paneTitleStyle.Render(fmt.Sprintf("Groups (%d)", len(t.groups)-1))
+	inner := width - 2
 	var lines []string
 	for i, g := range t.groups {
-		line := fmt.Sprintf("%s  [%d]", truncRunes(g.name, width-8), t.sidebarCount(i))
+		line := truncateRunes(fmt.Sprintf("%s  [%d]", g.name, t.sidebarCount(i)), inner-2)
 		if i == t.groupIndex && t.focusLeft {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	// Count excludes the "All" pseudo-group.
+	return windowedPane(fmt.Sprintf("Groups (%d)", max(0, len(t.groups)-1)), lines, t.groupIndex, height, width)
 }
 
-func (t *configTab) renderItems(width int) string {
+func (t *configTab) renderItems(width, height int) string {
 	if !t.loaded {
 		return emptyStateStyle.Render("loading configs...")
 	}
@@ -930,18 +929,18 @@ func (t *configTab) renderItems(width int) string {
 	if t.filter != "" {
 		header += "  /" + t.filter
 	}
-	title := paneTitleStyle.Render(header)
 	if len(items) == 0 {
 		hint := "no configuration files"
 		if t.filter != "" {
 			hint = "no names match /" + t.filter
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, title, emptyStateStyle.Render(hint))
+		return lipgloss.JoinVertical(lipgloss.Left, paneTitleStyle.Render(header), emptyStateStyle.Render(hint))
 	}
+	inner := width - 2
 	// Column budget: name 22 + desc 14 + updated 16 + 3 separators; the path
-	// column takes the rest (padding and the cursor marker are extra slack,
-	// matching the pre-existing single-pane behavior).
-	pathW := width - 22 - 14 - 16 - 5
+	// column takes the rest. Reserve 2 cols for the cursor marker so a selected
+	// line cannot wrap and inflate the pane.
+	pathW := inner - 2 - 22 - 14 - 16 - 5
 	if pathW < 8 {
 		pathW = 8
 	}
@@ -951,16 +950,15 @@ func (t *configTab) renderItems(width int) string {
 		if t.currentGroup() == "" {
 			displayName = it.group + "/" + it.name
 		}
-		line := fmt.Sprintf("%-22s %-14s %-*s %s",
+		line := truncateRunes(fmt.Sprintf("%-22s %-14s %-*s %s",
 			truncRunes(displayName, 22), truncRunes(it.description, 14),
-			pathW, truncPathN(it.targetPath, pathW), it.updatedAt)
+			pathW, truncPathN(it.targetPath, pathW), it.updatedAt), inner-2)
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return windowedPane(header, lines, t.itemIndex, height, width)
 }
 
 // renderPlan renders the install/uninstall plan preview and, during changed

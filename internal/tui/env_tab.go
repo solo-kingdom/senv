@@ -694,7 +694,7 @@ func (t *envTab) renderGroups(width, height int) string {
 	if len(t.groups) == 0 {
 		return emptyStateStyle.Render("no groups — press + to create one")
 	}
-	title := paneTitleStyle.Render(fmt.Sprintf("Groups (%d)", len(t.groups)))
+	inner := width - 2
 	var lines []string
 	for i, g := range t.groups {
 		marker := " "
@@ -705,14 +705,13 @@ func (t *envTab) renderGroups(width, height int) string {
 		if g.isDefault {
 			name += " (default)"
 		}
-		line := fmt.Sprintf("%s %s  [%d]", marker, name, g.varCount)
+		line := truncateRunes(fmt.Sprintf("%s %s  [%d]", marker, name, g.varCount), inner-2)
 		if i == t.groupIndex && t.focusLeft {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return windowedPane(fmt.Sprintf("Groups (%d)", len(t.groups)), lines, t.groupIndex, height, width)
 }
 
 func (t *envTab) renderItems(width, height int) string {
@@ -728,14 +727,14 @@ func (t *envTab) renderItems(width, height int) string {
 	if t.filter != "" {
 		header += "  /" + t.filter
 	}
-	title := paneTitleStyle.Render(header)
 	if len(items) == 0 {
 		hint := "no variables in this group"
 		if t.filter != "" {
 			hint = "no keys match /" + t.filter
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, title, emptyStateStyle.Render(hint))
+		return lipgloss.JoinVertical(lipgloss.Left, paneTitleStyle.Render(header), emptyStateStyle.Render(hint))
 	}
+	inner := width - 2
 	var lines []string
 	for i, it := range items {
 		shown := it.value
@@ -754,6 +753,8 @@ func (t *envTab) renderItems(width, height int) string {
 		if failed {
 			keyLabel = "⚠ " + it.key
 		}
+		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the pane.
+		shown = truncateRunes(shown, max(4, inner-2-len([]rune(keyLabel))-1))
 		var line string
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ "+keyLabel+"=") + renderValue(shown, revealed)
@@ -762,8 +763,7 @@ func (t *envTab) renderItems(width, height int) string {
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return windowedPane(header, lines, t.itemIndex, height, width)
 }
 
 // renderModal renders the active modal input/confirm panel.

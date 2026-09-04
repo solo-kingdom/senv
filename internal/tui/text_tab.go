@@ -582,17 +582,16 @@ func (t *textTab) renderGroups(width, height int) string {
 	if len(t.groups) == 0 {
 		return emptyStateStyle.Render("no groups — press + to create one")
 	}
-	title := paneTitleStyle.Render(fmt.Sprintf("Groups (%d)", len(t.groups)))
+	inner := width - 2
 	var lines []string
 	for i, g := range t.groups {
-		line := fmt.Sprintf("%s  [%d]", g.name, g.keyCount)
+		line := truncateRunes(fmt.Sprintf("%s  [%d]", g.name, g.keyCount), inner-2)
 		if i == t.groupIndex && t.focusLeft {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return windowedPane(fmt.Sprintf("Groups (%d)", len(t.groups)), lines, t.groupIndex, height, width)
 }
 
 func (t *textTab) renderItems(width, height int) string {
@@ -608,24 +607,23 @@ func (t *textTab) renderItems(width, height int) string {
 	if t.filter != "" {
 		header += "  /" + t.filter
 	}
-	title := paneTitleStyle.Render(header)
 	if len(items) == 0 {
 		hint := "no text blocks in this group"
 		if t.filter != "" {
 			hint = "no keys match /" + t.filter
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, title, emptyStateStyle.Render(hint))
+		return lipgloss.JoinVertical(lipgloss.Left, paneTitleStyle.Render(header), emptyStateStyle.Render(hint))
 	}
+	inner := width - 2
 	var lines []string
 	for i, it := range items {
-		line := fmt.Sprintf("%-20s %8d b  %s", it.key, it.size, it.updatedAt)
+		line := truncateRunes(fmt.Sprintf("%-20s %8d b  %s", it.key, it.size, it.updatedAt), inner-2)
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
 		}
 		lines = append(lines, line)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return windowedPane(header, lines, t.itemIndex, height, width)
 }
 
 func (t *textTab) renderModal() string {
