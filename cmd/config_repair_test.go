@@ -39,6 +39,15 @@ func setupLegacyConfigVault(t *testing.T) (cfg, data string) {
 	return cfg, data
 }
 
+func TestConfigRepairCommandIsRegistered(t *testing.T) {
+	for _, cmd := range configCmd.Commands() {
+		if cmd.Name() == configRepairCmd.Name() {
+			return
+		}
+	}
+	t.Fatalf("%q is not registered under %q; run `senv config repair` cannot work", configRepairCmd.Name(), configCmd.Name())
+}
+
 func setRepairFlags(t *testing.T, dryRun, yes, dropMissing bool) {
 	t.Helper()
 	prevDry, prevYes, prevDrop := configRepairDryRun, configRepairYes, configRepairDropMissing

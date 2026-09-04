@@ -454,6 +454,7 @@ func init() {
 	configCmd.AddCommand(configInstallCmd)
 	configCmd.AddCommand(configUninstallCmd)
 	configCmd.AddCommand(configGetCmd)
+	configCmd.AddCommand(configRepairCmd)
 
 	configRepairCmd.Flags().BoolVar(&configRepairDryRun, "dry-run", false, "show the repair plan without executing")
 	configRepairCmd.Flags().BoolVar(&configRepairYes, "yes", false, "skip the confirmation prompt")
