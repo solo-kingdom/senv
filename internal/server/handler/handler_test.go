@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wii/senv/internal/server/store"
@@ -163,6 +164,13 @@ func TestPushConflictListsEntries(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&conflictBody)
 	if len(conflictBody.Conflicts) != 1 || conflictBody.Conflicts[0].Key != "A" || conflictBody.Conflicts[0].CurrentRevision != 1 {
 		t.Errorf("409 conflicts = %+v, want A@1", conflictBody.Conflicts)
+	}
+	got := conflictBody.Conflicts[0]
+	if got.Deleted || got.Size != int64(len("ca")) || got.UpdatedAt.IsZero() {
+		t.Errorf("409 conflict descriptor = %+v, want live A with size %d and updated_at", got, len("ca"))
+	}
+	if strings.Contains(rec.Body.String(), "ciphertext") {
+		t.Errorf("409 response must not contain ciphertext field: %s", rec.Body.String())
 	}
 
 	// 冲突后数据未被写入

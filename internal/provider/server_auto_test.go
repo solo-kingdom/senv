@@ -478,6 +478,14 @@ func TestAutoSyncConcurrentWritesKeepStateConsistent(t *testing.T) {
 	if _, err := p.SyncWithReport(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// 预置 config 子系统数据：并发风暴后状态不得丢失其快照与 metadata 哈希。
+	indexPath := filepath.Join(cache.configPath, "config_index.json")
+	if err := os.WriteFile(indexPath, []byte(`{"configs":{"db":{"name":"db","encrypted_file":"db.pem.enc"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.AutoPush(context.Background(), autoSyncBudget); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < writers; i++ {
 		writeEnvVar(t, cache, "default", fmt.Sprintf("K_%d", i), fmt.Sprintf("v%d", i))
 	}
@@ -518,5 +526,12 @@ func TestAutoSyncConcurrentWritesKeepStateConsistent(t *testing.T) {
 		if !ok || snap.Revision != entry.Revision {
 			t.Fatalf("state snapshot for %s = %+v, entry revision %d", key, snap, entry.Revision)
 		}
+	}
+	indexSnap, ok := st.Entries[entryID(KindConfigIndex, "", "")]
+	if !ok || indexSnap.Revision == 0 {
+		t.Fatalf("config_index snapshot lost after concurrent pushes: %+v", indexSnap)
+	}
+	if st.MetadataHash == "" {
+		t.Fatal("metadata hash cleared after concurrent pushes")
 	}
 }

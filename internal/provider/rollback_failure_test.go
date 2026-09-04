@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,7 +36,11 @@ func TestRemoteApplyRollbackRestoreFailureDoesNotAdvanceState(t *testing.T) {
 	writeEnvVar(t, cache, "default", "A", "old-a")
 	writeEnvVar(t, cache, "default", "B", "old-b")
 	beforeState := &syncState{LastSyncedRevision: 2, Entries: map[string]syncEntryState{}}
-	if err := cache.saveState(beforeState); err != nil {
+	beforeBytes, err := json.MarshalIndent(beforeState, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache.dataPath, syncStateFileName), beforeBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writes := map[string]int{}
@@ -46,7 +52,7 @@ func TestRemoteApplyRollbackRestoreFailureDoesNotAdvanceState(t *testing.T) {
 		}
 		return &rollbackFailureRoot{TrustedRoot: root, mu: &mu, writes: writes}, nil
 	}
-	err := cache.applyRemote([]Entry{
+	err = cache.applyRemote([]Entry{
 		{Kind: KindEnv, Grp: "default", Key: "A", Ciphertext: []byte("new-a")},
 		{Kind: KindEnv, Grp: "default", Key: "B", Ciphertext: []byte("new-b")},
 	}, nil, false, &syncState{LastSyncedRevision: 3, Entries: map[string]syncEntryState{}})

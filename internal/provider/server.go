@@ -24,9 +24,14 @@ type ServerProvider struct {
 
 // newServerProvider 构造 server provider（接口实现），api 可注入以便测试
 func newServerProvider(api serverAPI, configPath, dataPath, vault string) *ServerProvider {
+	cache := &localCache{configPath: configPath, dataPath: dataPath}
+	if client, ok := api.(*serverClient); ok {
+		// 生产路径按 server 地址指纹 + vault 名绑定状态文件。
+		cache.binding = &vaultBinding{Server: serverFingerprint(client.baseURL), Vault: vault}
+	}
 	return &ServerProvider{
 		api:          api,
-		cache:        &localCache{configPath: configPath, dataPath: dataPath},
+		cache:        cache,
 		vault:        vault,
 		now:          time.Now,
 		autoSync:     true,
@@ -39,11 +44,48 @@ func NewServerProvider(address, token, configPath, dataPath, vault string) *Serv
 	return newServerProvider(newServerClient(address, token), configPath, dataPath, vault)
 }
 
+// newServerProviderWithBinding 是测试专用构造：注入合成 vault 绑定验证归属校验。
+func newServerProviderWithBinding(api serverAPI, configPath, dataPath, vault string, binding vaultBinding) *ServerProvider {
+	p := newServerProvider(api, configPath, dataPath, vault)
+	b := binding
+	p.cache.binding = &b
+	return p
+}
+
 // SyncConflictError 同步因乐观锁冲突中止；两端数据均未改动。
 // 附解决指引：accept-remote（放弃本地）或 force-push（放弃远端）。
 type SyncConflictError struct {
 	Conflicts        []Conflict
 	MetadataConflict bool
+	Details          []ConflictDetail
+	Metadata         *MetadataConflictDetail
+}
+
+// ConflictSide 描述冲突一侧的非机密信息。Ciphertext 仅供已认证渲染和
+// resolution 流程使用，绝不能进入 Error() 或日志。
+type ConflictSide struct {
+	Revision   int64     `json:"revision"`
+	Deleted    bool      `json:"deleted"`
+	Size       int       `json:"size"`
+	Hash       string    `json:"hash"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	Ciphertext []byte    `json:"-"`
+}
+
+// ConflictDetail 将本地待推送版本与远端当前版本配对，供 CLI 安全渲染。
+type ConflictDetail struct {
+	Kind   string       `json:"kind"`
+	Grp    string       `json:"grp"`
+	Key    string       `json:"key"`
+	Local  ConflictSide `json:"local"`
+	Remote ConflictSide `json:"remote"`
+}
+
+// MetadataConflictDetail 保存两端 metadata blob 供 key 兼容性诊断；
+// raw blob 不进入用户可见错误文本。
+type MetadataConflictDetail struct {
+	Local  []byte `json:"-"`
+	Remote []byte `json:"-"`
 }
 
 func (e *SyncConflictError) Error() string {
@@ -75,6 +117,93 @@ func displayKey(kind, key string) string {
 		return "(index/meta)"
 	}
 	return key
+}
+
+func entryMap(entries []Entry) map[string]Entry {
+	m := make(map[string]Entry, len(entries))
+	for _, e := range entries {
+		m[entryID(e.Kind, e.Grp, e.Key)] = e
+	}
+	return m
+}
+
+func localConflictSide(e Entry) ConflictSide {
+	return ConflictSide{
+		Revision: e.BaseRevision, Deleted: e.Deleted, Size: len(e.Ciphertext),
+		Hash: hashBytes(e.Ciphertext), Ciphertext: e.Ciphertext,
+	}
+}
+
+func remoteConflictSide(c Conflict, candidate Entry, hasCandidate bool) ConflictSide {
+	side := ConflictSide{
+		Revision: c.CurrentRevision, Deleted: c.Deleted, Size: int(c.Size),
+		UpdatedAt: c.UpdatedAt,
+	}
+	// Legacy servers only return identity/current_revision. A matching pull
+	// candidate can safely fill the descriptor without another network call.
+	legacyDescriptor := c.Size == 0 && c.UpdatedAt.IsZero()
+	if hasCandidate && candidate.Revision == c.CurrentRevision {
+		side.Deleted = candidate.Deleted || (legacyDescriptor && candidate.Deleted)
+		if legacyDescriptor && !side.Deleted {
+			side.Size = len(candidate.Ciphertext)
+		}
+		if c.UpdatedAt.IsZero() {
+			side.UpdatedAt = candidate.UpdatedAt
+		}
+		side.Hash = hashBytes(candidate.Ciphertext)
+		side.Ciphertext = candidate.Ciphertext
+	}
+	return side
+}
+
+// buildConflictError pairs push candidates with the remote versions that were
+// skipped during pull. If the remote moved again between pull and push, one
+// full pull refreshes the stale candidate; refresh failure retains descriptor-
+// only details rather than showing known-stale ciphertext.
+func (p *ServerProvider) buildConflictError(
+	ctx context.Context, conflicts []Conflict, metadataConflict bool,
+	dirty, candidates []Entry, localMeta, remoteMeta []byte,
+) *SyncConflictError {
+	known := entryMap(candidates)
+	needRefresh := false
+	for _, c := range conflicts {
+		candidate, ok := known[entryID(c.Kind, c.Grp, c.Key)]
+		if !ok || candidate.Revision != c.CurrentRevision {
+			needRefresh = true
+			break
+		}
+	}
+	if needRefresh {
+		if entries, _, err := p.api.Pull(ctx, p.vault, 0); err == nil {
+			if err := validateRemoteEntries(entries); err == nil {
+				known = entryMap(entries)
+			}
+		}
+	}
+
+	dirtyByID := entryMap(dirty)
+	details := make([]ConflictDetail, 0, len(conflicts))
+	for _, c := range conflicts {
+		id := entryID(c.Kind, c.Grp, c.Key)
+		local, hasLocal := dirtyByID[id]
+		candidate, hasCandidate := known[id]
+		detail := ConflictDetail{
+			Kind: c.Kind, Grp: c.Grp, Key: c.Key,
+			Remote: remoteConflictSide(c, candidate, hasCandidate),
+		}
+		if hasLocal {
+			detail.Local = localConflictSide(local)
+		}
+		details = append(details, detail)
+	}
+
+	out := &SyncConflictError{
+		Conflicts: conflicts, MetadataConflict: metadataConflict, Details: details,
+	}
+	if metadataConflict {
+		out.Metadata = &MetadataConflictDetail{Local: localMeta, Remote: remoteMeta}
+	}
+	return out
 }
 
 // lockBlocking 获取阻塞式同步锁（手动同步入口：锁忙时等待而非跳过）。
@@ -124,7 +253,10 @@ func (p *ServerProvider) bootstrapLocked(ctx context.Context) error {
 		}
 		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 	}
-	return p.cache.applyRemote(entries, blob, true, st)
+	return p.cache.applyRemoteOpts(entries, blob, true, st, stateWriteOptions{
+		writerPath:       "bootstrapLocked",
+		allowEntryShrink: true,
+	})
 }
 
 // collectDirty 对比快照与当前本地缓存，返回待推送条目（含删除标记）。
@@ -165,9 +297,11 @@ func dirtyIDs(dirty []Entry) map[string]bool {
 
 // PullResult 汇总一次 pull 的结果
 type PullResult struct {
-	Applied          int  // 落盘的条目数
-	SkippedDirty     int  // 因本地有未推送改动而跳过的条目数
+	Applied          int // 落盘的条目数
+	SkippedDirty     int // 因本地有未推送改动而跳过的条目数
+	RemoteCandidates []Entry
 	MetadataUpdated  bool // metadata 是否被远端版本更新
+	MetadataHealed   bool // 假冲突自愈：快照哈希失真但两端字节一致
 	MetadataConflict bool // metadata 两端均已修改
 	LatestRevision   int64
 }
@@ -207,16 +341,20 @@ func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 	dirty := dirtyIDs(p.collectDirty(st, current))
 	res := &PullResult{LatestRevision: latest}
 	toApply := make([]Entry, 0, len(entries))
+	// 本次合法消失的条目（远端 tombstone），供状态防退化护栏放行。
+	removed := make(map[string]bool)
 	for _, e := range entries {
 		id := entryID(e.Kind, e.Grp, e.Key)
 		if dirty[id] {
 			res.SkippedDirty++
+			res.RemoteCandidates = append(res.RemoteCandidates, e)
 			continue
 		}
 		toApply = append(toApply, e)
 		res.Applied++
 		if e.Deleted {
 			delete(st.Entries, id)
+			removed[id] = true
 		} else {
 			st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 		}
@@ -241,11 +379,19 @@ func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 		} else {
 			res.MetadataConflict = true
 		}
+	} else if st.MetadataHash != localHash {
+		// 假冲突自愈：两端 metadata 字节一致，仅本地快照哈希失真（如历史状态损坏）。
+		// 不写 metadata 文件、不算冲突，直接收养哈希。
+		st.MetadataHash = localHash
+		res.MetadataHealed = true
 	}
 
 	st.LastSyncedRevision = latest
 	st.LastPullAt = p.now().Unix()
-	if err := p.cache.applyRemote(toApply, remoteMeta, updateMetadata, st); err != nil {
+	if err := p.cache.applyRemoteOpts(toApply, remoteMeta, updateMetadata, st, stateWriteOptions{
+		writerPath:     "pullLocked",
+		removedEntries: removed,
+	}); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -254,22 +400,24 @@ func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 // PushResult 汇总一次 push 的结果
 type PushResult struct {
 	Pushed         int
+	Healed         int  // 假冲突自愈：收养的快照条目数
+	MetadataHealed bool // 假冲突自愈：metadata 快照哈希收养
 	MetadataPushed bool
 	LatestRevision int64
 }
 
 // push 收集 dirty 条目并乐观锁批量推送；409 时解析为 SyncConflictError
-func (p *ServerProvider) push(ctx context.Context) (*PushResult, error) {
+func (p *ServerProvider) push(ctx context.Context, remoteCandidates ...Entry) (*PushResult, error) {
 	var result *PushResult
 	err := p.withVaultMutation(func() error {
 		var err error
-		result, err = p.pushLocked(ctx)
+		result, err = p.pushLocked(ctx, remoteCandidates)
 		return err
 	})
 	return result, err
 }
 
-func (p *ServerProvider) pushLocked(ctx context.Context) (*PushResult, error) {
+func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entry) (*PushResult, error) {
 	st, err := p.cache.loadState()
 	if err != nil {
 		return nil, err
@@ -282,46 +430,80 @@ func (p *ServerProvider) pushLocked(ctx context.Context) (*PushResult, error) {
 
 	// metadata：本地已改时，仅在远端未改（哈希仍等于快照）的情况下安全上传
 	var metadataDirty, metadataConflict bool
+	var metadataHealed bool
+	var remoteMetaBlob []byte
 	localMeta, err := p.cache.readMetadata()
 	if err != nil {
 		return nil, err
 	}
 	if hashBytes(localMeta) != st.MetadataHash {
-		metadataDirty = true
 		remoteMeta, err := p.api.GetMetadata(ctx, p.vault)
 		if err != nil && !errors.Is(err, ErrVaultNotFound) {
 			return nil, err
 		}
-		if !errors.Is(err, ErrVaultNotFound) && hashBytes(remoteMeta) != st.MetadataHash {
+		if errors.Is(err, ErrVaultNotFound) {
+			// 远端无 metadata：本地版本可以安全上传
+			metadataDirty = true
+		} else if hashBytes(remoteMeta) == hashBytes(localMeta) {
+			// 假冲突自愈：两端 metadata 字节一致，仅本地快照哈希失真，收养哈希。
+			st.MetadataHash = hashBytes(localMeta)
+			metadataHealed = true
+		} else if hashBytes(remoteMeta) != st.MetadataHash {
 			metadataConflict = true
+			remoteMetaBlob = remoteMeta
 		}
 	}
 
 	res := &PushResult{}
+	if metadataHealed {
+		res.MetadataHealed = true
+	}
+	// removed 收集本次推送的删除标记（合法消失的快照），供防退化护栏放行。
+	removed := make(map[string]bool)
 	if len(dirty) > 0 {
-		pushed, latest, err := p.api.Push(ctx, p.vault, dirty)
-		if err != nil {
+		for attempt := 0; ; attempt++ {
+			pushed, latest, err := p.api.Push(ctx, p.vault, dirty)
+			if err == nil {
+				res.Pushed = len(pushed)
+				res.LatestRevision = latest
+				for _, e := range pushed {
+					id := entryID(e.Kind, e.Grp, e.Key)
+					if e.Deleted {
+						delete(st.Entries, id)
+						removed[id] = true
+					} else {
+						st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+					}
+				}
+				st.LastSyncedRevision = latest
+				break
+			}
 			var conflictErr *ConflictError
-			if errors.As(err, &conflictErr) {
-				return nil, &SyncConflictError{Conflicts: conflictErr.Conflicts, MetadataConflict: metadataConflict}
+			if !errors.As(err, &conflictErr) {
+				return nil, err
 			}
-			return nil, err
-		}
-		res.Pushed = len(pushed)
-		res.LatestRevision = latest
-		for _, e := range pushed {
-			id := entryID(e.Kind, e.Grp, e.Key)
-			if e.Deleted {
-				delete(st.Entries, id)
-			} else {
-				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+			// 409 先做假冲突自愈：快照缺失导致的新增误判 + 两端密文一致 → 收养远端 revision。
+			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, dirty, conflictErr.Conflicts)
+			if healErr != nil {
+				// 自愈所需的 Pull(0) 失败：不落盘、不误报内容冲突，返回原始网络错误。
+				return nil, healErr
+			}
+			res.Healed += healed
+			if len(remaining) > 0 {
+				return nil, p.buildConflictError(ctx, remaining, metadataConflict, retry, remoteCandidates, localMeta, remoteMetaBlob)
+			}
+			dirty = retry
+			if len(dirty) == 0 {
+				break // 全部为假冲突并已收养，无需再次推送
 			}
 		}
-		st.LastSyncedRevision = latest
 	}
 
 	if metadataConflict {
-		return nil, &SyncConflictError{MetadataConflict: true}
+		return nil, &SyncConflictError{
+			MetadataConflict: true,
+			Metadata:         &MetadataConflictDetail{Local: localMeta, Remote: remoteMetaBlob},
+		}
 	}
 	if metadataDirty {
 		if err := p.api.PutMetadata(ctx, p.vault, localMeta); err != nil {
@@ -331,10 +513,74 @@ func (p *ServerProvider) pushLocked(ctx context.Context) (*PushResult, error) {
 		res.MetadataPushed = true
 	}
 
-	if err := p.cache.saveState(st); err != nil {
+	if err := p.cache.saveStateOpts(st, stateWriteOptions{
+		writerPath:     "pushLocked",
+		removedEntries: removed,
+	}); err != nil {
 		return nil, err
 	}
 	return res, nil
+}
+
+// healFalseConflicts 处理 409 中的"假冲突"：本地快照缺失导致条目以 BaseRevision=0
+// 被当作新增推送，但远端密文与本地字节一致。此时收养远端 revision 修复快照，
+// 而不是报内容冲突；其余冲突原样返回，由调用方走既有冲突路径。
+// 返回：收养条数、剔除已收养条目后的待推送清单、无法自愈的冲突清单。
+func (p *ServerProvider) healFalseConflicts(ctx context.Context, st *syncState, dirty []Entry, conflicts []Conflict) (int, []Entry, []Conflict, error) {
+	// 只尝试"本地视为新增且非删除标记"的冲突；真实内容差异与删除冲突不自愈。
+	candidates := make(map[string]bool, len(conflicts))
+	for _, c := range conflicts {
+		id := entryID(c.Kind, c.Grp, c.Key)
+		for _, e := range dirty {
+			if entryID(e.Kind, e.Grp, e.Key) == id && e.BaseRevision == 0 && !e.Deleted {
+				candidates[id] = true
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return 0, dirty, conflicts, nil
+	}
+
+	remote, _, err := p.api.Pull(ctx, p.vault, 0)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	remoteByID := make(map[string]Entry, len(remote))
+	for _, e := range remote {
+		remoteByID[entryID(e.Kind, e.Grp, e.Key)] = e
+	}
+
+	healedIDs := make(map[string]bool, len(candidates))
+	for id := range candidates {
+		remoteEntry, ok := remoteByID[id]
+		if !ok || remoteEntry.Deleted {
+			continue
+		}
+		for _, e := range dirty {
+			if entryID(e.Kind, e.Grp, e.Key) != id || e.Deleted {
+				continue
+			}
+			if hashBytes(e.Ciphertext) == hashBytes(remoteEntry.Ciphertext) {
+				st.Entries[id] = syncEntryState{Revision: remoteEntry.Revision, Hash: hashBytes(remoteEntry.Ciphertext)}
+				healedIDs[id] = true
+			}
+			break
+		}
+	}
+
+	retry := make([]Entry, 0, len(dirty))
+	for _, e := range dirty {
+		if !healedIDs[entryID(e.Kind, e.Grp, e.Key)] {
+			retry = append(retry, e)
+		}
+	}
+	var remaining []Conflict
+	for _, c := range conflicts {
+		if !healedIDs[entryID(c.Kind, c.Grp, c.Key)] {
+			remaining = append(remaining, c)
+		}
+	}
+	return len(healedIDs), retry, remaining, nil
 }
 
 // --- Provider 接口实现（message 参数对 server 无意义，忽略） ---
@@ -368,10 +614,11 @@ func (p *ServerProvider) Sync(_ string) error {
 		return err
 	}
 	defer release()
-	if _, err := p.pull(context.Background()); err != nil {
+	pr, err := p.pull(context.Background())
+	if err != nil {
 		return err
 	}
-	_, err = p.push(context.Background())
+	_, err = p.push(context.Background(), pr.RemoteCandidates...)
 	return err
 }
 
@@ -380,6 +627,22 @@ type SyncResult struct {
 	Pull  *PullResult
 	Push  *PushResult
 	Dirty int // 同步前本地待推送条目数
+	// Healed 汇总本次同步自动修复的同步状态数量（快照收养 + metadata 哈希收养）。
+	Healed int
+}
+
+func (r *SyncResult) computeHealed() int {
+	if r == nil {
+		return 0
+	}
+	healed := r.Push.Healed
+	if r.Push.MetadataHealed {
+		healed++
+	}
+	if r.Pull.MetadataHealed {
+		healed++
+	}
+	return healed
 }
 
 // SyncWithReport 执行同步并返回详细结果
@@ -404,11 +667,13 @@ func (p *ServerProvider) SyncWithReport(ctx context.Context) (*SyncResult, error
 	if err != nil {
 		return nil, err
 	}
-	sr, err := p.push(ctx)
+	sr, err := p.push(ctx, pr.RemoteCandidates...)
 	if err != nil {
 		return nil, err
 	}
-	return &SyncResult{Pull: pr, Push: sr, Dirty: dirtyCount}, nil
+	result := &SyncResult{Pull: pr, Push: sr, Dirty: dirtyCount}
+	result.Healed = result.computeHealed()
+	return result, nil
 }
 
 // AcceptRemote 放弃本地改动，以远端为准：全量拉取覆盖本地（本地新增文件保留），
@@ -445,10 +710,14 @@ func (p *ServerProvider) acceptRemoteLocked(ctx context.Context) error {
 	if err == nil {
 		st.MetadataHash = hashBytes(blob)
 	}
-	if err := p.cache.applyRemote(entries, blob, err == nil, st); err != nil {
+	if err := p.cache.applyRemoteOpts(entries, blob, err == nil, st, stateWriteOptions{
+		writerPath:         "acceptRemoteLocked",
+		allowEntryShrink:   true,
+		allowEmptyMetadata: errors.Is(err, ErrVaultNotFound),
+	}); err != nil {
 		return err
 	}
-	_, err = p.pushLocked(ctx)
+	_, err = p.pushLocked(ctx, nil)
 	return err
 }
 
@@ -484,6 +753,8 @@ func (p *ServerProvider) forcePushLocked(ctx context.Context) error {
 		return err
 	}
 	dirty := p.collectDirty(st, current)
+	// forceRemoved 收集被推送的删除标记，供防退化护栏放行。
+	forceRemoved := make(map[string]bool)
 	// 以远端当前 revision 为 base：server 端对应条目被本地版本覆盖
 	for i := range dirty {
 		id := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key)
@@ -499,6 +770,7 @@ func (p *ServerProvider) forcePushLocked(ctx context.Context) error {
 			id := entryID(e.Kind, e.Grp, e.Key)
 			if e.Deleted {
 				delete(st.Entries, id)
+				forceRemoved[id] = true
 			} else {
 				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 			}
@@ -517,7 +789,10 @@ func (p *ServerProvider) forcePushLocked(ctx context.Context) error {
 		return err
 	}
 	st.MetadataHash = hashBytes(localMeta)
-	return p.cache.saveState(st)
+	return p.cache.saveStateOpts(st, stateWriteOptions{
+		writerPath:     "forcePushLocked",
+		removedEntries: forceRemoved,
+	})
 }
 
 // Status 返回本地缓存相对远端的同步状态描述

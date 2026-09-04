@@ -88,7 +88,41 @@ senv tui --refresh
 ```
 
 乐观锁冲突不会被自动覆盖。自动推送遇到冲突时仅列出冲突条目并提示 `senv sync`；
-随后可按既有语义选择：
+手动 `senv sync` 在 TTY 中会先显示脱敏摘要（本地 base revision、远端 revision、
+删除状态、size、hash 与可用更新时间），再进入交互式解决器：
+
+| 快捷键 | 作用 |
+| --- | --- |
+| `j` `k` / `↑` `↓` | 选择冲突 |
+| `Enter` | 查看本地/远端详情 |
+| `v` | 显式揭示 / 重新掩码内容 |
+| `l` / `r` | 当前条目使用本地 / 远端 |
+| `L` / `R` | 未逐条处理项全部使用本地 / 远端 |
+| `m` | 对兼容条目打开 `VISUAL`/`EDITOR` 手动合并 |
+| `y` | 预览并确认覆盖计划 |
+| `q` | 退出且不修改任何一端 |
+
+`config_index` 会显示按配置名归纳的 target/group/description 差异。`env` 值默认
+掩码；text/config 只有按 `v` 后才显示明文。`vault metadata` 只显示安全摘要，必须
+整体选择一边，不能 raw 编辑。远端 metadata 与本地 key 不兼容时，editor merge 会被
+禁用，避免生成无法解锁的混合状态。
+
+editor merge 是 LOCAL/REMOTE 两方手动合并，不是自动 three-way merge。退出 editor 后
+必须移除全部 `SENV_LOCAL` / `SENV_REMOTE` 标记并通过类型校验；senv 使用一次性私有
+目录保存缓冲区，退出后递归清理。远端在编辑期间再次变化时会重新进入冲突流程。
+
+脚本或不想进入 UI 时：
+
+```bash
+senv sync --no-interactive      # 输出增强脱敏报告与解决指引
+senv sync --accept-remote       # 放弃本地冲突版本，采用远端
+senv sync --force-push          # 放弃远端冲突版本，采用本地
+```
+
+旧 server 未返回新增时间/大小描述符时，CLI 会显示 `N/A` 并保留 revision 冲突语义；
+冲突 409 响应本身不携带 ciphertext。
+
+保留的非交互策略如下：
 
 ```bash
 senv sync --accept-remote   # 放弃本地，采用远端

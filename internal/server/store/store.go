@@ -47,10 +47,13 @@ func validationErrorf(format string, args ...any) *ValidationError {
 
 // Conflict 描述一次乐观锁冲突：条目在 server 端的当前 revision
 type Conflict struct {
-	Kind            string `json:"kind"`
-	Grp             string `json:"grp"`
-	Key             string `json:"key"`
-	CurrentRevision int64  `json:"current_revision"`
+	Kind            string    `json:"kind"`
+	Grp             string    `json:"grp"`
+	Key             string    `json:"key"`
+	CurrentRevision int64     `json:"current_revision"`
+	Deleted         bool      `json:"deleted"`
+	Size            int64     `json:"size"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // ConflictError 整批推送因乐观锁冲突被拒绝；绝不部分写入
@@ -64,13 +67,14 @@ func (e *ConflictError) Error() string {
 
 // Entry 是一条同步条目。ciphertext 对 server 完全不透明。
 type Entry struct {
-	Kind         string `json:"kind"`
-	Grp          string `json:"grp"`
-	Key          string `json:"key"`
-	Ciphertext   []byte `json:"ciphertext,omitempty"`
-	BaseRevision int64  `json:"base_revision,omitempty"` // 推送时携带
-	Revision     int64  `json:"revision"`                // 拉取/响应时携带
-	Deleted      bool   `json:"deleted"`
+	Kind         string    `json:"kind"`
+	Grp          string    `json:"grp"`
+	Key          string    `json:"key"`
+	Ciphertext   []byte    `json:"ciphertext,omitempty"`
+	BaseRevision int64     `json:"base_revision,omitempty"` // 推送时携带
+	Revision     int64     `json:"revision"`                // 拉取/响应时携带
+	Deleted      bool      `json:"deleted"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"` // server 端最近写入时间
 }
 
 // Store 封装连接池与全部 SQL 操作
@@ -296,22 +300,28 @@ func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, ent
 	// 整批先做 base_revision 校验，收集冲突清单；冲突则整批回滚
 	var conflicts []Conflict
 	for _, e := range entries {
-		var current int64
+		var current Conflict
 		err := tx.QueryRow(ctx,
-			`SELECT revision FROM entries WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4`,
-			vaultID, e.Kind, e.Grp, e.Key).Scan(&current)
+			`SELECT revision, deleted, COALESCE(length(ciphertext), 0), updated_at
+			 FROM entries WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4`,
+			vaultID, e.Kind, e.Grp, e.Key).Scan(
+			&current.CurrentRevision, &current.Deleted, &current.Size, &current.UpdatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// 新条目：base_revision 必须为 0
 			if e.BaseRevision != 0 {
-				conflicts = append(conflicts, Conflict{Kind: e.Kind, Grp: e.Grp, Key: e.Key, CurrentRevision: 0})
+				conflicts = append(conflicts, Conflict{
+					Kind: e.Kind, Grp: e.Grp, Key: e.Key,
+					CurrentRevision: 0, Deleted: true,
+				})
 			}
 			continue
 		}
 		if err != nil {
 			return nil, 0, err
 		}
-		if e.BaseRevision != current {
-			conflicts = append(conflicts, Conflict{Kind: e.Kind, Grp: e.Grp, Key: e.Key, CurrentRevision: current})
+		if e.BaseRevision != current.CurrentRevision {
+			current.Kind, current.Grp, current.Key = e.Kind, e.Grp, e.Key
+			conflicts = append(conflicts, current)
 		}
 	}
 	if len(conflicts) > 0 {
@@ -365,7 +375,7 @@ func (s *Store) PullEntries(ctx context.Context, userID int64, vault string, sin
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT kind, grp, key, ciphertext, revision, deleted FROM entries
+		`SELECT kind, grp, key, ciphertext, revision, deleted, updated_at FROM entries
 		 WHERE vault_id = $1 AND revision > $2 ORDER BY revision`, vaultID, since)
 	if err != nil {
 		return nil, 0, err
@@ -375,7 +385,7 @@ func (s *Store) PullEntries(ctx context.Context, userID int64, vault string, sin
 	entries := []Entry{}
 	for rows.Next() {
 		var e Entry
-		if err := rows.Scan(&e.Kind, &e.Grp, &e.Key, &e.Ciphertext, &e.Revision, &e.Deleted); err != nil {
+		if err := rows.Scan(&e.Kind, &e.Grp, &e.Key, &e.Ciphertext, &e.Revision, &e.Deleted, &e.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		entries = append(entries, e)

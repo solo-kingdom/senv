@@ -15,21 +15,25 @@ import (
 // Entry 是一条同步条目（与 senv-server v1 API 的 wire 格式一致）。
 // ciphertext 始终是不透明密文字节；CLI 侧不依赖 server 的 pgx 类型。
 type Entry struct {
-	Kind         string `json:"kind"`
-	Grp          string `json:"grp"`
-	Key          string `json:"key"`
-	Ciphertext   []byte `json:"ciphertext,omitempty"`
-	BaseRevision int64  `json:"base_revision,omitempty"`
-	Revision     int64  `json:"revision"`
-	Deleted      bool   `json:"deleted"`
+	Kind         string    `json:"kind"`
+	Grp          string    `json:"grp"`
+	Key          string    `json:"key"`
+	Ciphertext   []byte    `json:"ciphertext,omitempty"`
+	BaseRevision int64     `json:"base_revision,omitempty"`
+	Revision     int64     `json:"revision"`
+	Deleted      bool      `json:"deleted"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 // Conflict 描述 server 返回的单条乐观锁冲突
 type Conflict struct {
-	Kind            string `json:"kind"`
-	Grp             string `json:"grp"`
-	Key             string `json:"key"`
-	CurrentRevision int64  `json:"current_revision"`
+	Kind            string    `json:"kind"`
+	Grp             string    `json:"grp"`
+	Key             string    `json:"key"`
+	CurrentRevision int64     `json:"current_revision"`
+	Deleted         bool      `json:"deleted"`
+	Size            int64     `json:"size"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // ConflictError 表示推送被 server 乐观锁拒绝（409）；包含冲突清单

@@ -115,6 +115,11 @@ func TestPushPullAndConflict(t *testing.T) {
 	if len(got) != 2 || latestPull != 2 {
 		t.Errorf("pull since=0: got %d entries, latest=%d; want 2 entries, latest=2", len(got), latestPull)
 	}
+	for _, e := range got {
+		if e.UpdatedAt.IsZero() {
+			t.Errorf("pull entry %s updated_at is zero", e.Key)
+		}
+	}
 	got, latestPull, err = st.PullEntries(ctx, userID, "main", 2)
 	if err != nil {
 		t.Fatalf("PullEntries empty: %v", err)
@@ -145,6 +150,10 @@ func TestPushPullAndConflict(t *testing.T) {
 	}
 	if len(conflictErr.Conflicts) != 1 || conflictErr.Conflicts[0].Key != "A" || conflictErr.Conflicts[0].CurrentRevision != 3 {
 		t.Errorf("conflict list = %+v, want A@3", conflictErr.Conflicts)
+	}
+	c := conflictErr.Conflicts[0]
+	if c.Deleted || c.Size != int64(len("ca2")) || c.UpdatedAt.IsZero() {
+		t.Errorf("conflict descriptor = %+v, want live entry with size %d and updated_at", c, len("ca2"))
 	}
 	got, _, _ = st.PullEntries(ctx, userID, "main", 0)
 	for _, e := range got {

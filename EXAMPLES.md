@@ -453,4 +453,10 @@ senv config export NAME [--path PATH]
 senv config list
 senv config get NAME
 senv config delete NAME
+
+# 同步（git 或 server provider）
+senv sync                           # TTY 下 server 冲突进入交互解决器
+senv sync --no-interactive          # 脚本模式：只输出脱敏冲突摘要
+senv sync --accept-remote           # 冲突采用远端
+senv sync --force-push              # 冲突采用本地
 ```

@@ -7,14 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeServer 是内存版 serverAPI，模拟 server 的乐观锁与 revision 语义
 type fakeServer struct {
-	metadata map[string][]byte
-	entries  map[string]map[string]Entry // vault -> id -> entry
-	seq      map[string]int64
-	fail     bool // 模拟断网
+	metadata   map[string][]byte
+	entries    map[string]map[string]Entry // vault -> id -> entry
+	seq        map[string]int64
+	fail       bool // 模拟断网
+	failPush   bool
+	beforePush func()
 }
 
 func newFakeServer() *fakeServer {
@@ -45,7 +48,10 @@ func (f *fakeServer) PutMetadata(_ context.Context, vault string, blob []byte) e
 }
 
 func (f *fakeServer) Push(_ context.Context, vault string, entries []Entry) ([]Entry, int64, error) {
-	if f.fail {
+	if f.beforePush != nil {
+		f.beforePush()
+	}
+	if f.fail || f.failPush {
 		return nil, 0, errors.New("无法连接 server: connection refused")
 	}
 	store := f.entries[vault]
@@ -61,14 +67,21 @@ func (f *fakeServer) Push(_ context.Context, vault string, entries []Entry) ([]E
 			curRev = cur.Revision
 		}
 		if e.BaseRevision != curRev {
+			deleted := !ok || cur.Deleted
+			size := len(cur.Ciphertext)
+			if deleted {
+				size = 0
+			}
 			return nil, 0, &ConflictError{Conflicts: []Conflict{{
 				Kind: e.Kind, Grp: e.Grp, Key: e.Key, CurrentRevision: curRev,
+				Deleted: deleted, Size: int64(size), UpdatedAt: time.Now(),
 			}}}
 		}
 	}
 	for i := range entries {
 		f.seq[vault]++
 		entries[i].Revision = f.seq[vault]
+		entries[i].UpdatedAt = time.Now()
 		store[entryID(entries[i].Kind, entries[i].Grp, entries[i].Key)] = entries[i]
 	}
 	return entries, f.seq[vault], nil
@@ -198,6 +211,114 @@ func TestSyncConflictKeepsBothSides(t *testing.T) {
 	msg := err.Error()
 	if !containsAll(msg, "--accept-remote", "--force-push") {
 		t.Errorf("conflict error should include resolution guidance, got:\n%s", msg)
+	}
+	if len(conflictErr.Details) != 1 {
+		t.Fatalf("conflict details = %+v, want one detail", conflictErr.Details)
+	}
+	detail := conflictErr.Details[0]
+	if detail.Local.Revision != 1 || detail.Local.Deleted ||
+		detail.Local.Size != len("local-v2") ||
+		string(detail.Local.Ciphertext) != "local-v2" {
+		t.Errorf("local conflict side = %+v, want base revision 1 and local-v2", detail.Local)
+	}
+	if detail.Remote.Revision != 2 || detail.Remote.Deleted ||
+		detail.Remote.Size != len("remote-v2") || detail.Remote.UpdatedAt.IsZero() ||
+		string(detail.Remote.Ciphertext) != "remote-v2" {
+		t.Errorf("remote conflict side = %+v, want revision 2 and remote-v2", detail.Remote)
+	}
+	if strings.Contains(msg, "remote-v2") || strings.Contains(msg, "local-v2") {
+		t.Errorf("conflict error must not contain ciphertext or plaintext: %s", msg)
+	}
+}
+
+func TestSyncConflictDetailsCoverDeleteMetadataAndLegacyServer(t *testing.T) {
+	srv := newFakeServer()
+	p, cache := newTestProvider(t, srv)
+	ctx := context.Background()
+
+	writeEnvVar(t, cache, "default", "A", "v1")
+	writeEnvVar(t, cache, "default", "KEEP", "x")
+	if _, err := p.SyncWithReport(ctx); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	// 初始推送的 revision 分配顺序不确定（map 迭代），必须读取真实值。
+	st, err := p.cache.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	aRev := st.Entries[entryID(KindEnv, "default", "A")].Revision
+
+	// 本地删除，远端也删除：两侧删除状态都必须进入 detail。
+	srv.Push(ctx, "main", []Entry{{Kind: KindEnv, Grp: "default", Key: "A", BaseRevision: aRev, Deleted: true}})
+	if err := os.Remove(mustEntryPath(t, cache, KindEnv, "default", "A")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache.metadataPath(), []byte("local-meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv.metadata["main"] = []byte("remote-meta")
+
+	_, err = p.SyncWithReport(ctx)
+	var conflictErr *SyncConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("sync should abort with SyncConflictError, got: %v", err)
+	}
+	if len(conflictErr.Details) != 1 || !conflictErr.Details[0].Local.Deleted || !conflictErr.Details[0].Remote.Deleted {
+		t.Errorf("delete conflict details = %+v, want both sides deleted", conflictErr.Details)
+	}
+	if conflictErr.Metadata == nil || string(conflictErr.Metadata.Local) != "local-meta" ||
+		string(conflictErr.Metadata.Remote) != "remote-meta" {
+		t.Errorf("metadata detail = %+v, want both blobs", conflictErr.Metadata)
+	}
+	if msg := err.Error(); strings.Contains(msg, "local-meta") || strings.Contains(msg, "remote-meta") {
+		t.Errorf("metadata conflict error leaked blobs: %s", msg)
+	}
+
+	// 旧 server 缺少 deleted/size/updated_at 时，用匹配 pull 候选补齐描述符。
+	candidate := Entry{
+		Kind: KindText, Grp: "g", Key: "T", Revision: 7,
+		Ciphertext: []byte("legacy"), UpdatedAt: time.Now(),
+	}
+	side := remoteConflictSide(Conflict{
+		Kind: candidate.Kind, Grp: candidate.Grp, Key: candidate.Key,
+		CurrentRevision: 7,
+	}, candidate, true)
+	if side.Deleted || side.Size != len("legacy") || side.UpdatedAt.IsZero() ||
+		string(side.Ciphertext) != "legacy" {
+		t.Errorf("legacy remote side = %+v, want candidate-backed descriptor", side)
+	}
+}
+
+func TestConflictDetailsRefreshStaleRemoteCandidate(t *testing.T) {
+	srv := newFakeServer()
+	p, cache := newTestProvider(t, srv)
+	ctx := context.Background()
+
+	writeEnvVar(t, cache, "default", "A", "v1")
+	if _, err := p.SyncWithReport(ctx); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	srv.Push(ctx, "main", []Entry{{Kind: KindEnv, Grp: "default", Key: "A", Ciphertext: []byte("remote-v2"), BaseRevision: 1}})
+	writeEnvVar(t, cache, "default", "A", "local-v2")
+	pr, err := p.pull(ctx)
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if len(pr.RemoteCandidates) != 1 || string(pr.RemoteCandidates[0].Ciphertext) != "remote-v2" {
+		t.Fatalf("remote candidates = %+v, want remote-v2", pr.RemoteCandidates)
+	}
+
+	// 模拟 editor/网络窗口期间远端再次更新；409 revision 不再匹配 pull 候选。
+	srv.Push(ctx, "main", []Entry{{Kind: KindEnv, Grp: "default", Key: "A", Ciphertext: []byte("remote-v3"), BaseRevision: 2}})
+	conflict := Conflict{
+		Kind: KindEnv, Grp: "default", Key: "A",
+		CurrentRevision: 3, Size: int64(len("remote-v3")), UpdatedAt: time.Now(),
+	}
+	local := []Entry{{Kind: KindEnv, Grp: "default", Key: "A", BaseRevision: 1, Ciphertext: []byte("local-v2")}}
+	got := p.buildConflictError(ctx, []Conflict{conflict}, false, local, pr.RemoteCandidates, nil, nil)
+	if len(got.Details) != 1 || string(got.Details[0].Remote.Ciphertext) != "remote-v3" ||
+		got.Details[0].Remote.Revision != 3 {
+		t.Fatalf("refreshed details = %+v, want remote-v3@3", got.Details)
 	}
 }
 

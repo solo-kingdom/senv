@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/storage"
@@ -36,11 +37,32 @@ type syncState struct {
 	LastSyncedRevision int64                     `json:"last_synced_revision"`
 	LastPullAt         int64                     `json:"last_pull_at,omitempty"`
 	MetadataHash       string                    `json:"metadata_hash"`
+	VaultBinding       *vaultBinding             `json:"vault_binding,omitempty"`
+	WrittenBy          *stateWriterInfo          `json:"written_by,omitempty"`
 	Entries            map[string]syncEntryState `json:"entries"`
 }
 
 func newSyncState() *syncState {
 	return &syncState{Entries: make(map[string]syncEntryState)}
+}
+
+// vaultBinding 是状态文件的 vault 归属标记；Server 为地址指纹（sha256 前 16 hex），不含敏感内容。
+type vaultBinding struct {
+	Server string `json:"server"`
+	Vault  string `json:"vault"`
+}
+
+// stateWriterInfo 记录最近一次状态写入来源，用于事后取证（不含敏感内容）。
+type stateWriterInfo struct {
+	Path string `json:"path"`
+	PID  int    `json:"pid"`
+	TS   int64  `json:"ts"`
+}
+
+// serverFingerprint 计算 server 地址的非可逆指纹，取 sha256 前 16 个 hex 字符。
+func serverFingerprint(address string) string {
+	sum := sha256.Sum256([]byte(strings.TrimRight(address, "/")))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func hashBytes(data []byte) string {
@@ -53,6 +75,8 @@ type providerRootOpener func(string) (securefs.TrustedRoot, error)
 type localCache struct {
 	configPath string
 	dataPath   string
+	// binding 非空时，loadState 校验状态文件归属并在写入时补全绑定。
+	binding *vaultBinding
 	// openRoot is a package-private fault seam. Production caches leave it nil.
 	openRoot providerRootOpener
 }
@@ -417,9 +441,77 @@ func stateBytes(state *syncState) ([]byte, error) {
 	return json.MarshalIndent(state, "", "  ")
 }
 
+// StateRegressionError 表示待写入状态相对磁盘现状出现退化（快照丢失），写入被拒绝。
+type StateRegressionError struct {
+	LostEntries     int
+	MetadataCleared bool
+}
+
+func (e *StateRegressionError) Error() string {
+	switch {
+	case e.LostEntries > 0:
+		return fmt.Sprintf("同步状态防退化校验拒绝写入：将丢失 %d 个条目快照且无对应删除标记；如两端数据一致可执行 senv sync --accept-remote 重建", e.LostEntries)
+	default:
+		return "同步状态防退化校验拒绝写入：metadata_hash 将从非空变为空串；如两端数据一致可执行 senv sync --accept-remote 重建"
+	}
+}
+
+// stateWriteOptions 控制一次状态写入的来源与护栏白名单。
+type stateWriteOptions struct {
+	writerPath string
+	// allowEntryShrink 用于 bootstrap/accept-remote/migrate 等显式全量重建路径。
+	allowEntryShrink bool
+	// allowEmptyMetadata 仅允许 acceptRemote 在远端确无 metadata 时写入空哈希。
+	allowEmptyMetadata bool
+	// removedEntries 是本次写入合法消失的条目（已推送/应用的 tombstone）。
+	removedEntries map[string]bool
+}
+
+// encodeStateChecked 是所有状态落盘的统一咽喉：先对照磁盘现状做退化校验，
+// 再补全 vault 绑定与写入来源，最后序列化。绑定/来源字段不含敏感内容。
+func (c *localCache) encodeStateChecked(state *syncState, opts stateWriteOptions) ([]byte, error) {
+	if existing, ok, err := c.readStateRaw(); err != nil {
+		return nil, err
+	} else if ok {
+		if err := validateNoStateRegression(existing, state, opts); err != nil {
+			return nil, err
+		}
+	}
+	stamped := *state
+	if c.binding != nil {
+		binding := *c.binding
+		stamped.VaultBinding = &binding
+	}
+	stamped.WrittenBy = &stateWriterInfo{Path: opts.writerPath, PID: os.Getpid(), TS: time.Now().Unix()}
+	return stateBytes(&stamped)
+}
+
+// validateNoStateRegression 拒绝两类退化：无 tombstone 的快照净减少、metadata 哈希非空→空。
+func validateNoStateRegression(existing, next *syncState, opts stateWriteOptions) error {
+	if !opts.allowEntryShrink {
+		var lost int
+		for id := range existing.Entries {
+			if _, ok := next.Entries[id]; !ok && !opts.removedEntries[id] {
+				lost++
+			}
+		}
+		if lost > 0 {
+			return &StateRegressionError{LostEntries: lost}
+		}
+	}
+	if existing.MetadataHash != "" && next.MetadataHash == "" && !opts.allowEmptyMetadata {
+		return &StateRegressionError{MetadataCleared: true}
+	}
+	return nil
+}
+
 // applyRemote commits a validated pull as one recoverable in-process batch.
 // Sync state is written last and every synchronous failure restores snapshots.
 func (c *localCache) applyRemote(entries []Entry, metadata []byte, updateMetadata bool, state *syncState) error {
+	return c.applyRemoteOpts(entries, metadata, updateMetadata, state, stateWriteOptions{writerPath: "applyRemote"})
+}
+
+func (c *localCache) applyRemoteOpts(entries []Entry, metadata []byte, updateMetadata bool, state *syncState, opts stateWriteOptions) error {
 	if err := validateRemoteEntries(entries); err != nil {
 		return err
 	}
@@ -428,7 +520,7 @@ func (c *localCache) applyRemote(entries []Entry, metadata []byte, updateMetadat
 			return fmt.Errorf("invalid synced metadata: %w", err)
 		}
 	}
-	encodedState, err := stateBytes(state)
+	encodedState, err := c.encodeStateChecked(state, opts)
 	if err != nil {
 		return err
 	}
@@ -477,30 +569,53 @@ func (c *localCache) writeMetadata(blob []byte) error {
 }
 
 func (c *localCache) loadState() (*syncState, error) {
-	root, err := c.openExistingRoot(c.dataPath)
+	state, ok, err := c.readStateRaw()
 	if err != nil {
 		return nil, err
+	}
+	if !ok {
+		return newSyncState(), nil
+	}
+	// vault 绑定校验：状态文件属于其他 vault 时拒绝复用，防止交叉污染快照。
+	if state.VaultBinding != nil && c.binding != nil && *state.VaultBinding != *c.binding {
+		return nil, fmt.Errorf(
+			"同步状态文件绑定到其他 vault（server=%s vault=%s，当前 server=%s vault=%s）；如确认切换请执行 senv sync --accept-remote 重建",
+			state.VaultBinding.Server, state.VaultBinding.Vault, c.binding.Server, c.binding.Vault,
+		)
+	}
+	return state, nil
+}
+
+// readStateRaw 读取并解码状态文件，不做 vault 绑定校验；文件不存在时 ok=false。
+func (c *localCache) readStateRaw() (*syncState, bool, error) {
+	root, err := c.openExistingRoot(c.dataPath)
+	if err != nil {
+		return nil, false, err
 	}
 	defer root.Close()
 	data, err := root.Read(syncStateFileName)
 	if errors.Is(err, os.ErrNotExist) {
-		return newSyncState(), nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var state syncState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("同步状态文件损坏（%s）: %w；删除该文件后执行 senv init 或 senv sync 可重建", c.stateFilePath(), err)
+		return nil, false, fmt.Errorf("同步状态文件损坏（%s）: %w；删除该文件后执行 senv init 或 senv sync 可重建", c.stateFilePath(), err)
 	}
 	if state.Entries == nil {
 		state.Entries = make(map[string]syncEntryState)
 	}
-	return &state, nil
+	return &state, true, nil
 }
 
 func (c *localCache) saveState(state *syncState) error {
-	data, err := stateBytes(state)
+	return c.saveStateOpts(state, stateWriteOptions{writerPath: "saveState"})
+}
+
+func (c *localCache) saveStateOpts(state *syncState, opts stateWriteOptions) error {
+	data, err := c.encodeStateChecked(state, opts)
 	if err != nil {
 		return err
 	}

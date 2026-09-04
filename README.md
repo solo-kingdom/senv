@@ -490,6 +490,10 @@ senv config install [name] [--mode 0600]              安装配置文件
 senv config list                   列出所有配置文件
 senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
+senv sync                          同步 git/server provider（server 冲突时进入 TTY 解决器）
+senv sync --no-interactive         输出冲突脱敏摘要，不进入交互 UI
+senv sync --accept-remote          server 冲突时采用远端
+senv sync --force-push             server 冲突时采用本地
 senv doctor                        体检 metadata 与数据文件的一致性
 senv mcp serve                     以 stdio MCP server 运行（供本地 agent 调用）
 senv mcp install <agent>           把 senv MCP server 写入 agent 配置（claude-code/claude-desktop/cursor/codex/zcode/kimi/pi）
@@ -531,6 +535,7 @@ MIT License
 
 ### Unreleased
 
+- 🔄 `senv sync` 的 server 冲突体验增强：显示 revision/size/hash/时间摘要，TTY 内可对比明文、逐条选择本地/远端，并通过 `VISUAL`/`EDITOR` 手动合并兼容条目；`--no-interactive` 保持脚本路径。
 - 🔐 安全与兼容迁移详见 [Release Notes](docs/RELEASE_NOTES.md)：600k/legacy KDF、memory-backed session 限制、可恢复 rekey，以及明文导出默认 `0600`/显式 `--mode`。
 
 ### v1.0.0 (2026-03-06)

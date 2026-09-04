@@ -281,7 +281,10 @@ func (p *ServerProvider) migrateFromServerLocked(ctx context.Context, force bool
 		res.MetadataMoved = true
 	}
 	st.MetadataHash = hashBytes(remoteMeta)
-	if err := p.cache.applyRemote(toWrite, remoteMeta, writeMetadata, st); err != nil {
+	if err := p.cache.applyRemoteOpts(toWrite, remoteMeta, writeMetadata, st, stateWriteOptions{
+		writerPath:       "migrateFromServerLocked",
+		allowEntryShrink: true,
+	}); err != nil {
 		res.MetadataMoved = false
 		return res, err
 	}
