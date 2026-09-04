@@ -23,12 +23,87 @@ var (
 	configGroup       string
 	configDescription string
 	configListGroup   string
+
 	configInstallAll  bool
 	configDryRun      bool
 	configYes         bool
 	configExportMode  string
 	configInstallMode string
+
+	configRepairDryRun      bool
+	configRepairYes         bool
+	configRepairDropMissing bool
 )
+
+// configRepairCmd renames legacy non-portable config entries to portable names.
+var configRepairCmd = &cobra.Command{
+	Use:   "repair",
+	Short: "Repair legacy non-portable config names",
+	Long: "Rename quarantined legacy config entries (for example names containing ':')\n" +
+		"to deterministic portable names, renaming their ciphertext files atomically.\n" +
+		"Use --dry-run to preview, --yes to skip confirmation, and --drop-missing to\n" +
+		"remove stale entries whose ciphertext no longer exists.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		autoPull(cmd, refreshRequested(cmd))
+		configManager, err := getConfigManager()
+		if err != nil {
+			return err
+		}
+
+		items, err := configManager.PlanConfigRepair()
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Println("No quarantined configs to repair")
+			return nil
+		}
+
+		fmt.Println("Config repair plan:")
+		for _, item := range items {
+			suffix := ""
+			if item.MissingFile {
+				suffix = "  [ciphertext missing]"
+			}
+			fmt.Printf("  %s -> %s%s\n", item.OldName, item.NewName, suffix)
+		}
+		if configRepairDryRun {
+			return nil
+		}
+
+		dropCount := 0
+		renames := make(map[string]string, len(items))
+		for _, item := range items {
+			if item.MissingFile {
+				dropCount++
+				continue
+			}
+			renames[item.OldName] = item.NewName
+		}
+		if dropCount > 0 && !configRepairDropMissing {
+			return fmt.Errorf("%d quarantined config(s) have missing ciphertext; rerun with --drop-missing to drop them", dropCount)
+		}
+
+		if !configRepairYes {
+			fmt.Printf("Apply this repair plan? [y/N] ")
+			var answer string
+			if _, err := fmt.Scanln(&answer); err != nil {
+				return fmt.Errorf("confirmation required: %w (rerun with --yes to skip)", err)
+			}
+			answer = strings.ToLower(strings.TrimSpace(answer))
+			if answer != "y" && answer != "yes" {
+				fmt.Println("Repair cancelled")
+				return nil
+			}
+		}
+
+		if err := configManager.ExecuteConfigRepair(renames, configRepairDropMissing); err != nil {
+			return err
+		}
+		fmt.Println("Config repair complete")
+		return nil
+	},
+}
 
 func init() {
 	rootCmd.AddCommand(configCmd)
@@ -295,10 +370,11 @@ var configListCmd = &cobra.Command{
 			return err
 		}
 
-		configs, err := configManager.List(configListGroup)
+		configs, warnings, err := configManager.ListWithWarnings(configListGroup)
 		if err != nil {
 			return err
 		}
+		printQuarantineWarnings(cmd, warnings)
 
 		if len(configs) == 0 {
 			fmt.Println("No configuration files found")
@@ -317,6 +393,12 @@ var configListCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func printQuarantineWarnings(cmd *cobra.Command, warnings []config.QuarantineWarning) {
+	for _, w := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "⚠ 跳过配置 %s：名称不可移植，%s\n", w.OldName, w.Hint)
+	}
 }
 
 // configGetCmd represents the config get command
@@ -372,5 +454,10 @@ func init() {
 	configCmd.AddCommand(configInstallCmd)
 	configCmd.AddCommand(configUninstallCmd)
 	configCmd.AddCommand(configGetCmd)
+
+	configRepairCmd.Flags().BoolVar(&configRepairDryRun, "dry-run", false, "show the repair plan without executing")
+	configRepairCmd.Flags().BoolVar(&configRepairYes, "yes", false, "skip the confirmation prompt")
+	configRepairCmd.Flags().BoolVar(&configRepairDropMissing, "drop-missing", false, "drop stale entries whose ciphertext is missing")
+	addRefreshFlag(configRepairCmd)
 	addRefreshFlag(configGetCmd)
 }

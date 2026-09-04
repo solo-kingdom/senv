@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -128,6 +129,7 @@ func (t *configTab) InputMode() bool {
 type configLoadedMsg struct {
 	groups       []configGroupRow
 	itemsByGroup map[string][]configRow
+	warnings     []config.QuarantineWarning
 	err          error
 }
 
@@ -205,7 +207,7 @@ func (t *configTab) load() tea.Cmd {
 		if mgr == nil {
 			return configLoadedMsg{err: fmt.Errorf("config manager unavailable")}
 		}
-		cfgs, err := mgr.List("")
+		cfgs, warnings, err := mgr.ListWithWarnings("")
 		if err != nil {
 			return configLoadedMsg{err: err}
 		}
@@ -230,7 +232,7 @@ func (t *configTab) load() tea.Cmd {
 			itemsByGroup[g] = items
 			groups = append(groups, configGroupRow{name: g})
 		}
-		return configLoadedMsg{groups: groups, itemsByGroup: itemsByGroup}
+		return configLoadedMsg{groups: groups, itemsByGroup: itemsByGroup, warnings: warnings}
 	}
 }
 
@@ -326,7 +328,15 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.pendingFocusName, t.pendingFocusGroup = "", ""
 			t.positionAt(group, name)
 		}
-		return t, nil
+		if len(msg.warnings) == 0 {
+			return t, func() tea.Msg { return clearWarnMsg{} }
+		}
+		parts := make([]string, 0, len(msg.warnings))
+		for _, w := range msg.warnings {
+			parts = append(parts, fmt.Sprintf("跳过配置 %s", w.OldName))
+		}
+		text := strings.Join(parts, "、") + "：名称不可移植，运行 senv config repair 修复"
+		return t, func() tea.Msg { return warnMsg{text: text} }
 
 	case configCreatedMsg:
 		// Reload, then land the cursor on the new entry in its own group.

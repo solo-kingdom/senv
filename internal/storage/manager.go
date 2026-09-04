@@ -726,24 +726,58 @@ func (m *Manager) deriveKeyFromPassword(password string) ([]byte, error) {
 
 // LoadConfigIndex loads the config file index
 func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
-	if !m.mutationLocked {
-		return withVaultRead(m, func(locked *Manager) (*ConfigIndex, error) { return locked.LoadConfigIndex() })
-	}
-	root, err := m.openConfigRoot()
+	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
-	data, err := root.Read(ConfigIndexFile)
-	if err != nil {
-		return nil, err
+	if len(quarantined) > 0 {
+		return nil, quarantinedIndexError(quarantined)
 	}
+	return index, nil
+}
 
-	var configIndex ConfigIndex
-	if err := FromJSON(data, &configIndex); err != nil {
-		return nil, err
+// LoadConfigIndexWithQuarantine loads the config file index and separates
+// structurally consistent legacy entries whose identities are non-portable
+// (for example a ":" in the name) into the quarantine slice. Read-only
+// callers may skip those entries and surface a warning; mutating callers must
+// keep using LoadConfigIndex so the vault stays fail-closed until repair. A
+// missing index file is an empty index rather than an error.
+func (m *Manager) LoadConfigIndexWithQuarantine() (*ConfigIndex, []ConfigQuarantine, error) {
+	type result struct {
+		index       *ConfigIndex
+		quarantined []ConfigQuarantine
 	}
-	return normalizeConfigIndex(&configIndex)
+	loaded, err := withVaultRead(m, func(locked *Manager) (result, error) {
+		root, err := locked.openConfigRoot()
+		if err != nil {
+			return result{}, err
+		}
+		defer root.Close()
+		data, err := root.Read(ConfigIndexFile)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// A vault created before any config was stored has no index
+				// file yet; treat it as an empty index so empty-vault reads
+				// and the first create work without spurious errors.
+				return result{index: NewConfigIndex()}, nil
+			}
+			return result{}, err
+		}
+
+		var configIndex ConfigIndex
+		if err := FromJSON(data, &configIndex); err != nil {
+			return result{}, err
+		}
+		index, quarantined, err := normalizeConfigIndexWithQuarantine(&configIndex)
+		if err != nil {
+			return result{}, err
+		}
+		return result{index: index, quarantined: quarantined}, nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return loaded.index, loaded.quarantined, nil
 }
 
 // SaveConfigIndex saves the config file index

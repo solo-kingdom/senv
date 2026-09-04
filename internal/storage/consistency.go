@@ -26,6 +26,10 @@ type ConsistencyReport struct {
 	EnvFiles      FileProbes
 	TextFiles     FileProbes
 	ConfigFiles   FileProbes
+	// QuarantinedConfigNames lists legacy config entries whose identities are
+	// structurally consistent but non-portable. They are skipped (not probed,
+	// not counted) and surfaced separately as repair guidance.
+	QuarantinedConfigNames []string
 }
 
 // AllOK reports whether the key decrypts the metadata and every data file.
@@ -128,9 +132,12 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		}
 	}
 
-	index, err := m.LoadConfigIndex()
+	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	for _, q := range quarantined {
+		report.QuarantinedConfigNames = append(report.QuarantinedConfigNames, q.Name)
 	}
 	for name, config := range index.Configs {
 		fileName := config.EncryptedFile

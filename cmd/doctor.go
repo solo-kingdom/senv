@@ -112,6 +112,7 @@ func printDoctorReport(out io.Writer, r *storage.ConsistencyReport) {
 	printFileProbes(out, "env files", r.EnvFiles)
 	printFileProbes(out, "text files", r.TextFiles)
 	printFileProbes(out, "config files", r.ConfigFiles)
+	printQuarantinedConfigs(out, r.QuarantinedConfigNames)
 }
 
 func printFileProbes(out io.Writer, label string, p storage.FileProbes) {
@@ -122,5 +123,15 @@ func printFileProbes(out io.Writer, label string, p storage.FileProbes) {
 	fmt.Fprintf(out, "%-16s (%d/%d)\n", label+":", p.OK, p.Total)
 	for _, name := range p.Failed {
 		fmt.Fprintf(out, "  ! %s: cannot decrypt with current key\n", name)
+	}
+}
+
+func printQuarantinedConfigs(out io.Writer, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "quarantined configs: (%d) run `senv config repair`\n", len(names))
+	for _, name := range names {
+		fmt.Fprintf(out, "  ! %s: skipped (non-portable legacy name)\n", name)
 	}
 }

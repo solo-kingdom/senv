@@ -31,6 +31,7 @@ type Model struct {
 	width  int
 	height int
 	err    string
+	warn   string
 	search *searchTab // non-nil while the global search overlay is open
 }
 
@@ -66,6 +67,12 @@ func (e errMsg) Error() string { return e.err.Error() }
 
 // clearErrMsg clears the error bar.
 type clearErrMsg struct{}
+
+// warnMsg carries a non-fatal warning to be rendered in the warning bar.
+type warnMsg struct{ text string }
+
+// clearWarnMsg clears the warning bar.
+type clearWarnMsg struct{}
 
 // clearError returns a command that clears the error bar.
 func clearError() tea.Cmd { return func() tea.Msg { return clearErrMsg{} } }
@@ -121,6 +128,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = ""
 		return m, nil
 
+	case warnMsg:
+		m.warn = msg.text
+		return m, nil
+
+	case clearWarnMsg:
+		m.warn = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		// If the active tab is capturing text input, forward ALL keys so global
 		// shortcuts do not hijack typing.
@@ -130,8 +145,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Any keypress clears a stale error banner (task 11.1), except quit.
+		// Any keypress clears a stale error/warning banner (task 11.1), except quit.
 		hadErr := m.err != ""
+		hadWarn := m.warn != ""
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -142,22 +158,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.search.Init()
 		case "1":
 			m.err = ""
+			m.warn = ""
 			m.active = 0
 			return m, m.tabs[0].Init()
 		case "2":
 			m.err = ""
+			m.warn = ""
 			m.active = 1
 			return m, m.tabs[1].Init()
 		case "3":
 			m.err = ""
+			m.warn = ""
 			m.active = 2
 			return m, m.tabs[2].Init()
 		case "tab":
 			m.err = ""
+			m.warn = ""
 			m.active = (m.active + 1) % len(m.tabs)
 			return m, m.tabs[m.active].Init()
 		case "shift+tab":
 			m.err = ""
+			m.warn = ""
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
 			return m, m.tabs[m.active].Init()
 		}
@@ -166,6 +187,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// before the next action takes effect.
 		if hadErr {
 			m.err = ""
+			return m, nil
+		}
+		if hadWarn {
+			m.warn = ""
 			return m, nil
 		}
 	}
@@ -256,12 +281,14 @@ func (m Model) View() string {
 	// Active tab content.
 	content := m.tabs[m.active].View()
 
-	// Bottom bar: error takes precedence over the status hint. The text is
-	// hard-truncated (not Width-wrapped, which would add a line) to fit
-	// inside contentW minus the bar's Padding(0,1).
+	// Bottom bar: error takes precedence over warning, then status hint. The
+	// text is hard-truncated (not Width-wrapped, which would add a line) to
+	// fit inside contentW minus the bar's Padding(0,1).
 	var bottom string
 	if m.err != "" {
 		bottom = errorBarStyle.Render("⚠ " + truncateRunes(m.err, contentW-4))
+	} else if m.warn != "" {
+		bottom = warnBarStyle.Render("⚠ " + truncateRunes(m.warn, contentW-4))
 	} else {
 		bottom = statusBarStyle.Render(truncateRunes(m.tabs[m.active].Help(), contentW-2))
 	}

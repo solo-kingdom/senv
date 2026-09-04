@@ -62,6 +62,12 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color(colorError))
 
+	// warnBarStyle renders non-fatal warnings (e.g. skipped legacy configs)
+	// at the bottom, visually distinct from errors.
+	warnBarStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(lipgloss.Color(colorWarn))
+
 	// contentStyle wraps the main content area.
 	contentStyle = lipgloss.NewStyle().Padding(0, 1)
 

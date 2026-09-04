@@ -67,6 +67,28 @@ func normalizeConfigGroup(group string) (string, error) {
 	return group, nil
 }
 
+// QuarantineWarning reports one legacy config index entry that a read-only
+// operation skipped because its identity is structurally consistent but
+// non-portable (typically a ":" in the name).
+type QuarantineWarning struct {
+	OldName string
+	Hint    string
+}
+
+func quarantineWarnings(quarantined []storage.ConfigQuarantine) []QuarantineWarning {
+	if len(quarantined) == 0 {
+		return nil
+	}
+	warnings := make([]QuarantineWarning, 0, len(quarantined))
+	for _, q := range quarantined {
+		warnings = append(warnings, QuarantineWarning{
+			OldName: q.Name,
+			Hint:    "run `senv config repair`",
+		})
+	}
+	return warnings
+}
+
 // loadConfigFile loads a configuration file using key or password
 func (m *Manager) loadConfigFile(name string) ([]byte, error) {
 	if m.key != nil {
@@ -353,6 +375,8 @@ func (m *Manager) Delete(name string) error {
 }
 
 // List lists configuration files. An empty groupFilter lists all groups.
+// It fails closed when the index contains quarantined legacy entries so
+// unadapted callers never silently drop them.
 func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 	if groupFilter != "" {
 		if _, err := normalizeConfigGroup(groupFilter); err != nil {
@@ -363,7 +387,27 @@ func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
+	return listConfigInfos(configIndex, groupFilter), nil
+}
 
+// ListWithWarnings lists configuration files and returns quarantine warnings
+// for legacy entries whose non-portable identities were skipped. Warnings are
+// informational only: the call still succeeds so read-only UX degrades
+// gracefully instead of failing the whole listing.
+func (m *Manager) ListWithWarnings(groupFilter string) ([]ConfigInfo, []QuarantineWarning, error) {
+	if groupFilter != "" {
+		if _, err := normalizeConfigGroup(groupFilter); err != nil {
+			return nil, nil, err
+		}
+	}
+	configIndex, quarantined, err := m.storage.LoadConfigIndexWithQuarantine()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	return listConfigInfos(configIndex, groupFilter), quarantineWarnings(quarantined), nil
+}
+
+func listConfigInfos(configIndex *storage.ConfigIndex, groupFilter string) []ConfigInfo {
 	var result []ConfigInfo
 	for name, config := range configIndex.Configs {
 		if groupFilter != "" && config.NormalizedGroup() != groupFilter {
@@ -378,16 +422,30 @@ func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 			UpdatedAt:   config.UpdatedAt.Format(time.RFC3339),
 		})
 	}
-
-	return result, nil
+	return result
 }
 
-// Groups returns the sorted list of distinct group names.
+// Groups returns the sorted list of distinct group names. It fails closed when
+// the index contains quarantined legacy entries.
 func (m *Manager) Groups() ([]string, error) {
 	configIndex, err := m.storage.LoadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
+	return distinctGroups(configIndex), nil
+}
+
+// GroupsWithWarnings returns sorted distinct group names from valid index
+// entries plus quarantine warnings for skipped legacy entries.
+func (m *Manager) GroupsWithWarnings() ([]string, []QuarantineWarning, error) {
+	configIndex, quarantined, err := m.storage.LoadConfigIndexWithQuarantine()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	return distinctGroups(configIndex), quarantineWarnings(quarantined), nil
+}
+
+func distinctGroups(configIndex *storage.ConfigIndex) []string {
 	seen := map[string]bool{}
 	var groups []string
 	for _, config := range configIndex.Configs {
@@ -398,7 +456,7 @@ func (m *Manager) Groups() ([]string, error) {
 		}
 	}
 	sort.Strings(groups)
-	return groups, nil
+	return groups
 }
 
 // SetMeta updates the group and description of an existing config.

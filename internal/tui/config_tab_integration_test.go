@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -144,4 +146,66 @@ func indexByName(t *configTab, name string) int {
 func applyKey(t *configTab, key string) (*configTab, tea.Cmd) {
 	next, cmd := t.Update(runeKey(key))
 	return next.(*configTab), cmd
+}
+
+func TestConfigTabShowsQuarantineWarning(t *testing.T) {
+	dir := t.TempDir()
+	sm := storage.NewManager(filepath.Join(dir, "cfg"), filepath.Join(dir, "data"))
+	if err := sm.Initialize("pw"); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	index := &storage.ConfigIndex{Configs: map[string]storage.ConfigFile{
+		"database-prod": {Name: "database-prod", EncryptedFile: "database-prod.enc", Group: "default"},
+		"feg:ai-ops-portal.pub": {
+			Name: "feg:ai-ops-portal.pub", EncryptedFile: "feg:ai-ops-portal.pub.enc", Group: "default",
+		},
+	}}
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sm.GetConfigPath(), storage.ConfigIndexFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mgr := config.NewManager(sm, "pw")
+
+	model := New(Managers{Config: mgr})
+	next, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model = next.(Model)
+
+	// Load the config tab and replay its messages into the model so both
+	// configLoadedMsg and the resulting warnMsg are processed.
+	tab := newConfigTab(model.mgr)
+	tab.SetSize(80, 20)
+	cmd := tab.load()
+	var warnCmd tea.Cmd
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			break
+		}
+		nextTab, nextCmd := tab.Update(msg)
+		tab = nextTab.(*configTab)
+		cmd = nextCmd
+		if nextCmd != nil && warnCmd == nil {
+			warnCmd = nextCmd
+		}
+	}
+	if warnCmd != nil {
+		if warn, ok := warnCmd().(warnMsg); ok {
+			nextModel, _ := model.Update(warn)
+			model = nextModel.(Model)
+		}
+	}
+
+	if !hasConfigItem(tab, "database-prod") {
+		t.Fatal("valid entry missing from config tab")
+	}
+	if hasConfigItem(tab, "feg:ai-ops-portal.pub") {
+		t.Fatal("quarantined entry leaked into config tab")
+	}
+	view := model.View()
+	if !strings.Contains(view, "feg:ai-ops-portal.pub") || !strings.Contains(view, "senv config repair") {
+		t.Fatalf("warning missing from view:\n%s", view)
+	}
 }
