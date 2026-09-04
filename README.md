@@ -129,7 +129,7 @@ echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 
 无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘）。
 
-Session cache 只会写入经操作系统确认的 memory-backed 文件系统（Linux 为 tmpfs/ramfs）。`XDG_RUNTIME_DIR` 或系统临时目录若无法验证为内存介质，`session start` 会 fail closed；可继续使用交互式一次性密码，或将 `XDG_RUNTIME_DIR` 指向可信内存挂载。所有 timeout（包括 `never`）都遵守此限制，且不会跨重启保留。
+Session cache 只会写入平台验证的安全存储：macOS 默认使用 Keychain（静态加密、随 keychain 锁定）；Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法确认平台安全存储时 `session start` 会 fail closed 并输出可行动指引；headless macOS/CI 可显式使用 `senv session start --insecure-cache`（密钥以 0600 明文落盘，会打印醒目警告）。所有 timeout（包括 `never`）都遵守此限制，且不会跨重启保留。
 
 **注意**：`default` 分组默认激活，无需手动激活。
 

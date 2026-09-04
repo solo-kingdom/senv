@@ -18,10 +18,11 @@ func fallbackLifecycleLockName() string {
 // replacement, and cleanup. The lock itself is opened no-follow under a
 // runtime root that was already proven memory-backed and non-symlinked.
 func withFallbackLifecycleLock(tempRoot string, fn func() error) error {
-	if err := validateRuntimeRoot(tempRoot); err != nil {
+	resolvedRoot, err := validateRuntimeRoot(tempRoot)
+	if err != nil {
 		return err
 	}
-	path := filepath.Join(tempRoot, fallbackLifecycleLockName())
+	path := filepath.Join(resolvedRoot, fallbackLifecycleLockName())
 	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return fmt.Errorf("open fallback session lock: %w", err)

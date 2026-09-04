@@ -125,33 +125,57 @@ func rejectSymlinkComponents(path string) error {
 	return nil
 }
 
-func validateRuntimeRoot(path string) error {
-	if path == "" {
-		return fmt.Errorf("session runtime path is empty")
-	}
-	if err := rejectSymlinkComponents(path); err != nil {
-		return err
-	}
-	if err := requireMemoryBackedFilesystem(path); err != nil {
-		return err
-	}
-	root, err := securefs.OpenRoot(path)
+// resolveRuntimeRoot resolves trusted symlinks in the parent components of
+// path (for example macOS /var -> /private/var) while keeping the final
+// component unresolved so symlinked runtime directories stay rejected.
+func resolveRuntimeRoot(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return root.Close()
+	parent := filepath.Dir(absolute)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve session runtime parent %q: %w", parent, err)
+	}
+	return filepath.Join(resolvedParent, filepath.Base(absolute)), nil
+}
+
+// validateRuntimeRoot checks that the resolved runtime path has no symlink
+// components and is memory-backed. It returns the resolved root so later
+// operations anchor to the same directory that was validated.
+func validateRuntimeRoot(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("session runtime path is empty")
+	}
+	resolved, err := resolveRuntimeRoot(path)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectSymlinkComponents(resolved); err != nil {
+		return "", err
+	}
+	if err := requireMemoryBackedFilesystem(resolved); err != nil {
+		return "", err
+	}
+	root, err := securefs.OpenRoot(resolved)
+	if err != nil {
+		return "", err
+	}
+	return resolved, root.Close()
 }
 
 func xdgCacheLocation(create bool) (cacheLocation, error) {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if err := validateRuntimeRoot(runtimeDir); err != nil {
+	runtimeRoot, err := validateRuntimeRoot(runtimeDir)
+	if err != nil {
 		return cacheLocation{}, err
 	}
-	location := cacheLocation{root: runtimeDir, segments: []string{"senv", cacheFileName()}}
+	location := cacheLocation{root: runtimeRoot, segments: []string{"senv", cacheFileName()}}
 	if !create {
 		return location, nil
 	}
-	root, err := securefs.OpenRoot(runtimeDir)
+	root, err := securefs.OpenRoot(runtimeRoot)
 	if err != nil {
 		return cacheLocation{}, err
 	}
@@ -172,7 +196,8 @@ func fallbackDirectoryOwnedAndPrivate(info os.FileInfo) bool {
 
 func discoverFallbackLocations() ([]cacheLocation, error) {
 	tempRoot := os.TempDir()
-	if err := validateRuntimeRoot(tempRoot); err != nil {
+	tempRoot, err := validateRuntimeRoot(tempRoot)
+	if err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(tempRoot)
@@ -203,7 +228,8 @@ func newFallbackLocation() (cacheLocation, error) {
 	tempRoot := os.TempDir()
 	// The actual backing filesystem is checked before randomness or mkdir, and
 	// therefore before any candidate directory can be written.
-	if err := validateRuntimeRoot(tempRoot); err != nil {
+	tempRoot, err := validateRuntimeRoot(tempRoot)
+	if err != nil {
 		return cacheLocation{}, err
 	}
 	name, err := generateFallbackDirName()
@@ -259,7 +285,7 @@ func readLocation(location cacheLocation) (*SessionCache, bool, error) {
 	return &cache, true, nil
 }
 
-func saveCache(cache *SessionCache) error {
+func saveTmpfsCache(cache *SessionCache) error {
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
@@ -298,12 +324,10 @@ func saveCacheAt(data []byte, fallback bool) error {
 	if location.fallback != "" {
 		cleanupOtherFallbackDirectories(location.fallback)
 	}
-	removeLegacyRuntimeCache()
-	removeLegacyPersistentCache()
 	return nil
 }
 
-func loadCache() (*SessionCache, error) {
+func loadTmpfsCache() (*SessionCache, error) {
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
 		tempRoot := os.TempDir()
 		var cache *SessionCache
@@ -373,7 +397,8 @@ func cleanupOtherFallbackDirectories(keep string) {
 
 func removeLegacyRuntimeCache() {
 	tempRoot := os.TempDir()
-	if err := validateRuntimeRoot(tempRoot); err != nil {
+	tempRoot, err := validateRuntimeRoot(tempRoot)
+	if err != nil {
 		return
 	}
 	name := fmt.Sprintf("senv-%d", os.Getuid())
@@ -387,7 +412,7 @@ func removeLegacyRuntimeCache() {
 	}
 }
 
-func clearCache() error {
+func clearTmpfsCache() error {
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
 		tempRoot := os.TempDir()
 		return withFallbackLifecycleLock(tempRoot, clearCacheAt)

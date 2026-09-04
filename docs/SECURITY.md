@@ -93,7 +93,7 @@ Salt 与 KDF 参数存储在 `metadata.json` 中：
 1. **保护原始密码是核心**：数据目录可以安全地跨机器迁移，只要密码不泄露即可
 2. **密码无法从加密数据中恢复**：如果忘记密码，数据将无法解密
 3. **建议使用强密码**：结合高迭代次数，可以有效抵御暴力破解攻击
-4. **派生密钥不落持久盘**：session 缓存（含派生密钥）只写在经操作系统确认的 memory-backed 文件系统；Linux 仅接受 tmpfs/ramfs。`XDG_RUNTIME_DIR` 与 fallback 都会检查实际介质，未知或磁盘介质 fail closed。所有 timeout（含 `never`）均如此，`never` 仅表示不设时间过期，重启后仍失效
+4. **派生密钥只进平台安全存储**：session 缓存（含派生密钥）写入平台验证的安全存储——macOS 为 Keychain（静态加密、随 keychain 锁定、经 `/usr/bin/security` 静默访问），Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs，`XDG_RUNTIME_DIR` 与 fallback 都检查实际介质）。无法确认平台安全存储时 fail closed 并输出可行动指引；唯一的落盘例外是显式 `--insecure-cache` 逃生舱（0600 明文 + 醒目警告，仅供 headless/CI）。所有 timeout（含 `never`）均如此，`never` 仅表示不设时间过期，重启后仍失效
 5. **敏感文件强制 0600/0700**：metadata、settings.json（含 server token）、各 `.enc` 在每次写入时都会检查并收紧权限，老版本创建的宽松权限文件会被自动收敛
 
 ---
@@ -109,10 +109,12 @@ Salt 与 KDF 参数存储在 `metadata.json` 中：
 
 ---
 
-## Session 介质限制
+## Session 存储与逃生舱
 
-- `session start` 会验证 runtime 路径的实际 backing filesystem，而不是信任路径名。无法确认 memory-backed 时命令非零退出，derived key 不会写盘
-- 无安全 runtime 时仍可在交互式命令中输入一次密码；该路径不创建 session cache。也可将 `XDG_RUNTIME_DIR` 指向由用户提供并确认的内存挂载
+- `session start` 按平台选择安全存储：darwin 默认 Keychain（`senv.session.<uid>` generic-password item，写入时信任 `/usr/bin/security` 以保证 MCP 每请求读取零弹窗）；其他平台验证 runtime 路径的实际 backing filesystem，而不是信任路径名
+- macOS 上系统自带的符号链接（如 `/var` → `/private/var`）会先解析再校验，不再误拒；解析后的最终目录仍必须是真实目录且写入走 no-follow 锚定
+- 无法确认平台安全存储时命令非零退出，derived key 不写盘，错误信息包含 `--insecure-cache` 行动指引；无安全 runtime 时仍可在交互式命令中输入一次密码（不创建 session cache），或将 `XDG_RUNTIME_DIR` 指向可信内存挂载
+- `--insecure-cache` 是显式 opt-in 的磁盘逃生舱：密钥以 0600 明文写入 `${XDG_CACHE_HOME:-~/.cache}/senv/session.json`（目录 0700、原子写、boot ID 校验照旧），开启前打印醒目警告；同用户进程、备份与同步工具均可读取，仅建议 headless macOS/CI 使用
 - MCP 只保留非秘密授权指纹，并在每个工具请求前重新校验 session；expiry、`session clear`、session 替换、boot 变化或 rekey 都会撤销旧 MCP 进程
 
 ## Rekey 恢复

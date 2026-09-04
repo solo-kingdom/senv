@@ -24,11 +24,12 @@ Session timeout can be configured as:
 
 Security considerations:
   - Only the derived key is cached, not your password
-  - Every runtime candidate is verified as memory-backed before use; Linux
-    accepts tmpfs/ramfs. Unknown or disk-backed filesystems fail closed
-  - XDG_RUNTIME_DIR is preferred; fallback is allowed only on another verified
-    memory-backed filesystem, in a random 0700 directory
-  - The cache is 0600 and never written to persistent storage
+  - The cache lives in a platform-verified secure store: the macOS Keychain on
+    Darwin, or a verified memory-backed filesystem (tmpfs/ramfs) elsewhere
+  - XDG_RUNTIME_DIR is preferred on Linux; fallback is allowed only on another
+    verified memory-backed filesystem, in a random 0700 directory
+  - The cache is 0600 and never written to persistent storage unless you
+    explicitly opt in with --insecure-cache for headless/CI environments
   - Cache includes a hash of your data path for validation
   - Use 'session clear' to manually clear the cache`,
 }
@@ -39,8 +40,9 @@ var sessionStartCmd = &cobra.Command{
 	Long: `Start a new session with a specified timeout.
 
 If no timeout is specified, uses the default from settings (8h). All timeout
-modes require an operating-system-verified memory-backed runtime filesystem;
-otherwise the command fails without writing the derived key.
+modes require a platform-verified secure store (macOS Keychain, or a verified
+memory-backed filesystem on Linux); otherwise the command fails without writing
+the derived key unless --insecure-cache is explicitly set.
 
 Examples:
   # Start session with default timeout
@@ -82,6 +84,12 @@ Examples:
 
 		if timeout == nil {
 			return fmt.Errorf("session cache is disabled in configuration")
+		}
+
+		insecureCache, _ := cmd.Flags().GetBool("insecure-cache")
+		if insecureCache {
+			fmt.Fprintln(os.Stderr, session.InsecureCacheWarning)
+			session.EnableInsecureCache()
 		}
 
 		// Prompt for password
@@ -201,6 +209,8 @@ func init() {
 	// Add flags
 	sessionStartCmd.Flags().StringP("timeout", "t", "",
 		"Session timeout (e.g., 30m, 8h, 1d, 1y, restart, never)")
+	sessionStartCmd.Flags().Bool("insecure-cache", false,
+		"store the session key on disk (0600) for headless/CI use; insecure")
 	addRefreshFlag(sessionStartCmd)
 
 	// Add subcommands
