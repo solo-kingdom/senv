@@ -82,8 +82,8 @@ func requireMCPRevoked(t *testing.T, fixture *mcpGuardFixture) {
 }
 
 func TestMCPRequestSessionGuard(t *testing.T) {
-	t.Run("valid never", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+	t.Run("valid restart", func(t *testing.T) {
+		fixture := newMCPGuardFixture(t, "restart")
 		requestManagers, release, err := fixture.authorize()
 		if err != nil {
 			t.Fatalf("authorize valid never session: %v", err)
@@ -107,7 +107,7 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 	})
 
 	t.Run("clear", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+		fixture := newMCPGuardFixture(t, "restart")
 		if err := fixture.session.ClearSession(); err != nil {
 			t.Fatalf("ClearSession: %v", err)
 		}
@@ -115,8 +115,8 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 	})
 
 	t.Run("session ID replacement", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
-		timeout, _ := session.ParseTimeout("never")
+		fixture := newMCPGuardFixture(t, "restart")
+		timeout, _ := session.ParseTimeout("restart")
 		if err := fixture.session.StartSession("correct-secret", timeout); err != nil {
 			t.Fatalf("replacement StartSession: %v", err)
 		}
@@ -124,19 +124,19 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 	})
 
 	t.Run("boot ID change", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+		fixture := newMCPGuardFixture(t, "restart")
 		fixture.rewriteCache(t, func(cache *session.SessionCache) { cache.BootID = "different-boot" })
 		requireMCPRevoked(t, fixture)
 	})
 
 	t.Run("data path hash change", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+		fixture := newMCPGuardFixture(t, "restart")
 		fixture.rewriteCache(t, func(cache *session.SessionCache) { cache.DataPathHash = "different-path" })
 		requireMCPRevoked(t, fixture)
 	})
 
 	t.Run("metadata salt rekey change", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+		fixture := newMCPGuardFixture(t, "restart")
 		store := storage.NewManager(fixture.configPath, fixture.dataPath)
 		metadata, err := store.LoadMetadata()
 		if err != nil {
@@ -154,9 +154,20 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 	})
 
 	t.Run("cached key replacement", func(t *testing.T) {
-		fixture := newMCPGuardFixture(t, "never")
+		fixture := newMCPGuardFixture(t, "restart")
 		fixture.rewriteCache(t, func(cache *session.SessionCache) {
 			cache.Key = base64.StdEncoding.EncodeToString(make([]byte, internalcrypto.KeySize))
+		})
+		requireMCPRevoked(t, fixture)
+	})
+
+	// A cache written by an older senv with timeout_type "never" must fail
+	// per-request validation: the timeout type no longer exists, so MCP must
+	// not honor it even though the cached key itself is untouched.
+	t.Run("legacy never timeout type", func(t *testing.T) {
+		fixture := newMCPGuardFixture(t, "restart")
+		fixture.rewriteCache(t, func(cache *session.SessionCache) {
+			cache.TimeoutType = "never"
 		})
 		requireMCPRevoked(t, fixture)
 	})

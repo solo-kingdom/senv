@@ -36,7 +36,7 @@ func TestSessionCacheFilesystemRejectsDiskBackedXDG(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	setRuntimeProbe(t, runtimeFilesystemDisk, nil)
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 
 	err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout)
 	if !errors.Is(err, errUnsafeRuntimeFilesystem) {
@@ -54,7 +54,7 @@ func TestSessionCacheFilesystemRejectsDiskBackedFallback(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	setRuntimeProbe(t, runtimeFilesystemDisk, nil)
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 
 	err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout)
 	if !errors.Is(err, errUnsafeRuntimeFilesystem) {
@@ -71,7 +71,7 @@ func TestSessionCacheFallbackIsRandomAndPrivate(t *testing.T) {
 	t.Setenv("TMPDIR", fallbackRoot)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
-	_, _, manager := startSessionForCacheTest(t, "never")
+	_, _, manager := startSessionForCacheTest(t, "restart")
 
 	entries, err := os.ReadDir(fallbackRoot)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestSessionCacheFallbackIsRandomAndPrivate(t *testing.T) {
 }
 
 func TestSessionCacheFilesystemSupportsAllTimeoutModes(t *testing.T) {
-	for _, timeoutValue := range []string{"never", "restart", "5m"} {
+	for _, timeoutValue := range []string{"restart", "5m"} {
 		t.Run(timeoutValue, func(t *testing.T) {
 			isolateSessionCache(t)
 			setRuntimeProbe(t, runtimeFilesystemMemory, nil)
@@ -139,7 +139,7 @@ func TestSessionCacheSymlinkTargetRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
 		t.Fatal("cache symlink was accepted")
 	}
@@ -159,7 +159,7 @@ func TestSessionCacheSymlinkParentRejected(t *testing.T) {
 	}
 	t.Setenv("XDG_RUNTIME_DIR", linkedRuntime)
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
 		t.Fatal("runtime parent symlink was accepted")
 	}
@@ -175,7 +175,7 @@ func TestSessionCacheRandomSessionIDFailureLeavesNoCache(t *testing.T) {
 	randRead = func([]byte) (int, error) { return 0, errors.New("random unavailable") }
 	t.Cleanup(func() { randRead = original })
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
 		t.Fatal("session ID random failure was ignored")
 	}
@@ -204,7 +204,7 @@ func TestSessionCacheRandomFallbackFailureLeavesNoCache(t *testing.T) {
 	}
 	t.Cleanup(func() { randRead = original })
 	cfg, data := setupProject(t, "correct-secret")
-	timeout, _ := ParseTimeout("never")
+	timeout, _ := ParseTimeout("restart")
 	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
 		t.Fatal("fallback random failure was ignored")
 	}
@@ -223,7 +223,7 @@ func TestSessionCacheFilesystemClearsLegacyPersistentCache(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte(`{"key":"legacy"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	startSessionForCacheTest(t, "never")
+	startSessionForCacheTest(t, "restart")
 	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy persistent cache still exists: %v", err)
 	}

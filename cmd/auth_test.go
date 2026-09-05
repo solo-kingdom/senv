@@ -173,7 +173,7 @@ func TestExportIfSession_WithSessionExports(t *testing.T) {
 		t.Fatalf("set env: %v", err)
 	}
 
-	to, err := session.ParseTimeout("never")
+	to, err := session.ParseTimeout("restart")
 	if err != nil || to == nil {
 		t.Fatalf("parse timeout: %v", err)
 	}

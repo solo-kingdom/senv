@@ -149,7 +149,7 @@ func TestDiskCacheBootIDInvalidation(t *testing.T) {
 	cache := &SessionCache{
 		DataPathHash: hashDataPath(dataPath),
 		BootID:       "stale-boot",
-		TimeoutType:  string(TimeoutNever),
+		TimeoutType:  string(TimeoutRestart),
 	}
 	if err := (diskCacheStore{}).Save(cache); err != nil {
 		t.Fatalf("save hatch: %v", err)

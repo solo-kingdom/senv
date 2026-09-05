@@ -50,9 +50,6 @@ senv session start --timeout 1y
 ```bash
 # 直到系统重启（推荐用于服务器）
 senv session start --timeout restart
-
-# 永不过期（不推荐）
-senv session start --timeout never
 ```
 
 ### 3. 使用缓存的会话
@@ -132,8 +129,9 @@ senv session start --timeout false
 | `Nd` | N 天 | `1d`, `7d` |
 | `Ny` | N 年（365天） | `1y` |
 | `restart` | 直到系统重启 | `restart` |
-| `never` | 永不过期 | `never`（不推荐） |
 | `false` | 禁用缓存 | `false` |
+
+> 注：旧版本的 `never` 已移除（与 `restart` 行为本就相同），请改用 `restart`。
 
 ## 审计日志
 
@@ -165,7 +163,7 @@ cat ~/.config/senv/data/logs/audit.log | jq
 ```bash
 # 早上 / 登录后启动会话
 senv session start --timeout 8h
-# 或：senv session start -t never
+# 或：senv session start -t restart
 
 # 工作期间无需重复输入密码
 eval "$(senv env export --if-session)"
@@ -177,7 +175,7 @@ senv env get DATABASE_URL
 
 ```bash
 # ~/.zshrc
-# senv session start -t never   # 登录后手动执行一次
+# senv session start -t restart   # 登录后手动执行一次
 eval "$(senv env export --if-session)"
 ```
 
@@ -210,7 +208,6 @@ senv session start --timeout 7d
 | `1d` - `7d` | 长期项目 | ⭐⭐⭐⭐ | 可接受 |
 | `30d` - `1y` | 个人设备 | ⭐⭐ | ⚠️ 谨慎使用 |
 | `restart` | 服务器 | ⭐⭐⭐⭐ | **推荐** |
-| `never` | 不推荐 | ⭐ | ⚠️ **强烈不推荐** |
 
 ## 故障排查
 
@@ -246,11 +243,10 @@ ls -la ~/.config/senv/data/logs/
 
 ### 缓存文件位置
 
-- **duration / restart**（临时）:
+- **duration / restart**（临时，均不跨重启留存）:
   - `$XDG_RUNTIME_DIR/senv/session-<uid>`（优先）
-  - 后备: `/tmp/senv-session-<uid>`
-- **never**（持久，重启后仍在）:
-  - `~/.local/share/senv/session/session-<uid>`
+  - 后备: `/tmp/` 下随机命名的 0700 目录
+  - macOS: Keychain `senv.session.<uid>`
 
 ### 缓存文件结构
 

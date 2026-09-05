@@ -13,7 +13,7 @@ func TestGitPullSelfCheck_WarnsOnDesyncWithoutModifyingFiles(t *testing.T) {
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 	writeEnvFileWithPassword(t, cfg, data, "default", "correct-secret")
-	startNeverSession(t, cfg, data, "correct-secret")
+	startRestartSession(t, cfg, data, "correct-secret")
 
 	// Snapshot data files before the check.
 	envPath := filepath.Join(data, "envs", "default", ".meta.enc")
@@ -62,7 +62,7 @@ func TestGitPullSelfCheck_SilentWhenConsistent(t *testing.T) {
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 	writeEnvFileWithPassword(t, cfg, data, "default", "correct-secret")
-	startNeverSession(t, cfg, data, "correct-secret")
+	startRestartSession(t, cfg, data, "correct-secret")
 
 	var out bytes.Buffer
 	postPullSelfCheck(cfg, data, &out)

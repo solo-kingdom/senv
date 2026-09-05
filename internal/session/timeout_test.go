@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +20,6 @@ func TestParseTimeout(t *testing.T) {
 		{"7d", TimeoutDuration, 7 * 24 * time.Hour, false, false},
 		{"1y", TimeoutDuration, 365 * 24 * time.Hour, false, false},
 		{"restart", TimeoutRestart, 0, false, false},
-		{"never", TimeoutNever, 0, false, false},
 		{"false", "", 0, true, false},
 		{"disabled", "", 0, true, false},
 		{"invalid", "", 0, false, true},
@@ -74,7 +74,6 @@ func TestTimeoutString(t *testing.T) {
 		{&SessionTimeout{Type: TimeoutDuration, Value: 24 * time.Hour}, "1d"},
 		{&SessionTimeout{Type: TimeoutDuration, Value: 7 * 24 * time.Hour}, "7d"},
 		{&SessionTimeout{Type: TimeoutRestart}, "until restart"},
-		{&SessionTimeout{Type: TimeoutNever}, "never"},
 	}
 
 	for _, tt := range tests {
@@ -82,6 +81,22 @@ func TestTimeoutString(t *testing.T) {
 			result := tt.timeout.String()
 			if result != tt.expect {
 				t.Errorf("expected %s but got %s", tt.expect, result)
+			}
+		})
+	}
+}
+
+// TestParseTimeoutRejectsNever ensures the removed `never` timeout type is
+// rejected with an actionable message listing the supported values.
+func TestParseTimeoutRejectsNever(t *testing.T) {
+	for _, input := range []string{"never", "infinite", "forever"} {
+		t.Run(input, func(t *testing.T) {
+			timeout, err := ParseTimeout(input)
+			if err == nil {
+				t.Fatalf("expected error for %q but got timeout %+v", input, timeout)
+			}
+			if !strings.Contains(err.Error(), "restart") {
+				t.Errorf("expected error to list supported values, got: %v", err)
 			}
 		})
 	}

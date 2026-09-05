@@ -116,8 +116,8 @@ senv env group deactivate production
 先显式启动 session（唯一写盘入口），再在 shell 中注入：
 
 ```bash
-# 登录后启动一次（推荐永不过期或按需超时）
-senv session start -t never
+# 登录后启动一次（直到系统重启，或按需指定超时）
+senv session start -t restart
 
 # 导出所有激活分组的环境变量
 eval "$(senv env export --if-session)"
@@ -129,7 +129,7 @@ echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 
 无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘）。
 
-Session cache 只会写入平台验证的安全存储：macOS 默认使用 Keychain（静态加密、随 keychain 锁定）；Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法确认平台安全存储时 `session start` 会 fail closed 并输出可行动指引；headless macOS/CI 可显式使用 `senv session start --insecure-cache`（密钥以 0600 明文落盘，会打印醒目警告）。所有 timeout（包括 `never`）都遵守此限制，且不会跨重启保留。
+Session cache 只会写入平台验证的安全存储：macOS 默认使用 Keychain（静态加密、随 keychain 锁定）；Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法确认平台安全存储时 `session start` 会 fail closed 并输出可行动指引；headless macOS/CI 可显式使用 `senv session start --insecure-cache`（密钥以 0600 明文落盘，会打印醒目警告）。所有 timeout 模式都遵守此限制，且不会跨重启保留。
 
 **注意**：`default` 分组默认激活，无需手动激活。
 
@@ -283,7 +283,7 @@ senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工�
 **工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session；之后每个工具请求都会重新验证 session ID、到期时间、boot ID 与 vault metadata。session 到期、clear、替换或 rekey 后，旧 MCP 进程会拒绝请求，需重启 session 和 MCP server。
 
 ```bash
-# 1) 终端里鉴权一次（默认 30 分钟超时；-t never 永不过期）
+# 1) 终端里鉴权一次（默认 30 分钟超时；可用 -t restart 直到重启）
 senv session start
 
 # 2) 把 senv 写入目标 agent 的配置（保留其它 server，自动备份 .bak）

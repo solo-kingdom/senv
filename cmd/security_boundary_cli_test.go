@@ -78,7 +78,7 @@ func TestSecurityBoundaryCLI(t *testing.T) {
 			diskRuntime = "/proc"
 		}
 		output, code := runSecurityBoundaryCLI(t, cfg, data, password+"\n", map[string]string{"XDG_RUNTIME_DIR": diskRuntime},
-			"--path", data, "session", "start", "--timeout", "never")
+			"--path", data, "session", "start", "--timeout", "restart")
 		requireCLIError(t, output, code, "no secure session store available")
 		requireCLIError(t, output, code, "--insecure-cache")
 		if strings.Contains(output, "Session started") {

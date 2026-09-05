@@ -8,7 +8,6 @@ type TimeoutType string
 const (
 	TimeoutDuration TimeoutType = "duration" // Fixed duration (e.g., 8h, 1d)
 	TimeoutRestart  TimeoutType = "restart"  // Until system restart
-	TimeoutNever    TimeoutType = "never"    // Never expires
 )
 
 // SessionTimeout represents a session timeout configuration
@@ -22,8 +21,8 @@ type SessionCache struct {
 	Key          string    `json:"key"`  // Base64 encoded derived key
 	Salt         string    `json:"salt"` // Base64 encoded salt
 	CreatedAt    time.Time `json:"created_at"`
-	ExpiresAt    time.Time `json:"expires_at"`     // Expiration time (zero for never/restart)
-	TimeoutType  string    `json:"timeout_type"`   // "duration", "restart", "never"
+	ExpiresAt    time.Time `json:"expires_at"`     // Expiration time (zero for restart)
+	TimeoutType  string    `json:"timeout_type"`   // "duration", "restart" (legacy "never" is rejected as expired)
 	BootID       string    `json:"boot_id"`        // System boot ID (for restart type)
 	DataPathHash string    `json:"data_path_hash"` // Hash of data path for validation
 	SessionID    string    `json:"session_id"`     // Unique session ID for audit

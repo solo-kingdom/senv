@@ -93,7 +93,7 @@ Salt 与 KDF 参数存储在 `metadata.json` 中：
 1. **保护原始密码是核心**：数据目录可以安全地跨机器迁移，只要密码不泄露即可
 2. **密码无法从加密数据中恢复**：如果忘记密码，数据将无法解密
 3. **建议使用强密码**：结合高迭代次数，可以有效抵御暴力破解攻击
-4. **派生密钥只进平台安全存储**：session 缓存（含派生密钥）写入平台验证的安全存储——macOS 为 Keychain（静态加密、随 keychain 锁定、经 `/usr/bin/security` 静默访问），Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs，`XDG_RUNTIME_DIR` 与 fallback 都检查实际介质）。无法确认平台安全存储时 fail closed 并输出可行动指引；唯一的落盘例外是显式 `--insecure-cache` 逃生舱（0600 明文 + 醒目警告，仅供 headless/CI）。所有 timeout（含 `never`）均如此，`never` 仅表示不设时间过期，重启后仍失效
+4. **派生密钥只进平台安全存储**：session 缓存（含派生密钥）写入平台验证的安全存储——macOS 为 Keychain（静态加密、随 keychain 锁定、经 `/usr/bin/security` 静默访问），Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs，`XDG_RUNTIME_DIR` 与 fallback 都检查实际介质）。无法确认平台安全存储时 fail closed 并输出可行动指引；唯一的落盘例外是显式 `--insecure-cache` 逃生舱（0600 明文 + 醒目警告，仅供 headless/CI）。所有 timeout 模式均如此，重启后均失效
 5. **敏感文件强制 0600/0700**：metadata、settings.json（含 server token）、各 `.enc` 在每次写入时都会检查并收紧权限，老版本创建的宽松权限文件会被自动收敛
 
 ---

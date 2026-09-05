@@ -98,7 +98,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("  senv env set DATABASE_URL \"postgres://localhost/db\"")
 	fmt.Println("  senv env set --group prod API_KEY \"sk-xxx\"")
 	fmt.Println("  senv env list")
-	fmt.Println("  senv session start -t never")
+	fmt.Println("  senv session start -t restart")
 	fmt.Println("  eval \"$(senv env export --if-session)\"")
 
 	return nil

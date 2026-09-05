@@ -33,10 +33,10 @@ func desyncMetadata(t *testing.T, cfg, data string) {
 	}
 }
 
-// startNeverSession starts a never-expiring session for the project password.
-func startNeverSession(t *testing.T, cfg, data, password string) {
+// startRestartSession starts a restart-scoped session for the project password.
+func startRestartSession(t *testing.T, cfg, data, password string) {
 	t.Helper()
-	to, err := session.ParseTimeout("never")
+	to, err := session.ParseTimeout("restart")
 	if err != nil || to == nil {
 		t.Fatalf("parse timeout: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestDesync_ReportsErrDataDesyncNotInvalidPassword(t *testing.T) {
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 	writeEnvFileWithPassword(t, cfg, data, "default", "correct-secret")
-	startNeverSession(t, cfg, data, "correct-secret")
+	startRestartSession(t, cfg, data, "correct-secret")
 
 	desyncMetadata(t, cfg, data)
 
@@ -94,7 +94,7 @@ func TestDesync_StaleCachePreservedAsRecoveryKey(t *testing.T) {
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 	writeEnvFileWithPassword(t, cfg, data, "default", "correct-secret")
-	startNeverSession(t, cfg, data, "correct-secret")
+	startRestartSession(t, cfg, data, "correct-secret")
 
 	desyncMetadata(t, cfg, data)
 

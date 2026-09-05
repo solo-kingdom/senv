@@ -144,7 +144,7 @@ func TestMetadataAtomicInterruption(t *testing.T) {
 func TestSettingsAtomicInterruption(t *testing.T) {
 	testConfigAtomicInterruption(t, SettingsFile, func(m *Manager) error {
 		settings := NewSettings()
-		settings.Session.Timeout = "never"
+		settings.Session.Timeout = "restart"
 		return m.SaveSettings(settings)
 	})
 }

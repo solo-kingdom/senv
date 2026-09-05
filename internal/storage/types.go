@@ -43,7 +43,7 @@ type ProviderConfig struct {
 // SessionConfig represents session cache configuration
 type SessionConfig struct {
 	Enabled bool   `json:"enabled"` // Whether session cache is enabled
-	Timeout string `json:"timeout"` // Default session timeout (e.g., "8h", "1d", "restart", "never")
+	Timeout string `json:"timeout"` // Default session timeout (e.g., "8h", "1d", "restart")
 }
 
 // EnvGroup represents an environment variable group

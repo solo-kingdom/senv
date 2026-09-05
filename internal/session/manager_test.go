@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestGetCachedKeyRejectsStaleKey(t *testing.T) {
 	isolateSessionCache(t)
 	configPath, dataPath := setupProject(t, "correct-secret")
 
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil || timeout == nil {
 		t.Fatalf("parse timeout: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestGetCachedKeyRejectsStaleKey(t *testing.T) {
 		Key:          base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize)),
 		Salt:         metadata.Salt,
 		CreatedAt:    time.Now(),
-		TimeoutType:  string(TimeoutNever),
+		TimeoutType:  string(TimeoutRestart),
 		DataPathHash: hashDataPath(dataPath),
 		SessionID:    "sess-stale-key",
 	}
@@ -90,7 +91,7 @@ func TestGetCachedKeyRejectsStaleSalt(t *testing.T) {
 	isolateSessionCache(t)
 	configPath, dataPath := setupProject(t, "correct-secret")
 
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil || timeout == nil {
 		t.Fatalf("parse timeout: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestLoadCacheForDataPathIgnoresOtherProject(t *testing.T) {
 	configA, dataA := setupProject(t, "secret-a")
 	_, dataB := setupProject(t, "secret-b")
 
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil || timeout == nil {
 		t.Fatalf("parse timeout: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestErrorClass_Expired(t *testing.T) {
 func TestErrorClass_StaleMetadata(t *testing.T) {
 	isolateSessionCache(t)
 	cfg, data := setupProject(t, "correct-secret")
-	to, _ := ParseTimeout("never")
+	to, _ := ParseTimeout("restart")
 	sm := sessionManagerForTest(t, cfg, data)
 	if err := sm.StartSession("correct-secret", to); err != nil {
 		t.Fatalf("start session: %v", err)
@@ -236,7 +237,7 @@ func TestErrorClass_StaleMetadata(t *testing.T) {
 func TestErrorClass_StaleKey(t *testing.T) {
 	isolateSessionCache(t)
 	cfg, data := setupProject(t, "correct-secret")
-	to, _ := ParseTimeout("never")
+	to, _ := ParseTimeout("restart")
 	sm := sessionManagerForTest(t, cfg, data)
 	if err := sm.StartSession("correct-secret", to); err != nil {
 		t.Fatalf("start session: %v", err)
@@ -270,7 +271,7 @@ func TestErrorClass_StaleKey(t *testing.T) {
 func TestStaleNoClear_MetadataMismatchKeepsCache(t *testing.T) {
 	isolateSessionCache(t)
 	cfg, data := setupProject(t, "correct-secret")
-	to, _ := ParseTimeout("never")
+	to, _ := ParseTimeout("restart")
 	sm := sessionManagerForTest(t, cfg, data)
 	if err := sm.StartSession("correct-secret", to); err != nil {
 		t.Fatalf("start session: %v", err)
@@ -299,7 +300,7 @@ func TestStaleNoClear_MetadataMismatchKeepsCache(t *testing.T) {
 func TestStaleNoClear_KeyInvalidKeepsCache(t *testing.T) {
 	isolateSessionCache(t)
 	cfg, data := setupProject(t, "correct-secret")
-	to, _ := ParseTimeout("never")
+	to, _ := ParseTimeout("restart")
 	sm := sessionManagerForTest(t, cfg, data)
 	if err := sm.StartSession("correct-secret", to); err != nil {
 		t.Fatalf("start session: %v", err)
@@ -323,7 +324,7 @@ func TestStaleNoClear_KeyInvalidKeepsCache(t *testing.T) {
 func TestStartSessionRekeyConcurrentLease(t *testing.T) {
 	isolateSessionCache(t)
 	configPath, dataPath := setupProject(t, "correct-secret")
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,5 +356,43 @@ func TestStartSessionRekeyConcurrentLease(t *testing.T) {
 	}
 	if _, err := manager.GetCachedKey(); err != nil {
 		t.Fatalf("successful session cache is not immediately valid: %v", err)
+	}
+}
+
+// TestLegacyNeverCacheIsExpired ensures caches written by older versions with
+// timeout_type "never" are classified as expired (unknown type): no crash, no
+// password/data-desync misreport, and the caller is sent back to session start.
+func TestLegacyNeverCacheIsExpired(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+
+	bootID, err := systemBootID()
+	if err != nil {
+		t.Fatalf("boot id: %v", err)
+	}
+	legacy := &SessionCache{
+		Key:          base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize)),
+		Salt:         "stale",
+		CreatedAt:    time.Now(),
+		TimeoutType:  "never", // written by an older senv version
+		BootID:       bootID,
+		DataPathHash: hashDataPath(dataPath),
+		SessionID:    "sess-legacy-never",
+	}
+	if err := saveCache(legacy); err != nil {
+		t.Fatalf("save legacy cache: %v", err)
+	}
+
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	valid, err := sm.IsCacheValid(legacy)
+	if valid {
+		t.Fatal("legacy never cache must not validate")
+	}
+	if err == nil || !strings.Contains(err.Error(), "unknown timeout type") {
+		t.Fatalf("expected unknown timeout type error, got valid=%v err=%v", valid, err)
+	}
+
+	if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("expected ErrSessionExpired for legacy never cache, got %v", err)
 	}
 }

@@ -235,7 +235,7 @@ active session, export refuses to prompt and asks you to run
 senv session start. Use --if-session in shell rc files to skip silently.
 
 Usage:
-  senv session start -t never
+  senv session start -t restart
   eval "$(senv env export --if-session)"`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		autoPull(cmd, refreshRequested(cmd))

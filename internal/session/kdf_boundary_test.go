@@ -36,7 +36,7 @@ func TestInvalidKDFRejectedBeforeDeriveSession(t *testing.T) {
 	}
 	t.Cleanup(func() { deriveKeyWithIterations = originalDerive })
 
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil {
 		t.Fatalf("ParseTimeout: %v", err)
 	}

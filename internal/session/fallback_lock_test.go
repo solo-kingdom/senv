@@ -12,7 +12,7 @@ func TestFallbackConcurrentStartsLeaveVerifiableCache(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
 	configPath, dataPath := setupProject(t, "correct-secret")
-	timeout, err := ParseTimeout("never")
+	timeout, err := ParseTimeout("restart")
 	if err != nil {
 		t.Fatal(err)
 	}

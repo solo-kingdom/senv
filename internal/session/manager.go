@@ -209,7 +209,7 @@ func (m *Manager) isCacheValid(cache *SessionCache) (bool, error) {
 	}
 
 	switch cache.TimeoutType {
-	case string(TimeoutNever), string(TimeoutRestart):
+	case string(TimeoutRestart):
 		return true, nil
 	case string(TimeoutDuration):
 		return time.Now().Before(cache.ExpiresAt), nil

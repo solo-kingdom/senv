@@ -13,7 +13,7 @@ var durationRegex = regexp.MustCompile(`^(\d+)(ns|us|ms|s|m|h|d|y)$`)
 // ParseTimeout parses a timeout string into a SessionTimeout
 // Supports formats:
 //   - Duration: 30m, 8h, 1d, 1y
-//   - Special: restart, never
+//   - Special: restart
 //   - Disable: false, disabled
 func ParseTimeout(input string) (*SessionTimeout, error) {
 	input = strings.ToLower(strings.TrimSpace(input))
@@ -22,8 +22,6 @@ func ParseTimeout(input string) (*SessionTimeout, error) {
 	switch input {
 	case "restart", "until-restart", "until_restart":
 		return &SessionTimeout{Type: TimeoutRestart}, nil
-	case "never", "infinite", "forever":
-		return &SessionTimeout{Type: TimeoutNever}, nil
 	case "false", "disabled", "disable", "off":
 		return nil, nil // Indicates cache is disabled
 	}
@@ -31,7 +29,7 @@ func ParseTimeout(input string) (*SessionTimeout, error) {
 	// Parse duration
 	matches := durationRegex.FindStringSubmatch(input)
 	if matches == nil {
-		return nil, fmt.Errorf("invalid timeout format: %s (supported: 30m, 8h, 1d, 1y, restart, never)", input)
+		return nil, fmt.Errorf("invalid timeout format: %s (supported: 30m, 8h, 1d, 1y, restart)", input)
 	}
 
 	value, _ := strconv.ParseInt(matches[1], 10, 64)
@@ -74,8 +72,6 @@ func (st *SessionTimeout) String() string {
 	switch st.Type {
 	case TimeoutRestart:
 		return "until restart"
-	case TimeoutNever:
-		return "never"
 	case TimeoutDuration:
 		return formatDuration(st.Value)
 	default:

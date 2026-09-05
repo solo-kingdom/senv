@@ -62,7 +62,7 @@ func TestAllMCPToolsGuarded(t *testing.T) {
 }
 
 func TestMCPRevocationNoSideEffects(t *testing.T) {
-	fixture := newMCPGuardFixture(t, "never")
+	fixture := newMCPGuardFixture(t, "restart")
 	store := storage.NewManager(fixture.configPath, fixture.dataPath)
 	passwordManager := env.NewManager(store, "correct-secret")
 	const secret = "super-secret-plaintext"

@@ -116,7 +116,7 @@ func TestDoctor_DesyncedProjectStillDiagnoses(t *testing.T) {
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
 	writeEnvFileWithPassword(t, cfg, data, "default", "correct-secret")
-	startNeverSession(t, cfg, data, "correct-secret")
+	startRestartSession(t, cfg, data, "correct-secret")
 
 	// Desync metadata after a session exists: doctor should use the recovery key.
 	desyncMetadata(t, cfg, data)
