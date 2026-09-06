@@ -1,0 +1,7 @@
+schema: spec-driven
+created: 2026-09-06
+goal: 0. 支持认证 client 注册功能，且支持屏蔽 client，senv client
+  检查到被屏蔽后，应当清理session（缓存数据可以保留）1. 新增配置历史版本功能，默认保留 3 个版本，注意 cli+tui 查看历史版本的能力 2.
+  新增操作审计日志功能，senv client 可以查看（cli + tui），注意包含日期 3.
+  添加系统日志功能（保存数据库），主要是保存尝试访问的记录、用户错误登录、正确登录、同步等，主要用于安全审计
+skip_specs: true

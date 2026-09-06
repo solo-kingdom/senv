@@ -39,17 +39,30 @@ const (
 	AuditMCPRevocation   AuditEventType = "mcp_session_revoked"
 	AuditAuthSuccess     AuditEventType = "auth_success"
 	AuditAuthFailure     AuditEventType = "auth_failure"
+	AuditClientBlocked   AuditEventType = "client_blocked"
+
+	// 业务操作事件（op-audit）：target 只到 kind/group/key 或文件名粒度，
+	// 绝不包含任何值或明文内容。
+	AuditOpEnv       AuditEventType = "op_env"
+	AuditOpText      AuditEventType = "op_text"
+	AuditOpConfig    AuditEventType = "op_config"
+	AuditOpInstall   AuditEventType = "op_install"
+	AuditOpUninstall AuditEventType = "op_uninstall"
+	AuditOpSync      AuditEventType = "op_sync"
+	AuditOpConflict  AuditEventType = "op_conflict"
+	AuditOpRestore   AuditEventType = "op_restore"
 )
 
 // AuditEntry represents a single audit log entry
 type AuditEntry struct {
 	Timestamp   time.Time      `json:"timestamp"`
 	EventType   AuditEventType `json:"event_type"`
-	SessionID   string         `json:"session_id"`
+	SessionID   string         `json:"session_id,omitempty"`
+	Target      string         `json:"target,omitempty"` // 业务操作目标（kind/group/key、文件名）；会话事件为空
 	TimeoutType string         `json:"timeout_type,omitempty"`
 	Duration    string         `json:"duration,omitempty"`
 	Success     bool           `json:"success"`
-	Message     string         `json:"message"`
+	Message     string         `json:"message,omitempty"`
 	Hostname    string         `json:"hostname"`
 	Username    string         `json:"username"`
 }

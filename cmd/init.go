@@ -35,8 +35,8 @@ password. The vault password is never sent to the server.`,
 }
 
 func init() {
-	initCmd.Flags().StringVar(&initServerAddress, "server", "", "senv-server 地址（接入已有 server vault）")
-	initCmd.Flags().StringVar(&initServerToken, "token", "", "server token（默认取环境变量 SENV_SERVER_TOKEN）")
+	initCmd.Flags().StringVar(&initServerAddress, "server", "", "senv-server 地址（缺省回落到本机已注册的 provider 配置）")
+	initCmd.Flags().StringVar(&initServerToken, "token", "", "server token（缺省回落到本机 settings 与 SENV_SERVER_TOKEN）")
 	initCmd.Flags().StringVar(&initServerVault, "vault", "main", "server 端 vault 名")
 	rootCmd.AddCommand(initCmd)
 }
@@ -51,7 +51,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("project already initialized at %s", configPath)
 	}
 
-	// server 模式：接入 server 上已有的 vault
+	// server 模式：接入 server 上已有的 vault。
+	// 未显式给 --server 时回落到本机已注册的 provider 配置（senv server
+	// register 的产物），支持「先注册、后 init」的全新机器闭环。
+	applyRegisteredServerDefaults(manager)
 	if initServerAddress != "" {
 		return runInitServer(manager, configPath, dataPath)
 	}
@@ -104,6 +107,28 @@ func runInit(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// applyRegisteredServerDefaults 在未显式给 --server 时回落到本机已注册的
+// provider 配置（senv server register 的产物）；显式 flag 优先。
+func applyRegisteredServerDefaults(manager *storage.Manager) {
+	if initServerAddress != "" {
+		return
+	}
+	settings, err := manager.LoadSettings()
+	if err != nil || !strings.EqualFold(strings.TrimSpace(settings.Provider.Type), provider.TypeServer) {
+		return
+	}
+	if strings.TrimSpace(settings.Provider.Address) == "" {
+		return
+	}
+	initServerAddress = settings.Provider.Address
+	if initServerToken == "" {
+		initServerToken = settings.Provider.Token
+	}
+	if (initServerVault == "" || initServerVault == "main") && settings.Provider.Vault != "" {
+		initServerVault = settings.Provider.Vault
+	}
+}
+
 // runInitServer 以 server 地址 + token 初始化：拉取 metadata 与全部条目建本地缓存，
 // 然后用 vault 口令解锁。口令只在本地派生 key 校验，绝不发往 server。
 func runInitServer(manager *storage.Manager, configPath, dataPath string) error {
@@ -112,7 +137,7 @@ func runInitServer(manager *storage.Manager, configPath, dataPath string) error 
 		token = os.Getenv("SENV_SERVER_TOKEN")
 	}
 	if token == "" {
-		return fmt.Errorf("缺少 server token：请提供 --token 或设置 SENV_SERVER_TOKEN")
+		return fmt.Errorf("缺少 server token：请提供 --token、先执行 senv server register，或设置 SENV_SERVER_TOKEN")
 	}
 
 	if err := provider.ValidateServerAddress(initServerAddress); err != nil {

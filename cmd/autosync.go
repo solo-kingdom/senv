@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/provider"
+	"github.com/wii/senv/internal/session"
 )
 
 const (
@@ -47,6 +48,16 @@ func getAutoSyncServerProvider() (*provider.ServerProvider, error) {
 	return sp, nil
 }
 
+// exitOnClientBlocked 把「client 被屏蔽」升级为命令失败：本地解锁缓存清理
+// 已由 provider 完成，这里保证屏蔽提示与重新注册指引可见，且进程以非零码
+// 退出（spec：检测到被屏蔽后命令不得静默成功）。
+func exitOnClientBlocked(out io.Writer, err error) {
+	if errors.Is(err, provider.ErrClientBlocked) {
+		fmt.Fprintf(out, "✗ %v\n", err)
+		os.Exit(1)
+	}
+}
+
 // autoPull performs the bounded, best-effort pre-read pull. Provider and network
 // failures are deliberately swallowed so the local cache remains usable.
 func autoPull(cmd *cobra.Command, refresh bool) {
@@ -58,9 +69,14 @@ func autoPull(cmd *cobra.Command, refresh bool) {
 	defer cancel()
 	res, _, err := sp.AutoPull(ctx, sp.SyncThrottleWindow(), refresh)
 	if err != nil {
+		exitOnClientBlocked(cmd.ErrOrStderr(), err)
+		if !errors.Is(err, provider.ErrClientBlocked) {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto pull 失败")
+		}
 		return
 	}
 	if res != nil && (res.Applied > 0 || res.MetadataUpdated) {
+		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, fmt.Sprintf("auto pull %d 条", res.Applied))
 		fmt.Fprintf(cmd.ErrOrStderr(), "✓ 已从 server 更新 %d 条\n", res.Applied)
 		if res.MetadataUpdated {
 			fmt.Fprintln(cmd.ErrOrStderr(), "✓ 已从 server 更新 vault metadata")
@@ -89,6 +105,12 @@ func postRunAutoPush(cmd *cobra.Command) {
 	out, err := sp.AutoPush(ctx, autoSyncPushBudget)
 	if err == nil || out == nil || out.Skip == provider.AutoSyncSkipClean || out.Skip == provider.AutoSyncSkipLocked {
 		return
+	}
+	exitOnClientBlocked(os.Stderr, err)
+	if errors.Is(err, provider.ErrClientBlocked) {
+		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto push 被屏蔽拦截")
+	} else {
+		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, fmt.Sprintf("auto push %d 条待推送失败", out.Dirty))
 	}
 	printAutoPushWarning(os.Stderr, out.Dirty, err)
 }
@@ -130,8 +152,12 @@ func pushBlockingAfterCriticalWrite(cmd *cobra.Command) {
 	cmd.Annotations["senv/skip-auto-push"] = "true"
 	ctx, cancel := context.WithTimeout(commandContext(cmd), blockingPushBudget)
 	defer cancel()
-	if _, err := sp.PushBlocking(ctx); err != nil {
+	if pushed, err := sp.PushBlocking(ctx); err != nil {
+		exitOnClientBlocked(cmd.ErrOrStderr(), err)
+		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "关键更改阻塞推送失败")
 		fmt.Fprintf(cmd.ErrOrStderr(), "⚠ 关键更改已本地生效，但未能同步到 server；其他设备在执行 senv sync 前无法获得此次更改。请运行 senv sync 重试\n")
+	} else if pushed != nil {
+		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, "关键更改阻塞推送完成")
 	}
 }
 

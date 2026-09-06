@@ -99,9 +99,11 @@ var envSetCmd = &cobra.Command{
 		value := args[1]
 
 		if err := envManager.Set(group, key, value); err != nil {
+			auditOp(session.AuditOpEnv, "env:"+group+":"+key, false, "set 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpEnv, "env:"+group+":"+key, true, "set")
 		fmt.Printf("✓ Set %s in group %s\n", key, group)
 		return nil
 	},
@@ -123,9 +125,11 @@ var envDeleteCmd = &cobra.Command{
 		group, key := resolveAddressKey(args[0], envGroup)
 
 		if err := envManager.Delete(group, key); err != nil {
+			auditOp(session.AuditOpEnv, "env:"+group+":"+key, false, "delete 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpEnv, "env:"+group+":"+key, true, "delete")
 		fmt.Printf("✓ Deleted %s from group %s\n", key, group)
 		return nil
 	},

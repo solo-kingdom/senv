@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // ServerProvider 是 server provider：本地缓存（复用 storage.Manager 文件格式）为工作副本，
@@ -39,9 +41,27 @@ func newServerProvider(api serverAPI, configPath, dataPath, vault string) *Serve
 	}
 }
 
-// NewServerProvider 以 HTTP client 构造 server provider（CLI 使用）
+// NewServerProvider 以 HTTP client 构造 server provider（CLI 使用）。
+// server 判定本 client 被屏蔽（403 client_blocked）时，首次响应会触发本地
+// 解锁缓存清理（加密工作副本保留），此后每次请求仍返回 ErrClientBlocked。
 func NewServerProvider(address, token, configPath, dataPath, vault string) *ServerProvider {
-	return newServerProvider(newServerClient(address, token), configPath, dataPath, vault)
+	client := newServerClient(address, token)
+	p := newServerProvider(client, configPath, dataPath, vault)
+	client.onBlocked = p.clearLocalSession
+	return p
+}
+
+// clearLocalSession 清空本机解锁缓存并写入审计事件；由 serverClient 在收到
+// 屏蔽响应时回调（每实例至多一次）。清理失败不阻断错误返回——解锁缓存残留
+// 时用户可手动 `senv session clear`，本地加密数据始终不动。
+func (p *ServerProvider) clearLocalSession() {
+	mgr := session.NewManager(p.cache.configPath, p.cache.dataPath)
+	defer mgr.Close()
+	// 清理失败不影响屏蔽错误主路径；解锁缓存残留时用户可手动 senv session clear
+	_ = mgr.ClearSession()
+	if al := mgr.GetAuditLogger(); al != nil {
+		_ = al.Log(session.AuditClientBlocked, "", false, "server marked this client blocked; local session cache cleared")
+	}
 }
 
 // newServerProviderWithBinding 是测试专用构造：注入合成 vault 绑定验证归属校验。
@@ -50,6 +70,90 @@ func newServerProviderWithBinding(api serverAPI, configPath, dataPath, vault str
 	b := binding
 	p.cache.binding = &b
 	return p
+}
+
+// ErrHistoryUnsupported 表示当前 server API 不支持条目历史查询
+var ErrHistoryUnsupported = errors.New("当前 server 不支持条目历史查询（请升级 senv-server）")
+
+// historyAPI 由支持历史查询的 server client 实现；独立窄接口使旧测试 fake 无感
+type historyAPI interface {
+	History(ctx context.Context, vault string, f HistoryFilter) ([]HistoryVersion, error)
+}
+
+// History 查询条目历史（只读，不改本地缓存与同步状态）
+func (p *ServerProvider) History(ctx context.Context, f HistoryFilter) ([]HistoryVersion, error) {
+	api, ok := p.api.(historyAPI)
+	if !ok {
+		return nil, ErrHistoryUnsupported
+	}
+	return api.History(ctx, p.vault, f)
+}
+
+// RestoreEntry 把历史版本恢复为当前值：历史密文写回本地缓存 → 走既有乐观锁
+// 推送产生新 revision（不绕过冲突检测）。已删除/不存在条目的恢复等价于以
+// 历史密文重新创建。推送失败时本地恢复已生效（快照未推进），后续 sync 会
+// 把它当作本地改动重新推送。
+func (p *ServerProvider) RestoreEntry(ctx context.Context, kind, grp, key string, ciphertext []byte) error {
+	if err := syncschema.ValidateIdentity(kind, grp, key); err != nil {
+		return fmt.Errorf("无效的条目标识: %w", err)
+	}
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return p.withVaultMutation(func() error {
+		return p.restoreEntryLocked(ctx, kind, grp, key, ciphertext)
+	})
+}
+
+func (p *ServerProvider) restoreEntryLocked(ctx context.Context, kind, grp, key string, ciphertext []byte) error {
+	st, err := p.cache.loadState()
+	if err != nil {
+		return err
+	}
+	remote, remoteLatest, err := p.api.Pull(ctx, p.vault, 0)
+	if err != nil {
+		return err
+	}
+	if err := validateRemoteEntries(remote); err != nil {
+		return err
+	}
+	remoteRevision := int64(0)
+	if e, ok := entryMap(remote)[entryID(kind, grp, key)]; ok {
+		remoteRevision = e.Revision
+	}
+
+	// 本地写回历史密文（快照未推进 → 若推送失败，该条目保持 dirty 可重试）
+	if err := p.cache.applyRemote([]Entry{{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext}}, nil, false, st); err != nil {
+		return err
+	}
+
+	pushes := []Entry{{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext, BaseRevision: remoteRevision}}
+	pushed, latest, err := p.api.Push(ctx, p.vault, pushes)
+	if err != nil {
+		var conflictErr *ConflictError
+		if errors.As(err, &conflictErr) {
+			localMeta, metaErr := p.cache.readMetadata()
+			if metaErr != nil {
+				return metaErr
+			}
+			remoteMeta, metaErr := p.api.GetMetadata(ctx, p.vault)
+			if metaErr != nil && !errors.Is(metaErr, ErrVaultNotFound) {
+				return metaErr
+			}
+			return p.buildConflictError(ctx, conflictErr.Conflicts, false, pushes, remote, localMeta, remoteMeta)
+		}
+		return err
+	}
+	st.LastSyncedRevision = latest
+	for _, entry := range pushed {
+		st.Entries[entryID(entry.Kind, entry.Grp, entry.Key)] = syncEntryState{
+			Revision: entry.Revision, Hash: hashBytes(entry.Ciphertext),
+		}
+	}
+	_ = remoteLatest
+	return p.cache.saveState(st)
 }
 
 // SyncConflictError 同步因乐观锁冲突中止；两端数据均未改动。

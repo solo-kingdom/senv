@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/provider"
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/text"
 	"github.com/wii/senv/internal/tui"
 )
@@ -29,9 +32,11 @@ keybinding reference.`,
 		}
 
 		m := tui.New(tui.Managers{
-			Env:    envMgr,
-			Text:   textMgr,
-			Config: configMgr,
+			Env:     envMgr,
+			Text:    textMgr,
+			Config:  configMgr,
+			History: buildTUIHistorySource(),
+			Audit:   tuiAuditSource{},
 		})
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
@@ -39,6 +44,58 @@ keybinding reference.`,
 		}
 		return nil
 	},
+}
+
+// tuiHistorySource 把 server provider 与已认证 key 适配为 TUI 的 History
+// 数据源（server 模式才注入；git 模式返回 nil，TUI 不注册该 Tab）。
+type tuiHistorySource struct {
+	sp  *provider.ServerProvider
+	key []byte
+}
+
+func (s *tuiHistorySource) History(ctx context.Context, f provider.HistoryFilter) ([]provider.HistoryVersion, error) {
+	return s.sp.History(ctx, f)
+}
+
+func (s *tuiHistorySource) DecryptHistory(v provider.HistoryVersion) (string, error) {
+	plaintext, err := decryptHistoryValue(v, s.key)
+	if err != nil {
+		return "", err
+	}
+	return renderDecryptedHistory(v.Kind, plaintext), nil
+}
+
+func (s *tuiHistorySource) Restore(ctx context.Context, v provider.HistoryVersion) error {
+	return s.sp.RestoreEntry(ctx, v.Kind, v.Grp, v.Key, v.Ciphertext)
+}
+
+// tuiAuditSource 把本机审计文件读取器适配为 TUI 的 Audit 数据源
+type tuiAuditSource struct{}
+
+func (tuiAuditSource) LoadAuditEvents() ([]session.AuditEntry, int, error) {
+	return loadAuditEntries()
+}
+
+// buildTUIHistorySource 构造 History 数据源；任何一步不可用（git 模式、
+// 未认证、server 不支持）都返回 nil，让 TUI 优雅降级为无 History Tab。
+func buildTUIHistorySource() tui.HistorySource {
+	p, err := getSyncProvider()
+	if err != nil {
+		return nil
+	}
+	sp, ok := p.(*provider.ServerProvider)
+	if !ok {
+		return nil
+	}
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
+	if err != nil {
+		return nil
+	}
+	key, err := resolveKeyForAuth(auth)
+	if err != nil {
+		return nil
+	}
+	return &tuiHistorySource{sp: sp, key: key}
 }
 
 func init() {

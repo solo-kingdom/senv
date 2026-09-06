@@ -14,6 +14,8 @@ type AuditLogger struct {
 	logPath string
 	mu      sync.Mutex
 	file    *os.File
+	// writeFailedOnce 保证写失败只告警一次（best-effort 契约）
+	writeFailedOnce bool
 }
 
 // NewAuditLogger creates a new audit logger
@@ -41,6 +43,14 @@ func NewAuditLogger(configPath string) (*AuditLogger, error) {
 		logPath: logPath,
 		file:    file,
 	}, nil
+}
+
+// AuditLogPath 返回审计日志文件路径；无法定位 HOME 时返回空串
+func AuditLogPath() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".log", "senv", "audit.log")
+	}
+	return ""
 }
 
 // Log writes an audit entry to the log file
@@ -121,6 +131,55 @@ func (al *AuditLogger) Close() error {
 		return al.file.Close()
 	}
 	return nil
+}
+
+// LogOp 记录一条业务操作审计事件（best-effort）：写入失败仅向 stderr 告警
+// 一次，不改变调用方的控制流与退出码。target 只允许 kind/group/key、文件名
+// 等非敏感标识，值与明文内容不得进入本函数。
+func (al *AuditLogger) LogOp(eventType AuditEventType, target string, success bool, detail string) error {
+	if al == nil {
+		return nil
+	}
+	hostname, _ := os.Hostname()
+	username := os.Getenv("USER")
+	if username == "" {
+		username = os.Getenv("USERNAME")
+	}
+	entry := AuditEntry{
+		Timestamp: time.Now(),
+		EventType: eventType,
+		Target:    target,
+		Success:   success,
+		Message:   detail,
+		Hostname:  hostname,
+		Username:  username,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return al.warnWriteFailure(fmt.Errorf("marshal audit entry: %w", err))
+	}
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	if _, err := al.file.Write(append(data, '\n')); err != nil {
+		return al.warnWriteFailureLocked(fmt.Errorf("write audit log: %w", err))
+	}
+	al.writeFailedOnce = false
+	return nil
+}
+
+// warnWriteFailure 首次失败时向 stderr 告警（已持锁路径用 Locked 变体）
+func (al *AuditLogger) warnWriteFailure(err error) error {
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	return al.warnWriteFailureLocked(err)
+}
+
+func (al *AuditLogger) warnWriteFailureLocked(err error) error {
+	if !al.writeFailedOnce {
+		al.writeFailedOnce = true
+		fmt.Fprintf(os.Stderr, "⚠ 审计日志写入失败（不影响本次操作）: %v\n", err)
+	}
+	return err
 }
 
 // Rotate rotates the audit log if it exceeds a certain size

@@ -27,6 +27,9 @@ type Options struct {
 	// AuthRateLimit 每分钟每来源允许的认证失败次数；0 使用
 	// defaultAuthRateLimit；负值关闭限速
 	AuthRateLimit int
+	// TrustProxyHeaders 开启后，当直连对端是 loopback（同机反向代理）时，
+	// 来源 IP 采信 X-Real-IP / X-Forwarded-For；默认关闭（fail-closed）。
+	TrustProxyHeaders bool
 }
 
 // withDefaults 补齐零值
@@ -40,17 +43,15 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
-// contextKey 是 request context 中用户 ID 的键
-type contextKey string
-
-const userIDKey contextKey = "userID"
+// contextKey 与键定义见 context.go（userID / clientID / accessReason）
 
 // Server 聚合依赖，实现 http.Handler
 type Server struct {
-	store   *store.Store
-	mux     *http.ServeMux
-	limiter *authRateLimiter
-	maxBody int64
+	store             *store.Store
+	mux               *http.ServeMux
+	limiter           *authRateLimiter
+	maxBody           int64
+	trustProxyHeaders bool
 }
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
@@ -66,38 +67,49 @@ func New(st *store.Store, opts ...Options) *Server {
 	if o.AuthRateLimit > 0 {
 		limiter = newAuthRateLimiter(o.AuthRateLimit)
 	}
-	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes}
+	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
+		trustProxyHeaders: o.TrustProxyHeaders}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata", s.auth(s.handleGetMetadata))
 	s.mux.HandleFunc("PUT /v1/vaults/{vault}/metadata", s.auth(s.handlePutMetadata))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/entries", s.auth(s.handlePull))
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries", s.auth(s.handlePush))
+	s.mux.HandleFunc("GET /v1/vaults/{vault}/history", s.auth(s.handleHistory))
 	return s
 }
 
-// ServeHTTP 实现 http.Handler
+// ServeHTTP 实现 http.Handler；非 healthz 请求在响应后落一条安全事件
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	s.withAccessLog(s.mux).ServeHTTP(w, r)
 }
+
+// withAccessInfo 为每个请求挂上可变的身份/原因聚合（访问日志用）
 
 // auth 是 Bearer 认证中间件：无效/缺失/已吊销一律 401，不泄露 token 存在性。
 // 认证失败计入来源限速；已超限的来源直接 429，不再查询数据库。
+// client 被屏蔽时返回 403 + 机器可读码 client_blocked（区别于 401，client
+// 据此感知屏蔽并清理本地状态）；屏蔽不计入认证失败限速——它不是 token 爆破。
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := remoteIP(r)
+		ip := s.resolveRemoteIP(r)
+		info := accessInfoFrom(r.Context())
 		if s.limiter.blocked(ip) {
+			info.reason = "rate limited"
 			writeError(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || strings.TrimSpace(token) == "" {
+			info.reason = "missing bearer token"
 			s.limiter.countFailure(ip)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		userID, err := s.store.Authenticate(r.Context(), token)
+		res, err := s.store.AuthenticateWithClient(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
+				info.reason = "invalid or revoked token"
 				s.limiter.countFailure(ip)
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
@@ -106,8 +118,20 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		ctx := contextWithUserID(r.Context(), userID)
-		next(w, r.WithContext(ctx))
+		if res.ClientBlocked {
+			// 安全事件需要 client 身份：info 为指针，原地写入即可被外层读到
+			info.clientID = res.ClientID
+			info.reason = "client blocked"
+			writeError(w, http.StatusForbidden, "client_blocked")
+			return
+		}
+		if res.ClientID > 0 {
+			// best-effort 刷新最近活跃时间，失败不影响请求
+			s.store.TouchClient(r.Context(), res.ClientID)
+		}
+		info.userID = res.UserID
+		info.clientID = res.ClientID
+		next(w, r)
 	}
 }
 
