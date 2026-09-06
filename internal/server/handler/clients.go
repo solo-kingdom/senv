@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/wii/senv/internal/server/store"
 )
@@ -27,7 +28,7 @@ type registerResponse struct {
 // 无效注册码计入失败，防止对注册码的在线枚举。无效/过期/已用注册码统一
 // 400 通用消息，不区分具体原因（防枚举）；同名冲突 409 提示改名。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	ip := remoteIP(r)
+	ip := s.resolveRemoteIP(r)
 	if s.limiter.blocked(ip) {
 		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return
@@ -42,6 +43,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Code == "" || req.Name == "" || len(req.Name) > MaxClientNameLen {
 		writeError(w, http.StatusBadRequest, "code 与 name（1-128 字符）必填")
 		return
+	}
+	// 拒绝控制字符：设备名会回显在 admin list-clients/logs 输出里，
+	// 终端转义序列可污染管理员控制台
+	for _, r := range req.Name {
+		if unicode.IsControl(r) {
+			writeError(w, http.StatusBadRequest, "name 不能包含控制字符")
+			return
+		}
 	}
 
 	token, client, err := s.store.RegisterClient(r.Context(), req.Code, req.Name)

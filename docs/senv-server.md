@@ -27,6 +27,9 @@ export SENV_SERVER_DSN="postgres://senv:****@db-host:5432/senv"
 #    可选参数：
 #      -max-body-bytes N      单请求体上限（默认 64MB，覆盖 1000×512KB 理论最大值）
 #      -auth-rate-limit N     每分钟每来源 IP 认证失败阈值（默认 30，负值关闭）
+#      -trust-proxy-headers   同机反代时按 X-Real-IP/X-Forwarded-For 识别真实来源
+#                             IP（默认关闭；仅当直连对端是 loopback 才采信）
+#      -logs-retain-days N    访问日志保留天数（默认 90，0 关闭自动清理）
 ./senv-server-bin serve --addr 127.0.0.1:8080
 
 # 3. 创建用户并签发 token（明文只展示一次，库中只存 SHA-256 哈希）
@@ -54,6 +57,9 @@ senv init --server https://senv.example.com --token <token>
 # 冲突查看与修复 / 手动全量同步（断网时本地读写不受影响，恢复后同步收敛）
 senv sync
 ```
+
+vault 名规则：仅限可移植路径段字符（禁止 `/` `\` `:`、`.`/`..` 等），最长 128 字节；
+server 侧会拒绝非法 vault 名（400）。默认值 `main` 天然合规。
 
 地址scheme：客户端默认只接受 `https://` 的 server 地址；可信内网要用明文 http 时，
 显式设置环境变量 `SENV_ALLOW_INSECURE_HTTP=1`（构造 provider 时会向 stderr 打警告）。
@@ -132,16 +138,21 @@ senv sync --force-push      # 放弃远端，采用本地
 ## 运维要点
 
 - 备份 = 备份 Postgres 库即可；用户可随时 `senv migrate from-server` 导回本地/git 仓，无锁定
-- token 泄漏 → `admin revoke-token` 吊销；库中无明文 token
+- token 泄漏 → `admin revoke-token` 吊销（`revoke-token -` 可从 stdin 读 token，
+  避免明文进进程列表与 Shell 历史）；库中无明文 token
 - DB 泄漏的残余风险：metadata blob 含加密后的 passwordKey，可被离线爆破 vault 口令，
   由 PBKDF2 迭代次数缓解（新 vault 600k；旧 vault 经 `senv passwd` 升级）——要求强口令
 - API 全部位于 `/v1/` 前缀；健康检查 `GET /healthz` 无需认证
-- server 自身带读写/空闲超时、请求体上限与认证失败限速；日志中的内部错误细节只写
-  服务端日志，客户端只收到通用 `internal error`
+- server 自身带读写/空闲超时、请求体上限、认证失败限速与访问日志自动保留
+  （`--logs-retain-days`，默认 90 天；path 等变长字段截断入库，防超长 URL 灌爆日志表）；
+  内部错误细节只写服务端日志，客户端只收到通用 `internal error`
 
 ## 加固清单（tcbj 部署 runbook）
 
-安全审查（2026-09）后建议在运维窗口执行的加固项，按优先级排列：
+安全审查（2026-09）后建议在运维窗口执行的加固项，按优先级排列。
+第二轮 server 侧加固（2026-09）已随版本落地，无需运维操作：可信代理来源 IP
+识别（`--trust-proxy-headers`）、访问日志截断与自动保留（`--logs-retain-days`，
+默认 90 天）、vault 名与设备名 server 侧校验、优雅停机、`revoke-token -` stdin 传 token。
 
 ### 1. registry 加认证（供应链，P1）
 
@@ -194,11 +205,25 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
   `~/.local/share/senv`，备份天然不会带走；旧版本遗留的
   `~/.local/share/senv/session/` 已被新版本自动清理
 
-### 5. caddy 层可选项
+### 5. caddy 层配置（真实来源 IP 透传为必选项）
 
-- 认证限速：server 内置按 IP 的失败限速（默认 30 次/分钟）；如需在边缘再加一层，
+- 真实来源 IP：caddy 与 server 同机部署时，server 启动加 `--trust-proxy-headers`，
+  并在 caddy 反代块显式透传客户端 IP——否则限速与访问日志都记成回环地址，
+  全部客户端共享一个限速窗口，单个攻击者即可把整个服务锁在限速之外：
+
+  ```
+  reverse_proxy 127.0.0.1:8080 {
+      header_up X-Real-IP {remote_host}
+  }
+  ```
+
+  caddy 自动附加 X-Forwarded-For，作为 X-Real-IP 缺失时的回落；两者都缺失或
+  非法时 server 按代理自身 IP 计数（fail-safe）。server 的 `--trust-proxy-headers`
+  仅在直连对端为 loopback 时才采信这些头，外网直连伪造无效。
+- 认证限速：server 内置按来源 IP 的失败限速（默认 30 次/分钟）；如需在边缘再加一层，
   可用 caddy 的 `rate_limit` 插件对 `/v1/` 路径限速
-- 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简）
+- 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简；
+  server 自身的系统日志保留 90 天，由 `--logs-retain-days` 控制）
 
 ### 6. 客户端升级顺序
 

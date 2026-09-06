@@ -3,6 +3,7 @@ package handler
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,10 +15,11 @@ import (
 // 计数——若部署在反向代理之后，所有客户端共享代理的一个窗口，此时限速器
 // 退化为总量保护，仍能阻止无限速的 token 爆破打到数据库。
 type authRateLimiter struct {
-	mu       sync.Mutex
-	limit    int // 窗口内允许的认证失败次数
-	window   time.Duration
-	failures map[string]*authWindow
+	mu        sync.Mutex
+	limit     int // 窗口内允许的认证失败次数
+	window    time.Duration
+	failures  map[string]*authWindow
+	lastSweep time.Time
 }
 
 type authWindow struct {
@@ -62,6 +64,7 @@ func (l *authRateLimiter) countFailure(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	l.sweepExpired(now)
 	w, ok := l.failures[ip]
 	if !ok || now.After(w.resetAt) {
 		l.failures[ip] = &authWindow{count: 1, resetAt: now.Add(l.window)}
@@ -70,10 +73,54 @@ func (l *authRateLimiter) countFailure(ip string) {
 	w.count++
 }
 
+// sweepExpired 删除已过窗口的条目，防止分布式扫描以大量唯一失败 IP 无限
+// 撑大 failures map。惰性触发：每个窗口至多一次全表遍历（调用方持锁）。
+func (l *authRateLimiter) sweepExpired(now time.Time) {
+	if now.Sub(l.lastSweep) < l.window {
+		return
+	}
+	for ip, w := range l.failures {
+		if now.After(w.resetAt) {
+			delete(l.failures, ip)
+		}
+	}
+	l.lastSweep = now
+}
+
 // remoteIP 取请求来源 IP（去掉端口）。解析失败时退回原始 RemoteAddr。
 func remoteIP(r *http.Request) string {
 	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return ip
 	}
 	return r.RemoteAddr
+}
+
+// resolveRemoteIP 解析请求来源的客户端 IP，是限速与访问日志共用的唯一取值点。
+//
+// 仅当 TrustProxyHeaders 开启且直连对端是 loopback（同机反向代理拓扑）时，
+// 才依次采信 X-Real-IP 与 X-Forwarded-For 最左值，且必须解析为合法 IP；
+// 其余情况一律使用连接对端——外网直连的客户端伪造代理头无法绕过限速或
+// 污染审计 IP。反代不在同机时不应开启此开关（文档部署拓扑为同机 caddy）。
+func (s *Server) resolveRemoteIP(r *http.Request) string {
+	host := remoteIP(r)
+	if !s.trustProxyHeaders {
+		return host
+	}
+	peer := net.ParseIP(host)
+	if peer == nil || !peer.IsLoopback() {
+		return host
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+		if ip := net.ParseIP(v); ip != nil {
+			return ip.String()
+		}
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first, _, _ := strings.Cut(xff, ",")
+		first = strings.TrimSpace(first)
+		if ip := net.ParseIP(first); ip != nil {
+			return ip.String()
+		}
+	}
+	return host
 }

@@ -72,6 +72,9 @@ type HistoryFilter struct {
 // ListHistory 查询条目历史。指定 key（或 grp+kind）时按该条目 revision 新到旧
 // 返回；否则返回 vault 级按写入时间新到旧的最近变更。只能查自己的 vault。
 func (s *Store) ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error) {
+	if err := validateVaultName(vault); err != nil {
+		return nil, err
+	}
 	vaultID, err := lookupVault(ctx, s.pool, userID, vault)
 	if err != nil {
 		return nil, err

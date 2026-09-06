@@ -27,6 +27,9 @@ type Options struct {
 	// AuthRateLimit 每分钟每来源允许的认证失败次数；0 使用
 	// defaultAuthRateLimit；负值关闭限速
 	AuthRateLimit int
+	// TrustProxyHeaders 开启后，当直连对端是 loopback（同机反向代理）时，
+	// 来源 IP 采信 X-Real-IP / X-Forwarded-For；默认关闭（fail-closed）。
+	TrustProxyHeaders bool
 }
 
 // withDefaults 补齐零值
@@ -44,10 +47,11 @@ func (o Options) withDefaults() Options {
 
 // Server 聚合依赖，实现 http.Handler
 type Server struct {
-	store   *store.Store
-	mux     *http.ServeMux
-	limiter *authRateLimiter
-	maxBody int64
+	store             *store.Store
+	mux               *http.ServeMux
+	limiter           *authRateLimiter
+	maxBody           int64
+	trustProxyHeaders bool
 }
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
@@ -63,7 +67,8 @@ func New(st *store.Store, opts ...Options) *Server {
 	if o.AuthRateLimit > 0 {
 		limiter = newAuthRateLimiter(o.AuthRateLimit)
 	}
-	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes}
+	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
+		trustProxyHeaders: o.TrustProxyHeaders}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata", s.auth(s.handleGetMetadata))
@@ -87,7 +92,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // 据此感知屏蔽并清理本地状态）；屏蔽不计入认证失败限速——它不是 token 爆破。
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := remoteIP(r)
+		ip := s.resolveRemoteIP(r)
 		info := accessInfoFrom(r.Context())
 		if s.limiter.blocked(ip) {
 			info.reason = "rate limited"

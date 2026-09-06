@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/syncschema"
 )
 
@@ -30,6 +31,25 @@ const (
 	MaxGrpLen  = 128
 	MaxKeyLen  = 256
 )
+
+// MaxVaultNameLen 是 vault 名字节数上限（与 grp 同量级）。
+const MaxVaultNameLen = 128
+
+// validateVaultName 在 server 侧独立校验 vault 名：可移植路径段规则 + 长度
+// 上限。写路径会按名自动建 vault，无校验时认证用户可用任意/超长名称无限
+// 创建 vault，膨胀存储与访问日志。
+func validateVaultName(name string) error {
+	if len(name) == 0 {
+		return validationErrorf("vault 名不能为空")
+	}
+	if len(name) > MaxVaultNameLen {
+		return validationErrorf("vault 名长度超过上限 %d 字节", MaxVaultNameLen)
+	}
+	if err := securefs.ValidateSegment(name); err != nil {
+		return validationErrorf("vault 名无效：不能为空、含路径分隔符或非可移植字符")
+	}
+	return nil
+}
 
 // ErrNotFound 表示请求的用户/vault/条目不存在（HTTP 层映射为 404）
 var ErrNotFound = errors.New("not found")
@@ -197,6 +217,9 @@ func lookupVault(ctx context.Context, db interface {
 
 // GetMetadata 读取 vault metadata blob（原样透传，不解析）
 func (s *Store) GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error) {
+	if err := validateVaultName(vault); err != nil {
+		return nil, err
+	}
 	vaultID, err := lookupVault(ctx, s.pool, userID, vault)
 	if err != nil {
 		return nil, err
@@ -214,6 +237,9 @@ func (s *Store) GetMetadata(ctx context.Context, userID int64, vault string) ([]
 
 // PutMetadata 写入 vault metadata blob（vault 不存在时自动创建）
 func (s *Store) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
+	if err := validateVaultName(vault); err != nil {
+		return err
+	}
 	if len(blob) == 0 {
 		return validationErrorf("metadata blob 不能为空")
 	}
@@ -274,6 +300,9 @@ func validateEntry(e Entry) *ValidationError {
 
 // PushEntries 乐观锁批量推送：整批一个事务，任一冲突则整批拒绝
 func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
+	if err := validateVaultName(vault); err != nil {
+		return nil, 0, err
+	}
 	if len(entries) == 0 {
 		return nil, 0, validationErrorf("推送批次不能为空")
 	}
@@ -378,6 +407,9 @@ func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, ent
 // PullEntries 增量拉取：返回 revision > since 的全部条目（含删除标记）与最新 revision。
 // 空增量返回空列表与当前最新 revision，不报错。
 func (s *Store) PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error) {
+	if err := validateVaultName(vault); err != nil {
+		return nil, 0, err
+	}
 	vaultID, err := lookupVault(ctx, s.pool, userID, vault)
 	if err != nil {
 		return nil, 0, err

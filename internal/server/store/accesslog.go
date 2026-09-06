@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // 访问结果取值
@@ -15,6 +16,15 @@ const (
 	AccessOutcomeAuthFailed  = "AUTH-FAILED"
 	AccessOutcomeBlocked     = "BLOCKED"
 	AccessOutcomeRateLimited = "RATE-LIMITED"
+)
+
+// 访问日志字段长度上限。path 来自请求 URL，认证前即可被攻击者注入最长
+// MaxHeaderBytes 量级的超长值，不截断则未认证流量可灌爆日志表；ip/reason
+// 为服务端可控，防御性同限。
+const (
+	MaxAccessLogIPBytes     = 64
+	MaxAccessLogPathBytes   = 512
+	MaxAccessLogReasonBytes = 128
 )
 
 // AccessEvent 是一条安全事件
@@ -36,12 +46,28 @@ type AccessEventRow struct {
 	UserName   string `json:"user_name,omitempty"`
 }
 
+// truncateUTF8 把 s 截断到最多 max 字节，不切断尾部的多字节字符。
+// UTF-8 最长 4 字节，循环至多回退 3 次。
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
 // RecordAccess 落一条安全事件（调用方 best-effort：失败仅记服务端日志）。
-// e.Time 为零值时取当前时刻。
+// e.Time 为零值时取当前时刻；变长字段入库前截断（见 MaxAccessLog* 常量）。
 func (s *Store) RecordAccess(ctx context.Context, e AccessEvent) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
+	e.IP = truncateUTF8(e.IP, MaxAccessLogIPBytes)
+	e.Path = truncateUTF8(e.Path, MaxAccessLogPathBytes)
+	e.Reason = truncateUTF8(e.Reason, MaxAccessLogReasonBytes)
 	if e.Outcome != AccessOutcomeOK && e.Outcome != AccessOutcomeAuthFailed &&
 		e.Outcome != AccessOutcomeBlocked && e.Outcome != AccessOutcomeRateLimited {
 		return validationErrorf("未知的访问结果 %q", e.Outcome)

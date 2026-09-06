@@ -49,7 +49,7 @@ func outcomeFromStatus(status int) string {
 // recordAccess 落一条安全事件；写入失败仅记服务端错误日志，不影响响应
 func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder) {
 	err := s.store.RecordAccess(ctx, store.AccessEvent{
-		IP:       remoteIP(r),
+		IP:       s.resolveRemoteIP(r),
 		Method:   r.Method,
 		Path:     r.URL.Path,
 		ClientID: info.clientID,
