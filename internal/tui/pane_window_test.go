@@ -8,10 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// paneBudget is the rendered height of a two-pane tab: inner height plus the
-// 2-row rounded border lipgloss draws outside Height().
-func paneBudget(innerH int) int { return innerH + 2 }
-
 func TestEnvTabLongItemListDoesNotPushGroupsOffScreen(t *testing.T) {
 	items := make([]envItemRow, 40)
 	for i := range items {
@@ -116,6 +112,57 @@ func TestConfigTabLongItemListKeepsGroupsVisible(t *testing.T) {
 	}
 	if contains(view, "cfg_00") {
 		t.Fatalf("first config should have scrolled away:\n%s", view)
+	}
+}
+
+func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
+	items := make([]envItemRow, 20)
+	for i := range items {
+		items[i] = envItemRow{key: fmt.Sprintf("KEY_%02d", i), value: "v"}
+	}
+	tab := envTabWith(items...)
+	const innerH = 8
+	tab.SetSize(80, innerH)
+	tab.mode = envModeFilter
+	tab.filter = "KEY"
+
+	view := tab.View()
+	if h := lipgloss.Height(view); h > paneBudget(innerH) {
+		t.Fatalf("view height %d exceeds pane budget %d; bottom prompt squeezed content out of view:\n%s", h, paneBudget(innerH), view)
+	}
+	if !contains(view, "Groups") {
+		t.Fatalf("group sidebar missing when a prompt is open:\n%s", view)
+	}
+	if !contains(view, "Filter") {
+		t.Fatalf("filter prompt missing:\n%s", view)
+	}
+}
+
+func TestFramedModalDoesNotOverflowOuterFrame(t *testing.T) {
+	m := sizedModel(80, 24)
+	et := m.tabs[0].(*envTab)
+	items := make([]envItemRow, 30)
+	for i := range items {
+		items[i] = envItemRow{key: fmt.Sprintf("KEY_%02d", i), value: "v"}
+	}
+	et.loaded = true
+	et.groups = []envGroupRow{{name: "default", isDefault: true, isActive: true, varCount: len(items)}}
+	et.itemsByGroup = map[string][]envItemRow{"default": items}
+	et.focusLeft = false
+	et.mode = envModeDeleteConfirm
+	et.itemIndex = 0
+	et.clampCursors()
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) != 24 {
+		t.Errorf("row count = %d, want exactly 24 (bottom prompt overflowed the frame)", len(lines))
+	}
+	if !strings.Contains(out, "Groups") {
+		t.Error("group sidebar missing from framed view with a prompt open")
+	}
+	if !strings.Contains(out, "Delete") {
+		t.Error("delete prompt missing from framed view")
 	}
 }
 

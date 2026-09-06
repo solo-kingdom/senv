@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,6 +124,61 @@ func TestConfigTabUninstallUnchangedDirectDelete(t *testing.T) {
 	if tab.mode != configModeNormal {
 		t.Errorf("expected normal mode, got %v", tab.mode)
 	}
+}
+
+func TestConfigTabAllViewGroupInstallUsesAllScope(t *testing.T) {
+	tab := setupSidebarTab(t)
+	if tab.currentGroup() != "" {
+		t.Fatalf("expected All view, group=%q", tab.currentGroup())
+	}
+
+	next, cmd := tab.enterPlan("install", true)
+	tab = flushConfig(next.(*configTab), cmd)
+	if tab.mode != configModePlan || tab.plan == nil {
+		t.Fatalf("expected plan mode, got mode=%v", tab.mode)
+	}
+	if !tab.plan.scope.All {
+		t.Errorf("plan scope = %+v, want All when I is pressed in All view", tab.plan.scope)
+	}
+	if tab.plan.installPlan == nil || len(tab.plan.installPlan.Items) != 2 {
+		t.Errorf("All-view I plan = %+v, want 2 items", tab.plan.installPlan)
+	}
+}
+
+func TestConfigInstallPlanColumnsAlign(t *testing.T) {
+	short := formatPlanLine("create", "app", "/tmp/app.conf", "target does not exist", 80)
+	long := formatPlanLine("backup_overwrite", "longer-name", "/tmp/other.conf", "target content differs", 80)
+
+	arrowShort := strings.Index(short, "->")
+	arrowLong := strings.Index(long, "->")
+	if arrowShort < 0 || arrowLong < 0 {
+		t.Fatalf("missing arrow in plan lines:\n%s\n%s", short, long)
+	}
+	if arrowShort != arrowLong {
+		t.Errorf("plan columns misaligned: arrow at %d vs %d\n%s\n%s", arrowShort, arrowLong, short, long)
+	}
+}
+
+func TestConfigItemRowsShareColumnPrefix(t *testing.T) {
+	selected := formatConfigItemLine("work/app", "main app", "/tmp/app.conf", "now", 20, 70, true)
+	other := formatConfigItemLine("personal/db", "", "/tmp/db.conf", "now", 20, 70, false)
+
+	pathSel := strings.Index(afterCursorPrefix(selected), "/tmp")
+	pathOther := strings.Index(afterCursorPrefix(other), "/tmp")
+	if pathSel < 0 || pathOther < 0 {
+		t.Fatalf("missing path in item rows:\n%s\n%s", selected, other)
+	}
+	if pathSel != pathOther {
+		t.Errorf("item columns misaligned: path at %d vs %d\n%s\n%s", pathSel, pathOther, selected, other)
+	}
+}
+
+func afterCursorPrefix(s string) string {
+	r := []rune(s)
+	if len(r) >= 2 {
+		return string(r[2:])
+	}
+	return s
 }
 
 func TestConfigTabFilterMatchesGroupAndDescription(t *testing.T) {

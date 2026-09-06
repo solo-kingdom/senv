@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -103,17 +105,50 @@ func TestConfigTabSidebarGroupScopePlan(t *testing.T) {
 	}
 }
 
-func TestConfigTabSidebarAllRejectsGroupPlan(t *testing.T) {
+func TestConfigTabSidebarAllInstallsAll(t *testing.T) {
+	mgr := newTestConfigManager(t)
+	dir := t.TempDir()
+	t1 := filepath.Join(dir, "a.conf")
+	t2 := filepath.Join(dir, "b.conf")
+	src1 := writeSourceFile(t, "aaa\n")
+	src2 := writeSourceFile(t, "bbb\n")
+	if err := mgr.Create("alpha", src1, t1, "work", ""); err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+	if err := mgr.Create("beta", src2, t2, "personal", ""); err != nil {
+		t.Fatalf("create beta: %v", err)
+	}
+
+	tab := newConfigTab(Managers{Config: mgr})
+	tab.SetSize(100, 30)
+	tab = flushConfig(tab, tab.load())
+	tab, _ = applyKey(tab, "h")
+	next, cmd := tab.enterSidebarPlan("install")
+	tab = flushConfig(next.(*configTab), cmd)
+	next, cmd = tab.handlePlanKey(runeKey("y"))
+	tab = flushConfig(next.(*configTab), cmd)
+
+	for _, p := range []string{t1, t2} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected %s to be installed: %v", p, err)
+		}
+	}
+}
+
+func TestConfigTabSidebarAllPlansAll(t *testing.T) {
 	tab := setupSidebarTab(t)
 
 	tab, _ = applyKey(tab, "h") // sidebar focused on All
-	next, _ := tab.enterSidebarPlan("install")
-	tab = next.(*configTab)
-	if tab.mode == configModePlan || tab.plan != nil {
-		t.Fatal("All pseudo-group must not open a plan")
+	next, cmd := tab.enterSidebarPlan("install")
+	tab = flushConfig(next.(*configTab), cmd)
+	if tab.mode != configModePlan || tab.plan == nil {
+		t.Fatalf("expected All to open an install plan, got mode=%v", tab.mode)
 	}
-	if tab.flash == "" {
-		t.Error("expected a flash hint explaining All has no group scope")
+	if !tab.plan.scope.All {
+		t.Errorf("plan scope = %+v, want All", tab.plan.scope)
+	}
+	if tab.plan.installPlan == nil || len(tab.plan.installPlan.Items) != 2 {
+		t.Errorf("All install plan = %+v, want 2 items", tab.plan.installPlan)
 	}
 }
 

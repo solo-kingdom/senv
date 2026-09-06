@@ -686,27 +686,34 @@ type configPlanLoadedMsg struct {
 
 // enterPlan computes an install/uninstall plan for the current item (or its
 // whole group when groupScope is true) and switches to the plan preview.
+// When the All view is selected, groupScope uses Scope{All: true}.
 func (t *configTab) enterPlan(kind string, groupScope bool) (Tab, tea.Cmd) {
+	if groupScope {
+		if t.currentGroup() == "" {
+			return t.planForScope(kind, config.Scope{All: true})
+		}
+		it, ok := t.currentItem()
+		if !ok {
+			t.flash = "no item selected"
+			return t, nil
+		}
+		return t.planForScope(kind, config.Scope{Group: it.group})
+	}
 	it, ok := t.currentItem()
 	if !ok {
 		t.flash = "no item selected"
 		return t, nil
 	}
-	scope := config.Scope{Name: it.name}
-	if groupScope {
-		scope = config.Scope{Group: it.group}
-	}
-	return t.planForScope(kind, scope)
+	return t.planForScope(kind, config.Scope{Name: it.name})
 }
 
 // enterSidebarPlan handles group-scope install/uninstall triggered while the
-// group sidebar has focus: the selected real group is the scope. The "All"
-// pseudo-group has no group scope and only shows a hint.
+// group sidebar has focus. The All pseudo-group installs/uninstalls every
+// config (Scope{All: true}); a real group uses that group's scope.
 func (t *configTab) enterSidebarPlan(kind string) (Tab, tea.Cmd) {
 	g := t.currentGroup()
 	if g == "" {
-		t.flash = "select a concrete group for group-wide " + kind + " (All has no group scope)"
-		return t, nil
+		return t.planForScope(kind, config.Scope{All: true})
 	}
 	return t.planForScope(kind, config.Scope{Group: g})
 }
@@ -854,23 +861,26 @@ func (t *configTab) SetSize(w, h int) { t.width, t.height = w, h }
 
 func (t *configTab) View() string {
 	if (t.mode == configModePlan || t.mode == configModeChangedConfirm) && t.plan != nil {
-		return t.renderPlan()
+		return clipLines(t.renderPlan(), paneBudget(t.height))
 	}
 	if t.mode == configModeDetail && t.detail != nil {
-		return t.renderDetail()
+		return clipLines(t.renderDetail(), paneBudget(t.height))
 	}
-	base := t.viewBase()
+	overlay := ""
 	if t.mode == configModeNormal {
 		if t.flash != "" {
-			return lipgloss.JoinVertical(lipgloss.Left, base,
-				statusBarStyle.Foreground(lipgloss.Color(colorSuccess)).Render(t.flash))
+			overlay = statusBarStyle.Foreground(lipgloss.Color(colorSuccess)).Render(t.flash)
 		}
-		return base
+	} else {
+		overlay = t.renderModal()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, base, t.renderModal())
+	if t.width > 0 && overlay != "" {
+		overlay = lipgloss.NewStyle().MaxWidth(t.width).Render(overlay)
+	}
+	return stackWithOverlay(t.height, overlay, t.viewBaseAt)
 }
 
-func (t *configTab) viewBase() string {
+func (t *configTab) viewBaseAt(h int) string {
 	leftW := t.width / 4
 	if leftW > 26 {
 		leftW = 26
@@ -885,15 +895,15 @@ func (t *configTab) viewBase() string {
 		rightW = 4
 	}
 
-	left := t.renderGroups(leftW, t.height)
-	right := t.renderItems(rightW, t.height)
+	left := t.renderGroups(leftW, h)
+	right := t.renderItems(rightW, h)
 
 	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(t.height).Render(left)
-		right = paneStyle.Width(rightW).Height(t.height).Render(right)
+		left = activePaneStyle.Width(leftW).Height(h).Render(left)
+		right = paneStyle.Width(rightW).Height(h).Render(right)
 	} else {
-		left = paneStyle.Width(leftW).Height(t.height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(t.height).Render(right)
+		left = paneStyle.Width(leftW).Height(h).Render(left)
+		right = activePaneStyle.Width(rightW).Height(h).Render(right)
 	}
 	gap := lipgloss.NewStyle().Width(1).Render(" ")
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
@@ -907,8 +917,11 @@ func (t *configTab) renderGroups(width, height int) string {
 	var lines []string
 	for i, g := range t.groups {
 		line := truncateRunes(fmt.Sprintf("%s  [%d]", g.name, t.sidebarCount(i)), inner-2)
-		if i == t.groupIndex && t.focusLeft {
-			line = selectedLineStyle.Render("▸ " + line)
+		selected := i == t.groupIndex && t.focusLeft
+		if selected {
+			line = selectedLineStyle.Render(cursorPrefix(true) + line)
+		} else {
+			line = cursorPrefix(false) + line
 		}
 		lines = append(lines, line)
 	}
@@ -950,20 +963,32 @@ func (t *configTab) renderItems(width, height int) string {
 		if t.currentGroup() == "" {
 			displayName = it.group + "/" + it.name
 		}
-		line := truncateRunes(fmt.Sprintf("%-22s %-14s %-*s %s",
-			truncRunes(displayName, 22), truncRunes(it.description, 14),
-			pathW, truncPathN(it.targetPath, pathW), it.updatedAt), inner-2)
-		if i == t.itemIndex {
-			line = selectedLineStyle.Render("▸ " + line)
+		selected := i == t.itemIndex
+		line := formatConfigItemLine(displayName, it.description, it.targetPath, it.updatedAt, pathW, inner, selected)
+		if selected {
+			line = selectedLineStyle.Render(line)
 		}
 		lines = append(lines, line)
 	}
 	return windowedPane(header, lines, t.itemIndex, height, width)
 }
 
+// formatConfigItemLine builds one config list row. Every row starts with a
+// 2-column cursor prefix so name/desc/path/updated stay aligned across files.
+func formatConfigItemLine(name, desc, path, updated string, pathW, inner int, selected bool) string {
+	line := fmt.Sprintf("%s %s %s %s",
+		padRunes(name, 22), padRunes(desc, 14),
+		padRunes(truncPathN(path, pathW), pathW), updated)
+	return cursorPrefix(selected) + truncateRunes(line, inner-2)
+}
+
 // renderPlan renders the install/uninstall plan preview and, during changed
 // confirmation, the per-item prompt.
 func (t *configTab) renderPlan() string {
+	inner := t.width - 4
+	if inner < 40 {
+		inner = 40
+	}
 	var lines []string
 	title := "Install plan"
 	if t.plan.kind == "uninstall" {
@@ -971,7 +996,11 @@ func (t *configTab) renderPlan() string {
 	}
 	if t.plan.installPlan != nil {
 		for _, item := range t.plan.installPlan.Items {
-			lines = append(lines, fmt.Sprintf("  [%s] %s -> %s (%s)", item.Action, item.Name, truncRunes(item.TargetPath, 40), item.Reason))
+			name := item.Name
+			if t.plan.scope.All && item.Group != "" {
+				name = item.Group + "/" + item.Name
+			}
+			lines = append(lines, formatPlanLine(item.Action, name, item.TargetPath, item.Reason, inner))
 		}
 	} else {
 		for _, item := range t.plan.uninstallPlan.Items {
@@ -979,8 +1008,24 @@ func (t *configTab) renderPlan() string {
 			if item.Action == config.ActionChanged {
 				marker = "CHANGED"
 			}
-			lines = append(lines, fmt.Sprintf("  [%s] %s -> %s (%s)", marker, item.Name, truncRunes(item.TargetPath, 40), item.Reason))
+			name := item.Name
+			if t.plan.scope.All && item.Group != "" {
+				name = item.Group + "/" + item.Name
+			}
+			lines = append(lines, formatPlanLine(marker, name, item.TargetPath, item.Reason, inner))
 		}
+	}
+	// Keep title + hint + borders visible: window the item list if needed.
+	chrome := 5
+	if t.mode == configModeChangedConfirm {
+		chrome += 2
+	}
+	page := paneBudget(t.height) - chrome
+	if page < 1 {
+		page = 1
+	}
+	if len(lines) > page {
+		lines = lines[:page]
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
@@ -990,6 +1035,30 @@ func (t *configTab) renderPlan() string {
 		return modalBox(title, body+"\n\n"+prompt, "")
 	}
 	return modalBox(title, body, "y confirm · esc cancel")
+}
+
+// formatPlanLine aligns action / name / path / reason so multi-file plans
+// keep a stable column grid. Action is padded to backup_overwrite (16).
+func formatPlanLine(action, name, path, reason string, inner int) string {
+	const actionW, nameW = 16, 14
+	fixed := 2 + 1 + actionW + 2 + 1 + nameW + 4 // "  [" + action + "] " + name + " -> "
+	rest := inner - fixed
+	if rest < 12 {
+		rest = 12
+	}
+	pathW := rest * 2 / 3
+	if pathW > 36 {
+		pathW = 36
+	}
+	reasonW := rest - pathW - 3 // " (" + ")"
+	if reasonW < 4 {
+		reasonW = 4
+	}
+	line := "  [" + padRunes(action, actionW) + "] " +
+		padRunes(name, nameW) + " -> " +
+		padRunes(truncPathN(path, pathW), pathW) +
+		" (" + truncRunes(reason, reasonW) + ")"
+	return truncateRunes(line, inner)
 }
 
 // truncRunes shortens a string to at most n runes with an ellipsis.

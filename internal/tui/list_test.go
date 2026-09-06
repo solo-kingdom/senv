@@ -1,6 +1,10 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 func TestVisibleRangeFitsShortLists(t *testing.T) {
 	start, end := visibleRange(3, 1, 10)
@@ -49,6 +53,19 @@ func TestVisibleRangeKeepsCursorInWindow(t *testing.T) {
 		if cursor < start || cursor >= end {
 			t.Errorf("cursor %d not in window [%d,%d)", cursor, start, end)
 		}
+	}
+}
+
+func TestStackWithOverlayKeepsPaneBudget(t *testing.T) {
+	overlay := "prompt line"
+	got := stackWithOverlay(8, overlay, func(h int) string {
+		return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Height(h).Width(10).Render("body")
+	})
+	if h := lipgloss.Height(got); h > paneBudget(8) {
+		t.Fatalf("stacked height %d exceeds pane budget %d:\n%s", h, paneBudget(8), got)
+	}
+	if !contains(got, "body") || !contains(got, "prompt line") {
+		t.Fatalf("expected body and overlay:\n%s", got)
 	}
 }
 

@@ -535,18 +535,21 @@ func (t *textTab) doAddGroup(name string) tea.Cmd {
 func (t *textTab) SetSize(w, h int) { t.width, t.height = w, h }
 
 func (t *textTab) View() string {
-	base := t.viewBase()
+	overlay := ""
 	if t.mode == textModeNormal {
 		if t.flash != "" {
-			return lipgloss.JoinVertical(lipgloss.Left, base,
-				statusBarStyle.Foreground(lipgloss.Color(colorSuccess)).Render(t.flash))
+			overlay = statusBarStyle.Foreground(lipgloss.Color(colorSuccess)).Render(t.flash)
 		}
-		return base
+	} else {
+		overlay = t.renderModal()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, base, t.renderModal())
+	if t.width > 0 && overlay != "" {
+		overlay = lipgloss.NewStyle().MaxWidth(t.width).Render(overlay)
+	}
+	return stackWithOverlay(t.height, overlay, t.viewBaseAt)
 }
 
-func (t *textTab) viewBase() string {
+func (t *textTab) viewBaseAt(h int) string {
 	leftW := t.width / 4
 	if leftW > 26 {
 		leftW = 26
@@ -561,15 +564,15 @@ func (t *textTab) viewBase() string {
 		rightW = 4
 	}
 
-	left := t.renderGroups(leftW, t.height)
-	right := t.renderItems(rightW, t.height)
+	left := t.renderGroups(leftW, h)
+	right := t.renderItems(rightW, h)
 
 	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(t.height).Render(left)
-		right = paneStyle.Width(rightW).Height(t.height).Render(right)
+		left = activePaneStyle.Width(leftW).Height(h).Render(left)
+		right = paneStyle.Width(rightW).Height(h).Render(right)
 	} else {
-		left = paneStyle.Width(leftW).Height(t.height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(t.height).Render(right)
+		left = paneStyle.Width(leftW).Height(h).Render(left)
+		right = activePaneStyle.Width(rightW).Height(h).Render(right)
 	}
 	gap := lipgloss.NewStyle().Width(1).Render(" ")
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)

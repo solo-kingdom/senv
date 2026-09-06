@@ -7,6 +7,46 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// paneBudget is the rendered height of a two-pane tab: inner height plus the
+// 2-row rounded border lipgloss draws outside Height().
+func paneBudget(innerH int) int { return innerH + 2 }
+
+// stackWithOverlay renders the two-pane body at a reduced height so a bottom
+// prompt/flash stays inside the pane budget instead of pushing the list off-screen.
+func stackWithOverlay(innerH int, overlay string, renderBody func(h int) string) string {
+	if overlay == "" {
+		return renderBody(innerH)
+	}
+	oh := lipgloss.Height(overlay)
+	bodyH := innerH - oh
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	out := lipgloss.JoinVertical(lipgloss.Left, renderBody(bodyH), overlay)
+	return clipLines(out, paneBudget(innerH))
+}
+
+// cursorPrefix reserves two columns on every list row so selected ("▸ ") and
+// unselected ("  ") lines share the same column start.
+func cursorPrefix(selected bool) string {
+	if selected {
+		return "▸ "
+	}
+	return "  "
+}
+
+// padRunes pads or truncates s to exactly n runes.
+func padRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) > n {
+		return truncRunes(s, n)
+	}
+	return s + strings.Repeat(" ", n-len(r))
+}
+
 // listPageSize is the number of list rows that fit under a 1-line pane title.
 // A non-positive height means "no window" (show everything).
 func listPageSize(height int) int {
