@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-06
+goal: client-history-audit driver 的子 change：access-log（决策依据 grill.md）

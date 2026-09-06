@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/provider"
+	"github.com/wii/senv/internal/session"
 )
 
 var (
@@ -52,8 +53,10 @@ server provider:  incremental pull into the local cache, then push pending chang
 		}
 		fmt.Printf("正在同步（commit → pull --rebase → push）...\n")
 		if err := p.Sync(message); err != nil {
+			auditOp(session.AuditOpSync, "git", false, "git sync 失败")
 			return err
 		}
+		auditOp(session.AuditOpSync, "git", true, "git sync")
 		fmt.Printf("✓ 同步完成\n")
 		postPullSelfCheck(getConfigPath(), getDataPath(), os.Stdout)
 		return nil
@@ -71,6 +74,7 @@ func init() {
 // runServerSync server 模式同步：冲突解决标志优先，否则正常双向同步
 func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	ctx := context.Background()
+	target := "vault:" + syncVaultName()
 
 	if syncAcceptRemote && syncForcePush {
 		return fmt.Errorf("--accept-remote 与 --force-push 不能同时使用")
@@ -78,16 +82,20 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	if syncAcceptRemote {
 		fmt.Println("以远端为准覆盖本地改动...")
 		if err := sp.AcceptRemote(ctx); err != nil {
+			auditOp(session.AuditOpSync, target, false, "accept-remote 失败")
 			return err
 		}
+		auditOp(session.AuditOpSync, target, true, "accept-remote")
 		fmt.Println("✓ 已以远端为准完成同步")
 		return nil
 	}
 	if syncForcePush {
 		fmt.Println("以本地为准覆盖远端改动...")
 		if err := sp.ForcePush(ctx); err != nil {
+			auditOp(session.AuditOpSync, target, false, "force-push 失败")
 			return err
 		}
+		auditOp(session.AuditOpSync, target, true, "force-push")
 		fmt.Println("✓ 已以本地为准完成同步")
 		return nil
 	}
@@ -97,6 +105,7 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	if err != nil {
 		var conflictErr *provider.SyncConflictError
 		if errors.As(err, &conflictErr) {
+			auditOp(session.AuditOpSync, target, false, fmt.Sprintf("同步冲突 %d 项", len(conflictErr.Conflicts)))
 			if syncConflictResolverAvailable() {
 				return runSyncConflictResolver(cmd, sp, conflictErr)
 			}
@@ -106,10 +115,21 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 			}
 			return err
 		}
+		auditOp(session.AuditOpSync, target, false, "同步失败")
 		return err
 	}
+	auditOp(session.AuditOpSync, target, true,
+		fmt.Sprintf("pull %d 条 / push %d 条", res.Pull.Applied, res.Push.Pushed))
 	writeSyncSuccessReport(os.Stdout, res)
 	return nil
+}
+
+// syncVaultName 返回当前 server vault 名（审计 target 用）
+func syncVaultName() string {
+	if settings, err := getStorage().LoadSettings(); err == nil && settings.Provider.Vault != "" {
+		return settings.Provider.Vault
+	}
+	return "main"
 }
 
 // writeSyncSuccessReport 输出双向同步成功报告；自愈发生时低噪声提示修复数量。

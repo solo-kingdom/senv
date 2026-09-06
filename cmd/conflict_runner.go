@@ -82,8 +82,10 @@ func runSyncConflictResolver(
 		return fmt.Errorf("冲突解决计划不完整")
 	}
 	if err := sp.ResolveConflicts(cmd.Context(), plan); err != nil {
+		auditOp(session.AuditOpConflict, "vault:"+syncVaultName(), false, fmt.Sprintf("解决 %d 项失败", len(plan.Items)))
 		return err
 	}
+	auditOp(session.AuditOpConflict, "vault:"+syncVaultName(), true, fmt.Sprintf("解决 %d 项冲突", len(plan.Items)))
 	fmt.Fprintln(cmd.OutOrStdout(), "✓ 冲突解决完成")
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/ref"
+	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/text"
 )
 
@@ -76,22 +77,31 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 		}
 
 		group, key := resolveAddressKey(args[0], textGroup)
+		target := "text:" + group + ":" + key
 
 		// Priority: --file > stdin > args > editor
-		if textSetFile != "" {
-			return textManager.SetFromFile(group, key, textSetFile)
+		var setErr error
+		var via string
+		switch {
+		case textSetFile != "":
+			via = "set --file"
+			setErr = textManager.SetFromFile(group, key, textSetFile)
+		case isPipe():
+			via = "set stdin"
+			setErr = textManager.SetFromReader(group, key, os.Stdin)
+		case len(args) >= 2:
+			via = "set"
+			setErr = textManager.Set(group, key, args[1])
+		default:
+			via = "set editor"
+			setErr = textManager.SetViaEditor(group, key)
 		}
-
-		if isPipe() {
-			return textManager.SetFromReader(group, key, os.Stdin)
+		if setErr != nil {
+			auditOp(session.AuditOpText, target, false, via+" 失败")
+			return setErr
 		}
-
-		if len(args) >= 2 {
-			return textManager.Set(group, key, args[1])
-		}
-
-		// Open editor
-		return textManager.SetViaEditor(group, key)
+		auditOp(session.AuditOpText, target, true, via)
+		return nil
 	},
 }
 
@@ -170,9 +180,11 @@ var textDeleteCmd = &cobra.Command{
 
 		group, key := resolveAddressKey(args[0], textGroup)
 		if err := textManager.Delete(group, key); err != nil {
+			auditOp(session.AuditOpText, "text:"+group+":"+key, false, "delete 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpText, "text:"+group+":"+key, true, "delete")
 		fmt.Printf("✓ Deleted text %s from group %s\n", key, group)
 		return nil
 	},
@@ -308,9 +320,11 @@ var textGroupDeleteCmd = &cobra.Command{
 		}
 
 		if err := textManager.DeleteGroup(name); err != nil {
+			auditOp(session.AuditOpText, "text:"+name, false, "delete group 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpText, "text:"+name, true, "delete group")
 		fmt.Printf("✓ Deleted text group %s\n", name)
 		return nil
 	},

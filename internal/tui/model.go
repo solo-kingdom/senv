@@ -12,10 +12,14 @@ import (
 
 // Managers bundles the three domain managers shared by all tabs. The TUI is a
 // pure interaction layer over these existing managers (no storage changes).
+// History 为 nil 时不注册 History Tab（git 模式 / 未配置 server）；
+// Audit 为 nil 时不注册审计 Tab。
 type Managers struct {
-	Env    *env.Manager
-	Text   *text.Manager
-	Config *config.Manager
+	Env     *env.Manager
+	Text    *text.Manager
+	Config  *config.Manager
+	History HistorySource
+	Audit   AuditSource
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -42,6 +46,12 @@ func New(mgr Managers) Model {
 		newEnvTab(mgr),
 		newTextTab(mgr),
 		newConfigTab(mgr),
+	}
+	if mgr.History != nil {
+		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
+	}
+	if mgr.Audit != nil {
+		m.tabs = append(m.tabs, newAuditTab(mgr.Audit))
 	}
 	return m
 }
@@ -156,21 +166,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.search = newSearchTab(m.mgr)
 			m.search.SetSize(m.width, m.height)
 			return m, m.search.Init()
-		case "1":
-			m.err = ""
-			m.warn = ""
-			m.active = 0
-			return m, m.tabs[0].Init()
-		case "2":
-			m.err = ""
-			m.warn = ""
-			m.active = 1
-			return m, m.tabs[1].Init()
-		case "3":
-			m.err = ""
-			m.warn = ""
-			m.active = 2
-			return m, m.tabs[2].Init()
+		case "1", "2", "3", "4", "5":
+			// 数字键直达对应 Tab；不存在时忽略（如未注册的 History/Audit Tab）
+			if idx := int(msg.String()[0] - '1'); idx < len(m.tabs) {
+				m.err = ""
+				m.warn = ""
+				m.active = idx
+				return m, m.tabs[idx].Init()
+			}
 		case "tab":
 			m.err = ""
 			m.warn = ""

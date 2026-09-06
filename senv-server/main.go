@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -52,6 +53,18 @@ Commands:
   migrate                    应用数据库 schema 迁移
   admin create-user <name>   创建用户并签发 token（明文只展示一次）
   admin revoke-token <token> 吊销 token
+  admin create-registration <user> [--expires 24h]
+                             为用户签发一次性注册码（明文只展示一次）
+  admin list-clients [--user <name>]
+                             列出已注册 client
+  admin block-client --client <name> [--user <user>]
+                             屏蔽 client（其名下 token 立即失效，可解封）
+  admin unblock-client --client <name> [--user <user>]
+                             解封 client
+  admin logs [--user u] [--client c] [--since d] [--until d] [--outcome o] [--limit n]
+                             查询访问日志（时间/IP/身份/结果/原因，含日期）
+  admin logs-prune --before <YYYY-MM-DD>
+                             清理该日期之前的访问日志
 
 Flags（serve/migrate/admin 通用）:
   --dsn    Postgres 连接串（默认取环境变量 SENV_SERVER_DSN）
@@ -79,6 +92,8 @@ func runServe(args []string) {
 		"max request body size in bytes (must cover batch pushes; 64MB covers the 1000x512KB maximum)")
 	rateLimit := fs.Int("auth-rate-limit", 30,
 		"allowed auth failures per minute per source IP (negative disables the limiter)")
+	historyRetain := fs.Int("history-retain", store.DefaultHistoryRetain,
+		"history versions kept per entry (0 or negative disables entry history)")
 	fs.Parse(args)
 	requireDSN(*dsn)
 
@@ -105,7 +120,10 @@ func runServe(args []string) {
 	}
 	defer pool.Close()
 
-	srv := handler.New(store.New(pool), handler.Options{
+	st := store.New(pool)
+	st.SetHistoryRetain(*historyRetain)
+
+	srv := handler.New(st, handler.Options{
 		MaxBodyBytes:  *maxBodyMB,
 		AuthRateLimit: *rateLimit,
 	})
@@ -160,9 +178,175 @@ func runAdmin(args []string) {
 	sub := args[0]
 	fs := flag.NewFlagSet("admin", flag.ExitOnError)
 	dsn := dsnFrom(args[1:], fs)
+	// 子命令私有 flag 必须在 Parse 前定义（Go flag 遇位置参数即停止），
+	// 各子命令按需读取；未用到的定义无副作用
+	expires := fs.String("expires", "24h", "注册码有效期（Go duration，如 24h、30m）")
+	clientName := fs.String("client", "", "client 设备名")
+	userFilter := fs.String("user", "", "限定用户名（缺省作用于全部用户）")
+	outcome := fs.String("outcome", "", "访问日志结果过滤（OK/AUTH-FAILED/BLOCKED/RATE-LIMITED）")
+	logsSince := fs.String("since", "", "起始日期（YYYY-MM-DD 或 RFC3339，含）")
+	logsUntil := fs.String("until", "", "结束日期（YYYY-MM-DD 或 RFC3339，含当天）")
+	logsBefore := fs.String("before", "", "清理该日期之前的日志（YYYY-MM-DD）")
+	logsLimit := fs.Int("limit", 100, "最多显示条数")
 	fs.Parse(args[1:])
 
 	switch sub {
+	case "create-registration":
+		if fs.NArg() < 1 {
+			fmt.Fprintln(os.Stderr, "用法: senv-server admin create-registration <username> [--expires 24h] [--dsn ...]")
+			os.Exit(1)
+		}
+		requireDSN(*dsn)
+		ttl, err := time.ParseDuration(*expires)
+		if err != nil || ttl <= 0 {
+			fmt.Fprintf(os.Stderr, "错误: --expires %q 不是正的有效时长\n", *expires)
+			os.Exit(1)
+		}
+		withStore(*dsn, func(st *store.Store) error {
+			userID, err := st.UserIDByName(context.Background(), fs.Arg(0))
+			if err != nil {
+				return fmt.Errorf("用户 %q 不存在", fs.Arg(0))
+			}
+			code, err := st.CreateRegistrationCode(context.Background(), userID, ttl)
+			if err != nil {
+				return err
+			}
+			// 明文注册码只在此展示一次，库中仅存 SHA-256 哈希
+			fmt.Printf("✓ 已为用户 %q 签发一次性注册码（有效期 %s）:\n%s\n", fs.Arg(0), ttl, code)
+			fmt.Println("在客户端执行: senv server register --address <server> --code <注册码> --name <设备名>")
+			return nil
+		})
+	case "list-clients":
+		withStore(*dsn, func(st *store.Store) error {
+			var userID int64 = -1
+			if *userFilter != "" {
+				id, err := st.UserIDByName(context.Background(), *userFilter)
+				if err != nil {
+					return fmt.Errorf("用户 %q 不存在", *userFilter)
+				}
+				userID = id
+			}
+			clients, err := st.ListClients(context.Background(), userID)
+			if err != nil {
+				return err
+			}
+			if len(clients) == 0 {
+				fmt.Println("（无 client）")
+				return nil
+			}
+			fmt.Printf("%-4s %-16s %-20s %-8s %-24s %-24s\n", "ID", "NAME", "USER", "STATUS", "CREATED", "LAST_SEEN")
+			for _, c := range clients {
+				lastSeen := "-"
+				if c.LastSeenAt != nil {
+					lastSeen = c.LastSeenAt.Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("%-4d %-16s %-20d %-8s %-24s %-24s\n",
+					c.ID, c.Name, c.UserID, c.Status,
+					c.CreatedAt.Format("2006-01-02 15:04:05"), lastSeen)
+			}
+			return nil
+		})
+	case "block-client", "unblock-client":
+		status := store.ClientStatusBlocked
+		hint := "已屏蔽"
+		if sub == "unblock-client" {
+			status = store.ClientStatusActive
+			hint = "已解封"
+		}
+		if *clientName == "" {
+			fmt.Fprintf(os.Stderr, "用法: senv-server admin %s --client <设备名> [--user <用户名>] [--dsn ...]\n", sub)
+			os.Exit(1)
+		}
+		withStore(*dsn, func(st *store.Store) error {
+			var userID int64 = -1
+			if *userFilter != "" {
+				id, err := st.UserIDByName(context.Background(), *userFilter)
+				if err != nil {
+					return fmt.Errorf("用户 %q 不存在", *userFilter)
+				}
+				userID = id
+			}
+			if err := st.SetClientStatus(context.Background(), userID, *clientName, status); err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					return fmt.Errorf("client %q 不存在（可用 admin list-clients 核对设备名）", *clientName)
+				}
+				return err
+			}
+			fmt.Printf("✓ client %q %s\n", *clientName, hint)
+			return nil
+		})
+	case "logs":
+		requireDSN(*dsn)
+		withStore(*dsn, func(st *store.Store) error {
+			f := store.AccessLogFilter{Outcome: *outcome, Limit: *logsLimit}
+			if *userFilter != "" {
+				id, err := st.UserIDByName(context.Background(), *userFilter)
+				if err != nil {
+					return fmt.Errorf("用户 %q 不存在", *userFilter)
+				}
+				f.User = &id
+			}
+			if *clientName != "" {
+				cid, err := resolveClientID(st, *clientName, *userFilter)
+				if err != nil {
+					return err
+				}
+				f.Client = &cid
+			}
+			if *logsSince != "" {
+				t, err := parseAdminDate(*logsSince, false)
+				if err != nil {
+					return fmt.Errorf("--since %q: %w", *logsSince, err)
+				}
+				f.Since = &t
+			}
+			if *logsUntil != "" {
+				t, err := parseAdminDate(*logsUntil, true)
+				if err != nil {
+					return fmt.Errorf("--until %q: %w", *logsUntil, err)
+				}
+				f.Until = &t
+			}
+			events, err := st.ListAccessLogs(context.Background(), f)
+			if err != nil {
+				return err
+			}
+			if len(events) == 0 {
+				fmt.Println("（无匹配的访问日志）")
+				return nil
+			}
+			fmt.Printf("%-20s %-15s %-28s %-14s %-12s %-13s %s\n",
+				"时间", "IP", "METHOD PATH", "CLIENT", "USER", "结果", "原因")
+			for _, e := range events {
+				fmt.Printf("%-20s %-15s %-28s %-14s %-12s %-13s %s\n",
+					e.Time.Local().Format("2006-01-02 15:04:05"),
+					truncateCell(e.IP, 15),
+					truncateCell(e.Method+" "+e.Path, 28),
+					truncateCell(clientDisplay(e), 14),
+					truncateCell(userDisplay(e), 12),
+					e.Outcome, e.Reason)
+			}
+			return nil
+		})
+	case "logs-prune":
+		requireDSN(*dsn)
+		if *logsBefore == "" {
+			fmt.Fprintln(os.Stderr, "用法: senv-server admin logs-prune --before <YYYY-MM-DD> [--dsn ...]")
+			os.Exit(1)
+		}
+		before, err := parseAdminDate(*logsBefore, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: --before %q: %v\n", *logsBefore, err)
+			os.Exit(1)
+		}
+		withStore(*dsn, func(st *store.Store) error {
+			n, err := st.PruneAccessLogs(context.Background(), before)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ 已删除 %d 条 %s 之前的访问日志\n", n, before.Format("2006-01-02 15:04:05"))
+			return nil
+		})
 	case "create-user":
 		if fs.NArg() < 1 {
 			fmt.Fprintln(os.Stderr, "用法: senv-server admin create-user <name> [--dsn ...]")
@@ -215,4 +399,76 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// resolveClientID 按设备名解析 client id；同名跨用户时要求显式 --user
+func resolveClientID(st *store.Store, name, userName string) (int64, error) {
+	var userID int64 = -1
+	if userName != "" {
+		id, err := st.UserIDByName(context.Background(), userName)
+		if err != nil {
+			return 0, fmt.Errorf("用户 %q 不存在", userName)
+		}
+		userID = id
+	}
+	clients, err := st.ListClients(context.Background(), userID)
+	if err != nil {
+		return 0, err
+	}
+	var matches []store.Client
+	for _, c := range clients {
+		if c.Name == name {
+			matches = append(matches, c)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0].ID, nil
+	case 0:
+		return 0, fmt.Errorf("client %q 不存在（可用 admin list-clients 核对）", name)
+	default:
+		return 0, fmt.Errorf("client %q 归属多个用户，请加 --user 限定", name)
+	}
+}
+
+// parseAdminDate 解析 YYYY-MM-DD（本地时区）或 RFC3339；endOfDay 用于 until 含当天
+func parseAdminDate(value string, endOfDay bool) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", value, time.Local); err == nil {
+		if endOfDay {
+			return t.Add(24*time.Hour - time.Second), nil
+		}
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("无法解析日期，支持 YYYY-MM-DD 或 RFC3339")
+}
+
+func truncateCell(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+func clientDisplay(e store.AccessEventRow) string {
+	if e.ClientName != "" {
+		return e.ClientName
+	}
+	if e.ClientID > 0 {
+		return fmt.Sprintf("#%d", e.ClientID)
+	}
+	return "-"
+}
+
+func userDisplay(e store.AccessEventRow) string {
+	if e.UserName != "" {
+		return e.UserName
+	}
+	if e.UserID > 0 {
+		return fmt.Sprintf("#%d", e.UserID)
+	}
+	return "-"
 }

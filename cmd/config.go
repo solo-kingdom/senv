@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/exportfile"
+	"github.com/wii/senv/internal/session"
 )
 
 var configCmd = &cobra.Command{
@@ -144,9 +145,11 @@ You must specify both source file path and target path where the file will be re
 		}
 
 		if err := configManager.Create(name, configSourcePath, configTargetPath, configGroup, configDescription); err != nil {
+			auditOp(session.AuditOpConfig, "config:"+configGroup+":"+name, false, "create 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpConfig, "config:"+configGroup+":"+name, true, "create")
 		fmt.Printf("✓ Created config %s\n", name)
 		fmt.Printf("  Source: %s\n", configSourcePath)
 		fmt.Printf("  Target: %s\n", configTargetPath)
@@ -251,7 +254,13 @@ default to 0600; --mode is an explicit per-command permission choice.`,
 			return nil
 		}
 
-		return configManager.ExecuteInstallWithMode(plan, mode)
+		installErr := configManager.ExecuteInstallWithMode(plan, mode)
+		names := make([]string, 0, len(plan.Items))
+		for _, item := range plan.Items {
+			names = append(names, item.Name)
+		}
+		auditOp(session.AuditOpInstall, auditScopeTarget(names, scope), installErr == nil, fmt.Sprintf("install %d 项", len(plan.Items)))
+		return installErr
 	},
 }
 
@@ -319,8 +328,28 @@ storage entries are never touched.`,
 			confirmChanged = func(config.UninstallItem) bool { return true }
 		}
 
-		return configManager.ExecuteUninstall(plan, confirmChanged)
+		uninstallErr := configManager.ExecuteUninstall(plan, confirmChanged)
+		names := make([]string, 0, len(plan.Items))
+		for _, item := range plan.Items {
+			names = append(names, item.Name)
+		}
+		auditOp(session.AuditOpUninstall, auditScopeTarget(names, scope), uninstallErr == nil, fmt.Sprintf("uninstall %d 项", len(plan.Items)))
+		return uninstallErr
 	},
+}
+
+// auditScopeTarget 汇总安装/卸载范围用于审计 target（不含文件内容）
+func auditScopeTarget(names []string, scope config.Scope) string {
+	if len(names) == 1 {
+		return "config:" + names[0]
+	}
+	if scope.All {
+		return "config:*"
+	}
+	if scope.Name != "" {
+		return "config:" + scope.Name
+	}
+	return "config:[" + fmt.Sprint(len(names)) + " 项]"
 }
 
 func printUninstallPlan(plan *config.UninstallPlan) {
@@ -351,9 +380,11 @@ var configDeleteCmd = &cobra.Command{
 		name := args[0]
 
 		if err := configManager.Delete(name); err != nil {
+			auditOp(session.AuditOpConfig, "config:"+name, false, "delete 失败")
 			return err
 		}
 
+		auditOp(session.AuditOpConfig, "config:"+name, true, "delete")
 		fmt.Printf("✓ Deleted config %s\n", name)
 		return nil
 	},

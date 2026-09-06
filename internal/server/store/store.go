@@ -79,12 +79,13 @@ type Entry struct {
 
 // Store 封装连接池与全部 SQL 操作
 type Store struct {
-	pool *pgxpool.Pool
+	pool          *pgxpool.Pool
+	historyRetain int
 }
 
-// New 创建 Store
+// New 创建 Store（条目历史默认保留 DefaultHistoryRetain 版）
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: pool, historyRetain: DefaultHistoryRetain}
 }
 
 // Close 关闭连接池
@@ -328,7 +329,14 @@ func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, ent
 		return nil, 0, &ConflictError{Conflicts: conflicts}
 	}
 
-	// 无冲突：逐条写入，每条取新的单调 revision（更新与删除都推进）
+	// 无冲突：逐条写入，每条取新的单调 revision（更新与删除都推进）。
+	// 历史留存（可由 --history-retain<=0 关闭）：先把受影响条目的当前值
+	// 写入前像历史，推送事务整体回滚时历史随之回滚。
+	if s.historyRetain > 0 {
+		if err := recordHistoryPreimages(ctx, tx, vaultID, entries); err != nil {
+			return nil, 0, err
+		}
+	}
 	var latest int64
 	for i := range entries {
 		rev, err := nextRevision(ctx, tx, vaultID)
@@ -353,6 +361,11 @@ func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, ent
 				vaultID, entries[i].Kind, entries[i].Grp, entries[i].Key, entries[i].Ciphertext, rev)
 		}
 		if err != nil {
+			return nil, 0, err
+		}
+	}
+	if s.historyRetain > 0 {
+		if err := pruneHistory(ctx, tx, vaultID, s.historyRetain); err != nil {
 			return nil, 0, err
 		}
 	}
