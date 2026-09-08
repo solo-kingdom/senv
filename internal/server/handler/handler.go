@@ -27,8 +27,9 @@ type Options struct {
 	// AuthRateLimit 每分钟每来源允许的认证失败次数；0 使用
 	// defaultAuthRateLimit；负值关闭限速
 	AuthRateLimit int
-	// TrustProxyHeaders 开启后，当直连对端是 loopback（同机反向代理）时，
-	// 来源 IP 采信 X-Real-IP / X-Forwarded-For；默认关闭（fail-closed）。
+	// TrustProxyHeaders 开启后，当直连对端是 loopback 或私网地址（同机反代，
+	// 或 docker 网桥/内网反代拓扑）时，来源 IP 采信 X-Real-IP / X-Forwarded-For；
+	// 默认关闭（fail-closed），公网直连的伪造头一律不采信。
 	TrustProxyHeaders bool
 }
 

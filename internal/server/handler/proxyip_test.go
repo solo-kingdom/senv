@@ -45,11 +45,25 @@ func TestResolveRemoteIP(t *testing.T) {
 			want:       "127.0.0.1",
 		},
 		{
-			name:       "对端非 loopback 时即使信任开启也忽略代理头",
+			name:       "对端为公网地址时即使信任开启也忽略代理头",
 			trustProxy: true,
 			remoteAddr: external,
 			headers:    map[string]string{"X-Real-IP": "203.0.113.7"},
 			want:       "192.0.2.1",
+		},
+		{
+			name:       "私网对端（docker 网桥反代）采信 X-Real-IP",
+			trustProxy: true,
+			remoteAddr: "172.18.0.2:45678",
+			headers:    map[string]string{"X-Real-IP": "203.0.113.7"},
+			want:       "203.0.113.7",
+		},
+		{
+			name:       "私网对端的 X-Real-IP 非法时回落连接对端",
+			trustProxy: true,
+			remoteAddr: "172.18.0.2:45678",
+			headers:    map[string]string{"X-Real-IP": "not-an-ip"},
+			want:       "172.18.0.2",
 		},
 		{
 			name:       "loopback 对端采信 X-Real-IP",

@@ -97,17 +97,18 @@ func remoteIP(r *http.Request) string {
 
 // resolveRemoteIP 解析请求来源的客户端 IP，是限速与访问日志共用的唯一取值点。
 //
-// 仅当 TrustProxyHeaders 开启且直连对端是 loopback（同机反向代理拓扑）时，
-// 才依次采信 X-Real-IP 与 X-Forwarded-For 最左值，且必须解析为合法 IP；
-// 其余情况一律使用连接对端——外网直连的客户端伪造代理头无法绕过限速或
-// 污染审计 IP。反代不在同机时不应开启此开关（文档部署拓扑为同机 caddy）。
+// 仅当 TrustProxyHeaders 开启且直连对端是 loopback 或私网地址（同机反代，
+// 或 docker 网桥/内网反代拓扑）时，才依次采信 X-Real-IP 与 X-Forwarded-For
+// 最左值，且必须解析为合法 IP；其余情况一律使用连接对端——公网直连的客户端
+// 伪造代理头无法绕过限速或污染审计 IP。开启后同一私网内的其他主机也被视为
+// 可信代理（可借伪造头获得独立限速窗口），仅当私网对端全部可信时才应开启。
 func (s *Server) resolveRemoteIP(r *http.Request) string {
 	host := remoteIP(r)
 	if !s.trustProxyHeaders {
 		return host
 	}
 	peer := net.ParseIP(host)
-	if peer == nil || !peer.IsLoopback() {
+	if peer == nil || !(peer.IsLoopback() || peer.IsPrivate()) {
 		return host
 	}
 	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {

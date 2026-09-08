@@ -76,7 +76,8 @@ Flags（serve/migrate/admin 通用）:
   --addr   监听地址（仅 serve，默认 ":8080"，环境变量 SENV_SERVER_ADDR 可覆盖）
 
 serve 专属:
-  --trust-proxy-headers  同机反代时采信 X-Real-IP/X-Forwarded-For（默认关闭）
+  --trust-proxy-headers  反代对端为 loopback/私网（同机或 docker 网桥）时采信
+                         X-Real-IP/X-Forwarded-For（默认关闭）
   --logs-retain-days N   访问日志保留天数（默认 90，0 关闭自动清理）
 `)
 }
@@ -104,7 +105,7 @@ func runServe(args []string) {
 	historyRetain := fs.Int("history-retain", store.DefaultHistoryRetain,
 		"history versions kept per entry (0 or negative disables entry history)")
 	trustProxy := fs.Bool("trust-proxy-headers", false,
-		"trust X-Real-IP/X-Forwarded-For only when the direct peer is loopback (same-host reverse proxy)")
+		"trust X-Real-IP/X-Forwarded-For only when the direct peer is loopback or a private address (same-host or private-network reverse proxy)")
 	logsRetainDays := fs.Int("logs-retain-days", 90,
 		"access log retention in days (0 disables automatic pruning)")
 	fs.Parse(args)
