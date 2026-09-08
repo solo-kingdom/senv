@@ -27,8 +27,9 @@ export SENV_SERVER_DSN="postgres://senv:****@db-host:5432/senv"
 #    可选参数：
 #      -max-body-bytes N      单请求体上限（默认 64MB，覆盖 1000×512KB 理论最大值）
 #      -auth-rate-limit N     每分钟每来源 IP 认证失败阈值（默认 30，负值关闭）
-#      -trust-proxy-headers   同机反代时按 X-Real-IP/X-Forwarded-For 识别真实来源
-#                             IP（默认关闭；仅当直连对端是 loopback 才采信）
+#      -trust-proxy-headers   反代时按 X-Real-IP/X-Forwarded-For 识别真实来源 IP
+#                             （默认关闭；仅当直连对端是 loopback 或私网地址才采信，
+#                             覆盖同机与 docker 网桥/内网反代拓扑）
 #      -logs-retain-days N    访问日志保留天数（默认 90，0 关闭自动清理）
 ./senv-server-bin serve --addr 127.0.0.1:8080
 
@@ -135,6 +136,32 @@ senv sync --accept-remote   # 放弃本地，采用远端
 senv sync --force-push      # 放弃远端，采用本地
 ```
 
+## 构建与发布（踩坑记录）
+
+生产镜像 `registry.wii.pub/senv/senv-server:<tag>` 的 Dockerfile 在部署机上
+（`tcbj:/home/ubuntu/.agent-deploy/tcbj/senv-server/Dockerfile`，senv 仓内没有），
+构建上下文 = senv 源码仓根。
+
+**构建优先在 iship 上做**（192.168.6.3，`wii`）：其上已有 senv 仓 checkout
+（`~/code/repos/github/solo-kingdom/senv`）和 docker，且 `proxy.golang.org` 可达，
+`go mod download` 开箱即用。流程：在 iship 的仓里 `docker build`（可同时打
+`<tag>` 与 `sha-<short>` 标签）→ `docker push` → tcbj 上 `docker compose pull && up -d`。
+
+已踩过的坑：
+
+- **不要在 tcbj 上直接 docker build**：大陆云机访问不了默认 Go 模块代理
+  `proxy.golang.org`，`go mod download` 必失败（2026-09-08 实测）。
+- **`--trust-proxy-headers` 旧语义（<0.1.23）只认 loopback 对端**：docker 网桥反代
+  （caddy 容器 → senv-server 容器）的对端是 172.18.0.0/16 网桥地址，只加 flag 不生效——
+  访问日志全记成网桥 IP、按 IP 限速退化为全局共享。0.1.23 起扩展为 loopback 或私网地址。
+- **查线上访问日志直接查 PG**：`docker exec tcbj-casdoor-pg psql -U casdoor -d senv`
+  查 `access_log` 表（ts/ip/method/path/outcome/reason；outcome 取值
+  OK/AUTH-FAILED/BLOCKED/RATE-LIMITED），或用 `senv-server admin logs` 子命令。
+  日志只从 0.1.22（2026-09-08 部署）起才有。
+- **Caddyfile 是单文件 bind mount**：不能 `docker cp` 覆盖（报 device or resource busy）。
+  宿主机 `/home/ubuntu/.agent-deploy/tcbj/configs/caddy/Caddyfile` 就是挂载源，
+  原地编辑后 `caddy validate` + `caddy reload` 优雅生效，无需重启容器。
+
 ## 运维要点
 
 - 备份 = 备份 Postgres 库即可；用户可随时 `senv migrate from-server` 导回本地/git 仓，无锁定
@@ -219,7 +246,9 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
 
   caddy 自动附加 X-Forwarded-For，作为 X-Real-IP 缺失时的回落；两者都缺失或
   非法时 server 按代理自身 IP 计数（fail-safe）。server 的 `--trust-proxy-headers`
-  仅在直连对端为 loopback 时才采信这些头，外网直连伪造无效。
+  仅在直连对端为 loopback 或私网地址（RFC1918/ULA，覆盖 docker 网桥反代）时
+  才采信这些头，外网直连伪造无效。开启后同一私网内的其他主机也被视为可信
+  代理（可借伪造头获得独立限速窗口），仅当私网对端全部可信时才应开启。
 - 认证限速：server 内置按来源 IP 的失败限速（默认 30 次/分钟）；如需在边缘再加一层，
   可用 caddy 的 `rate_limit` 插件对 `/v1/` 路径限速
 - 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简；
