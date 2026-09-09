@@ -112,6 +112,8 @@ func printDoctorReport(out io.Writer, r *storage.ConsistencyReport) {
 	printFileProbes(out, "env files", r.EnvFiles)
 	printFileProbes(out, "text files", r.TextFiles)
 	printFileProbes(out, "config files", r.ConfigFiles)
+	printFileProbes(out, "hosts", r.HostFiles)
+	printFileProbes(out, "keypairs", r.KeyPairFiles)
 	printQuarantinedConfigs(out, r.QuarantinedConfigNames)
 }
 

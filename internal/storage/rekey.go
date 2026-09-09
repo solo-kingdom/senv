@@ -18,12 +18,16 @@ import (
 
 // RekeyResult reports how many files were re-encrypted.
 type RekeyResult struct {
-	EnvFiles    int
-	TextFiles   int
-	ConfigFiles int
+	EnvFiles     int
+	TextFiles    int
+	ConfigFiles  int
+	HostFiles    int
+	KeyPairFiles int
 }
 
-func (r *RekeyResult) Total() int { return r.EnvFiles + r.TextFiles + r.ConfigFiles }
+func (r *RekeyResult) Total() int {
+	return r.EnvFiles + r.TextFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles
+}
 
 type rekeyEntryKind uint8
 
@@ -31,6 +35,8 @@ const (
 	rekeyEntryEnv rekeyEntryKind = iota + 1
 	rekeyEntryText
 	rekeyEntryConfig
+	rekeyEntryHost
+	rekeyEntryKeyPair
 )
 
 type rekeyEntry struct {
@@ -368,6 +374,10 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 			result.TextFiles++
 		case rekeyEntryConfig:
 			result.ConfigFiles++
+		case rekeyEntryHost:
+			result.HostFiles++
+		case rekeyEntryKeyPair:
+			result.KeyPairFiles++
 		}
 		return nil
 	})
@@ -426,6 +436,18 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 			return 0, fmt.Errorf("invalid text key: %w", err)
 		}
 		return rekeyEntryText, nil
+	case len(segments) == 2 && segments[0] == HostDirName:
+		alias := strings.TrimSuffix(segments[1], ConfigFileSuffix)
+		if alias == segments[1] || securefs.ValidateSegment(alias) != nil {
+			return 0, fmt.Errorf("invalid host entry identity %q", strings.Join(segments, "/"))
+		}
+		return rekeyEntryHost, nil
+	case len(segments) == 2 && segments[0] == KeypairDirName:
+		name := strings.TrimSuffix(segments[1], ConfigFileSuffix)
+		if name == segments[1] || securefs.ValidateSegment(name) != nil {
+			return 0, fmt.Errorf("invalid keypair entry identity %q", strings.Join(segments, "/"))
+		}
+		return rekeyEntryKeyPair, nil
 	default:
 		return 0, fmt.Errorf("encrypted file has unknown managed identity %q", strings.Join(segments, "/"))
 	}

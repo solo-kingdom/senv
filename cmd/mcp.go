@@ -13,6 +13,7 @@ import (
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 )
@@ -72,6 +73,7 @@ type managers struct {
 	env      *env.Manager
 	text     *text.Manager
 	config   *config.Manager
+	ssh      *ssh.Manager
 	autoPull func()
 }
 
@@ -115,12 +117,14 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			env:    env.NewManagerWithKey(store, key),
 			text:   text.NewManagerWithKey(store, key),
 			config: config.NewManagerWithKey(store, key),
+			ssh:    ssh.NewManagerWithKey(store, key),
 		}
 		release := func() {
 			session.ZeroKey(key)
 			requestManagers.env = nil
 			requestManagers.text = nil
 			requestManagers.config = nil
+			requestManagers.ssh = nil
 		}
 		return requestManagers, release, nil
 	}
@@ -492,6 +496,8 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, guardMCPTool(authorize, autoPull, (*managers).groupAdd))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool(authorize, autoPull, (*managers).groupActivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool(authorize, autoPull, (*managers).groupDeactivate))
+	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostList))
+	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_get", Description: "Get one SSH host connection metadata record (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostGet))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -513,6 +519,8 @@ func toolCatalogue() []toolDef {
 		{"senv_group_add", "Create a group (kind=env|text)."},
 		{"senv_group_activate", "Activate an env group."},
 		{"senv_group_deactivate", "Deactivate an env group."},
+		{"ssh_host_list", "List SSH host connection metadata (read-only; no private keys)."},
+		{"ssh_host_get", "Get one SSH host metadata record (read-only; no private keys)."},
 	}
 }
 

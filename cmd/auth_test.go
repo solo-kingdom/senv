@@ -161,6 +161,46 @@ func TestExportIfSession_NoSessionSilent(t *testing.T) {
 	}
 }
 
+func TestAuthMemo_PreservesPlatformSessionStoreFailure(t *testing.T) {
+	isolateSessionCache(t)
+	dir := t.TempDir()
+	cfg, data := newInitializedProject(t, dir, "correct-secret")
+
+	timeout, err := session.ParseTimeout("restart")
+	if err != nil || timeout == nil {
+		t.Fatalf("parse timeout: %v", err)
+	}
+	if err := session.NewManager(cfg, data).StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	// After a session exists, make the platform runtime store unreadable.
+	// On macOS this corresponds to Keychain unavailable/locked; on Linux the
+	// hardened tmpfs store reports the same ErrNoSecureSessionStore.
+	diskRuntime, err := os.MkdirTemp(".", "senv-disk-runtime-")
+	if err != nil {
+		t.Fatalf("create disk runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(diskRuntime) })
+	t.Setenv("XDG_RUNTIME_DIR", diskRuntime)
+
+	// `eval "$(senv env export)"` runs with captured stdout, exactly the user
+	// symptom reported by new shell startup.
+	stdoutIsTerminal = func() bool { return false }
+	activeAuthOpts = authOptions{requireStdoutTTY: true}
+	t.Cleanup(func() { activeAuthOpts = authOptions{} })
+
+	var prompts int
+	prompt := countingPrompter("correct-secret", &prompts)
+	_, err = resolveAuth(cfg, data, prompt)
+	if !errors.Is(err, session.ErrNoSecureSessionStore) {
+		t.Fatalf("expected platform store failure, got %v", err)
+	}
+	if prompts != 0 {
+		t.Fatalf("platform store failure must not become a password prompt, got %d", prompts)
+	}
+}
+
 func TestExportIfSession_WithSessionExports(t *testing.T) {
 	isolateSessionCache(t)
 	dir := t.TempDir()

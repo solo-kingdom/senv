@@ -51,6 +51,8 @@ const (
 	AuditOpSync      AuditEventType = "op_sync"
 	AuditOpConflict  AuditEventType = "op_conflict"
 	AuditOpRestore   AuditEventType = "op_restore"
+	AuditOpSSHKey    AuditEventType = "op_ssh_keypair"
+	AuditOpSSHHost   AuditEventType = "op_ssh_host"
 )
 
 // AuditEntry represents a single audit log entry

@@ -48,3 +48,25 @@ _Avoid_: 服务日志（stdout 含义）、审计（client 含义）
 **配置历史版本（Entry History）**:
 server 为单个条目保留的最近 N 个密文历史版本（默认 3），按 revision 回看，可恢复为当前值；仅 server 模式提供（git 模式用 git 历史）。
 _Avoid_: 版本号（指 revision 本身时）、快照（指整库时）
+
+### SSH 资产
+
+**Host（主机）**:
+SSH 连接档案：以别名为唯一标识，含真实地址、登录用户、端口等连接要素，可关联一把 KeyPair，其余连接参数以自由属性承载。
+_Avoid_: 服务器（泛指远端机器时）、机器、节点
+
+**别名**:
+Host 的连接名与唯一标识，即 OpenSSH `Host` token；真实地址是 Host 的独立字段，不与别名混用。
+_Avoid_: 展示名、备注名
+
+**KeyPair（密钥对）**:
+从既有私钥文件导入的 SSH 密钥资产：私钥是机密本体，公钥仅用于辨识（指纹/展示）；senv 不生成新密钥。
+_Avoid_: identity 文件（指盘上路径时）、钥匙（单指私钥时）
+
+**ProxyJump（跳板）**:
+经另一台 Host 中转连接目标 Host；其值必须引用已存在的 Host 别名。
+_Avoid_: 代理（泛指时）、前置机
+
+**ProxyCommand**:
+自定义连接命令文本，黑盒直传，不做结构化解析。
+_Avoid_: 跳板（指 ProxyJump 时）

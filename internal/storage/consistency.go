@@ -26,6 +26,8 @@ type ConsistencyReport struct {
 	EnvFiles      FileProbes
 	TextFiles     FileProbes
 	ConfigFiles   FileProbes
+	HostFiles     FileProbes
+	KeyPairFiles  FileProbes
 	// QuarantinedConfigNames lists legacy config entries whose identities are
 	// structurally consistent but non-portable. They are skipped (not probed,
 	// not counted) and surfaced separately as repair guidance.
@@ -37,7 +39,9 @@ func (r *ConsistencyReport) AllOK() bool {
 	return r.MetadataKeyOK &&
 		r.EnvFiles.OK == r.EnvFiles.Total &&
 		r.TextFiles.OK == r.TextFiles.Total &&
-		r.ConfigFiles.OK == r.ConfigFiles.Total
+		r.ConfigFiles.OK == r.ConfigFiles.Total &&
+		r.HostFiles.OK == r.HostFiles.Total &&
+		r.KeyPairFiles.OK == r.KeyPairFiles.Total
 }
 
 // CheckConsistency probes whether the given key can decrypt the metadata
@@ -156,6 +160,42 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		}
 	}
 
+	hostNames, err := m.ListHosts()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list hosts: %w", err)
+	}
+	for _, name := range hostNames {
+		ciphertext, err := dataRoot.Read(HostDirName, name+ConfigFileSuffix)
+		if err != nil {
+			return nil, err
+		}
+		rel := filepath.Join(HostDirName, name+ConfigFileSuffix)
+		report.HostFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.HostFiles.OK++
+		} else {
+			report.HostFiles.Failed = append(report.HostFiles.Failed, rel)
+		}
+	}
+
+	keyPairNames, err := m.ListKeyPairs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list keypairs: %w", err)
+	}
+	for _, name := range keyPairNames {
+		ciphertext, err := dataRoot.Read(KeypairDirName, name+ConfigFileSuffix)
+		if err != nil {
+			return nil, err
+		}
+		rel := filepath.Join(KeypairDirName, name+ConfigFileSuffix)
+		report.KeyPairFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.KeyPairFiles.OK++
+		} else {
+			report.KeyPairFiles.Failed = append(report.KeyPairFiles.Failed, rel)
+		}
+	}
+
 	return report, nil
 }
 
@@ -197,10 +237,32 @@ func (m *Manager) HasOrphanedData() bool {
 					return true
 				}
 			}
+			if name == HostDirName && hasManagedEncFiles(m.dataPath, HostDirName) {
+				return true
+			}
+			if name == KeypairDirName && hasManagedEncFiles(m.dataPath, KeypairDirName) {
+				return true
+			}
 			continue
 		}
 		// env_*.json.enc, *.enc config files
 		if strings.HasSuffix(name, EnvFileSuffix) || strings.HasSuffix(name, ConfigFileSuffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasManagedEncFiles reports whether a one-level managed collection contains
+// any encrypted entry. Orphan-data detection uses it before metadata exists so
+// re-initializing cannot silently make SSH assets undecryptable.
+func hasManagedEncFiles(dataPath, dir string) bool {
+	entries, err := os.ReadDir(filepath.Join(dataPath, dir))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ConfigFileSuffix) {
 			return true
 		}
 	}

@@ -30,11 +30,16 @@ keybinding reference.`,
 		if err != nil {
 			return err
 		}
+		sshMgr, err := getSSHManager()
+		if err != nil {
+			return err
+		}
 
 		m := tui.New(tui.Managers{
 			Env:     envMgr,
 			Text:    textMgr,
 			Config:  configMgr,
+			SSH:     sshMgr,
 			History: buildTUIHistorySource(),
 			Audit:   tuiAuditSource{},
 		})

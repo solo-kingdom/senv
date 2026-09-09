@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,34 @@ func TestKeychainStoreFailureIsActionable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--insecure-cache") {
 		t.Fatalf("Save() error = %v, missing escape-hatch hint", err)
+	}
+}
+
+func TestKeychainStoreFailureIncludesSecurityStderr(t *testing.T) {
+	command := exec.Command("sh", "-c", "exit 45")
+	if err := command.Run(); err == nil {
+		t.Fatal("expected helper command to fail")
+	}
+	securityErr := command.ProcessState
+	if securityErr == nil {
+		t.Fatal("missing helper process state")
+	}
+	store := keychainStore{runner: func([]string, string) (string, error) {
+		return "", &exec.ExitError{ProcessState: securityErr, Stderr: []byte("security: User interaction is not allowed.\n")}
+	}}
+
+	_, err := store.Load()
+	if !errors.Is(err, ErrNoSecureSessionStore) {
+		t.Fatalf("Load() error = %v, want ErrNoSecureSessionStore", err)
+	}
+	for _, want := range []string{
+		"User interaction is not allowed",
+		"unlock the login keychain",
+		"--insecure-cache",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load() error = %q, missing %q", err, want)
+		}
 	}
 }
 

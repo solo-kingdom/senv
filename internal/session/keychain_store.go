@@ -55,7 +55,17 @@ func (s keychainStore) run(args []string, stdin string) (string, error) {
 }
 
 func keychainStoreError(err error) error {
-	return fmt.Errorf("%w: macOS Keychain unavailable: %v; for headless macOS or CI rerun with --insecure-cache", ErrNoSecureSessionStore, err)
+	detail := err.Error()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) != 0 {
+		if message := strings.TrimSpace(string(exitErr.Stderr)); message != "" {
+			detail = message
+		}
+	}
+	return fmt.Errorf(
+		"%w: macOS Keychain unavailable: %s; unlock the login keychain, or for headless macOS or CI rerun with --insecure-cache",
+		ErrNoSecureSessionStore, detail,
+	)
 }
 
 func isSecurityItemNotFound(err error) bool {

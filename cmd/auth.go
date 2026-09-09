@@ -167,6 +167,12 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authRes
 
 	// 3. Non-interactive / captured-stdout: refuse to prompt.
 	if !stdinIsTerminal() || (activeAuthOpts.requireStdoutTTY && !stdoutIsTerminal()) {
+		// A platform-store failure is not the same as "there is no session".
+		// In particular, macOS Keychain lock/unavailability must remain
+		// actionable instead of being rewritten to the generic hint.
+		if errors.Is(err, session.ErrNoSecureSessionStore) {
+			return nil, err
+		}
 		return nil, ErrNeedSession
 	}
 

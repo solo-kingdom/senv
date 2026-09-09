@@ -59,6 +59,8 @@ func TestAllMCPToolsGuarded(t *testing.T) {
 	assertMCPToolDenied(t, "senv_group_add", (*managers).groupAdd, groupKindInput{Kind: "env", Name: "prod"})
 	assertMCPToolDenied(t, "senv_group_activate", (*managers).groupActivate, groupNameInput{Name: "prod"})
 	assertMCPToolDenied(t, "senv_group_deactivate", (*managers).groupDeactivate, groupNameInput{Name: "prod"})
+	assertMCPToolDenied(t, "ssh_host_list", (*managers).sshHostList, struct{}{})
+	assertMCPToolDenied(t, "ssh_host_get", (*managers).sshHostGet, configNameInput{Name: "web"})
 }
 
 func TestMCPRevocationNoSideEffects(t *testing.T) {

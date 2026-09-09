@@ -13,6 +13,7 @@
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
+- ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 浏览与 MCP 只读查询
 
 ## 安装
 
@@ -236,9 +237,47 @@ senv config get database
 senv config delete database
 ```
 
-### 8. TUI 模式（全屏界面）
+### 8. 管理 SSH host 与 keypair
 
-通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑所有 env/text/config 数据，无需记忆子命令。
+SSH 私钥和连接档案可进入 vault 加密存储。`keypair` 只导入既有私钥，不生成新密钥；`host` 通过结构化字段管理连接，并可生成 OpenSSH config 片段。
+
+```bash
+# 导入既有私钥；passphrase 加密私钥也能导入，但 senv 不派生公钥
+senv keypair import web-key --file ~/.ssh/id_ed25519
+senv keypair list
+
+# 引用已有 keypair；一步导入可用 --key-file ~/.ssh/id_ed25519 --keypair-name web-key
+senv host add web --hostname 10.0.0.1 --user deploy --port 2222 \
+  --keypair web-key
+
+# extra OpenSSH 选项按 key=value 原样直传
+senv host add db --hostname 10.0.0.2 --user deploy \
+  --proxy-jump web --attr ForwardAgent=yes --attr ServerAliveInterval=30
+
+# 查看、编辑、删除
+senv host list
+senv host get web
+senv host edit web        # 使用 $VISUAL/$EDITOR 编辑结构化字段与 extra
+senv keypair delete web-key
+senv host delete web
+
+# 生成 OpenSSH config 片段；--host web 可过滤
+senv host export >> ~/.ssh/config.d/senv
+
+# 需要时把私钥落到约定路径：~/.ssh/senv/web-key
+senv keypair materialize web-key
+```
+
+安全提示：
+
+- `materialize` 后私钥会**常驻磁盘**：目录是 `0700`，文件是 `0600`；删除 vault 内 keypair 不会自动删除已落盘文件。
+- `--attr` / host `extra` 是有意的 OpenSSH 直传能力，会原样写入导出片段。不要把不可信文本放进值；注意 `LocalCommand` 等关键字的副作用。
+- 导出的片段可通过 `Include ~/.ssh/config.d/senv` 接入 `~/.ssh/config`。
+- 被引用 keypair 默认拒绝删除；`--force` 会清空 host 的 `identityKey` 后删除 vault 记录。
+
+### 9. TUI 模式（全屏界面）
+
+通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑 env/text/config，并浏览 SSH host/keypair 元数据。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -250,7 +289,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 | 按键 | 作用 |
 | --- | --- |
-| `Tab` / `1` `2` `3` | 切换 Env / Text / Config 标签（导航状态各自保留） |
+| `Tab` / 数字键 | 切换 Env / Text / Config / SSH 标签（SSH 仅有注入时显示；导航状态保留） |
 | `↑` `↓` / `j` `k` | 列表导航 |
 | `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text Tab） |
 | `enter` | 查看详情（Config）/ 解开当前 env 明文 |
@@ -270,13 +309,13 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 #### 安全设计
 
-- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。
+- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH Tab 只显示指纹和元数据，不加载或渲染 private key。
 - **搜索不泄漏**：全局搜索（`S`）与 Tab 内过滤（`/`）**只匹配 key/name，绝不匹配值**，避免结果列表批量暴露秘密。
 - **vim 闭环复用**：text/config 的编辑复用现有「解密 → 临时文件(600) → 编辑 → 重新加密 → 删除临时文件」流程，无新攻击面。
 
 > 注：TUI 内不提供 `env export`（其服务于 shell 启动注入 `eval $(...)`，TUI 作为子进程无法反向 eval 父 shell）。export 请继续使用命令行。
 
-### 9. MCP 集成（让 AI agent 调用 senv）
+### 10. MCP 集成（让 AI agent 调用 senv）
 
 senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
 
@@ -301,7 +340,9 @@ senv mcp install codex --print            # 只打印可粘贴的配置片段，
 senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 ```
 
-暴露的工具（共 16 个）：`senv_env_get/set/delete/list/export`、`senv_text_get/set/delete/list`、`senv_config_list/get/export`、`senv_group_list/add/activate/deactivate`。键支持 `group:key` 简写地址；`get` 支持 `decode=true` 解引用 `{{env:...}}`/`{{text:...}}`。
+暴露的工具（共 18 个）：`senv_env_get/set/delete/list/export`、`senv_text_get/set/delete/list`、`senv_config_list/get/export`、`senv_group_list/add/activate/deactivate`、只读 `ssh_host_list/get`。键支持 `group:key` 简写地址；`get` 支持 `decode=true` 解引用 `{{env:...}}`/`{{text:...}}`。
+
+> SSH MCP 工具只返回 host 连接元数据与指纹的白名单字段，**不提供任何返回 private key 明文的工具**。
 
 > 安全提示：写入 agent 配置会把 senv 的读/写能力交给该 agent 上下文中的模型。按需使用；敏感写入建议结合审计日志（`~/.log/senv/audit.log`）核查。
 
@@ -339,7 +380,11 @@ senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 │   └── keys/                  # keys 分组
 │       ├── SSH.enc
 │       └── TLS.enc
-└── database.enc               # 配置文件（加密）
+├── database.enc               # 配置文件（加密）
+├── hosts/                     # SSH host 档案（加密，每个 alias 独立文件）
+│   └── web.enc
+└── keypairs/                  # SSH private key（加密，每个 name 独立文件）
+    └── web-key.enc
 
 ~/.log/senv/                    # 日志目录
 └── audit.log                  # 审计日志
@@ -490,6 +535,16 @@ senv config install [name] [--mode 0600]              安装配置文件
 senv config list                   列出所有配置文件
 senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
+senv keypair import <name> --file <path> [--force]  导入既有 SSH private key
+senv keypair list                  列出 SSH keypair 指纹/元数据
+senv keypair materialize <name> [--force]  解密落盘到 ~/.ssh/senv/<name>
+senv keypair delete <name> [--force]       删除 keypair（被引用默认拒绝）
+senv host add <alias> [flags]      新建 SSH host 档案并可选关联 keypair
+senv host get <alias>              查看 SSH host 档案
+senv host edit <alias>             用编辑器修改 SSH host 档案
+senv host list                     列出 SSH host 档案
+senv host delete <alias>           删除 SSH host 档案
+senv host export [--host alias]    渲染 OpenSSH config 片段
 senv sync                          同步 git/server provider（server 冲突时进入 TTY 解决器）
 senv sync --no-interactive         输出冲突脱敏摘要，不进入交互 UI
 senv sync --accept-remote          server 冲突时采用远端

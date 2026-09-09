@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
 )
 
@@ -18,6 +19,7 @@ type Managers struct {
 	Env     *env.Manager
 	Text    *text.Manager
 	Config  *config.Manager
+	SSH     *ssh.Manager
 	History HistorySource
 	Audit   AuditSource
 }
@@ -39,13 +41,17 @@ type Model struct {
 	search *searchTab // non-nil while the global search overlay is open
 }
 
-// New creates the TUI model backed by the given managers.
+// New creates the TUI model backed by the given managers. SSH is registered
+// only when supplied; this keeps existing tests and limited integrations stable.
 func New(mgr Managers) Model {
 	m := Model{mgr: mgr}
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
 		newConfigTab(mgr),
+	}
+	if mgr.SSH != nil {
+		m.tabs = append(m.tabs, newSSHTab(mgr))
 	}
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
