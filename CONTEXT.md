@@ -104,3 +104,21 @@ _Avoid_: 激活（指 env 分组时）
 **当前指向**:
 单个 Coding Agent 当前使用的 LLM Provider 与模型记录；属于本机状态，不随 vault 同步。
 _Avoid_: 指针（实现意味）、profile（多预设含义，未采用）
+
+### MCP 接入
+
+**MCP Server 档案**:
+一份第三方 MCP 服务器接入定义：以别名为唯一标识，含传输类型与启动/连接要素，存于 vault。senv 是它的唯一事实源，导出时按目标 Coding Agent 的配置格式落盘。
+_Avoid_: MCP 配置（指 agent 配置文件里的落盘结果时）、服务（泛指时）
+
+**导出（Export）**:
+把 MCP Server 档案合并写入目标 Coding Agent 全局配置的动作；agent 配置文件是派生产物，不由 senv 回读为事实源。
+_Avoid_: 安装（指 senv 自身的 MCP server 时）、同步（指 vault 同步时）
+
+**MCP 安装（Install）**:
+把 senv 自身的 MCP server（`senv mcp serve`）写入某个 Coding Agent 配置的动作，与「导出」区分：安装写的是 senv 这个 server，导出写的是用户的 MCP Server 档案。
+_Avoid_: 用它指导出用户档案
+
+**全局配置（Global Config）**:
+Coding Agent 的 user 级配置文件（如 `~/.claude.json`、`~/.codex/config.toml`），作用域是当前用户的所有项目；区别于 project 级配置。
+_Avoid_: 用户配置（易与 server 侧 user 混淆）

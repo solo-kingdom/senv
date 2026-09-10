@@ -55,6 +55,8 @@ const (
 	AuditOpSSHHost     AuditEventType = "op_ssh_host"
 	AuditOpLLMProvider AuditEventType = "op_llm_provider"
 	AuditOpLLMSwitch   AuditEventType = "op_llm_switch"
+	AuditOpMCPServer   AuditEventType = "op_mcp_server"
+	AuditOpMCPExport   AuditEventType = "op_mcp_export"
 )
 
 // AuditEntry represents a single audit log entry

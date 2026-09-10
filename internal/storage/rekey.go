@@ -18,16 +18,17 @@ import (
 
 // RekeyResult reports how many files were re-encrypted.
 type RekeyResult struct {
-	EnvFiles      int
-	TextFiles     int
-	ConfigFiles   int
-	HostFiles     int
-	KeyPairFiles  int
-	ProviderFiles int
+	EnvFiles       int
+	TextFiles      int
+	ConfigFiles    int
+	HostFiles      int
+	KeyPairFiles   int
+	ProviderFiles  int
+	MCPServerFiles int
 }
 
 func (r *RekeyResult) Total() int {
-	return r.EnvFiles + r.TextFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles
+	return r.EnvFiles + r.TextFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles
 }
 
 type rekeyEntryKind uint8
@@ -39,6 +40,7 @@ const (
 	rekeyEntryHost
 	rekeyEntryKeyPair
 	rekeyEntryProvider
+	rekeyEntryMCPServer
 )
 
 type rekeyEntry struct {
@@ -382,6 +384,8 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 			result.KeyPairFiles++
 		case rekeyEntryProvider:
 			result.ProviderFiles++
+		case rekeyEntryMCPServer:
+			result.MCPServerFiles++
 		}
 		return nil
 	})
@@ -458,6 +462,12 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 			return 0, fmt.Errorf("invalid provider entry identity %q", strings.Join(segments, "/"))
 		}
 		return rekeyEntryProvider, nil
+	case len(segments) == 2 && segments[0] == MCPServerDirName:
+		alias := strings.TrimSuffix(segments[1], ConfigFileSuffix)
+		if alias == segments[1] || securefs.ValidateSegment(alias) != nil {
+			return 0, fmt.Errorf("invalid MCP server entry identity %q", strings.Join(segments, "/"))
+		}
+		return rekeyEntryMCPServer, nil
 	default:
 		return 0, fmt.Errorf("encrypted file has unknown managed identity %q", strings.Join(segments, "/"))
 	}

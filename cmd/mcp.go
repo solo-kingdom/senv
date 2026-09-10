@@ -14,23 +14,30 @@ import (
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
+	mcpserver "github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 )
 
-// mcpCmd is the parent for all MCP-related subcommands.
+// mcpCmd is the parent for all MCP-related subcommands: senv's own MCP server
+// (serve/install/list-tools) and user-owned MCP server profiles
+// (add/get/edit/list/delete/export/unexport).
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Model Context Protocol (MCP) integration",
 	Long: `Expose senv's secret/config capabilities to local AI agents over MCP (stdio),
-or install the MCP server into an agent's configuration.
+install senv's own MCP server into an agent's configuration, and manage your own
+MCP server profiles so they can be exported into several agents at once.
 
 Typical flow:
   senv session start      # authenticate once (MCP servers cannot prompt)
   senv mcp install cursor # write senv into the agent's config
-  # restart the agent; the senv_* tools are now available`,
+  # restart the agent; the senv_* tools are now available
+
+  senv mcp add github ... # store one of your own MCP servers
+  senv mcp export --all   # export it into every supported agent's config`,
 }
 
 // mcpServeCmd runs the stdio MCP server. It validates a cached session at
@@ -79,6 +86,7 @@ type managers struct {
 	llm        *llm.ProviderManager
 	llmPointer string
 	llmHome    string
+	mcpServer  *mcpserver.Manager
 	autoPull   func()
 }
 
@@ -132,6 +140,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			llm:        llm.NewProviderManagerWithKey(store, key),
 			llmPointer: filepath.Join(configPath, "agent-pointers.json"),
 			llmHome:    home,
+			mcpServer:  mcpserver.NewManagerWithKey(store, key),
 		}
 		release := func() {
 			session.ZeroKey(key)
@@ -140,6 +149,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			requestManagers.config = nil
 			requestManagers.ssh = nil
 			requestManagers.llm = nil
+			requestManagers.mcpServer = nil
 		}
 		return requestManagers, release, nil
 	}
@@ -515,6 +525,7 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_get", Description: "Get one SSH host connection metadata record (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostGet))
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool(authorize, autoPull, (*managers).llmProviderList))
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool(authorize, autoPull, (*managers).llmAgentStatus))
+	mcp.AddTool(s, &mcp.Tool{Name: "mcp_server_list", Description: "List stored MCP server profiles (read-only; alias/transport/description only, no env values)."}, guardMCPTool(authorize, autoPull, (*managers).mcpServerList))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -540,6 +551,7 @@ func toolCatalogue() []toolDef {
 		{"ssh_host_get", "Get one SSH host metadata record (read-only; no private keys)."},
 		{"llm_provider_list", "List saved LLM provider profiles (read-only; credential references only)."},
 		{"llm_agent_status", "Show each coding agent's current provider/model pointer (read-only)."},
+		{"mcp_server_list", "List stored MCP server profiles (read-only; no env values)."},
 	}
 }
 

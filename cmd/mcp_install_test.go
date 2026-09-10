@@ -17,9 +17,9 @@ func installWithHome(t *testing.T, target agentTarget, scope string, printOnly b
 	t.Setenv("HOME", home)
 	var buf bytes.Buffer
 	if err := installInto(target, scope, printOnly, &buf); err != nil {
-		t.Fatalf("installInto(%s): %v", target.id, err)
+		t.Fatalf("installInto(%s): %v", target.ID, err)
 	}
-	cfgPath := target.resolveConfigPath(home, scope)
+	cfgPath := target.ResolveConfigPath(home, scope)
 	return cfgPath, &buf, home
 }
 
@@ -59,7 +59,7 @@ func TestInstallJSON_PreservesExistingServers(t *testing.T) {
 	target, _ := findAgent("cursor")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfgPath := target.resolveConfigPath(home, "user")
+	cfgPath := target.ResolveConfigPath(home, "user")
 
 	// Pre-existing config with another server and an unrelated top-level key.
 	seed := map[string]any{
@@ -115,7 +115,7 @@ func TestInstallPrintDoesNotWrite(t *testing.T) {
 	if !strings.Contains(out, "senv") || !strings.Contains(out, "command") {
 		t.Fatalf("print output missing senv entry: %s", out)
 	}
-	cfgPath := target.resolveConfigPath(home, "user")
+	cfgPath := target.ResolveConfigPath(home, "user")
 	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
 		t.Fatalf("--print wrote a file at %s", cfgPath)
 	}
@@ -145,7 +145,7 @@ func TestInstallTOML_PreservesExistingTables(t *testing.T) {
 	target, _ := findAgent("codex")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cfgPath := target.resolveConfigPath(home, "user")
+	cfgPath := target.ResolveConfigPath(home, "user")
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -216,9 +216,9 @@ func TestInstallAll(t *testing.T) {
 	}
 	// Every supported agent's config file must now exist.
 	for _, a := range supportedAgents() {
-		cfgPath := a.resolveConfigPath(home, "user")
+		cfgPath := a.ResolveConfigPath(home, "user")
 		if _, err := os.Stat(cfgPath); err != nil {
-			t.Fatalf("installAll did not write %s config (%s): %v", a.id, cfgPath, err)
+			t.Fatalf("installAll did not write %s config (%s): %v", a.ID, cfgPath, err)
 		}
 	}
 }

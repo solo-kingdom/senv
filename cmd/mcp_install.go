@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wii/senv/internal/agentcfg"
 )
 
 // mcpInstallCmd writes the senv MCP server config into a target agent's config
@@ -51,35 +52,26 @@ Examples:
 	},
 }
 
-// serverEntryJSON is the per-server object every JSON-format agent expects.
-type serverEntryJSON struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-}
-
 // installInto performs the merge-and-write for one agent target.
 func installInto(t agentTarget, scope string, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not determine home directory: %w", err)
 	}
-	if scope == "" {
-		scope = "user"
+	scope, err = agentcfg.ResolveScope(scope)
+	if err != nil {
+		return err
 	}
-	if scope != "user" && scope != "project" {
-		return fmt.Errorf("invalid scope %q: must be \"user\" or \"project\"", scope)
-	}
-	cfgPath := t.resolveConfigPath(home, scope)
-	spec := defaultServerSpec(!printOnly)
+	cfgPath := t.ResolveConfigPath(home, scope)
+	spec := defaultServerSpec(!printOnly).server()
 
-	switch t.format {
+	switch t.Format {
 	case formatJSON:
 		return installJSON(t, cfgPath, spec, printOnly, out)
 	case formatTOML:
 		return installTOML(t, cfgPath, spec, printOnly, out)
 	default:
-		return fmt.Errorf("unsupported format for agent %q", t.id)
+		return fmt.Errorf("unsupported format for agent %q", t.ID)
 	}
 }
 
@@ -89,7 +81,7 @@ func installAll(scope string, printOnly bool, out interface{ Write([]byte) (int,
 	var errs []string
 	for _, t := range supportedAgents() {
 		if err := installInto(t, scope, printOnly, out); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", t.id, err))
+			errs = append(errs, fmt.Sprintf("%s: %v", t.ID, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -100,156 +92,63 @@ func installAll(scope string, printOnly bool, out interface{ Write([]byte) (int,
 
 // installJSON reads (or creates) the JSON config, upserts the senv entry under
 // the agent's servers key while preserving everything else, then writes back.
-func installJSON(t agentTarget, cfgPath string, spec mcpServerSpec, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
-	// Load existing config as generic JSON to preserve unknown keys verbatim.
-	root := map[string]any{}
-	if existing, err := os.ReadFile(cfgPath); err == nil && len(existing) > 0 {
-		if err := json.Unmarshal(existing, &root); err != nil {
-			return fmt.Errorf("parse %s: %w", cfgPath, err)
-		}
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", cfgPath, err)
-	}
-
-	servers, _ := root[t.jsonServersKey].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
-	}
-	servers["senv"] = serverEntryJSON{Command: spec.Command, Args: spec.Args, Env: spec.Env}
-	root[t.jsonServersKey] = servers
-
-	data, err := json.MarshalIndent(root, "", "  ")
+func installJSON(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
+	root, err := agentcfg.ReadJSONRoot(cfgPath)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	agentcfg.SetJSONServer(root, t.JSONServersKey, "senv", spec)
 
 	if printOnly {
 		entry, _ := json.MarshalIndent(map[string]any{
-			t.jsonServersKey: map[string]any{"senv": servers["senv"]},
+			t.JSONServersKey: map[string]any{"senv": agentcfg.JSONServers(root, t.JSONServersKey)["senv"]},
 		}, "", "  ")
-		fmt.Fprintf(out, "# %s — add to %s\n%s\n", t.name, cfgPath, entry)
+		fmt.Fprintf(out, "# %s — add to %s\n%s\n", t.Name, cfgPath, entry)
 		return nil
 	}
 
-	if err := writeWithBackup(cfgPath, data); err != nil {
+	data, err := agentcfg.EncodeJSON(root)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.name, cfgPath)
-	if t.note != "" {
-		fmt.Fprintf(out, "  %s\n", t.note)
+	if err := agentcfg.WriteWithBackup(cfgPath, data); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.Name, cfgPath)
+	if t.Note != "" {
+		fmt.Fprintf(out, "  %s\n", t.Note)
 	}
 	return nil
 }
 
 // installTOML handles the Codex-style [mcp_servers.<name>] config. It preserves
 // all other tables and only upserts the senv server block.
-func installTOML(t agentTarget, cfgPath string, spec mcpServerSpec, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
-	block := renderCodexServerBlock(spec)
+func installTOML(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
+	block := agentcfg.RenderTOMLServerBlock(t.TOMLTableName, "senv", spec)
 	if printOnly {
-		fmt.Fprintf(out, "# %s — add to %s\n%s", t.name, cfgPath, block)
+		fmt.Fprintf(out, "# %s — add to %s\n%s", t.Name, cfgPath, block)
 		return nil
 	}
 
 	existing, _ := os.ReadFile(cfgPath)
-	merged, err := upsertTomlServer(string(existing), "senv", block)
+	merged, err := agentcfg.UpsertTOMLServer(string(existing), t.TOMLTableName, "senv", block)
 	if err != nil {
 		return err
 	}
-	if err := writeWithBackup(cfgPath, []byte(merged)); err != nil {
+	if err := agentcfg.WriteWithBackup(cfgPath, []byte(merged)); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.name, cfgPath)
-	if t.note != "" {
-		fmt.Fprintf(out, "  %s\n", t.note)
+	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.Name, cfgPath)
+	if t.Note != "" {
+		fmt.Fprintf(out, "  %s\n", t.Note)
 	}
 	return nil
 }
 
-// renderCodexServerBlock renders the TOML block for the senv server, matching
-// Codex's [mcp_servers.<name>] convention with command/args/env keys.
-func renderCodexServerBlock(spec mcpServerSpec) string {
-	var b strings.Builder
-	b.WriteString("[mcp_servers.senv]\n")
-	fmt.Fprintf(&b, "command = %q\n", spec.Command)
-	fmt.Fprintf(&b, "args = [\"%s\"]\n", strings.Join(spec.Args, "\", \""))
-	if len(spec.Env) > 0 {
-		b.WriteString("[mcp_servers.senv.env]\n")
-		for k, v := range spec.Env {
-			fmt.Fprintf(&b, "%s = %q\n", k, v)
-		}
-	}
-	return b.String()
-}
-
-// upsertTomlServer replaces the [mcp_servers.<name>] table (and its nested
-// subtables) in src with newBlock, or appends newBlock if absent. Other tables
-// and free-form content are preserved verbatim. This is deliberately simple:
-// it splits on top-level table headers ([...] at column 0) and treats any
-// [parent.child...] header belonging to <name> as part of the block.
+// upsertTomlServer is the Codex-table special case of the shared TOML upsert,
+// kept for the install-side tests.
 func upsertTomlServer(src, name, newBlock string) (string, error) {
-	tableHeader := fmt.Sprintf("[mcp_servers.%s]", name)
-	subtablePrefix := fmt.Sprintf("[mcp_servers.%s.", name) // matches [mcp_servers.senv.env]
-
-	lines := strings.Split(src, "\n")
-	var out []string
-	inBlock := false
-	replaced := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		isHeader := strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[")
-		if isHeader {
-			if trimmed == tableHeader || strings.HasPrefix(trimmed, subtablePrefix) {
-				inBlock = true
-				if !replaced {
-					out = append(out, strings.TrimRight(newBlock, "\n"))
-					replaced = true
-				}
-				continue
-			}
-			inBlock = false
-		}
-		if inBlock {
-			continue // drop the old block's content
-		}
-		out = append(out, line)
-	}
-
-	result := strings.Join(out, "\n")
-	if !replaced {
-		// Append: ensure separation from preceding content.
-		if result != "" && !strings.HasSuffix(result, "\n\n") {
-			if strings.HasSuffix(result, "\n") {
-				result += "\n"
-			} else {
-				result += "\n\n"
-			}
-		}
-		result += newBlock
-	}
-	// Normalize trailing newline.
-	result = strings.TrimRight(result, "\n") + "\n"
-	return result, nil
-}
-
-// writeWithBackup writes data to path, creating parent dirs as needed and
-// backing up any existing file to path.bak first.
-func writeWithBackup(path string, data []byte) error {
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create config dir: %w", err)
-		}
-	}
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
-			return fmt.Errorf("write backup: %w", err)
-		}
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	return nil
+	return agentcfg.UpsertTOMLServer(src, "mcp_servers", name, newBlock)
 }
 
 func init() {

@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.2"
+  version: "1.3"
 ---
 
 # senv：agent 使用指南
@@ -17,10 +17,12 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 20 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 21 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/materialize、LLM Provider 写入与 coding agent 切换。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。
+
+`senv mcp install` 写的是 **senv 自己**的 MCP server；用户自己的 MCP server 定义用 `senv mcp add/export` 管理，见下文「MCP Server 档案与导出」。两件事不要混用。
 
 ## 非交互执行规则（重要）
 
@@ -29,7 +31,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
 - headless/CI 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
-- `senv mcp install`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
+- `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
 ## TUI 键位（人机交互，agent 不驱动）
 
@@ -72,6 +74,17 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - `senv ai switch <agent> <provider> --model <model>` 可为已指向同一 provider 的 agent 仅更换模型：provider、接入地址与凭据引用不变。
 - MCP 只提供 provider 档案与 agent 指向的只读查询；不能通过 MCP 添加 provider 或切换 agent。
 
+## MCP Server 档案与导出
+
+- 档案存 vault，别名唯一标识；V1 只支持 `stdio`：`senv mcp add github --command npx --arg -y --arg @modelcontextprotocol/server-github --env GITHUB_TOKEN={{env:secrets:GH_TOKEN}}`。`--arg` 可重复且保序；`--env KEY=VALUE` 可重复，值里的 `{{env:...}}`/`{{text:...}}` 按模板原样存储、导出时才解析。
+- `senv mcp list` 只列别名/传输/命令/env 键名，**不输出值**；`senv mcp get <alias>` 才展示完整字段（含值），是 CLI 解密面。`senv mcp edit <alias>` 就地改字段（别名不可改；传 `--arg` 替换整个参数列表，传 `--env` 替换整个 env 集合，`--unset-env KEY` 删单个键）。`senv mcp delete <alias>` 只删档案，不动任何 agent 配置。
+- 导出：`senv mcp export --agent codex,cursor` 或 `--all`（必须显式给目标，没有默认全量）。按目标 agent 的格式合并写入其**全局配置**：JSON 族写 `mcpServers`，Codex 写 `[mcp_servers.<alias>]`。`--dry-run` 只出计划，`--print` 只输出片段，二者都不落盘。
+- **明文落盘**：导出会把解析后的 env 值明文写进 agent 配置文件（0600，覆盖前备份 `<file>.bak`）。计划里会标出哪些条目含明文，执行前需确认；agent 与用户确认是必要前提，不要把值复述进回复或日志。
+- 漂移与覆盖：senv 用本机台账 `~/.config/senv/mcp-exports.json`（不进 vault、不同步）判断条目是否由自己写入；目标条目被本地改过或是别人写的，默认拒绝覆盖，需 `--force`。台账损坏时按「全部外部条目」处理。
+- 撤回：`senv mcp unexport --agent <id>|--all [alias...]`，依据台账移除；与 senv 写入内容一致的直接删除，被本地改过的需逐条确认。删除档案不会自动撤回已导出的条目。
+- `command` 原样写入，不做绝对路径归一（`npx`/`uvx` 依赖 agent 自身 PATH）；不透传 `disabled`/`autoApprove` 等 agent 特有键。
+- MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值与 env 键名）；导出与写入只能在 CLI 做。
+
 ## server 模式
 
 git provider 之外，vault 可托管在 senv-server 上：
@@ -103,6 +116,11 @@ senv keypair list                        # 只看 SSH keypair 元数据/指纹
 senv host list                           # 只看 SSH host 连接元数据
 senv ai status                           # 查看 coding agent 的 provider/model 指向
 senv ai provider edit <alias> [flags]    # 就地编辑档案（别名不可改；--api-shape 声明/清除形态）
+senv mcp add github --command npx --arg -y --arg @modelcontextprotocol/server-github
+senv mcp list && senv mcp get github     # list 不含值；get 展示完整字段
+senv mcp export --all --dry-run          # 先看计划与明文落盘点
+senv mcp export --agent codex,cursor     # 确认后写入 agent 全局配置
+senv mcp unexport --agent codex          # 撤回（被本地改过的需逐条确认）
 ```
 
 完整清单以 `senv --help` 与 `senv mcp list-tools` 为准；本文档滞后时以命令输出为准并回写修正。

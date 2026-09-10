@@ -265,6 +265,8 @@ func entryKindForDir(dir string) string {
 		return "SSH keypair"
 	case LLMProviderDirName:
 		return "LLM provider"
+	case MCPServerDirName:
+		return "MCP server"
 	default:
 		return "SSH host"
 	}
