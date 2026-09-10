@@ -30,8 +30,8 @@
 
 <!-- 仅记录满足「难逆转 + 后人费解 + 真实取舍」三门槛的；由 design.md 吸收或随 change 归档晋升 -->
 
-- [ ] adr-plaintext-key-after-switch: LLM Provider 凭据存 vault，但切换后明文落在 agent 配置中——安全工具写明文 key 是接受的妥协，因为 agent 自身无法从 vault 拉取（出处：D4）
-- [ ] adr-local-agent-pointer: Coding Agent 的当前指向是本机状态、不进 vault，因为 agent 配置本身是本机的，同步指针会与本机实况脱节（出处：D11）
+- [x] adr-plaintext-key-after-switch: LLM Provider 凭据存 vault，但切换后明文落在 agent 配置中——安全工具写明文 key 是接受的妥协，因为 agent 自身无法从 vault 拉取（出处：D4）→ 已晋升 `docs/adr/0002-plaintext-key-after-switch.md`
+- [x] adr-local-agent-pointer: Coding Agent 的当前指向是本机状态、不进 vault，因为 agent 配置本身是本机的，同步指针会与本机实况脱节（出处：D11）→ 已晋升 `docs/adr/0003-local-agent-pointer.md`
 
 ## 未决问题
 
