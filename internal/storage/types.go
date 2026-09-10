@@ -123,9 +123,21 @@ type LLMProviderEntry struct {
 	// behavior of deriving the shape from the target agent (ADR-0006).
 	APIShape     string    `json:"api_shape,omitempty"`
 	Models       []string  `json:"models"`
+	ModelInfo    map[string]LLMModelInfo `json:"model_info,omitempty"`
 	DefaultModel string    `json:"default_model,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// LLMModelInfo is the per-model metadata senv persists with a provider profile.
+// Legacy profiles may omit it; new add/edit operations that replace the model
+// set require at least ContextWindow for every model.
+type LLMModelInfo struct {
+	Name             string   `json:"name,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	ContextWindow    int      `json:"context_window,omitempty"`
+	OutputLimit      int      `json:"output_limit,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
 // MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up

@@ -15,7 +15,7 @@
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
-- ✅ **LLM Provider 管理** - `senv ai provider add/edit/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配
+- ✅ **LLM Provider 管理** - `senv ai provider add/edit/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
 
 ## 安装
 
@@ -562,10 +562,13 @@ senv ai provider add local \
   --base-url http://127.0.0.1:11434/v1 \
   --allow-http \
   --key-ref env:llm/LOCAL_KEY \
-  --model qwen3
+  --model qwen3 \
+  --model-context qwen3=32768
 ```
 
 > `senv ai provider add` 不支持 `--api-key`；请使用 TTY prompt、`--api-key-stdin` 或 `--key-ref`。
+
+> 新增或替换模型集时，每个模型都必须能解析 context window：`--catalog-provider` 从 models.dev 的 `limit.context` 读取；自定义模型或目录缺字段时用 `--model-context <model>=<tokens>` 显式提供，否则命令报错且不写档案。已有档案不会被强制补全，仍可读取；需要补元数据时用 `senv ai provider edit <alias> --model-context ...`。
 
 ```bash
 # 就地编辑（别名不可改；只改传入的字段，省略的保持原值）
@@ -574,6 +577,9 @@ senv ai provider edit acme --base-url https://new.acme.com/v1 --default-model m2
 # 声明接口形态：留空表示不声明，切换时按目标 agent 协议族推断
 senv ai provider edit acme --api-shape anthropic
 senv ai provider edit acme --api-shape ""     # 清除该字段，回到推断
+
+# 给既有自定义模型补充或修正上下文窗口
+senv ai provider edit acme --model-context m1=1000000 --model-context m2=200000
 
 # 轮换自有凭据（TTY 提示；脚本里用 --api-key-stdin），或改走外部引用
 senv ai provider edit acme --rotate-key

@@ -165,6 +165,9 @@ func TestLLMProviderAPIShape(t *testing.T) {
 	if legacy.APIShape != "" {
 		t.Fatalf("legacy APIShape = %q, want empty", legacy.APIShape)
 	}
+	if legacy.ModelInfo != nil {
+		t.Fatalf("legacy ModelInfo = %v, want nil", legacy.ModelInfo)
+	}
 	if err := legacy.ValidateLLMProvider(); err != nil {
 		t.Fatalf("legacy entry rejected: %v", err)
 	}
@@ -175,5 +178,8 @@ func TestLLMProviderAPIShape(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "api_shape") {
 		t.Fatalf("empty api_shape should be omitted: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "model_info") {
+		t.Fatalf("empty model_info should be omitted: %s", encoded)
 	}
 }

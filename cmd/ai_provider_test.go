@@ -11,7 +11,7 @@ import (
 	"github.com/wii/senv/internal/llm"
 )
 
-const aiProviderTestCatalog = `{"p1":{"id":"p1","name":"P1","models":{"m1":{"id":"m1"},"m2":{"id":"m2"}}}}`
+const aiProviderTestCatalog = `{"p1":{"id":"p1","name":"P1","models":{"m1":{"id":"m1","limit":{"context":128000}},"m2":{"id":"m2","limit":{"context":200000}}}}}`
 
 func writeAIProviderTestCatalog(t *testing.T) {
 	t.Helper()
@@ -30,6 +30,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 	old := providerAddFlags{
 		baseURL: providerAddBaseURL, keyRef: providerAddKeyRef,
 		catalog: providerAddCatalog, models: providerAddModels,
+		modelCtx:     providerAddModelCtx,
 		defaultModel: providerAddDefault, force: providerAddForce,
 		stdin: providerAddAPIKeyStdin, allowHTTP: providerAddAllowHTTP,
 	}
@@ -39,6 +40,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		providerAddKeyRef = old.keyRef
 		providerAddCatalog = old.catalog
 		providerAddModels = old.models
+		providerAddModelCtx = old.modelCtx
 		providerAddDefault = old.defaultModel
 		providerAddForce = old.force
 		providerAddAPIKeyStdin = old.stdin
@@ -48,7 +50,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 
 type providerAddFlags struct {
 	baseURL, keyRef, catalog, defaultModel string
-	models                                 []string
+	models, modelCtx                       []string
 	force                                  bool
 	stdin, allowHTTP                       bool
 }
@@ -81,6 +83,7 @@ func TestAIProviderFullLifecycle(t *testing.T) {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddCatalog = "p1"
 		providerAddModels = []string{"custom-1"}
+		providerAddModelCtx = []string{"custom-1=1000000"}
 		providerAddDefault = "custom-1"
 	})
 	out, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"})
@@ -89,6 +92,20 @@ func TestAIProviderFullLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(out, "已保存 LLM Provider main") || !strings.Contains(out, "3 个模型") {
 		t.Fatalf("add output = %q", out)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if got := entry.ModelInfo["custom-1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("custom-1 context window = %d, want 1000000", got)
+	}
+	if got := entry.ModelInfo["m1"].ContextWindow; got != 128000 {
+		t.Fatalf("m1 context window = %d, want 128000", got)
 	}
 
 	// 重复别名：未加 --force 报错。
@@ -141,6 +158,7 @@ func TestAIProviderAddExternalKeyRef(t *testing.T) {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddKeyRef = "env:openai/KEY"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 	})
 	out, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"ext"})
 	if err != nil {
@@ -154,6 +172,30 @@ func TestAIProviderAddExternalKeyRef(t *testing.T) {
 	}
 	if !strings.Contains(out, "凭据为外部引用，已保留") {
 		t.Fatalf("remove output = %q", out)
+	}
+}
+
+func TestAIProviderAddRequiresModelContext(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err == nil ||
+		!strings.Contains(err.Error(), "--model-context") {
+		t.Fatalf("add error = %v, want model context guidance", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entries, err := mgr.ListProviders()
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("provider written despite missing model context: %+v", entries)
 	}
 }
 
@@ -197,6 +239,7 @@ func TestAIProviderAddStdinFlagAndNonTTYGuard(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 		providerAddAPIKeyStdin = true
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"stdin"}); err != nil {
@@ -206,6 +249,7 @@ func TestAIProviderAddStdinFlagAndNonTTYGuard(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 		providerAddAPIKeyStdin = false
 	})
 	providerCredentialReader = readProviderCredential
@@ -221,6 +265,7 @@ func TestAIProviderAddHTTPRequiresExplicitAllow(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "http://127.0.0.1:11434/v1"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"local"}); err == nil ||
 		!strings.Contains(err.Error(), "HTTPS") {
@@ -229,6 +274,7 @@ func TestAIProviderAddHTTPRequiresExplicitAllow(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "http://127.0.0.1:11434/v1"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 		providerAddAllowHTTP = true
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"local"}); err != nil {
@@ -257,6 +303,7 @@ func TestAIProviderEditCLI(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddModels = []string{"m1", "m2"}
+		providerAddModelCtx = []string{"m1=128000", "m2=200000"}
 		providerAddDefault = "m1"
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
@@ -323,6 +370,33 @@ func TestAIProviderEditCLI(t *testing.T) {
 	}
 }
 
+func TestAIProviderEditBackfillsModelContext(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	if _, err := mgr.AddProvider(llm.AddProviderOptions{
+		Alias: "legacy", BaseURL: "https://api.example.com",
+		APIKey: "sk-secret-value", Models: []string{"m1"},
+	}); err != nil {
+		t.Fatalf("seed legacy provider: %v", err)
+	}
+
+	setProviderEditFlag(t, "model-context", "m1=1000000")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"legacy"}); err != nil {
+		t.Fatalf("edit backfill: %v", err)
+	}
+	entry, err := mgr.GetProvider("legacy")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if got := entry.ModelInfo["m1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window = %d, want 1000000", got)
+	}
+}
+
 // TestAIProviderEditStdinFlagRoutesToStdin 覆盖 add/edit 各自 --api-key-stdin
 // 的取凭据路径互不串线（edit 曾误用 add 的 flag）。
 func TestAIProviderEditStdinFlagRoutesToStdin(t *testing.T) {
@@ -332,6 +406,7 @@ func TestAIProviderEditStdinFlagRoutesToStdin(t *testing.T) {
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
 		t.Fatalf("add: %v", err)

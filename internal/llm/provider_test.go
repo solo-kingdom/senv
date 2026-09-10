@@ -36,6 +36,24 @@ const catalogPayload = `{
 	"p1": {"id":"p1","name":"P1","models":{"m2":{"id":"m2"},"m1":{"id":"m1"}}}
 }`
 
+func TestParseModelContexts(t *testing.T) {
+	got, err := ParseModelContexts([]string{"m1=1000000", "m2=200000"})
+	if err != nil {
+		t.Fatalf("ParseModelContexts() error = %v", err)
+	}
+	if got["m1"] != 1_000_000 || got["m2"] != 200000 {
+		t.Fatalf("contexts = %v", got)
+	}
+	for _, spec := range []string{"m1", "m1=nope", "m1=0", "m1=-1", "=1"} {
+		if _, err := ParseModelContexts([]string{spec}); err == nil {
+			t.Fatalf("ParseModelContexts(%q) unexpectedly succeeded", spec)
+		}
+	}
+	if _, err := ParseModelContexts([]string{"m1=1000", "m1=2000"}); err == nil {
+		t.Fatal("duplicate model context unexpectedly succeeded")
+	}
+}
+
 func TestAddProviderWithCatalogAndCustomModels(t *testing.T) {
 	mgr, store, catalogPath := newTestProviderManager(t)
 	writeTestCatalog(t, catalogPath, catalogPayload, time.Now())
@@ -68,6 +86,111 @@ func TestAddProviderWithCatalogAndCustomModels(t *testing.T) {
 	got, err := tm.Get(LLMKeysGroup, "main")
 	if err != nil || got != "sk-secret" {
 		t.Fatalf("credential Get() = %q, %v", got, err)
+	}
+}
+
+func TestAddProviderRequiresContextWindow(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	_, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, RequireModelMetadata: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--model-context") {
+		t.Fatalf("AddProvider() error = %v, want explicit context guidance", err)
+	}
+}
+
+func TestAddProviderStoresContextWindow(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	res, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 1_000_000},
+		RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	if got := res.Entry.ModelInfo["custom-1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window = %d, want 1000000", got)
+	}
+}
+
+func TestAddProviderReadsCatalogContextWindow(t *testing.T) {
+	mgr, _, catalogPath := newTestProviderManager(t)
+	writeTestCatalog(t, catalogPath, `{
+		"p1": {"id":"p1","models":{"m1":{"id":"m1","limit":{"context":200000}}}}
+	}`, time.Now())
+	res, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		CatalogPath: catalogPath, CatalogProvider: "p1", RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	if got := res.Entry.ModelInfo["m1"].ContextWindow; got != 200000 {
+		t.Fatalf("context window = %d, want 200000", got)
+	}
+}
+
+func TestAddProviderExplicitContextOverridesCatalog(t *testing.T) {
+	mgr, _, catalogPath := newTestProviderManager(t)
+	writeTestCatalog(t, catalogPath, `{
+		"p1": {"id":"p1","models":{"m1":{"id":"m1","limit":{"context":128000}}}}
+	}`, time.Now())
+	res, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		CatalogPath: catalogPath, CatalogProvider: "p1",
+		ModelContexts: map[string]int{"m1": 1_000_000}, RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	if got := res.Entry.ModelInfo["m1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window = %d, want explicit 1000000", got)
+	}
+}
+
+func TestEditProviderAddsContextWindowWithoutChangingModels(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"},
+	}); err != nil {
+		t.Fatalf("seed legacy provider: %v", err)
+	}
+	res, err := mgr.EditProvider(EditProviderOptions{
+		Alias: "main", ModelContexts: map[string]int{"custom-1": 1_000_000},
+		RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	if strings.Join(res.Entry.Models, ",") != "custom-1" {
+		t.Fatalf("models = %v, want unchanged", res.Entry.Models)
+	}
+	if got := res.Entry.ModelInfo["custom-1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window = %d, want 1000000", got)
+	}
+}
+
+func TestAddProviderForcePreservesModelMetadata(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 1_000_000},
+		RequireModelMetadata: true,
+	}); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	res, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://new.example.com", Models: []string{"custom-1"},
+		RequireModelMetadata: true, Force: true,
+	})
+	if err != nil {
+		t.Fatalf("force AddProvider() error = %v", err)
+	}
+	if got := res.Entry.ModelInfo["custom-1"].ContextWindow; got != 1_000_000 {
+		t.Fatalf("context window = %d, want preserved 1000000", got)
 	}
 }
 

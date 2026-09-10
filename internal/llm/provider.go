@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,7 +101,14 @@ type AddProviderOptions struct {
 	CatalogPath     string // 模型目录缓存路径
 	CatalogProvider string // models.dev provider id
 	Models          []string
-	DefaultModel    string
+	// ModelContexts 是调用方显式提供的模型上下文窗口（token 数），覆盖目录值。
+	ModelContexts map[string]int
+	// BaseMetadata 是编辑时用于保留既有元数据的内部输入；CLI/TUI 不直接设置。
+	BaseMetadata map[string]storage.LLMModelInfo
+	// RequireModelMetadata 为 true 时，最终模型集中每个模型都必须解析出
+	// ContextWindow；旧档案读取/不影响模型集的编辑保持 false。
+	RequireModelMetadata bool
+	DefaultModel         string
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
 	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
 	APIShape string
@@ -134,7 +142,12 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if err := validateCredentialInput(opts); err != nil {
 		return nil, err
 	}
-	models, warnings, err := m.assembleModels(opts)
+	if existing, loadErr := m.load(alias); loadErr == nil {
+		opts.BaseMetadata = existing.ModelInfo
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return nil, loadErr
+	}
+	models, modelInfo, warnings, err := m.assembleModels(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +164,7 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		CatalogProvider: strings.TrimSpace(opts.CatalogProvider),
 		APIShape:        strings.TrimSpace(opts.APIShape),
 		Models:          models,
+		ModelInfo:       modelInfo,
 		DefaultModel:    defaultModel,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -251,9 +265,15 @@ type EditProviderOptions struct {
 	// nil 表示保留原目录来源。
 	CatalogProvider *string
 	// Models 非 nil 时替换模型集（与 CatalogProvider 一起装配）；nil 表示保留。
-	Models       []string
-	DefaultModel *string
-	APIShape     *string
+	Models []string
+	// ModelContexts 非 nil 时补充或覆盖模型上下文窗口；只改元数据时 Models
+	// 保持 nil，最终模型集沿用档案原值。
+	ModelContexts map[string]int
+	// RequireModelMetadata 与 AddProviderOptions 同义；仅在本次会改动模型集
+	// 或元数据时为 true，避免 editor 因旧档案缺元数据而无法修改其他字段。
+	RequireModelMetadata bool
+	DefaultModel         *string
+	APIShape             *string
 }
 
 // EditProvider 更新既有档案。alias 不可改；未提供的字段保持原值。凭据轮换
@@ -303,16 +323,24 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 	if opts.CatalogProvider != nil {
 		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
 	}
-	if opts.Models != nil || opts.CatalogProvider != nil {
-		models, modelWarnings, err := m.assembleModels(AddProviderOptions{
-			CatalogPath:     opts.CatalogPath,
-			CatalogProvider: entry.CatalogProvider,
-			Models:          opts.Models,
+	if opts.Models != nil || opts.CatalogProvider != nil || opts.ModelContexts != nil {
+		models := opts.Models
+		if models == nil && opts.CatalogProvider == nil {
+			models = existing.Models
+		}
+		finalModels, modelInfo, modelWarnings, err := m.assembleModels(AddProviderOptions{
+			CatalogPath:          opts.CatalogPath,
+			CatalogProvider:      entry.CatalogProvider,
+			Models:               models,
+			ModelContexts:        opts.ModelContexts,
+			BaseMetadata:         existing.ModelInfo,
+			RequireModelMetadata: opts.RequireModelMetadata,
 		})
 		if err != nil {
 			return nil, err
 		}
-		entry.Models = models
+		entry.Models = finalModels
+		entry.ModelInfo = modelInfo
 		warnings = append(warnings, modelWarnings...)
 	}
 	if opts.DefaultModel != nil {
@@ -439,21 +467,27 @@ func ValidateCredentialRef(ref string) error {
 }
 
 // assembleModels 装配模型集：目录模型 ∪ 自定义模型，去重升序，不得为空。
-// 返回值中的 warnings 是非致命提示（如缓存过期）。
-func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, []string, error) {
+// 每个模型的 context window 优先取显式 ModelContexts，其次取档案已有元数据，
+// 最后取 models.dev 目录；RequireModelMetadata 为 true 时缺一项即报错。
+func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map[string]storage.LLMModelInfo, []string, error) {
 	var warnings []string
 	set := map[string]struct{}{}
+	metadata := map[string]ModelMetadata{}
+	for id, info := range opts.BaseMetadata {
+		metadata[id] = modelMetadataFromStorage(info)
+	}
+
 	if opts.CatalogProvider != "" {
 		cat, err := Load(opts.CatalogPath)
 		if err != nil {
 			if errors.Is(err, ErrCacheNotFound) {
-				return nil, nil, fmt.Errorf("model catalog cache missing; run `senv ai refresh` first")
+				return nil, nil, nil, fmt.Errorf("model catalog cache missing; run `senv ai refresh` first")
 			}
-			return nil, nil, fmt.Errorf("load model catalog: %w; run `senv ai refresh` to fix", err)
+			return nil, nil, nil, fmt.Errorf("load model catalog: %w; run `senv ai refresh` to fix", err)
 		}
 		ids, err := cat.ProviderModelIDs(opts.CatalogProvider)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w; run `senv ai refresh` if the provider was added upstream", err)
+			return nil, nil, nil, fmt.Errorf("%w; run `senv ai refresh` if the provider was added upstream", err)
 		}
 		for _, id := range ids {
 			set[id] = struct{}{}
@@ -470,14 +504,86 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, []s
 		}
 	}
 	if len(set) == 0 {
-		return nil, nil, fmt.Errorf("model set is empty; provide --catalog-provider or --model")
+		return nil, nil, nil, fmt.Errorf("model set is empty; provide --catalog-provider or --model")
 	}
+
 	ids := make([]string, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	return ids, warnings, nil
+
+	// 先读目录元数据，再叠加档案里已有的值和调用方显式值。显式值优先，
+	// 保证用户可以用 --model-context 修正目录缺失或过时的数据。
+	if opts.CatalogProvider != "" {
+		for id, catalogMeta := range LoadModelMetadata(opts.CatalogPath, opts.CatalogProvider, ids) {
+			metadata[id] = mergeModelMetadata(catalogMeta, metadata[id])
+		}
+	}
+	for model, contextWindow := range opts.ModelContexts {
+		model = strings.TrimSpace(model)
+		if contextWindow <= 0 {
+			return nil, nil, nil, fmt.Errorf("model %q context window must be a positive integer", model)
+		}
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("--model-context model %q is not in the final model set", model)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{ContextLimit: contextWindow})
+	}
+
+	var missing []string
+	if opts.RequireModelMetadata {
+		for _, id := range ids {
+			if metadata[id].ContextLimit <= 0 {
+				missing = append(missing, id)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		quoted := make([]string, len(missing))
+		for i, id := range missing {
+			quoted[i] = fmt.Sprintf("%q", id)
+		}
+		return nil, nil, nil, fmt.Errorf(
+			"model(s) %s are missing context window metadata; pass --model-context <model>=<tokens>, or use a catalog model whose models.dev entry includes limit.context",
+			strings.Join(quoted, ", "))
+	}
+
+	modelInfo := make(map[string]storage.LLMModelInfo, len(ids))
+	for _, id := range ids {
+		if meta := metadata[id]; !modelMetadataEmpty(meta) {
+			modelInfo[id] = storageModelInfo(meta)
+		}
+	}
+	return ids, modelInfo, warnings, nil
+}
+
+// ParseModelContexts 解析重复的 --model-context <model>=<tokens> 参数。
+func ParseModelContexts(specs []string) (map[string]int, error) {
+	out := map[string]int{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(spec, "=")
+		model = strings.TrimSpace(model)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("invalid --model-context %q: want <model>=<tokens>", raw)
+		}
+		tokens, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || tokens <= 0 {
+			return nil, fmt.Errorf("invalid --model-context %q: tokens must be a positive integer", raw)
+		}
+		if _, exists := out[model]; exists {
+			return nil, fmt.Errorf("duplicate --model-context for model %q", model)
+		}
+		out[model] = tokens
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // GetProvider 加载单个档案；不存在时返回带友好文案的错误。

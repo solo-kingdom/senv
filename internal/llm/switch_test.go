@@ -191,6 +191,30 @@ func TestClaudeCodeAdapterMaps1MContext(t *testing.T) {
 	}
 }
 
+func TestSwitchUsesStoredModelMetadata(t *testing.T) {
+	pm, _, _ := newTestProviderManager(t)
+	if _, err := pm.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 1_000_000},
+		RequireModelMetadata: true,
+	}); err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	sm := NewSwitchManager(pm, "", t.TempDir())
+	out, err := sm.Switch("claude-code", "main", nil, "")
+	if err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(mustRead(t, out.ConfigPath), &root); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	option := root["modelPicker"].(map[string]any)["options"].([]any)[0].(map[string]any)
+	if got := option["behavesAs"]; got != claudeBehavesAsModel+"[1m]" {
+		t.Fatalf("behavesAs = %v, want stored 1M context mapping", got)
+	}
+}
+
 func TestCodexAdapterNoSecretOnDisk(t *testing.T) {
 	out, path := applyAdapter(t, codexAdapter(), senvEnvKeyName("main"))
 	var cfg map[string]any

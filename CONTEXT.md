@@ -122,8 +122,12 @@ _Avoid_: 兼容性处理（实现意味）、适配（泛指时）
 _Avoid_: 模型列表（泛指时）、可用模型、模型目录（指公开数据源时）
 
 **模型目录**:
-models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填充 Provider 模型集。自定义模型不依赖它。
+models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填充 Provider 模型集。自定义模型不依赖它，但必须显式提供模型元数据。
 _Avoid_: 模型列表（泛指时）
+
+**模型元数据**:
+随 LLM Provider 档案保存的 per-model 信息，至少包含 context window；切换写入 Coding Agent 配置时优先使用它，再进行 agent 专属投影。增改模型集时缺失 context window 会拒绝写入；既有旧档案可不补全并继续读取。
+_Avoid_: 模型配置（易与 agent 配置混淆）、模型能力（范围过宽）
 
 **Coding Agent**:
 接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider，并写入 Agent 模型集与默认模型。

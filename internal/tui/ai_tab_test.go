@@ -340,13 +340,14 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 		t.Fatal("create form must expose the alias field")
 	}
 	tab = submitAIForm(t, tab, map[string]string{
-		"alias":         "second",
-		"base_url":      "https://second.example.com",
-		"api_shape":     string(llm.APIShapeAnthropic),
-		"models":        "s1, s2",
-		"default_model": "s2",
-		"credential":    aiNewCredential,
-		"api_key":       "sk-second-secret",
+		"alias":          "second",
+		"base_url":       "https://second.example.com",
+		"api_shape":      string(llm.APIShapeAnthropic),
+		"models":         "s1, s2",
+		"model_contexts": "s1=128000, s2=200000",
+		"default_model":  "s2",
+		"credential":     aiNewCredential,
+		"api_key":        "sk-second-secret",
 	})
 	if tab.form != nil {
 		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)

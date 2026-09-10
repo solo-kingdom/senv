@@ -285,12 +285,16 @@ func TestAISwitchHintsWhenModelSetLarge(t *testing.T) {
 	writeAIProviderTestCatalog(t)
 	setProviderCredentialReader(t, "sk-secret-value")
 	models := make([]string, 0, aiSwitchModelSetHint+1)
+	modelCtx := make([]string, 0, aiSwitchModelSetHint+1)
 	for i := 0; i <= aiSwitchModelSetHint; i++ {
-		models = append(models, fmt.Sprintf("mm-%02d", i))
+		model := fmt.Sprintf("mm-%02d", i)
+		models = append(models, model)
+		modelCtx = append(modelCtx, model+"=128000")
 	}
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
 		providerAddModels = models
+		providerAddModelCtx = modelCtx
 		providerAddDefault = models[0]
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"big"}); err != nil {

@@ -618,7 +618,7 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 	}
 
 	title := "新建 LLM Provider"
-	fields := make([]formField, 0, 8)
+	fields := make([]formField, 0, 9)
 	if create {
 		fields = append(fields, formField{
 			key: "alias", label: "别名", kind: formText, placeholder: "main",
@@ -647,6 +647,11 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 		formField{
 			key: "models", label: "模型集", kind: formText, value: strings.Join(base.Models, ", "),
 			placeholder: "m1, m2（逗号分隔）",
+		},
+		formField{
+			key: "model_contexts", label: "模型上下文", kind: formText,
+			value:       formatModelContexts(base.Models, base.ModelInfo),
+			placeholder: "m1=1000000（自定义模型缺少目录元数据时必填）",
 		},
 		formField{
 			key: "default_model", label: "默认模型", kind: formText, value: base.DefaultModel,
@@ -715,6 +720,10 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	}
 	catalog := strings.TrimSpace(values["catalog"])
 	models := parseModelList(values["models"])
+	modelContexts, err := llm.ParseModelContexts(parseModelList(values["model_contexts"]))
+	if err != nil {
+		return reopen("model_contexts", err)
+	}
 	if catalog == "" && len(models) == 0 {
 		return reopen("models", fmt.Errorf("模型集不能为空：填写模型或目录 provider"))
 	}
@@ -739,14 +748,16 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 
 	if create {
 		opts := llm.AddProviderOptions{
-			Alias:           alias,
-			BaseURL:         baseURL,
-			AllowHTTP:       allowHTTP,
-			CatalogPath:     catalogPath,
-			CatalogProvider: catalog,
-			Models:          models,
-			DefaultModel:    defaultModel,
-			APIShape:        apiShape,
+			Alias:                alias,
+			BaseURL:              baseURL,
+			AllowHTTP:            allowHTTP,
+			CatalogPath:          catalogPath,
+			CatalogProvider:      catalog,
+			Models:               models,
+			ModelContexts:        modelContexts,
+			RequireModelMetadata: true,
+			DefaultModel:         defaultModel,
+			APIShape:             apiShape,
 		}
 		if credential == aiNewCredential {
 			opts.APIKey = apiKey
@@ -776,9 +787,12 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		APIShape:     &apiShape,
 		DefaultModel: &defaultModel,
 	}
-	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider {
+	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
+	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider || contextsChanged {
 		opts.Models = models
 		opts.CatalogProvider = &catalog
+		opts.ModelContexts = modelContexts
+		opts.RequireModelMetadata = true
 	}
 	if credential == aiNewCredential {
 		opts.APIKey = apiKey
@@ -846,6 +860,8 @@ func providerErrorField(err error) string {
 		return "default_model"
 	case strings.Contains(msg, "credential"), strings.Contains(msg, "api key"), strings.Contains(msg, "key"):
 		return "api_key"
+	case strings.Contains(msg, "context"):
+		return "model_contexts"
 	case strings.Contains(msg, "model"):
 		return "models"
 	case strings.Contains(msg, "catalog"):
@@ -888,7 +904,11 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		lines = append(lines, "  -")
 	}
 	for _, m := range p.Models {
-		lines = append(lines, "  "+m)
+		line := "  " + m
+		if info, ok := p.ModelInfo[m]; ok && info.ContextWindow > 0 {
+			line += fmt.Sprintf("  context=%d", info.ContextWindow)
+		}
+		lines = append(lines, line)
 	}
 	lines = append(lines, "", "被指向的 agent:")
 	used := false
@@ -1014,6 +1034,16 @@ func parseModelList(raw string) []string {
 		}
 	}
 	return out
+}
+
+func formatModelContexts(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && meta.ContextWindow > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", model, meta.ContextWindow))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // --- view ---

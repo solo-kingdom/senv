@@ -52,7 +52,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 编辑面：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名（分组栏改分组/条目栏改 key）、`a`/`x` 激活停用分组、`+` 新建分组、`y` 复制；Text/Config `e` 走 vim、`n`/`d`、`r` 重命名；Text 另有 `i` 从文件导入、`o` 导出；Config 另有 `m` 编辑分组与描述、`x` 导出、`i`/`u`（`I`/`U` 批量）安装卸载（需在计划页确认）。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。
 - SSH Tab：两栏（host / keypair）。host 栏 `n` 新建、`e` 表单编辑、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段；keypair 栏 `n`/`i` 导入、`R` 重命名（自动联动 host `identityKey`）、`d` 删除、`m` materialize、`x` 导出全部。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`。
-- AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`m` 对已指向的 agent 仅换默认模型，候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。
+- AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`m` 对已指向的 agent 仅换默认模型，候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、模型上下文、默认模型与凭据来源；模型上下文用 `<model>=<tokens>` 逗号分隔。凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。
 - 只读详情：Config/SSH/AI 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
 - 同步状态：server 模式且未关闭 `auto_sync` 时底部常驻「N 条待推送 / 已同步 时间」；启动不等待网络——本地数据先行渲染，远端拉取在后台完成（2 秒预算，`--refresh` 绕过节流窗口），应用了变更会提示「已从 server 更新 N 条」并自动更新各标签；写操作后后台异步推送（2 秒预算）；git 模式不显示也不拉取。
 - TUI 写操作会进本机操作审计（`senv audit` 可见），target 只含 group/key/name 等标识，不含值。
@@ -78,6 +78,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
 - 档案与凭据存 vault：`senv ai provider add/edit/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
+- 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。`show`/MCP 的 `model_info` 会展示已保存的 context window。
 - `senv ai provider edit <alias>` 就地编辑：alias 是主键不可改；只改传入的字段，省略的保持原值。轮换自有凭据用 `--rotate-key`（TTY）或 `--api-key-stdin`；改走外部引用用 `--key-ref`（会删除原自有凭据）。任一步失败不留部分更新。
 - 接入地址统一按 OpenAI 兼容形态落库：`add`/`edit` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
 - `--api-shape`（`openai-chat` | `openai-responses` | `anthropic`）可选声明接口形态；`--api-shape ""` 清除回推断。留空时 `switch` 按目标 agent 协议族归一接入地址；声明后成为兼容判据，形态与目标 agent 协议族不匹配时 `switch` 拒绝写文件并提示「改档案形态或换 provider」。

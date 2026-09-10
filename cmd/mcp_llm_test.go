@@ -44,6 +44,7 @@ func TestMCPLLMProviderListWhitelistedOnly(t *testing.T) {
 	allowed := map[string]bool{
 		"alias": true, "base_url": true, "credential_ref": true,
 		"catalog_provider": true, "default_model": true, "models": true,
+		"model_info": true,
 		"created_at": true, "updated_at": true,
 	}
 	for key := range providers[0] {

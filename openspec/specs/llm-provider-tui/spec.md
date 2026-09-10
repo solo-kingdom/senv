@@ -80,11 +80,15 @@ AI Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭
 - **THEN** 成功提示只包含别名与来源类型，不含任何 key 片段
 
 ### Requirement: AI Tab 档案写操作
-AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
+AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段，格式为 `<model>=<tokens>`；新建或改动模型集/元数据时缺失 context window SHALL 经统一提示条回显并保持在表单内修正。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
 
 #### Scenario: TUI 新建档案
-- **WHEN** 用户在 AI Tab 按 `n` 并填写别名、base_url、模型集与凭据来源后提交
+- **WHEN** 用户在 AI Tab 按 `n` 并填写别名、base_url、模型集、模型 context window 与凭据来源后提交
 - **THEN** 调用 `AddProvider` 保存档案，左栏出现新档案，提示成功
+
+#### Scenario: TUI 缺少模型 context window
+- **WHEN** 新建自定义模型但表单未提供对应 context window，且目录元数据也不存在
+- **THEN** 提交失败，表单聚焦模型上下文字段并显示 `--model-context` 指引，不创建档案或凭据
 
 #### Scenario: TUI 编辑档案
 - **WHEN** 用户按 `e` 修改选中档案的 base_url 或默认模型并提交
@@ -112,4 +116,3 @@ AI Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>
 #### Scenario: 全界面无明文
 - **WHEN** 用户在 AI Tab 内浏览并完成任意操作
 - **THEN** 界面渲染与状态中均不含 key 明文（凭据引用文本除外）
-

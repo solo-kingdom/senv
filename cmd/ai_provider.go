@@ -56,6 +56,7 @@ var (
 	providerAddKeyRef      string
 	providerAddCatalog     string
 	providerAddModels      []string
+	providerAddModelCtx    []string
 	providerAddDefault     string
 	providerAddAPIShape    string
 	providerAddForce       bool
@@ -67,6 +68,7 @@ var (
 	providerEditKeyRef      string
 	providerEditCatalog     string
 	providerEditModels      []string
+	providerEditModelCtx    []string
 	providerEditDefault     string
 	providerEditAPIShape    string
 
@@ -82,6 +84,8 @@ var aiProviderAddCmd = &cobra.Command{
 model set. The model set is the union of models from --catalog-provider
 (models.dev cache) and custom --model values. Provide the credential through a
 TTY prompt or --api-key-stdin, or reference an existing entry with --key-ref.
+Every model must resolve a context window: catalog models read models.dev
+limit.context, and custom models require --model-context <model>=<tokens>.
 The --api-key flag is unsupported because argv and shell history leak secrets.
 The base URL is normalized to the OpenAI-compatible shape (a trailing /v1 is
 appended when missing, trailing slashes are trimmed) so every agent can derive
@@ -90,6 +94,10 @@ its own shape at switch time; the command reports the normalized value.
 | anthropic); leave it empty to keep deriving the shape from the target agent.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		modelContexts, err := llm.ParseModelContexts(providerAddModelCtx)
+		if err != nil {
+			return err
+		}
 		mgr, err := getAIProviderManager()
 		if err != nil {
 			return err
@@ -103,17 +111,19 @@ its own shape at switch time; the command reports the normalized value.
 			apiKey = string(credential)
 		}
 		res, err := mgr.AddProvider(llm.AddProviderOptions{
-			Alias:           args[0],
-			BaseURL:         providerAddBaseURL,
-			AllowHTTP:       providerAddAllowHTTP,
-			APIKey:          apiKey,
-			KeyRef:          providerAddKeyRef,
-			CatalogPath:     catalogCachePath(),
-			CatalogProvider: providerAddCatalog,
-			Models:          providerAddModels,
-			DefaultModel:    providerAddDefault,
-			APIShape:        providerAddAPIShape,
-			Force:           providerAddForce,
+			Alias:                args[0],
+			BaseURL:              providerAddBaseURL,
+			AllowHTTP:            providerAddAllowHTTP,
+			APIKey:               apiKey,
+			KeyRef:               providerAddKeyRef,
+			CatalogPath:          catalogCachePath(),
+			CatalogProvider:      providerAddCatalog,
+			Models:               providerAddModels,
+			ModelContexts:        modelContexts,
+			RequireModelMetadata: true,
+			DefaultModel:         providerAddDefault,
+			APIShape:             providerAddAPIShape,
+			Force:                providerAddForce,
 		})
 		if err != nil {
 			auditOp(session.AuditOpLLMProvider, "provider:"+args[0], false, "add 失败")
@@ -148,10 +158,22 @@ Credential rotation follows the same semantics as add: --api-key-stdin (or
 --key-ref switches to an external reference and deletes the own credential;
 passing neither keeps the credential and its reference untouched.
 
+When the model set, catalog provider or model context metadata changes, every
+final model must resolve a context window; legacy profiles can still edit other
+fields without being forced to backfill model metadata.
+
 The base URL and api_shape are validated exactly like add. Any failure leaves
 the profile, credential and references untouched.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		var modelContexts map[string]int
+		if cmd.Flags().Changed("model-context") {
+			var err error
+			modelContexts, err = llm.ParseModelContexts(providerEditModelCtx)
+			if err != nil {
+				return err
+			}
+		}
 		mgr, err := getAIProviderManager()
 		if err != nil {
 			return err
@@ -172,6 +194,9 @@ the profile, credential and references untouched.`,
 		if cmd.Flags().Changed("model") {
 			opts.Models = providerEditModels
 		}
+		if cmd.Flags().Changed("model-context") {
+			opts.ModelContexts = modelContexts
+		}
 		if cmd.Flags().Changed("default-model") {
 			opts.DefaultModel = &providerEditDefault
 		}
@@ -185,6 +210,8 @@ the profile, credential and references untouched.`,
 			}
 			opts.APIKey = string(credential)
 		}
+		opts.RequireModelMetadata = cmd.Flags().Changed("model") ||
+			cmd.Flags().Changed("catalog-provider") || cmd.Flags().Changed("model-context")
 		res, err := mgr.EditProvider(opts)
 		if err != nil {
 			auditOp(session.AuditOpLLMProvider, "provider:"+args[0], false, "edit 失败")
@@ -256,6 +283,14 @@ var aiProviderShowCmd = &cobra.Command{
 		fmt.Fprintf(out, "目录 provider：%s\n", orDash(e.CatalogProvider))
 		fmt.Fprintf(out, "接入形态：%s\n", orDash(e.APIShape))
 		fmt.Fprintf(out, "模型（%d）：%s\n", len(e.Models), strings.Join(e.Models, ", "))
+		if len(e.ModelInfo) > 0 {
+			fmt.Fprintln(out, "模型 context window：")
+			for _, model := range e.Models {
+				if info, ok := e.ModelInfo[model]; ok && info.ContextWindow > 0 {
+					fmt.Fprintf(out, "  %s = %d\n", model, info.ContextWindow)
+				}
+			}
+		}
 		fmt.Fprintf(out, "默认模型：%s\n", orDash(e.DefaultModel))
 		return nil
 	},
@@ -335,6 +370,7 @@ func init() {
 	aiProviderAddCmd.Flags().StringVar(&providerAddKeyRef, "key-ref", "", "reference to an existing entry: env:<group>/<key> or text:<group>/<key>")
 	aiProviderAddCmd.Flags().StringVar(&providerAddCatalog, "catalog-provider", "", "models.dev provider id for auto model loading")
 	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModels, "model", nil, "custom model id (repeatable)")
+	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModelCtx, "model-context", nil, "model context window: <model>=<tokens> (repeatable; required when metadata is unavailable)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefault, "default-model", "", "default model (must be in the model set)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty derives it from the target agent)")
 	aiProviderAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing profile")
@@ -345,6 +381,7 @@ func init() {
 	aiProviderEditCmd.Flags().StringVar(&providerEditKeyRef, "key-ref", "", "switch to an external reference: env:<group>/<key> or text:<group>/<key>")
 	aiProviderEditCmd.Flags().StringVar(&providerEditCatalog, "catalog-provider", "", "models.dev provider id; re-assembles the model set")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModels, "model", nil, "custom model id (repeatable); replaces the model set")
+	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelCtx, "model-context", nil, "model context window: <model>=<tokens> (repeatable; required when metadata is unavailable)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
 	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)

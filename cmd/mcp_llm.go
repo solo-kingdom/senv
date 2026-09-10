@@ -12,14 +12,15 @@ import (
 // llmProviderView 是 MCP 响应的显式白名单：档案本身不存凭据明文，这里
 // 再裁剪一层，从结构上排除任何密钥字段。
 type llmProviderView struct {
-	Alias         string   `json:"alias"`
-	BaseURL       string   `json:"base_url"`
-	CredentialRef string   `json:"credential_ref"`
-	Catalog       string   `json:"catalog_provider,omitempty"`
-	DefaultModel  string   `json:"default_model,omitempty"`
-	Models        []string `json:"models"`
-	CreatedAt     string   `json:"created_at"`
-	UpdatedAt     string   `json:"updated_at"`
+	Alias         string                          `json:"alias"`
+	BaseURL       string                          `json:"base_url"`
+	CredentialRef string                          `json:"credential_ref"`
+	Catalog       string                          `json:"catalog_provider,omitempty"`
+	DefaultModel  string                          `json:"default_model,omitempty"`
+	Models        []string                        `json:"models"`
+	ModelInfo     map[string]storage.LLMModelInfo `json:"model_info,omitempty"`
+	CreatedAt     string                          `json:"created_at"`
+	UpdatedAt     string                          `json:"updated_at"`
 }
 
 func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
@@ -30,6 +31,7 @@ func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 		Catalog:       e.CatalogProvider,
 		DefaultModel:  e.DefaultModel,
 		Models:        e.Models,
+		ModelInfo:     e.ModelInfo,
 		CreatedAt:     e.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     e.UpdatedAt.Format(time.RFC3339),
 	}

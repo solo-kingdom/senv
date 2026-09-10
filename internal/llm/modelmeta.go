@@ -9,6 +9,8 @@ package llm
 import (
 	"encoding/json"
 	"path/filepath"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 // ModelMetadata 是单个模型在目录里的元数据子集。
@@ -86,4 +88,66 @@ func LoadModelMetadata(catalogPath, catalogProvider string, modelIDs []string) m
 		out[id] = meta
 	}
 	return out
+}
+
+// ResolveModelMetadata overlays metadata persisted in the provider profile on
+// top of the optional models.dev cache. Persisted values win so an explicit
+// context window survives cache loss or upstream changes.
+func ResolveModelMetadata(stored map[string]storage.LLMModelInfo, catalogPath, catalogProvider string, modelIDs []string) map[string]ModelMetadata {
+	external := LoadModelMetadata(catalogPath, catalogProvider, modelIDs)
+	out := make(map[string]ModelMetadata, len(modelIDs))
+	for _, id := range modelIDs {
+		meta := external[id]
+		if info, ok := stored[id]; ok {
+			meta = mergeModelMetadata(meta, modelMetadataFromStorage(info))
+		}
+		if !modelMetadataEmpty(meta) {
+			out[id] = meta
+		}
+	}
+	return out
+}
+
+func modelMetadataFromStorage(info storage.LLMModelInfo) ModelMetadata {
+	return ModelMetadata{
+		Name:             info.Name,
+		Description:      info.Description,
+		ContextLimit:     info.ContextWindow,
+		OutputLimit:      info.OutputLimit,
+		ReasoningEfforts: append([]string(nil), info.ReasoningEfforts...),
+	}
+}
+
+func storageModelInfo(meta ModelMetadata) storage.LLMModelInfo {
+	return storage.LLMModelInfo{
+		Name:             meta.Name,
+		Description:      meta.Description,
+		ContextWindow:    meta.ContextLimit,
+		OutputLimit:      meta.OutputLimit,
+		ReasoningEfforts: append([]string(nil), meta.ReasoningEfforts...),
+	}
+}
+
+func mergeModelMetadata(base, override ModelMetadata) ModelMetadata {
+	if override.Name != "" {
+		base.Name = override.Name
+	}
+	if override.Description != "" {
+		base.Description = override.Description
+	}
+	if override.ContextLimit > 0 {
+		base.ContextLimit = override.ContextLimit
+	}
+	if override.OutputLimit > 0 {
+		base.OutputLimit = override.OutputLimit
+	}
+	if len(override.ReasoningEfforts) > 0 {
+		base.ReasoningEfforts = append([]string(nil), override.ReasoningEfforts...)
+	}
+	return base
+}
+
+func modelMetadataEmpty(meta ModelMetadata) bool {
+	return meta.Name == "" && meta.Description == "" && meta.ContextLimit <= 0 &&
+		meta.OutputLimit <= 0 && len(meta.ReasoningEfforts) == 0
 }
