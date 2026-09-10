@@ -66,3 +66,11 @@ func TestValidateSegmentAcceptsPortableNames(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSegmentRejectsControlCharacters(t *testing.T) {
+	for _, segment := range []string{"a\nb", "a\rb", "a\tb", "a\x00b", "a\x1fb", "a\x7fb"} {
+		if err := ValidateSegment(segment); err == nil {
+			t.Fatalf("ValidateSegment(%q) unexpectedly succeeded", segment)
+		}
+	}
+}

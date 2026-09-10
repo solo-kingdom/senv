@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-10
+goal: coding agent 注册表与 provider 切换：支持 claude-code、codex、zcode、kimi、pi、opencode
+  的配置适配器写回，senv ai switch/status 命令

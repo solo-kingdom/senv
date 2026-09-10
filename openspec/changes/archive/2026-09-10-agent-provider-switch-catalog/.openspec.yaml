@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-10
+goal: "建立 senv ai 根命令与模型目录能力：senv ai refresh 从 models.dev 拉取 provider/model
+  目录并落盘缓存（带格式版本与校验，解析失败保留旧缓存），离线回退旧缓存；capability: llm-model-catalog"

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-10
+goal: LLM Provider 档案的 vault 加密存储与 senv ai provider add/list/show/remove：凭据存
+  vault、档案只存引用；添加时自动从模型目录缓存加载模型集，支持自定义模型

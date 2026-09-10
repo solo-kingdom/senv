@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
 )
@@ -14,14 +15,19 @@ import (
 // Managers bundles the three domain managers shared by all tabs. The TUI is a
 // pure interaction layer over these existing managers (no storage changes).
 // History 为 nil 时不注册 History Tab（git 模式 / 未配置 server）；
-// Audit 为 nil 时不注册审计 Tab。
+// Audit 为 nil 时不注册审计 Tab；LLM 为 nil 时不注册 AI Tab。
 type Managers struct {
-	Env     *env.Manager
-	Text    *text.Manager
-	Config  *config.Manager
-	SSH     *ssh.Manager
-	History HistorySource
-	Audit   AuditSource
+	Env    *env.Manager
+	Text   *text.Manager
+	Config *config.Manager
+	SSH    *ssh.Manager
+	LLM    *llm.ProviderManager
+	// LLMPointer/LLMHome 是 agent 指针文件路径与 agent 配置根目录；
+	// 为空时按用户默认位置解析（测试可注入临时目录）。
+	LLMPointer string
+	LLMHome    string
+	History    HistorySource
+	Audit      AuditSource
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -52,6 +58,9 @@ func New(mgr Managers) Model {
 	}
 	if mgr.SSH != nil {
 		m.tabs = append(m.tabs, newSSHTab(mgr))
+	}
+	if mgr.LLM != nil {
+		m.tabs = append(m.tabs, newAITab(mgr))
 	}
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))

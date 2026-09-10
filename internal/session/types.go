@@ -43,16 +43,18 @@ const (
 
 	// 业务操作事件（op-audit）：target 只到 kind/group/key 或文件名粒度，
 	// 绝不包含任何值或明文内容。
-	AuditOpEnv       AuditEventType = "op_env"
-	AuditOpText      AuditEventType = "op_text"
-	AuditOpConfig    AuditEventType = "op_config"
-	AuditOpInstall   AuditEventType = "op_install"
-	AuditOpUninstall AuditEventType = "op_uninstall"
-	AuditOpSync      AuditEventType = "op_sync"
-	AuditOpConflict  AuditEventType = "op_conflict"
-	AuditOpRestore   AuditEventType = "op_restore"
-	AuditOpSSHKey    AuditEventType = "op_ssh_keypair"
-	AuditOpSSHHost   AuditEventType = "op_ssh_host"
+	AuditOpEnv         AuditEventType = "op_env"
+	AuditOpText        AuditEventType = "op_text"
+	AuditOpConfig      AuditEventType = "op_config"
+	AuditOpInstall     AuditEventType = "op_install"
+	AuditOpUninstall   AuditEventType = "op_uninstall"
+	AuditOpSync        AuditEventType = "op_sync"
+	AuditOpConflict    AuditEventType = "op_conflict"
+	AuditOpRestore     AuditEventType = "op_restore"
+	AuditOpSSHKey      AuditEventType = "op_ssh_keypair"
+	AuditOpSSHHost     AuditEventType = "op_ssh_host"
+	AuditOpLLMProvider AuditEventType = "op_llm_provider"
+	AuditOpLLMSwitch   AuditEventType = "op_llm_switch"
 )
 
 // AuditEntry represents a single audit log entry

@@ -70,3 +70,25 @@ _Avoid_: 代理（泛指时）、前置机
 **ProxyCommand**:
 自定义连接命令文本，黑盒直传，不做结构化解析。
 _Avoid_: 跳板（指 ProxyJump 时）
+
+### LLM 接入
+
+**LLM Provider**:
+一份 AI 服务接入档案：以别名为唯一标识，含接入地址、凭据引用与可用模型集；凭据本体存于 vault。与同步后端 provider（git/server）无关。
+_Avoid_: provider（单独使用，易与同步后端混淆）、服务商
+
+**Coding Agent**:
+接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider 与模型。
+_Avoid_: agent（泛指时）、客户端
+
+**模型目录**:
+models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填充 LLM Provider 的可用模型集。自定义模型不依赖它。
+_Avoid_: 模型列表（指单个 LLM Provider 的模型集时）
+
+**切换**:
+把某个 Coding Agent 指向指定 LLM Provider 及其某个模型的动作；senv 是唯一事实源，改写 agent 配置后即时生效。
+_Avoid_: 激活（指 env 分组时）
+
+**当前指向**:
+单个 Coding Agent 当前使用的 LLM Provider 与模型记录；属于本机状态，不随 vault 同步。
+_Avoid_: 指针（实现意味）、profile（多预设含义，未采用）
