@@ -289,6 +289,20 @@ func setTOMLPath(root map[string]any, path []string, value any) {
 // modelPicker（Agent 模型集）+ env 块（ANTHROPIC_BASE_URL /
 // ANTHROPIC_AUTH_TOKEN），凭据内联。provider 是自定义接入地址，
 // replaceBuiltInOptions 让内置 lineup 不出现在选择器里（D5）。
+const (
+	// claudeBehavesAsModel 是 Claude Code 已知的稳定模型，用作自定义模型
+	// 的客户端能力映射；behavesAs 只影响客户端行为，不改实际发送的模型 ID。
+	claudeBehavesAsModel = "claude-sonnet-4-5"
+	claudeContext1M      = 1_000_000
+)
+
+func claudeBehavesAs(meta ModelMetadata) string {
+	if meta.ContextLimit >= claudeContext1M {
+		return claudeBehavesAsModel + "[1m]"
+	}
+	return claudeBehavesAsModel
+}
+
 func claudeCodeAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "claude-code",
@@ -310,7 +324,11 @@ func claudeCodeAdapter() AgentAdapter {
 				options := make([]map[string]any, 0, len(req.Models))
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
-					option := map[string]any{"model": model, "label": modelLabel(model, meta)}
+					option := map[string]any{
+						"model":     model,
+						"label":     modelLabel(model, meta),
+						"behavesAs": claudeBehavesAs(meta),
+					}
 					if meta.Description != "" {
 						option["description"] = meta.Description
 					}
@@ -476,9 +494,63 @@ func piAdapter() AgentAdapter {
 			return applyJSONMerge(settings, func(root map[string]any) error {
 				root["defaultProvider"] = id
 				root["defaultModel"] = req.DefaultModel
+				// Pi 启动时，非空 enabledModels 会先生成 scoped model 列表，并优先
+				// 选第一个 scoped model；把本次默认模型放在首位，才能压过用户
+				// 原有 allowlist 的顺序，同时保留其余用户 scope。
+				priorID := ""
+				if req.PriorProvider != "" {
+					priorID = senvProviderID(req.PriorProvider)
+				}
+				updatePiEnabledModels(root, id, req.DefaultModel, priorID)
 				return nil
 			}, req.tx)
 		},
+	}
+}
+
+func updatePiEnabledModels(root map[string]any, providerID, defaultModel, priorProviderID string) {
+	raw, ok := root["enabledModels"]
+	if !ok {
+		return
+	}
+	patterns, ok := stringValues(raw)
+	if !ok || len(patterns) == 0 {
+		return
+	}
+	removeProviders := map[string]struct{}{providerID: {}}
+	if priorProviderID != "" {
+		removeProviders[priorProviderID] = struct{}{}
+	}
+	kept := make([]any, 0, len(patterns)+2)
+	for _, pattern := range patterns {
+		provider, _, ok := strings.Cut(strings.TrimSpace(pattern), "/")
+		if _, remove := removeProviders[provider]; ok && remove {
+			continue
+		}
+		kept = append(kept, pattern)
+	}
+	root["enabledModels"] = append([]any{
+		providerID + "/" + defaultModel,
+		providerID + "/*",
+	}, kept...)
+}
+
+func stringValues(value any) ([]string, bool) {
+	switch values := value.(type) {
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	case []string:
+		return append([]string(nil), values...), true
+	default:
+		return nil, false
 	}
 }
 

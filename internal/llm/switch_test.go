@@ -157,9 +157,37 @@ func TestClaudeCodeAdapter(t *testing.T) {
 	if root["model"] != "m1" {
 		t.Fatalf("model = %v", root["model"])
 	}
+	options := root["modelPicker"].(map[string]any)["options"].([]any)
+	if got := options[0].(map[string]any)["behavesAs"]; got != claudeBehavesAsModel {
+		t.Fatalf("behavesAs = %v, want %q", got, claudeBehavesAsModel)
+	}
 	env := root["env"].(map[string]any)
 	if env["ANTHROPIC_BASE_URL"] != "https://api.example.com" || env["ANTHROPIC_AUTH_TOKEN"] != "sk-secret" {
 		t.Fatalf("env = %v", env)
+	}
+}
+
+func TestClaudeCodeAdapterMaps1MContext(t *testing.T) {
+	home := t.TempDir()
+	a := claudeCodeAdapter()
+	req := SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1"}, DefaultModel: "m1", Credential: "sk-secret",
+		ConfigPath: a.ConfigPath(home), Home: home,
+		ModelMetadata: map[string]ModelMetadata{
+			"m1": {ContextLimit: claudeContext1M},
+		},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(mustRead(t, req.ConfigPath), &root); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	option := root["modelPicker"].(map[string]any)["options"].([]any)[0].(map[string]any)
+	if got := option["behavesAs"]; got != claudeBehavesAsModel+"[1m]" {
+		t.Fatalf("behavesAs = %v, want %q", got, claudeBehavesAsModel+"[1m]")
 	}
 }
 
@@ -230,6 +258,50 @@ func TestPiAdapterWritesBothFiles(t *testing.T) {
 	}
 	if sroot["defaultProvider"] != "senv-main" || sroot["defaultModel"] != "m1" {
 		t.Fatalf("pi settings = %v", sroot)
+	}
+	if _, ok := sroot["enabledModels"]; ok {
+		t.Fatalf("pi settings should not create enabledModels when absent: %v", sroot)
+	}
+}
+
+func TestPiAdapterOrdersDefaultModelInEnabledScope(t *testing.T) {
+	home := t.TempDir()
+	a := piAdapter()
+	settingsPath := filepath.Join(home, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{
+		"theme": "dark",
+		"defaultProvider": "senv-old",
+		"defaultModel": "old-model",
+		"enabledModels": ["minimax-cn/*", "senv-old/*", "senv-main/stale", "custom/*"]
+	}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	req := SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1", "m2"}, DefaultModel: "m2", Credential: "sk-secret",
+		ConfigPath: a.ConfigPath(home), Home: home, PriorProvider: "old",
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(mustRead(t, settingsPath), &settings); err != nil {
+		t.Fatalf("Unmarshal(settings.json) error = %v", err)
+	}
+	if settings["defaultProvider"] != "senv-main" || settings["defaultModel"] != "m2" || settings["theme"] != "dark" {
+		t.Fatalf("pi settings = %v", settings)
+	}
+	rawPatterns := settings["enabledModels"].([]any)
+	got := make([]string, 0, len(rawPatterns))
+	for _, item := range rawPatterns {
+		got = append(got, item.(string))
+	}
+	want := []string{"senv-main/m2", "senv-main/*", "minimax-cn/*", "custom/*"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("enabledModels = %v, want %v", got, want)
 	}
 }
 

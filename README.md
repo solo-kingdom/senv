@@ -593,7 +593,7 @@ senv ai switch codex acme --models m1,m2 --default-model m2
 senv ai status
 ```
 
-> 切换把 **Agent 模型集**按各 agent 原生机制写入，之后可在 agent 自己的模型选择器里换模型：claude-code 写 `modelPicker`（替换内置 lineup）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models.*]`、pi/opencode 写 provider 的模型表。`--default-model` 只覆盖本次写入的起始模型，不改档案。切换会清理上一次 senv 写入、本次不再需要的条目与失效 catalog，用户自有条目与文件保持原样。`--model` 已移除：模型集用 `--models`，起始模型用 `--default-model`。
+> 切换把 **Agent 模型集**按各 agent 原生机制写入，之后可在 agent 自己的模型选择器里换模型：claude-code 写 `modelPicker`（替换内置 lineup，并用 `behavesAs` 映射自定义模型）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models.*]`、pi/opencode 写 provider 的模型表；pi 的既有 `enabledModels` 非空时还会把本次默认模型置顶，避免启动时选中 scope 首项。`--default-model` 只覆盖本次写入的起始模型，不改档案。切换会清理上一次 senv 写入、本次不再需要的条目与失效 catalog，用户自有条目与文件保持原样。`--model` 已移除：模型集用 `--models`，起始模型用 `--default-model`。
 
 ```
 senv init                          初始化项目
