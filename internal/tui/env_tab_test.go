@@ -183,3 +183,21 @@ func TestFilterModeFlow(t *testing.T) {
 		t.Errorf("after clearing filter: %d items, want 2", got)
 	}
 }
+
+// TestEnvTabReloadDropsCacheAndReloads 验证后台同步触发的 Reload：先置回
+// loaded，经 LoadedMsg 回灌后恢复为已加载。
+func TestEnvTabReloadDropsCacheAndReloads(t *testing.T) {
+	tab := newEnvTab(newFullManagers(t))
+	tab = flushTab(tab, tab.Init()).(*envTab)
+	if !tab.loaded {
+		t.Fatal("env tab should be loaded after Init")
+	}
+	cmd := tab.Reload()
+	if tab.loaded {
+		t.Fatal("Reload must drop the loaded flag immediately")
+	}
+	tab = flushTab(tab, cmd).(*envTab)
+	if !tab.loaded {
+		t.Fatal("env tab should be loaded again after the reload lands")
+	}
+}

@@ -40,10 +40,16 @@ func newMCPGuardFixture(t *testing.T, timeoutValue string) *mcpGuardFixture {
 	if err != nil {
 		t.Fatalf("getMCPAuthorization: %v", err)
 	}
+	// Cache files are named per vault slot (session-<uid>-<slot>); discover the
+	// one this vault just wrote instead of hard-coding the legacy name.
+	matches, err := filepath.Glob(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "senv", fmt.Sprintf("session-%d-*", os.Getuid())))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("session slot lookup = %v (err=%v), want exactly one cache file", matches, err)
+	}
 	return &mcpGuardFixture{
 		configPath:    configPath,
 		dataPath:      dataPath,
-		cachePath:     filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "senv", fmt.Sprintf("session-%d", os.Getuid())),
+		cachePath:     matches[0],
 		session:       sessionManager,
 		authorize:     newMCPRequestAuthorizer(configPath, dataPath, authorization),
 		authorization: authorization,
@@ -114,13 +120,17 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 		requireMCPRevoked(t, fixture)
 	})
 
-	t.Run("session ID replacement", func(t *testing.T) {
+	t.Run("session ID replacement keeps authorization", func(t *testing.T) {
 		fixture := newMCPGuardFixture(t, "restart")
 		timeout, _ := session.ParseTimeout("restart")
 		if err := fixture.session.StartSession("correct-secret", timeout); err != nil {
 			t.Fatalf("replacement StartSession: %v", err)
 		}
-		requireMCPRevoked(t, fixture)
+		// ADR-0010: authorization binds to the vault and derived key, not to a
+		// session instance, so a new session start must not revoke MCP.
+		if _, _, err := fixture.authorize(); err != nil {
+			t.Fatalf("re-authorization after new session instance error = %v, want nil", err)
+		}
 	})
 
 	t.Run("boot ID change", func(t *testing.T) {
@@ -161,14 +171,15 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 		requireMCPRevoked(t, fixture)
 	})
 
-	// A cache written by an older senv with timeout_type "never" must fail
-	// per-request validation: the timeout type no longer exists, so MCP must
-	// not honor it even though the cached key itself is untouched.
-	t.Run("legacy never timeout type", func(t *testing.T) {
+	// A cache written by an older senv with timeout_type "never" is adopted as
+	// restart, so MCP keeps honoring it (boot ID unchanged, key untouched).
+	t.Run("legacy never timeout type is adopted", func(t *testing.T) {
 		fixture := newMCPGuardFixture(t, "restart")
 		fixture.rewriteCache(t, func(cache *session.SessionCache) {
 			cache.TimeoutType = "never"
 		})
-		requireMCPRevoked(t, fixture)
+		if _, _, err := fixture.authorize(); err != nil {
+			t.Fatalf("legacy never cache must stay usable: %v", err)
+		}
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -149,8 +150,15 @@ func driveAISwitch(t *testing.T, tab *aiTab, agentSteps, modelSteps int, trigger
 	if _, cmd := tab.Update(runeKey(trigger)); cmd != nil {
 		t.Fatal("flow start unexpectedly returned a command")
 	}
-	if tab.flow != aiFlowSelectModel {
-		t.Fatalf("flow = %v, want selectModel", tab.flow)
+	// s 先进入多选步骤（默认全选），m 直接从默认模型步骤开始。
+	if trigger == "s" {
+		if tab.flow != aiFlowSelectModel {
+			t.Fatalf("flow = %v, want selectModel", tab.flow)
+		}
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if tab.flow != aiFlowSelectDefault {
+		t.Fatalf("flow = %v, want selectDefault", tab.flow)
 	}
 	for i := 0; i < modelSteps; i++ {
 		tab.Update(runeKey("j"))
@@ -271,10 +279,10 @@ func TestAITabModelOnlyChange(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("model-only change error: %v", result.err)
 	}
-	if !result.onlyModel || result.out.Provider != "main" || result.out.Model != "m2" {
+	if !result.onlyModel || result.out.Provider != "main" || result.out.DefaultModel != "m2" {
 		t.Fatalf("model-only result = %+v", result.out)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "仅换模型") {
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "仅换默认模型") {
 		t.Fatalf("notice = %q", notices)
 	}
 	if !strings.Contains(tab.View(), "main / m2") {
@@ -597,5 +605,227 @@ func TestAITabLongValuesDoNotWrap(t *testing.T) {
 		if w := lipgloss.Width(line); w > 80 {
 			t.Fatalf("line %d width %d > 80: %q", i, w, line)
 		}
+	}
+}
+
+// rowIndexOf 返回右栏里指定 agent 的行下标。
+func rowIndexOf(t *testing.T, tab *aiTab, agentID string) int {
+	t.Helper()
+	for i, row := range tab.rows {
+		if row.AgentID == agentID {
+			return i
+		}
+	}
+	t.Fatalf("agent %s not found in rows", agentID)
+	return -1
+}
+
+// TestAITabSwitchSelectionSubset 覆盖任务 1.1/1.3：进入多选默认全选，取消勾选
+// 后只把子集写入 agent 配置，成功提示含条数。
+func TestAITabSwitchSelectionSubset(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("s"))
+	if tab.flow != aiFlowSelectModel {
+		t.Fatalf("flow = %v, want selectModel", tab.flow)
+	}
+	if len(tab.flowSelectedModels()) != 2 {
+		t.Fatalf("multi-select must default to the full provider set, got %v", tab.flowSelectedModels())
+	}
+	tab.Update(runeKey("j"))                   // 游标到 m2
+	tab.Update(tea.KeyMsg{Type: tea.KeySpace}) // 取消勾选
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 进入默认模型步骤
+	if tab.flow != aiFlowSelectDefault {
+		t.Fatalf("flow = %v, want selectDefault", tab.flow)
+	}
+	if got := strings.Join(tab.flowSelectedModels(), ","); got != "m1" {
+		t.Fatalf("selected = %q, want m1 only", got)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := tab.Update(runeKey("y"))
+	if cmd == nil {
+		t.Fatal("confirm did not return a switch command")
+	}
+	result := cmd().(aiSwitchResultMsg)
+	if result.err != nil {
+		t.Fatalf("switch error: %v", result.err)
+	}
+	if got := strings.Join(result.out.Models, ","); got != "m1" {
+		t.Fatalf("switched models = %q, want the selected subset", got)
+	}
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "1 个模型") {
+		t.Fatalf("notice should include the model count: %q", notices)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"m1"`) || strings.Contains(string(raw), `"m2"`) {
+		t.Fatalf("settings.json should only carry the subset:\n%s", raw)
+	}
+}
+
+// TestAITabSwitchEmptySelectionBlocked 覆盖任务 1.2：空模型集在提交前拦截，
+// 不进入确认步骤，也不调用 SwitchManager。
+func TestAITabSwitchEmptySelectionBlocked(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("s"))
+	for i := 0; i < len(tab.flowCandidates); i++ {
+		tab.Update(tea.KeyMsg{Type: tea.KeySpace}) // 逐个取消勾选
+		if i < len(tab.flowCandidates)-1 {
+			tab.Update(runeKey("j"))
+		}
+	}
+	if len(tab.flowSelectedModels()) != 0 {
+		t.Fatalf("expected an empty selection, got %v", tab.flowSelectedModels())
+	}
+	_, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowSelectModel {
+		t.Fatalf("empty selection advanced the flow to %v", tab.flow)
+	}
+	msgs := runCmd(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %#v, want a single warning toast", msgs)
+	}
+	tm, ok := msgs[0].(toastMsg)
+	if !ok || !strings.Contains(tm.text, "不能为空") {
+		t.Fatalf("expected an empty-set toast, got %#v", msgs)
+	}
+	if _, err := os.Stat(tab.mgr.LLMPointer); !os.IsNotExist(err) {
+		t.Fatalf("pointer written despite the blocked switch: %v", err)
+	}
+}
+
+// TestAITabDefaultCursorFallsToFirstSelected 覆盖任务 2.2 的一半：档案默认模型
+// 不在勾选集合内时，默认模型游标落集合首项。
+func TestAITabDefaultCursorFallsToFirstSelected(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("s"))
+	tab.Update(tea.KeyMsg{Type: tea.KeySpace}) // 取消勾选档案默认模型 m1
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	models := tab.flowSelectedModels()
+	if strings.Join(models, ",") != "m2" {
+		t.Fatalf("selected = %v", models)
+	}
+	if got := models[tab.flowCursor]; got != "m2" {
+		t.Fatalf("default cursor = %q, want the first selected model", got)
+	}
+}
+
+// TestAITabModelOnlyCandidatesLimitedToPointer 覆盖任务 2.1/2.2：m 的候选只能是
+// 指针里的 Agent 模型集，提交时模型集不变。
+func TestAITabModelOnlyCandidatesLimitedToPointer(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	// 指针记录的模型集比档案小（档案有 m1、m2），m 必须只用指针里的集合。
+	pf := &llm.PointerFile{Version: 1, Agents: map[string]llm.AgentPointer{
+		"claude-code": {
+			Provider: "main", Models: []string{"m2"}, DefaultModel: "m2",
+			SwitchedAt: time.Now().Format(time.RFC3339),
+		},
+	}}
+	if err := llm.SavePointers(tab.mgr.LLMPointer, pf); err != nil {
+		t.Fatalf("SavePointers: %v", err)
+	}
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("m"))
+	if tab.flow != aiFlowSelectDefault {
+		t.Fatalf("flow = %v, want selectDefault directly", tab.flow)
+	}
+	if got := strings.Join(tab.flowCandidates, ","); got != "m2" {
+		t.Fatalf("candidates = %q, want only the pointer's Agent model set", got)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := tab.Update(runeKey("y"))
+	if cmd == nil {
+		t.Fatal("confirm did not return a switch command")
+	}
+	result := cmd().(aiSwitchResultMsg)
+	if result.err != nil {
+		t.Fatalf("model-only change error: %v", result.err)
+	}
+	if !result.onlyModel || strings.Join(result.out.Models, ",") != "m2" || result.out.DefaultModel != "m2" {
+		t.Fatalf("model-only result = %+v, want the pointer set unchanged", result.out)
+	}
+}
+
+// TestAITabAgentRowShowsModelCountAndDrift 覆盖任务 3.1：agent 行与 status 口径
+// 一致（默认模型 + 条数），档案缩集时附漂移标记，且不渲染凭据。
+func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	result := driveAISwitch(t, tab, 0, 0, "s").(aiSwitchResultMsg)
+	if result.err != nil {
+		t.Fatalf("switch error: %v", result.err)
+	}
+	collectAIToasts(t, tab, result)
+	view := tab.View()
+	if !strings.Contains(view, "main / m1（2 个模型）") {
+		t.Fatalf("agent row missing the model count:\n%s", view)
+	}
+	if strings.Contains(view, "sk-tui-secret") {
+		t.Fatal("credential rendered into the AI tab")
+	}
+
+	if _, err := tab.mgr.LLM.EditProvider(llm.EditProviderOptions{
+		Alias: "main", Models: []string{"m1"},
+	}); err != nil {
+		t.Fatalf("EditProvider: %v", err)
+	}
+	runAITabLoad(t, tab)
+	if view := tab.View(); !strings.Contains(view, "main / m1（2 个模型） ⚠") {
+		t.Fatalf("drift marker missing:\n%s", view)
+	}
+}
+
+// TestAITabSwitchHelpDocumentsMultiSelect 覆盖任务 1.3 的 Help 文案。
+func TestAITabSwitchHelpDocumentsMultiSelect(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.Update(runeKey("s"))
+	if help := tab.Help(); !strings.Contains(help, "space 勾选") {
+		t.Fatalf("multi-select help = %q", help)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if help := tab.Help(); !strings.Contains(help, "默认模型") {
+		t.Fatalf("default-model help = %q", help)
+	}
+}
+
+// TestAITabReloadDropsCacheAndReloads 验证后台同步触发的 Reload：先置回
+// loaded，经 aiLoadedMsg 回灌后恢复数据。
+func TestAITabReloadDropsCacheAndReloads(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	if !tab.loaded {
+		t.Fatal("ai tab should be loaded after load")
+	}
+	cmd := tab.Reload()
+	if tab.loaded {
+		t.Fatal("Reload must drop the loaded flag immediately")
+	}
+	if cmd == nil {
+		t.Fatal("expected a load command from Reload")
+	}
+	runAITabLoad(t, tab)
+	if !tab.loaded {
+		t.Fatal("ai tab should be loaded again after the reload lands")
+	}
+	if len(tab.providers) != 1 {
+		t.Fatalf("providers = %d after reload, want 1", len(tab.providers))
 	}
 }

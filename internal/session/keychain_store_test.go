@@ -12,13 +12,13 @@ import (
 func TestKeychainStoreSaveCommand(t *testing.T) {
 	var gotArgs []string
 	var gotStdin string
-	store := keychainStore{runner: func(args []string, stdin string) (string, error) {
+	store := keychainStore{slot: testSlot, runner: func(args []string, stdin string) (string, error) {
 		gotArgs, gotStdin = args, stdin
 		return "", nil
 	}}
 	cache := &SessionCache{SessionID: "sess-keychain"}
 
-	if err := store.Save(cache); err != nil {
+	if err := store.Save(testSlot, cache); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 	if len(gotArgs) != 1 || gotArgs[0] != "-i" {
@@ -31,7 +31,7 @@ func TestKeychainStoreSaveCommand(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	for _, want := range []string{
 		"add-generic-password", "-U", "-s", keychainServiceName(),
-		"-a", keychainAccount, "-w", encoded, "-T", keychainTrustedBinary,
+		"-a", keychainAccount(testSlot), "-w", encoded, "-T", keychainTrustedBinary,
 	} {
 		if !strings.Contains(gotStdin, want) {
 			t.Fatalf("security stdin %q missing %q", gotStdin, want)
@@ -45,14 +45,14 @@ func TestKeychainStoreLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal cache: %v", err)
 	}
-	store := keychainStore{runner: func(args []string, stdin string) (string, error) {
+	store := keychainStore{slot: testSlot, runner: func(args []string, stdin string) (string, error) {
 		if len(args) == 0 || args[0] != "find-generic-password" {
 			t.Fatalf("security args = %v, want find-generic-password", args)
 		}
 		return base64.StdEncoding.EncodeToString(data) + "\n", nil
 	}}
 
-	loaded, err := store.Load()
+	loaded, err := store.Load(testSlot)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -66,18 +66,18 @@ func TestKeychainStoreLoadMissing(t *testing.T) {
 		return "", errors.New("security: could not be found")
 	}}
 
-	loaded, err := store.Load()
+	loaded, err := store.Load(testSlot)
 	if err != nil || loaded != nil {
 		t.Fatalf("Load() = (%v, %v), want (nil, nil)", loaded, err)
 	}
 }
 
 func TestKeychainStoreFailureIsActionable(t *testing.T) {
-	store := keychainStore{runner: func([]string, string) (string, error) {
+	store := keychainStore{slot: testSlot, runner: func([]string, string) (string, error) {
 		return "", errors.New("security: keychain is locked")
 	}}
 
-	err := store.Save(&SessionCache{})
+	err := store.Save(testSlot, &SessionCache{})
 	if !errors.Is(err, ErrNoSecureSessionStore) {
 		t.Fatalf("Save() error = %v, want ErrNoSecureSessionStore", err)
 	}
@@ -95,11 +95,11 @@ func TestKeychainStoreFailureIncludesSecurityStderr(t *testing.T) {
 	if securityErr == nil {
 		t.Fatal("missing helper process state")
 	}
-	store := keychainStore{runner: func([]string, string) (string, error) {
+	store := keychainStore{slot: testSlot, runner: func([]string, string) (string, error) {
 		return "", &exec.ExitError{ProcessState: securityErr, Stderr: []byte("security: User interaction is not allowed.\n")}
 	}}
 
-	_, err := store.Load()
+	_, err := store.Load(testSlot)
 	if !errors.Is(err, ErrNoSecureSessionStore) {
 		t.Fatalf("Load() error = %v, want ErrNoSecureSessionStore", err)
 	}
@@ -115,11 +115,11 @@ func TestKeychainStoreFailureIncludesSecurityStderr(t *testing.T) {
 }
 
 func TestKeychainStoreClearMissing(t *testing.T) {
-	store := keychainStore{runner: func([]string, string) (string, error) {
+	store := keychainStore{slot: testSlot, runner: func([]string, string) (string, error) {
 		return "", errors.New("security: could not be found")
 	}}
 
-	if err := store.Clear(); err != nil {
+	if err := store.Clear(testSlot); err != nil {
 		t.Fatalf("Clear() error = %v, want nil for missing item", err)
 	}
 }

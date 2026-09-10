@@ -67,6 +67,7 @@ func (h *helpTab) Title() string     { return "Help" }
 func (h *helpTab) Help() string      { return "? / esc close" }
 func (h *helpTab) InputMode() bool   { return true }
 func (h *helpTab) Init() tea.Cmd     { return nil }
+func (h *helpTab) Reload() tea.Cmd   { return nil }
 func (h *helpTab) SetSize(w, hh int) { h.width, h.height = w, hh }
 
 func (h *helpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {

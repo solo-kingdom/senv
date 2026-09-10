@@ -9,14 +9,24 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fakeSyncSource 是可控的同步源：Status 返回固定快照，Push 记录调用次数。
+// fakeSyncSource 是可控的同步源：Status 返回固定快照，Push/Pull 记录调用，
+// Pull 的返回由 pullOut 注入。
 type fakeSyncSource struct {
-	state    SyncState
-	pushes   int
-	pushFail error
+	state       SyncState
+	pushes      int
+	pushFail    error
+	pulls       int
+	pullRefresh bool
+	pullOut     PullOutcome
 }
 
 func (f *fakeSyncSource) Status() SyncState { return f.state }
+
+func (f *fakeSyncSource) Pull(refresh bool) PullOutcome {
+	f.pulls++
+	f.pullRefresh = refresh
+	return f.pullOut
+}
 
 func (f *fakeSyncSource) Push() SyncState {
 	f.pushes++
@@ -146,5 +156,154 @@ func TestQuitImmediateWhenClean(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("expected tea.QuitMsg, got %T", cmd())
+	}
+}
+
+func TestPullSyncNilSourceIsNoop(t *testing.T) {
+	if cmd := pullSync(nil, true); cmd != nil {
+		t.Fatal("pullSync must return nil without a sync source (git mode)")
+	}
+}
+
+func TestInitRunsBackgroundPullWithRefreshFlag(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		src := &fakeSyncSource{}
+		mgrs := newFullManagers(t)
+		mgrs.Sync = src
+		mgrs.Refresh = refresh
+		m := New(mgrs)
+		runCmd(m.Init()) // the zero pull outcome needs no feedback
+		if src.pulls != 1 {
+			t.Fatalf("refresh=%v: pulls = %d, want exactly one background pull at startup", refresh, src.pulls)
+		}
+		if src.pullRefresh != refresh {
+			t.Fatalf("refresh=%v: Pull saw refresh=%v", refresh, src.pullRefresh)
+		}
+	}
+}
+
+// tabLoadedFlag reports the loaded flag of tabs that keep one; the second
+// return value is false for tabs without a loaded short-circuit (audit).
+func tabLoadedFlag(tab Tab) (loaded, hasFlag bool) {
+	switch tb := tab.(type) {
+	case *envTab:
+		return tb.loaded, true
+	case *textTab:
+		return tb.loaded, true
+	case *configTab:
+		return tb.loaded, true
+	case *sshTab:
+		return tb.loaded, true
+	case *aiTab:
+		return tb.loaded, true
+	case *historyTab:
+		return tb.loaded, true
+	default:
+		return false, false
+	}
+}
+
+// focusAllTabs walks through every tab and back to the first, feeding each
+// lazy load like a user pressing 1..N — so every tab is loaded before a test
+// asserts on reload behavior.
+func focusAllTabs(m Model) Model {
+	for i := range m.tabs {
+		out, cmd := m.Update(runeKey(string(rune('1' + i))))
+		m = out.(Model)
+		for _, msg := range runCmd(cmd) {
+			out, _ = m.Update(msg)
+			m = out.(Model)
+		}
+	}
+	// Land back on the first tab so the active tab has a loaded flag.
+	out, cmd := m.Update(runeKey("1"))
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	return m
+}
+
+func TestSyncPullWithoutChangesKeepsTabsLoaded(t *testing.T) {
+	src := &fakeSyncSource{}
+	m := focusAllTabs(syncModel(t, src))
+	for i, tab := range m.tabs {
+		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && !loaded {
+			t.Fatalf("precondition: tabs[%d] not loaded after focusing", i)
+		}
+	}
+	out, cmd := m.Update(syncPullMsg{out: PullOutcome{}})
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("expected a sync status refresh command even without changes")
+	}
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	if m.toast != "" {
+		t.Errorf("toast = %q, want none when nothing was applied", m.toast)
+	}
+	for i, tab := range m.tabs {
+		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && !loaded {
+			t.Errorf("tabs[%d] reloaded although the pull applied nothing", i)
+		}
+	}
+}
+
+func TestSyncPullAppliedReloadsTabsWithToast(t *testing.T) {
+	src := &fakeSyncSource{}
+	m := focusAllTabs(syncModel(t, src))
+	out, cmd := m.Update(syncPullMsg{out: PullOutcome{Applied: 2, MetadataUpdated: true}})
+	m = out.(Model)
+	// Reload drops every loaded flag immediately; inactive tabs self-heal via
+	// their Init on the next visit, the active tab recovers from the reload.
+	for i, tab := range m.tabs {
+		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && loaded {
+			t.Errorf("tabs[%d] kept its loaded flag after an applied pull", i)
+		}
+	}
+	if cmd == nil {
+		t.Fatal("expected toast + reload + status refresh commands")
+	}
+	sawToast := false
+	for _, msg := range runCmd(cmd) {
+		if toast, ok := msg.(toastMsg); ok && toast.text == "已从 server 更新 2 条" {
+			sawToast = true
+		}
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	if !sawToast {
+		t.Fatal("expected the applied-changes toast message")
+	}
+	if !strings.Contains(m.View(), "已从 server 更新 2 条") {
+		t.Errorf("view = %q, want the applied-changes toast", m.View())
+	}
+	if loaded, hasFlag := tabLoadedFlag(m.tabs[m.active]); hasFlag && !loaded {
+		t.Error("active tab did not finish reloading")
+	}
+	// Visiting an unloaded tab must issue its lazy reload.
+	if _, visit := m.Update(runeKey("2")); visit == nil {
+		t.Error("visiting an unloaded tab must issue a load command after an applied pull")
+	}
+}
+
+func TestSyncPullErrorShowsBannerWithoutToast(t *testing.T) {
+	src := &fakeSyncSource{}
+	m := focusAllTabs(syncModel(t, src))
+	out, _ := m.Update(syncPullMsg{out: PullOutcome{Err: errors.New("server 不可达")}})
+	m = out.(Model)
+	if !strings.Contains(m.View(), "server 不可达") {
+		t.Errorf("view = %q, want the pull error in the banner", m.View())
+	}
+	if m.toast != "" {
+		t.Errorf("toast = %q, want none on pull error", m.toast)
+	}
+	for i, tab := range m.tabs {
+		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && !loaded {
+			t.Errorf("tabs[%d] reloaded although the pull failed", i)
+		}
 	}
 }

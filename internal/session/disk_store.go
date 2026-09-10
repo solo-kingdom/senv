@@ -12,6 +12,13 @@ import (
 
 const diskCacheDirName = "senv"
 
+// diskCacheLegacyFileName is the pre-slot single-cache file name.
+const diskCacheLegacyFileName = "session.json"
+
+func diskCacheFileName(slot string) string {
+	return fmt.Sprintf("session-%s.json", slot)
+}
+
 // diskCacheStore is the explicit opt-in escape hatch for environments without
 // a platform secure store (headless macOS, CI). It keeps the historical file
 // hardening — 0700 directory, 0600 atomic no-follow writes, boot ID validation
@@ -30,7 +37,7 @@ func diskCacheBase() (string, error) {
 	return base, nil
 }
 
-func (diskCacheStore) Save(cache *SessionCache) error {
+func (diskCacheStore) Save(slot string, cache *SessionCache) error {
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
@@ -50,13 +57,21 @@ func (diskCacheStore) Save(cache *SessionCache) error {
 	if err := root.EnsureDir([]string{diskCacheDirName}, 0o700); err != nil {
 		return fmt.Errorf("failed to secure disk cache directory: %w", err)
 	}
-	if err := root.AtomicWrite([]string{diskCacheDirName, "session.json"}, data, 0o600); err != nil {
+	if err := root.AtomicWrite([]string{diskCacheDirName, diskCacheFileName(slot)}, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write disk cache: %w", err)
 	}
 	return nil
 }
 
-func (diskCacheStore) Load() (*SessionCache, error) {
+func (diskCacheStore) Load(slot string) (*SessionCache, error) {
+	return loadDiskCacheFile(diskCacheFileName(slot))
+}
+
+func (diskCacheStore) LoadLegacy() (*SessionCache, error) {
+	return loadDiskCacheFile(diskCacheLegacyFileName)
+}
+
+func loadDiskCacheFile(name string) (*SessionCache, error) {
 	base, err := diskCacheBase()
 	if err != nil {
 		return nil, err
@@ -69,7 +84,7 @@ func (diskCacheStore) Load() (*SessionCache, error) {
 		return nil, fmt.Errorf("failed to open disk cache: %w", err)
 	}
 	defer root.Close()
-	data, err := root.Read(diskCacheDirName, "session.json")
+	data, err := root.Read(diskCacheDirName, name)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -77,15 +92,23 @@ func (diskCacheStore) Load() (*SessionCache, error) {
 		return nil, fmt.Errorf("failed to read disk cache: %w", err)
 	}
 	var cache SessionCache
-	// Corrupt escape-hatch files are treated as "no session" and deliberately
-	// left in place for diagnosis rather than silently deleted.
 	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, nil
+		// Corrupt escape-hatch files are reported as unverifiable and left in
+		// place for diagnosis rather than silently deleted.
+		return nil, fmt.Errorf("%w: corrupt escape-hatch session cache; run: senv session clear --all", ErrSessionUnverifiable)
 	}
 	return &cache, nil
 }
 
-func (diskCacheStore) Clear() error {
+func (diskCacheStore) Clear(slot string) error {
+	return removeDiskCacheFile(diskCacheFileName(slot))
+}
+
+func (diskCacheStore) ClearLegacy() error {
+	return removeDiskCacheFile(diskCacheLegacyFileName)
+}
+
+func (diskCacheStore) ClearAll() error {
 	base, err := diskCacheBase()
 	if err != nil {
 		return err
@@ -98,7 +121,26 @@ func (diskCacheStore) Clear() error {
 		return fmt.Errorf("failed to open disk cache: %w", err)
 	}
 	defer root.Close()
-	if err := root.Remove(diskCacheDirName, "session.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := root.RemoveTree(diskCacheDirName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to remove disk cache: %w", err)
+	}
+	return nil
+}
+
+func removeDiskCacheFile(name string) error {
+	base, err := diskCacheBase()
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(base)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to open disk cache: %w", err)
+	}
+	defer root.Close()
+	if err := root.Remove(diskCacheDirName, name); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to remove disk cache: %w", err)
 	}
 	return nil

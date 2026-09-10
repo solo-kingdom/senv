@@ -17,6 +17,26 @@ const (
 	SaltSize = 32
 )
 
+// newVaultIterations is the PBKDF2 cost recorded when creating a vault. It is
+// crypto.DefaultIterations in production; test binaries may lower it to
+// LegacyIterations so suites that create many vaults do not pay the production
+// cost (under -race a 600k derivation is ~11x slower). Only
+// IterationsForNewVault and LowerIterationsForTesting touch it.
+var newVaultIterations = DefaultIterations
+
+// IterationsForNewVault reports the PBKDF2 cost to record for a newly created
+// vault. Production code must call this instead of hard-coding DefaultIterations
+// so tests can lower the cost consistently.
+func IterationsForNewVault() int {
+	return newVaultIterations
+}
+
+// LowerIterationsForTesting cuts new-vault PBKDF2 to LegacyIterations. It must
+// be called from TestMain before any test runs; production code never calls it.
+func LowerIterationsForTesting() {
+	newVaultIterations = LegacyIterations
+}
+
 // DeriveKey derives a 256-bit key from a password using PBKDF2 with the
 // legacy iteration count. Only meaningful for metadata that predates KDF
 // parameter versioning; prefer DeriveKeyWithIterations with the iteration

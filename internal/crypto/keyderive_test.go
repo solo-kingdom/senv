@@ -27,6 +27,15 @@ func TestDeriveKeyWithIterations(t *testing.T) {
 	}
 }
 
+// TestIterationsForNewVaultDefaultsToProductionCost guards the test seam: only
+// test binaries that explicitly opt in may lower the vault-creation cost, so
+// this package (which does not opt in) must still report the production value.
+func TestIterationsForNewVaultDefaultsToProductionCost(t *testing.T) {
+	if got := IterationsForNewVault(); got != DefaultIterations {
+		t.Fatalf("IterationsForNewVault() = %d, want production default %d", got, DefaultIterations)
+	}
+}
+
 func TestDeriveKeyUsesLegacyIterations(t *testing.T) {
 	salt := GenerateSaltFixed()
 	key := DeriveKey("pw", salt)

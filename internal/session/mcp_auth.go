@@ -3,21 +3,19 @@ package session
 import (
 	"crypto/sha256"
 	"errors"
-	"time"
 )
 
-const MCPRevocationMessage = "session expired or revoked; restart senv session and MCP server"
+const MCPRevocationMessage = "session expired, cleared, or key changed; run: senv session start"
 
 var ErrMCPRevoked = errors.New(MCPRevocationMessage)
 
-// MCPAuthorization is an opaque, non-secret fingerprint of the exact session
+// MCPAuthorization is an opaque, non-secret fingerprint of the vault binding
 // that authorized an MCP server at startup. It deliberately retains no salt,
-// cached key, password, or manager.
+// cached key, password, or manager, and it is NOT tied to one session instance:
+// re-running `senv session start` against the same vault and key keeps a running
+// MCP server valid (see ADR-0010).
 type MCPAuthorization struct {
 	sessionID    string
-	timeoutType  string
-	expiresAt    time.Time
-	bootID       string
 	dataPathHash string
 	saltHash     [sha256.Size]byte
 	keyHash      [sha256.Size]byte
@@ -34,9 +32,6 @@ func fingerprintText(value string) [sha256.Size]byte {
 func authorizationFor(cache *SessionCache, metadataSalt string, key []byte) *MCPAuthorization {
 	return &MCPAuthorization{
 		sessionID:    cache.SessionID,
-		timeoutType:  cache.TimeoutType,
-		expiresAt:    cache.ExpiresAt,
-		bootID:       cache.BootID,
 		dataPathHash: cache.DataPathHash,
 		saltHash:     fingerprintText(metadataSalt),
 		keyHash:      fingerprintSecret(key),
@@ -47,11 +42,7 @@ func (a *MCPAuthorization) matches(cache *SessionCache, metadataSalt string, key
 	if a == nil || cache == nil {
 		return false
 	}
-	return a.sessionID == cache.SessionID &&
-		a.timeoutType == cache.TimeoutType &&
-		a.expiresAt.Equal(cache.ExpiresAt) &&
-		a.bootID == cache.BootID &&
-		a.dataPathHash == cache.DataPathHash &&
+	return a.dataPathHash == cache.DataPathHash &&
 		a.saltHash == fingerprintText(metadataSalt) &&
 		a.keyHash == fingerprintSecret(key)
 }

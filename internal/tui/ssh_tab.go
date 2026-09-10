@@ -120,6 +120,13 @@ func (t *sshTab) Init() tea.Cmd {
 	return t.load()
 }
 
+// Reload drops cached data and reloads; the top level calls it after a
+// background sync applies remote changes.
+func (t *sshTab) Reload() tea.Cmd {
+	t.loaded = false
+	return t.load()
+}
+
 func (t *sshTab) load() tea.Cmd {
 	mgr := t.mgr.SSH
 	return func() tea.Msg {

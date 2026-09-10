@@ -32,6 +32,34 @@ _Avoid_: 登录/登出（会话含义）
 client 本地保存的口令派生密钥缓存，用于免重复输口令；与 server 无关。client 检测到被屏蔽时清除它，本地加密工作副本保留。
 _Avoid_: 会话（server 会话含义）、session（歧义场合）
 
+**持久会话（Persistent Session）**:
+`senv session start` 落盘到安全存储的免密凭据，其有效期内所有命令可复用，直到到期、失效或被清除。
+_Avoid_: 登录、登录状态、session（泛指时）
+
+**临时认证（Ephemeral Auth）**:
+无持久会话时，单次命令内由口令派生的密钥；仅当前进程内复用，不落盘、不改变会话状态。
+_Avoid_: 会话、临时会话
+
+**续期（Refresh）**:
+持久会话仍有效时，凭缓存密钥重签有效期、不重新验证口令的动作；与需口令的 `session start` 区分。
+_Avoid_: 刷新（泛指界面刷新时）、重新登录
+
+**到期（Expired）**:
+持久会话的有效时间点已过，与绑定前提是否变化无关。
+_Avoid_: 过期（统称到期/失效/不可判定时）
+
+**失效（Invalidated）**:
+持久会话的成立前提不再满足（如系统已重启、所绑定的 vault 已变），与时间无关。
+_Avoid_: 过期
+
+**不可判定（Unverifiable）**:
+环境故障导致无法确证持久会话有效或失效；缓存保留，既不按到期也不按失效处理。
+_Avoid_: 过期、失效
+
+**安全存储（Secure Store）**:
+持久会话的落盘位置：macOS 登录钥匙串，或经校验的内存文件系统；只有显式选择磁盘逃生舱才落持久磁盘。
+_Avoid_: 缓存文件（泛指时）、Keychain（泛指平台存储时）
+
 **工作副本（Working Copy）**:
 client 本地目录中的加密数据文件，是唯一的编辑现场；同步通道只做 push/pull。
 
@@ -89,21 +117,37 @@ _Avoid_: 接口类型（泛）、协议（指 agent 侧协议族时）
 Coding Agent 使用的 API 方言，分 Anthropic Messages 与 OpenAI 兼容两族；同一份接入地址写进不同族 agent 的配置时形态不同。
 _Avoid_: 兼容性处理（实现意味）、适配（泛指时）
 
-**Coding Agent**:
-接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider 与模型。
-_Avoid_: agent（泛指时）、客户端
+**Provider 模型集**:
+一份 LLM Provider 档案声明的全部可用模型；是所有切换的候选来源，与接入地址、凭据同属该档案。
+_Avoid_: 模型列表（泛指时）、可用模型、模型目录（指公开数据源时）
 
 **模型目录**:
-models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填充 LLM Provider 的可用模型集。自定义模型不依赖它。
-_Avoid_: 模型列表（指单个 LLM Provider 的模型集时）
+models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填充 Provider 模型集。自定义模型不依赖它。
+_Avoid_: 模型列表（泛指时）
+
+**Coding Agent**:
+接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider，并写入 Agent 模型集与默认模型。
+_Avoid_: agent（泛指时）、客户端
+
+**Agent 模型集**:
+某次切换后写入某个 Coding Agent、由该 agent 在自己的模型选择器里切换的模型集合；取自 Provider 模型集，默认全选，随切换时的选择而定。
+_Avoid_: 模型列表（泛指时）、可用模型（指 provider 侧时）
+
+**默认模型**:
+切换后 Coding Agent 起始使用的那个模型；默认沿用 provider 档案的默认模型，可被单次切换覆盖且不回写档案。
+_Avoid_: 首选模型、主模型
 
 **切换**:
-把某个 Coding Agent 指向指定 LLM Provider 及其某个模型的动作；senv 是唯一事实源，改写 agent 配置后即时生效。
+把某个 Coding Agent 指向指定 LLM Provider，并为其选定 Agent 模型集与默认模型的动作；senv 是唯一事实源，改写 agent 配置后即时生效。
 _Avoid_: 激活（指 env 分组时）
 
 **当前指向**:
-单个 Coding Agent 当前使用的 LLM Provider 与模型记录；属于本机状态，不随 vault 同步。
+单个 Coding Agent 最近一次被切换后的 LLM Provider、Agent 模型集与默认模型记录；属于本机状态，不随 vault 同步。
 _Avoid_: 指针（实现意味）、profile（多预设含义，未采用）
+
+**漂移（Drift）**:
+senv 侧事实源（Provider 模型集、MCP Server 档案）与 agent 侧派生产物（Agent 模型集、已导出条目）不再一致、且 senv 不回读 agent 配置去自动纠正的状态。
+_Avoid_: 不一致（泛指时）、同步冲突（指 vault 同步时）、失配
 
 ### MCP 接入
 

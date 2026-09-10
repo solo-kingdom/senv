@@ -67,6 +67,10 @@ func (s *searchTab) InputMode() bool { return true }
 
 func (s *searchTab) Init() tea.Cmd { return s.gather() }
 
+// Reload re-runs the local cross-type scan so results reflect data applied by
+// a background sync while the overlay is open.
+func (s *searchTab) Reload() tea.Cmd { return s.gather() }
+
 func (s *searchTab) SetSize(w, h int) { s.width, s.height = w, h }
 
 // --- messages ---

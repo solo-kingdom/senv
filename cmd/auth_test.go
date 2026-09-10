@@ -336,3 +336,39 @@ func captureStdout(t *testing.T, fn func()) string {
 	_ = w.Close()
 	return <-done
 }
+
+func TestResolveAuthDoesNotPersistSessionByDefault(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+
+	if _, err := resolveAuth(cfg, data, stubPrompter("correct-secret")); err != nil {
+		t.Fatalf("resolveAuth: %v", err)
+	}
+	cache, err := session.NewManager(cfg, data).LoadCache()
+	if err != nil || cache != nil {
+		t.Fatalf("default password auth must stay ephemeral: cache=%v err=%v", cache, err)
+	}
+}
+
+func TestResolveAuthAutoStartOptInPersistsSession(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+	store := storage.NewManager(cfg, data)
+	settings, err := store.LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	settings.Session.AutoStart = true
+	if err := store.SaveSettings(settings); err != nil {
+		t.Fatalf("SaveSettings: %v", err)
+	}
+	clearAuthMemo()
+
+	if _, err := resolveAuth(cfg, data, stubPrompter("correct-secret")); err != nil {
+		t.Fatalf("resolveAuth: %v", err)
+	}
+	cache, err := session.NewManager(cfg, data).LoadCache()
+	if err != nil || cache == nil {
+		t.Fatalf("auto_start must persist a session: cache=%v err=%v", cache, err)
+	}
+}

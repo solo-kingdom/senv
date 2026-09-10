@@ -3,7 +3,6 @@
 ## Purpose
 把 provider 档案浏览与 agent 切换纳入 `senv tui` 全屏界面：浏览时不得泄露凭据，切换复用 agents 子 change 的 SwitchManager（原子写 + 指针 + 回滚），让用户不离开 TUI 即可完成「哪个 agent 用哪个 provider 的哪个模型」。
 ## Requirements
-
 ### Requirement: AI Tab 注册
 `senv tui` 在 vault 解锁后 SHALL 注册 AI Tab；`tui.Managers` 的 LLM 管理器为 nil（如 git 模式）时 SHALL 跳过注册且不影响其他 Tab。
 
@@ -35,11 +34,19 @@ AI Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模
 - **THEN** Tab 正常渲染空态提示，引导执行 `senv ai provider add`
 
 ### Requirement: Tab 内切换操作
-AI Tab SHALL 提供切换与换模型键位：`s` 以左栏选中的 provider 为目标，对右栏选中的 agent 执行切换（选择该 provider 模型集中的模型后确认）；`m` 对右栏已指向某 provider 的 agent 仅更换模型（provider 不变）；两者均复用 SwitchManager 的原子写回与回滚。成功后 SHALL 刷新指针展示并提示结果（codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
+AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provider 为目标，对右栏选中的 agent 执行切换——先多选 Agent 模型集（space 逐个勾选/取消，进入时默认全选 Provider 模型集），再选定默认模型（默认取档案默认模型）后确认；`m` 对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 provider 当前写入该 agent 的 Agent 模型集内，不改动模型集；两者均复用 SwitchManager 的原子写回与回滚。模型集为空时 MUST NOT 提交切换。成功后 SHALL 刷新指针展示并提示结果（含模型集条数与默认模型；codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
 
 #### Scenario: 切换成功
-- **WHEN** 用户对 provider main 按 `s` 并在右栏选中 claude-code，选择模型 m1 后确认
-- **THEN** TUI 调用 SwitchManager 成功，agent 行立即显示 `main / m1`，出现成功提示
+- **WHEN** 用户对 provider main 按 `s` 并在右栏选中 claude-code，勾选两个模型、选定默认模型后确认
+- **THEN** TUI 调用 SwitchManager 成功，agent 行立即显示 `main / <默认模型>（2 个模型）`，出现成功提示
+
+#### Scenario: 默认全选
+- **WHEN** 用户进入 `s` 的模型集选择步骤后不做任何勾选调整
+- **THEN** 提交的 Agent 模型集等于该 provider 的 Provider 模型集全集
+
+#### Scenario: 空模型集被拦截
+- **WHEN** 用户取消勾选全部模型后确认
+- **THEN** 界面提示模型集不能为空，不调用 SwitchManager，配置与指针不变
 
 #### Scenario: 切换失败回显
 - **WHEN** 切换执行失败（如目标配置目录不可写）
@@ -52,6 +59,14 @@ AI Tab SHALL 提供切换与换模型键位：`s` 以左栏选中的 provider �
 #### Scenario: 仅换模型无未指向报错
 - **WHEN** 用户对未指向任何 provider 的 agent 按 `m`
 - **THEN** 界面提示先执行切换（`s`），不调用 SwitchManager
+
+#### Scenario: 仅换模型限定在已写入集合内
+- **WHEN** agent 当前 Agent 模型集为 m1、m2，用户按 `m`
+- **THEN** 候选只有 m1、m2，选择后只更新默认模型，模型集与 provider 指向不变
+
+#### Scenario: 漂移展示与 status 一致
+- **WHEN** 指针中的 Agent 模型集与 provider 档案当前模型集不一致
+- **THEN** agent 行附带漂移提示，判定不依赖解析 agent 配置文件
 
 ### Requirement: 凭据安全
 AI Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭据解密 SHALL 仅在 SwitchManager 内部完成，不进入 TUI 状态；新建凭据的遮蔽输入 MUST NOT 被写入任何渲染文本、日志或提示条。
@@ -97,3 +112,4 @@ AI Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>
 #### Scenario: 全界面无明文
 - **WHEN** 用户在 AI Tab 内浏览并完成任意操作
 - **THEN** 界面渲染与状态中均不含 key 明文（凭据引用文本除外）
+

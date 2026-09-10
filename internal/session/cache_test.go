@@ -71,7 +71,7 @@ func TestSessionCacheFallbackIsRandomAndPrivate(t *testing.T) {
 	t.Setenv("TMPDIR", fallbackRoot)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	setRuntimeProbe(t, runtimeFilesystemMemory, nil)
-	_, _, manager := startSessionForCacheTest(t, "restart")
+	_, data, manager := startSessionForCacheTest(t, "restart")
 
 	entries, err := os.ReadDir(fallbackRoot)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestSessionCacheFallbackIsRandomAndPrivate(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("fallback mode=%v err=%v, want 0700", info.Mode(), err)
 	}
-	cacheInfo, err := os.Stat(filepath.Join(fallbackRoot, name, cacheFileName()))
+	cacheInfo, err := os.Stat(filepath.Join(fallbackRoot, name, cacheFileName(vaultSlotFor(data))))
 	if err != nil || cacheInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("cache mode=%v err=%v, want 0600", cacheInfo.Mode(), err)
 	}
@@ -131,14 +131,14 @@ func TestSessionCacheSymlinkTargetRejected(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(runtimeDir, "senv"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	cfg, data := setupProject(t, "correct-secret")
 	sentinel := filepath.Join(t.TempDir(), "sentinel")
 	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(sentinel, filepath.Join(runtimeDir, "senv", cacheFileName())); err != nil {
+	if err := os.Symlink(sentinel, filepath.Join(runtimeDir, "senv", cacheFileName(vaultSlotFor(data)))); err != nil {
 		t.Fatal(err)
 	}
-	cfg, data := setupProject(t, "correct-secret")
 	timeout, _ := ParseTimeout("restart")
 	if err := sessionManagerForTest(t, cfg, data).StartSession("correct-secret", timeout); err == nil {
 		t.Fatal("cache symlink was accepted")

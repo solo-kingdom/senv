@@ -106,6 +106,13 @@ func (t *textTab) Init() tea.Cmd {
 	return t.load()
 }
 
+// Reload drops cached data and reloads; the top level calls it after a
+// background sync applies remote changes.
+func (t *textTab) Reload() tea.Cmd {
+	t.loaded = false
+	return t.load()
+}
+
 func (t *textTab) load() tea.Cmd {
 	mgr := t.mgr.Text
 	return func() tea.Msg {

@@ -15,8 +15,12 @@ import (
 var ErrNoSecureSessionStore = errors.New("no secure session store available")
 
 const (
-	keychainAccount       = "senv.v1"
+	// keychainLegacyAccount is the pre-slot account holding one cache for all vaults.
+	keychainLegacyAccount = "senv.v1"
 	keychainTrustedBinary = "/usr/bin/security"
+	// keychainClearAllLimit bounds the delete loop; many vaults are fine, an
+	// unbounded loop is not.
+	keychainClearAllLimit = 1000
 )
 
 // securityRunner is the seam used by tests; production shells out to the
@@ -35,11 +39,18 @@ func keychainServiceName() string {
 	return fmt.Sprintf("senv.session.%d", os.Getuid())
 }
 
-// keychainStore persists the session cache as a login-keychain generic
-// password. The payload is base64(JSON) so the interactive command line needs
-// no quoting and the derived key never appears in process argv.
+// keychainAccount is the per-vault account name; each vault slot gets its own
+// generic-password item.
+func keychainAccount(slot string) string {
+	return keychainLegacyAccount + "." + slot
+}
+
+// keychainStore persists session caches as login-keychain generic passwords.
+// The payload is base64(JSON) so the interactive command line needs no quoting
+// and the derived key never appears in process argv.
 type keychainStore struct {
 	runner securityRunner
+	slot   string
 }
 
 func (s keychainStore) run(args []string, stdin string) (string, error) {
@@ -79,7 +90,7 @@ func isSecurityItemNotFound(err error) bool {
 	return strings.Contains(err.Error(), "could not be found")
 }
 
-func (s keychainStore) Save(cache *SessionCache) error {
+func (s keychainStore) Save(slot string, cache *SessionCache) error {
 	data, err := json.Marshal(cache)
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
@@ -88,7 +99,7 @@ func (s keychainStore) Save(cache *SessionCache) error {
 	// security -i reads commands from stdin, keeping the secret off argv.
 	command := fmt.Sprintf(
 		"add-generic-password -U -s %s -a %s -w %s -T %s\n",
-		keychainServiceName(), keychainAccount, encoded, keychainTrustedBinary,
+		keychainServiceName(), keychainAccount(slot), encoded, keychainTrustedBinary,
 	)
 	if _, err := s.run([]string{"-i"}, command); err != nil {
 		return err
@@ -96,9 +107,17 @@ func (s keychainStore) Save(cache *SessionCache) error {
 	return nil
 }
 
-func (s keychainStore) Load() (*SessionCache, error) {
+func (s keychainStore) Load(slot string) (*SessionCache, error) {
+	return s.loadAccount(keychainAccount(slot))
+}
+
+func (s keychainStore) LoadLegacy() (*SessionCache, error) {
+	return s.loadAccount(keychainLegacyAccount)
+}
+
+func (s keychainStore) loadAccount(account string) (*SessionCache, error) {
 	output, err := s.run(
-		[]string{"find-generic-password", "-s", keychainServiceName(), "-a", keychainAccount, "-w"},
+		[]string{"find-generic-password", "-s", keychainServiceName(), "-a", account, "-w"},
 		"",
 	)
 	if isSecurityItemNotFound(err) {
@@ -113,15 +132,38 @@ func (s keychainStore) Load() (*SessionCache, error) {
 	}
 	var cache SessionCache
 	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal keychain cache: %w", err)
+		return nil, fmt.Errorf("%w: corrupt keychain session cache; run: senv session clear --all", ErrSessionUnverifiable)
 	}
 	return &cache, nil
 }
 
-func (s keychainStore) Clear() error {
-	_, err := s.run([]string{"delete-generic-password", "-s", keychainServiceName()}, "")
+func (s keychainStore) Clear(slot string) error {
+	return s.clearAccount(keychainAccount(slot))
+}
+
+func (s keychainStore) ClearLegacy() error {
+	return s.clearAccount(keychainLegacyAccount)
+}
+
+func (s keychainStore) clearAccount(account string) error {
+	_, err := s.run([]string{"delete-generic-password", "-s", keychainServiceName(), "-a", account}, "")
 	if isSecurityItemNotFound(err) {
 		return nil
 	}
 	return err
+}
+
+// ClearAll deletes every senv item under this user's service. Iterating the
+// service-scoped delete covers both per-vault accounts and the legacy account.
+func (s keychainStore) ClearAll() error {
+	for i := 0; i < keychainClearAllLimit; i++ {
+		_, err := s.run([]string{"delete-generic-password", "-s", keychainServiceName()}, "")
+		if isSecurityItemNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("failed to clear keychain session caches: exceeded %d items", keychainClearAllLimit)
 }

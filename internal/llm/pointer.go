@@ -27,10 +27,16 @@ var (
 	ErrPointerCorrupt  = errors.New("agent pointer file corrupt")
 )
 
-// AgentPointer 记录单个 agent 的当前指向。
+// AgentPointer 记录单个 agent 的当前指向：provider、Agent 模型集与默认模型。
 type AgentPointer struct {
-	Provider   string `json:"provider"`
-	Model      string `json:"model"`
+	Provider string `json:"provider"`
+	// Models 是写入该 agent 配置的 Agent 模型集，顺序即写入顺序。
+	Models []string `json:"models,omitempty"`
+	// DefaultModel 是该 agent 的起始模型，属于 Models。
+	DefaultModel string `json:"default_model,omitempty"`
+	// Model 是 version 1 遗留字段：仅在读取旧指针时出现，读取后归一进
+	// Models/DefaultModel，写回时不再产生。
+	Model      string `json:"model,omitempty"`
 	SwitchedAt string `json:"switched_at"` // RFC3339
 }
 
@@ -59,14 +65,15 @@ func (pf *PointerFile) Get(agentID string) (AgentPointer, bool) {
 }
 
 // Set 记录或覆盖 agent 指针，时间戳取当前时刻。
-func (pf *PointerFile) Set(agentID, provider, model string) {
+func (pf *PointerFile) Set(agentID, provider string, models []string, defaultModel string) {
 	if pf.Agents == nil {
 		pf.Agents = map[string]AgentPointer{}
 	}
 	pf.Agents[agentID] = AgentPointer{
-		Provider:   provider,
-		Model:      model,
-		SwitchedAt: time.Now().Format(time.RFC3339),
+		Provider:     provider,
+		Models:       append([]string(nil), models...),
+		DefaultModel: defaultModel,
+		SwitchedAt:   time.Now().Format(time.RFC3339),
 	}
 }
 
@@ -90,6 +97,16 @@ func LoadPointers(path string) (*PointerFile, error) {
 		if _, err := p.SwitchedAtTime(); err != nil {
 			return nil, fmt.Errorf("%w: agent %q: %v", ErrPointerCorrupt, id, errors.Unwrap(err))
 		}
+		// version 1 兼容：只有 model 字段的旧记录读作单元素集。旧记录描述的
+		// 就是「配置里确实只有这一个模型」，归一而非要求重新切换。
+		if len(p.Models) == 0 && p.Model != "" {
+			p.Models = []string{p.Model}
+			if p.DefaultModel == "" {
+				p.DefaultModel = p.Model
+			}
+		}
+		p.Model = ""
+		pf.Agents[id] = p
 	}
 	return &pf, nil
 }

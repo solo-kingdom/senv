@@ -195,6 +195,14 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authRes
 	if stale {
 		_ = sm.ClearSession()
 	}
+
+	// 5b. Opt-in only: rebuild a persistent session after a successful password
+	// prompt. Default off, so password auth normally stays ephemeral.
+	if sm.AutoStartEnabled() {
+		if timeout, terr := sessionTimeoutFromSettings(configPath, dataPath); terr == nil && timeout != nil {
+			_ = sm.StartSession(password, timeout)
+		}
+	}
 	auth := &authResult{storage: store, password: password}
 	storeAuthMemo(configPath, dataPath, auth)
 	return auth, nil

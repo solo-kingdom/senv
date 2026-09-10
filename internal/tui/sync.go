@@ -17,14 +17,38 @@ type SyncState struct {
 	Err   error
 }
 
-// SyncSource 提供自动同步状态与写后推送。server 模式且开启 auto_sync 时由
-// cmd 层注入；git 模式或关闭 auto_sync 时为 nil，TUI 不显示同步状态，也不
-// 触发任何 push（见 tui-viewer 的同步状态可见性要求）。
+// PullOutcome 汇总一次后台拉取。零值表示没有网络动作（节流/锁忙跳过）或
+// 远端无变更。Err 含 client 被屏蔽的情况，调用方可用 errors.Is 判别。
+type PullOutcome struct {
+	Applied         int
+	MetadataUpdated bool
+	Err             error
+}
+
+// SyncSource 提供自动同步状态、写后推送与后台拉取。server 模式且开启
+// auto_sync 时由 cmd 层注入；git 模式或关闭 auto_sync 时为 nil，TUI 不显示
+// 同步状态，也不触发任何 push/pull（见 tui-viewer 的同步状态可见性要求）。
 type SyncSource interface {
 	// Status 只读本地状态（待推送条数 / 最近同步时间），不得发起网络请求。
 	Status() SyncState
 	// Push 在内部预算内做一次 best-effort 推送，返回推送后的状态。
 	Push() SyncState
+	// Pull 在内部预算内做一次 best-effort 拉取；refresh=true 绕过节流窗口。
+	// 不打印、不退出进程：结果只反映在返回的 outcome 里。
+	Pull(refresh bool) PullOutcome
+}
+
+// syncPullMsg 携带一次后台拉取的结果。
+type syncPullMsg struct{ out PullOutcome }
+
+// pullSync runs one best-effort background pull (the budget lives in the
+// injected SyncSource). It is issued at startup so the TUI renders local data
+// first and converges on the server state once the pull lands.
+func pullSync(src SyncSource, refresh bool) tea.Cmd {
+	if src == nil {
+		return nil
+	}
+	return func() tea.Msg { return syncPullMsg{out: src.Pull(refresh)} }
 }
 
 // syncStatusMsg 携带一次 Status/Push 的结果。
@@ -47,6 +71,22 @@ func (m Model) pushSync() tea.Cmd {
 	}
 	src := m.sync
 	return func() tea.Msg { return syncStatusMsg{state: src.Push()} }
+}
+
+// reloadAllTabs asks every tab to drop its cached data and reload, so the UI
+// converges on the working copy after a background pull applies changes. Tabs
+// are held by pointer, so the reloads land on the live tab instances.
+func reloadAllTabs(m Model) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, t := range m.tabs {
+		if c := t.Reload(); c != nil {
+			cmds = append(cmds, c)
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // syncBadge renders the persistent sync status for the bottom bar. An empty

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,8 +17,8 @@ func TestPointerRoundTrip(t *testing.T) {
 	}
 
 	pf := &PointerFile{}
-	pf.Set("claude-code", "p1", "m1")
-	pf.Set("opencode", "p2", "m2")
+	pf.Set("claude-code", "p1", []string{"m1", "m2"}, "m2")
+	pf.Set("opencode", "p2", []string{"m3"}, "m3")
 	if err := SavePointers(path, pf); err != nil {
 		t.Fatalf("SavePointers() error = %v", err)
 	}
@@ -38,8 +39,15 @@ func TestPointerRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("Get(claude-code) not found after round trip")
 	}
-	if p.Provider != "p1" || p.Model != "m1" {
-		t.Fatalf("pointer = %+v, want provider p1 model m1", p)
+	if p.Provider != "p1" || p.DefaultModel != "m2" {
+		t.Fatalf("pointer = %+v, want provider p1 default m2", p)
+	}
+	// Agent 模型集保序落盘。
+	if len(p.Models) != 2 || p.Models[0] != "m1" || p.Models[1] != "m2" {
+		t.Fatalf("Models = %v, want [m1 m2]", p.Models)
+	}
+	if raw := string(mustRead(t, path)); !strings.Contains(raw, "\"models\"") || strings.Contains(raw, "\"model\"") {
+		t.Fatalf("pointer file should carry models and not the legacy model field: %s", raw)
 	}
 	if _, err := p.SwitchedAtTime(); err != nil {
 		t.Fatalf("SwitchedAtTime() error = %v", err)
@@ -71,7 +79,7 @@ func TestPointerSaveKeepsOldOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-pointers.json")
 	pf := &PointerFile{}
-	pf.Set("claude-code", "p1", "m1")
+	pf.Set("claude-code", "p1", []string{"m1"}, "m1")
 	if err := SavePointers(path, pf); err != nil {
 		t.Fatalf("SavePointers() error = %v", err)
 	}
@@ -92,7 +100,7 @@ func TestPointerSaveKeepsOldOnFailure(t *testing.T) {
 func TestPointerSetTimestamps(t *testing.T) {
 	pf := &PointerFile{}
 	before := time.Now()
-	pf.Set("a", "p", "m")
+	pf.Set("a", "p", []string{"m"}, "m")
 	p1, _ := pf.Get("a")
 	ts1, err := p1.SwitchedAtTime()
 	if err != nil {

@@ -63,6 +63,12 @@ func (t *auditTab) Init() tea.Cmd {
 	return t.load()
 }
 
+// Reload re-reads the local audit file; the top level calls it after a
+// background sync applies remote changes (new audit rows may have appeared).
+func (t *auditTab) Reload() tea.Cmd {
+	return t.load()
+}
+
 func (t *auditTab) load() tea.Cmd {
 	source := t.source
 	return func() tea.Msg {

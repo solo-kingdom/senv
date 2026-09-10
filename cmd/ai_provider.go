@@ -24,6 +24,22 @@ func getAIProviderManager() (*llm.ProviderManager, error) {
 	return llm.NewProviderManager(auth.storage, auth.password), nil
 }
 
+// tryGetAIProviderManager 只在无需交互的前提下解析 vault（进程内 memo 或
+// 有效会话缓存），拿不到时返回 nil 而不提示密码。供 `senv ai status` 这类
+// 「有档案才好、没档案也能用」的只读命令做增强信息（漂移提示）。
+func tryGetAIProviderManager() *llm.ProviderManager {
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), func(string) (string, error) {
+		return "", ErrNeedSession
+	})
+	if err != nil {
+		return nil
+	}
+	if auth.hasKey() {
+		return llm.NewProviderManagerWithKey(auth.storage, auth.key)
+	}
+	return llm.NewProviderManager(auth.storage, auth.password)
+}
+
 var aiProviderCmd = &cobra.Command{
 	Use:   "provider",
 	Short: "Manage LLM provider profiles",

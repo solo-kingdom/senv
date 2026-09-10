@@ -6,7 +6,7 @@ import (
 )
 
 func TestDefaultSessionStorePlatformSelection(t *testing.T) {
-	store := defaultSessionStore()
+	store := defaultSessionStoreFor("0123456789abcdef")
 	if runtime.GOOS == "darwin" {
 		if _, ok := store.(keychainStore); !ok {
 			t.Fatalf("darwin default store = %T, want keychainStore", store)

@@ -94,8 +94,8 @@ func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
 			Agent     string `json:"agent"`
 			Supported bool   `json:"supported"`
 			Pointer   *struct {
-				Provider string `json:"provider"`
-				Model    string `json:"model"`
+				Provider     string `json:"provider"`
+				DefaultModel string `json:"default_model"`
 			} `json:"pointer"`
 			ConfigPath string `json:"config_path"`
 		} `json:"agents"`
@@ -106,21 +106,21 @@ func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
 	byAgent := map[string]struct {
 		Supported bool
 		Pointer   *struct {
-			Provider string `json:"provider"`
-			Model    string `json:"model"`
+			Provider     string `json:"provider"`
+			DefaultModel string `json:"default_model"`
 		}
 	}{}
 	for _, a := range payload.Agents {
 		byAgent[a.Agent] = struct {
 			Supported bool
 			Pointer   *struct {
-				Provider string `json:"provider"`
-				Model    string `json:"model"`
+				Provider     string `json:"provider"`
+				DefaultModel string `json:"default_model"`
 			}
 		}{a.Supported, a.Pointer}
 	}
 	cc := byAgent["claude-code"]
-	if !cc.Supported || cc.Pointer == nil || cc.Pointer.Provider != "main" || cc.Pointer.Model != "m1" {
+	if !cc.Supported || cc.Pointer == nil || cc.Pointer.Provider != "main" || cc.Pointer.DefaultModel != "m1" {
 		t.Fatalf("claude-code status = %+v", cc)
 	}
 	oc := byAgent["opencode"]

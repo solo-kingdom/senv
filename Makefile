@@ -15,6 +15,8 @@ GOCMD=go
 GOBUILD=$(GOCMD) build $(LDFLAGS)
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
+# 额外的 go test 参数（如 -count=1 禁用结果缓存）；默认留空以复用缓存
+GOTESTFLAGS?=
 GOGET=$(GOCMD) get
 GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
@@ -28,7 +30,7 @@ YELLOW=\033[0;33m
 RED=\033[0;31m
 NC=\033[0m # No Color
 
-.PHONY: all build clean install uninstall test coverage lint fmt vet help
+.PHONY: all build clean install uninstall test test-race coverage coverage-summary lint fmt vet check check-fast help
 
 all: build
 
@@ -70,22 +72,27 @@ clean:
 	rm -f coverage.out coverage.html
 	@echo "$(YELLOW)Clean complete$(NC)"
 
-# 运行测试
+# 运行测试（默认不带 -race：快；提交前用 test-race 或 check-full）
 test:
 	@echo "$(GREEN)Running tests...$(NC)"
-	$(GOTEST) -v -race ./...
+	$(GOTEST) $(GOTESTFLAGS) ./...
 
-# 运行测试并生成覆盖率报告
+# 运行测试（race detector，慢约 10 倍，建议做提交前/CI 全量门禁）
+test-race:
+	@echo "$(GREEN)Running tests with race detector...$(NC)"
+	$(GOTEST) -race $(GOTESTFLAGS) ./...
+
+# 运行测试并生成覆盖率报告（不带 -race，避免重复放大 PBKDF2 成本）
 coverage:
 	@echo "$(GREEN)Running tests with coverage...$(NC)"
-	$(GOTEST) -v -race -coverprofile=coverage.out ./...
+	$(GOTEST) -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "$(GREEN)Coverage report generated: coverage.html$(NC)"
 
 # 查看覆盖率摘要
 coverage-summary:
 	@echo "$(GREEN)Coverage summary...$(NC)"
-	$(GOTEST) -race -coverprofile=coverage.out ./...
+	$(GOTEST) -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -func=coverage.out
 
 # 代码格式化
@@ -155,8 +162,13 @@ security:
 	fi
 
 # 运行所有检查
-check: fmt vet lint test
+# 完整门禁：fmt + vet + lint + race 全量测试（提交前 / CI 用）
+check: fmt vet lint test-race
 	@echo "$(GREEN)All checks passed!$(NC)"
+
+# 快速门禁：跳过 race，适合本地迭代（约 check 的 1/3）
+check-fast: fmt vet lint test
+	@echo "$(GREEN)All quick checks passed!$(NC)"
 
 # 发布前准备
 release: clean check build-all
@@ -174,13 +186,15 @@ help:
 	@echo "  $(GREEN)build$(NC)           - 编译项目"
 	@echo "  $(GREEN)build-all$(NC)       - 编译所有平台版本"
 	@echo "  $(GREEN)clean$(NC)           - 清理编译产物"
-	@echo "  $(GREEN)test$(NC)            - 运行测试"
+	@echo "  $(GREEN)test$(NC)            - 运行测试（快速，不含 race）"
+	@echo "  $(GREEN)test-race$(NC)       - 运行测试（含 race detector）"
 	@echo "  $(GREEN)coverage$(NC)        - 运行测试并生成覆盖率报告"
 	@echo "  $(GREEN)coverage-summary$(NC) - 显示覆盖率摘要"
 	@echo "  $(GREEN)fmt$(NC)             - 格式化代码"
 	@echo "  $(GREEN)vet$(NC)             - 运行 go vet"
 	@echo "  $(GREEN)lint$(NC)            - 运行代码检查"
-	@echo "  $(GREEN)check$(NC)           - 运行所有检查 (fmt + vet + lint + test)"
+	@echo "  $(GREEN)check$(NC)           - 完整门禁 (fmt + vet + lint + test-race)"
+	@echo "  $(GREEN)check-fast$(NC)      - 快速门禁 (fmt + vet + lint + test)"
 	@echo "  $(GREEN)install$(NC)         - 安装到 $(INSTALL_DIR)"
 	@echo "  $(GREEN)uninstall$(NC)       - 从 $(INSTALL_DIR) 卸载"
 	@echo "  $(GREEN)reinstall$(NC)       - 重新安装"

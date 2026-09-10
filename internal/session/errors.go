@@ -16,6 +16,19 @@ var (
 	// cache is genuinely unusable; clearing it is safe.
 	ErrSessionExpired = errors.New("session expired")
 
+	// ErrSessionInvalidated is returned when a cache exists but its binding no
+	// longer holds (the system rebooted for a "restart"/legacy "never" session,
+	// or the cache belongs to a different vault). Like ErrSessionExpired the
+	// cache is genuinely unusable, so clearing it is safe.
+	ErrSessionInvalidated = errors.New("session invalidated")
+
+	// ErrSessionUnverifiable is returned when an environmental failure leaves
+	// the cache neither confirmed valid nor confirmed unusable (boot ID
+	// unreadable, secure store temporarily unavailable, corrupt cache payload,
+	// duplicated caches for one vault). The cache MUST be preserved: it may
+	// still be the only credential able to decrypt the user's data.
+	ErrSessionUnverifiable = errors.New("session unverifiable")
+
 	// ErrSessionStaleMetadata is returned when the cache's salt no longer
 	// matches metadata.json, which typically means metadata was replaced
 	// (e.g. git pull brought another machine's re-initialized metadata).

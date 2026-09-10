@@ -38,6 +38,9 @@ type Managers struct {
 	// Sync 提供自动同步状态与写后推送；nil（git 模式 / 未开 auto_sync）时
 	// 底部不显示同步状态，写操作也不触发 push。
 	Sync SyncSource
+	// Refresh 透传 `senv tui --refresh`：启动后台拉取绕过节流窗口。TUI 从不
+	// 因网络阻塞——本地数据先行渲染，拉取完成后自动更新界面。
+	Refresh bool
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -122,7 +125,10 @@ func New(mgr Managers) Model {
 	return m
 }
 
-// Init performs initial setup. Tabs load their data lazily on first focus.
+// Init performs initial setup. Tabs load their data lazily on first focus,
+// and the server pull (when automatic sync is available) runs in the
+// background: local cached data renders immediately and the tabs reload once
+// the pull applies remote changes.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, t := range m.tabs {
@@ -131,6 +137,9 @@ func (m Model) Init() tea.Cmd {
 		}
 	}
 	if c := m.refreshSync(); c != nil {
+		cmds = append(cmds, c)
+	}
+	if c := pullSync(m.sync, m.mgr.Refresh); c != nil {
 		cmds = append(cmds, c)
 	}
 	if len(cmds) == 0 {
@@ -248,6 +257,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case syncStatusMsg:
 		m.syncState = msg.state
 		return m, nil
+
+	case syncPullMsg:
+		// 后台拉取结束：错误进错误栏（含被屏蔽提示，不退出进程）；应用了
+		// 变更则提示并让所有 Tab 重载本地（已更新的）工作副本；无变更或
+		// 零网络跳过时只更新同步徽标。
+		if msg.out.Err != nil {
+			m.err = msg.out.Err.Error()
+			return m, m.refreshSync()
+		}
+		if msg.out.Applied > 0 || msg.out.MetadataUpdated {
+			return m, tea.Batch(
+				okToast(fmt.Sprintf("已从 server 更新 %d 条", msg.out.Applied)),
+				reloadAllTabs(m),
+				m.refreshSync(),
+			)
+		}
+		return m, m.refreshSync()
 
 	case tea.KeyMsg:
 		// If the active tab is capturing text input, forward ALL keys so global

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +36,8 @@ func TestNewMetadata(t *testing.T) {
 		t.Error("UpdatedAt should not be zero")
 	}
 
-	if metadata.KDFIterations != crypto.DefaultIterations {
-		t.Errorf("Expected KDFIterations %d, got %d", crypto.DefaultIterations, metadata.KDFIterations)
+	if metadata.KDFIterations != crypto.IterationsForNewVault() {
+		t.Errorf("Expected KDFIterations %d, got %d", crypto.IterationsForNewVault(), metadata.KDFIterations)
 	}
 }
 
@@ -74,7 +75,7 @@ func TestMetadataKDFIterationsJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(data), `"kdf_iterations": 600000`) {
+	if !strings.Contains(string(data), fmt.Sprintf(`"kdf_iterations": %d`, crypto.IterationsForNewVault())) {
 		t.Errorf("expected kdf_iterations in JSON, got: %s", data)
 	}
 
@@ -82,7 +83,7 @@ func TestMetadataKDFIterationsJSONRoundTrip(t *testing.T) {
 	if err := FromJSON(data, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if back.KDFIterations != crypto.DefaultIterations {
+	if back.KDFIterations != crypto.IterationsForNewVault() {
 		t.Errorf("round-trip lost KDFIterations: %d", back.KDFIterations)
 	}
 }
@@ -104,6 +105,14 @@ func TestNewSettings(t *testing.T) {
 
 	if settings.Session.Timeout != "8h" {
 		t.Errorf("Expected default timeout '8h', got %s", settings.Session.Timeout)
+	}
+
+	if settings.Session.MaxLifetime != "24h" {
+		t.Errorf("Expected default max_lifetime '24h', got %s", settings.Session.MaxLifetime)
+	}
+
+	if settings.Session.AutoStart {
+		t.Error("Session auto_start must default to false")
 	}
 }
 

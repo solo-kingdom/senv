@@ -251,6 +251,32 @@ func (tx *configTransaction) find(path string) *pathSnapshot {
 	return nil
 }
 
+// remove 删除受事务覆盖的路径。删除只在本次切换确实需要时调用（例如清理
+// 上一次 senv 写入的 catalog 文件）；原内容在事务开始时已快照，回滚会写回。
+// 目标不存在时视为成功，保证重复切换幂等。
+func (tx *configTransaction) remove(path string) error {
+	if tx == nil {
+		return fmt.Errorf("config transaction is nil")
+	}
+	if tx.committed {
+		return fmt.Errorf("config transaction is committed")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve config path %q: %w", path, err)
+	}
+	abs = filepath.Clean(abs)
+	snapshot := tx.find(abs)
+	if snapshot == nil {
+		return fmt.Errorf("config path %s is not covered by transaction", path)
+	}
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	snapshot.touched = true
+	return nil
+}
+
 // rollback restores touched paths in reverse order. Each successful restore
 // removes only that path's backup; a failed restore leaves its good backup.
 func (tx *configTransaction) rollback() error {

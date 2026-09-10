@@ -170,7 +170,7 @@ func TestPiAdapterTransactionRollsBackFirstFile(t *testing.T) {
 	}
 	req := SwitchRequest{
 		AgentID: adapter.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
-		Model: "m1", Credential: "key", ConfigPath: paths[0], tx: tx,
+		Models: []string{"m1"}, DefaultModel: "m1", Credential: "key", ConfigPath: paths[0], tx: tx,
 	}
 	if err := adapter.Apply(req); err == nil {
 		t.Fatal("Pi Apply() unexpectedly survived second-file failure")
@@ -184,5 +184,60 @@ func TestPiAdapterTransactionRollsBackFirstFile(t *testing.T) {
 		if got := mustRead(t, path); string(got) != want {
 			t.Fatalf("path %s = %s, want %s", path, got, want)
 		}
+	}
+}
+
+func TestConfigTransactionRollbackRestoresNewAndDeletedPaths(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing.toml")
+	original := "keep = true\n"
+	if err := os.WriteFile(existing, []byte(original), 0o600); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+	fresh := filepath.Join(dir, "fresh.json")
+
+	tx, err := newConfigTransaction(existing, fresh)
+	if err != nil {
+		t.Fatalf("new transaction: %v", err)
+	}
+	if err := tx.remove(existing); err != nil {
+		t.Fatalf("remove() error = %v", err)
+	}
+	if _, err := os.Stat(existing); !os.IsNotExist(err) {
+		t.Fatalf("remove() left %s in place: %v", existing, err)
+	}
+	tx.renameHook = func(_, _ string) error { return errors.New("injected write failure") }
+	if err := tx.write(fresh, []byte("{}")); err == nil {
+		t.Fatal("write() unexpectedly succeeded")
+	}
+	if err := tx.rollback(); err != nil {
+		t.Fatalf("rollback() error = %v", err)
+	}
+	tx.unlock()
+	if got := string(mustRead(t, existing)); got != original {
+		t.Fatalf("deleted path = %q, want restored %q", got, original)
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Fatalf("new file kept after rollback: %v", err)
+	}
+}
+
+func TestConfigTransactionRemoveIsIdempotentAndCoveredOnly(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.json")
+	covered := filepath.Join(dir, "covered.json")
+	if err := os.WriteFile(covered, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write covered: %v", err)
+	}
+	tx, err := newConfigTransaction(missing, covered)
+	if err != nil {
+		t.Fatalf("new transaction: %v", err)
+	}
+	defer tx.unlock()
+	if err := tx.remove(missing); err != nil {
+		t.Fatalf("remove(missing) error = %v, want nil (idempotent)", err)
+	}
+	if err := tx.remove(filepath.Join(dir, "outside.json")); err == nil {
+		t.Fatal("remove() accepted a path outside the transaction")
 	}
 }

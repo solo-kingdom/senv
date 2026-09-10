@@ -163,6 +163,13 @@ func (t *configTab) Init() tea.Cmd {
 	return t.load()
 }
 
+// Reload drops cached data and reloads; the top level calls it after a
+// background sync applies remote changes.
+func (t *configTab) Reload() tea.Cmd {
+	t.loaded = false
+	return t.load()
+}
+
 // focusJump positions the cursor at (group, name) for search-result
 // navigation. It also dismisses detail/filter modes. An empty or unknown
 // group falls back to the "All" view so stale/foreign data cannot strand the

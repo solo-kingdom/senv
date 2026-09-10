@@ -19,6 +19,13 @@ import (
 
 const fallbackDirRandomBytes = 16
 
+// legacyNoticeFileName marks that the "unmatched legacy cache" hint was already
+// shown, so the hint appears at most once per boot.
+const legacyNoticeFileName = "legacy-cache-notice"
+
+const legacyCacheNoticeMessage = "senv: 发现与当前 vault 不匹配的旧单槽会话缓存，已保留未删；" +
+	"如需清理请运行 `senv session clear --all`"
+
 // cacheLocation describes a cache relative to an already validated runtime
 // filesystem root. Keeping path segments separate lets securefs reject links.
 type cacheLocation struct {
@@ -27,7 +34,13 @@ type cacheLocation struct {
 	fallback string
 }
 
-func cacheFileName() string {
+// cacheFileName is the per-vault slot file name: session-<uid>-<slot>.
+func cacheFileName(slot string) string {
+	return fmt.Sprintf("session-%d-%s", os.Getuid(), slot)
+}
+
+// legacyCacheFileName is the pre-slot single-cache file name.
+func legacyCacheFileName() string {
 	return fmt.Sprintf("session-%d", os.Getuid())
 }
 
@@ -35,12 +48,16 @@ func fallbackDirPrefix() string {
 	return fmt.Sprintf("senv-%d-", os.Getuid())
 }
 
+func fallbackDirPrefixForSlot(slot string) string {
+	return fmt.Sprintf("senv-%d-%s-", os.Getuid(), slot)
+}
+
 func legacyPersistentCachePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".local", "share", "senv", "session", cacheFileName())
+	return filepath.Join(home, ".local", "share", "senv", "session", legacyCacheFileName())
 }
 
 // removeLegacyPersistentCache removes only through a trusted home-directory
@@ -56,7 +73,7 @@ func removeLegacyPersistentCache() {
 		return
 	}
 	defer root.Close()
-	err = root.Remove(".local", "share", "senv", "session", cacheFileName())
+	err = root.Remove(".local", "share", "senv", "session", legacyCacheFileName())
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return
 	}
@@ -86,12 +103,12 @@ func generateSessionID() (string, error) {
 	return "sess-" + value, nil
 }
 
-func generateFallbackDirName() (string, error) {
+func generateFallbackDirName(slot string) (string, error) {
 	value, err := randomHex(fallbackDirRandomBytes, "session cache directory")
 	if err != nil {
 		return "", err
 	}
-	return fallbackDirPrefix() + value, nil
+	return fallbackDirPrefixForSlot(slot) + value, nil
 }
 
 func hashDataPath(dataPath string) string {
@@ -165,13 +182,13 @@ func validateRuntimeRoot(path string) (string, error) {
 	return resolved, root.Close()
 }
 
-func xdgCacheLocation(create bool) (cacheLocation, error) {
+func xdgCacheLocation(slot string, create bool) (cacheLocation, error) {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	runtimeRoot, err := validateRuntimeRoot(runtimeDir)
 	if err != nil {
 		return cacheLocation{}, err
 	}
-	location := cacheLocation{root: runtimeRoot, segments: []string{"senv", cacheFileName()}}
+	location := cacheLocation{root: runtimeRoot, segments: []string{"senv", cacheFileName(slot)}}
 	if !create {
 		return location, nil
 	}
@@ -194,7 +211,42 @@ func fallbackDirectoryOwnedAndPrivate(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Getuid())
 }
 
-func discoverFallbackLocations() ([]cacheLocation, error) {
+// discoverFallbackLocations returns the slot files for one vault across all
+// owned private fallback directories.
+func discoverFallbackLocations(slot string) ([]cacheLocation, error) {
+	tempRoot := os.TempDir()
+	tempRoot, err := validateRuntimeRoot(tempRoot)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		return nil, err
+	}
+	prefix := fallbackDirPrefixForSlot(slot)
+	locations := make([]cacheLocation, 0, 1)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		if err := securefs.ValidateSegment(entry.Name()); err != nil {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(tempRoot, entry.Name()))
+		if err != nil || !fallbackDirectoryOwnedAndPrivate(info) {
+			continue
+		}
+		locations = append(locations, cacheLocation{
+			root: tempRoot, segments: []string{entry.Name(), cacheFileName(slot)}, fallback: entry.Name(),
+		})
+	}
+	sort.Slice(locations, func(i, j int) bool { return locations[i].fallback < locations[j].fallback })
+	return locations, nil
+}
+
+// discoverAllFallbackDirectories returns every fallback directory owned by this
+// user, including pre-slot ones (old random names without a slot segment).
+func discoverAllFallbackDirectories() ([]cacheLocation, error) {
 	tempRoot := os.TempDir()
 	tempRoot, err := validateRuntimeRoot(tempRoot)
 	if err != nil {
@@ -216,15 +268,50 @@ func discoverFallbackLocations() ([]cacheLocation, error) {
 		if err != nil || !fallbackDirectoryOwnedAndPrivate(info) {
 			continue
 		}
-		locations = append(locations, cacheLocation{
-			root: tempRoot, segments: []string{entry.Name(), cacheFileName()}, fallback: entry.Name(),
-		})
+		locations = append(locations, cacheLocation{root: tempRoot, fallback: entry.Name()})
 	}
 	sort.Slice(locations, func(i, j int) bool { return locations[i].fallback < locations[j].fallback })
 	return locations, nil
 }
 
-func newFallbackLocation() (cacheLocation, error) {
+// discoverLegacyFallbackLocations returns pre-slot fallback directories that
+// may still hold a legacy single-cache file.
+func discoverLegacyFallbackLocations() ([]cacheLocation, error) {
+	all, err := discoverAllFallbackDirectories()
+	if err != nil {
+		return nil, err
+	}
+	legacy := make([]cacheLocation, 0, len(all))
+	for _, location := range all {
+		if isSlotFallbackDirName(location.fallback) {
+			continue
+		}
+		legacy = append(legacy, cacheLocation{
+			root:     location.root,
+			segments: []string{location.fallback, legacyCacheFileName()},
+			fallback: location.fallback,
+		})
+	}
+	return legacy, nil
+}
+
+// isSlotFallbackDirName reports whether a fallback directory belongs to a
+// per-vault slot (name shape senv-<uid>-<slot16hex>-<random>) rather than the
+// pre-slot single-cache naming.
+func isSlotFallbackDirName(name string) bool {
+	rest, ok := strings.CutPrefix(name, fallbackDirPrefix())
+	if !ok {
+		return false
+	}
+	slot, tail, ok := strings.Cut(rest, "-")
+	if !ok || tail == "" || len(slot) != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(slot)
+	return err == nil
+}
+
+func newFallbackLocation(slot string) (cacheLocation, error) {
 	tempRoot := os.TempDir()
 	// The actual backing filesystem is checked before randomness or mkdir, and
 	// therefore before any candidate directory can be written.
@@ -232,7 +319,7 @@ func newFallbackLocation() (cacheLocation, error) {
 	if err != nil {
 		return cacheLocation{}, err
 	}
-	name, err := generateFallbackDirName()
+	name, err := generateFallbackDirName(slot)
 	if err != nil {
 		return cacheLocation{}, err
 	}
@@ -244,25 +331,25 @@ func newFallbackLocation() (cacheLocation, error) {
 	if err := root.EnsureDir([]string{name}, 0o700); err != nil {
 		return cacheLocation{}, err
 	}
-	return cacheLocation{root: tempRoot, segments: []string{name, cacheFileName()}, fallback: name}, nil
+	return cacheLocation{root: tempRoot, segments: []string{name, cacheFileName(slot)}, fallback: name}, nil
 }
 
-func locationsForRead() ([]cacheLocation, error) {
+func locationsForRead(slot string) ([]cacheLocation, error) {
 	if os.Getenv("XDG_RUNTIME_DIR") != "" {
-		location, err := xdgCacheLocation(false)
+		location, err := xdgCacheLocation(slot, false)
 		if err != nil {
 			return nil, err
 		}
 		return []cacheLocation{location}, nil
 	}
-	return discoverFallbackLocations()
+	return discoverFallbackLocations(slot)
 }
 
-func locationForWrite() (cacheLocation, error) {
+func locationForWrite(slot string) (cacheLocation, error) {
 	if os.Getenv("XDG_RUNTIME_DIR") != "" {
-		return xdgCacheLocation(true)
+		return xdgCacheLocation(slot, true)
 	}
-	return newFallbackLocation()
+	return newFallbackLocation(slot)
 }
 
 func readLocation(location cacheLocation) (*SessionCache, bool, error) {
@@ -285,7 +372,7 @@ func readLocation(location cacheLocation) (*SessionCache, bool, error) {
 	return &cache, true, nil
 }
 
-func saveTmpfsCache(cache *SessionCache) error {
+func saveTmpfsCache(slot string, cache *SessionCache) error {
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal cache: %w", err)
@@ -293,14 +380,14 @@ func saveTmpfsCache(cache *SessionCache) error {
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
 		tempRoot := os.TempDir()
 		return withFallbackLifecycleLock(tempRoot, func() error {
-			return saveCacheAt(data, true)
+			return saveCacheAt(data, slot, true)
 		})
 	}
-	return saveCacheAt(data, false)
+	return saveCacheAt(data, slot, false)
 }
 
-func saveCacheAt(data []byte, fallback bool) error {
-	location, err := locationForWrite()
+func saveCacheAt(data []byte, slot string, fallback bool) error {
+	location, err := locationForWrite(slot)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secure session runtime: %w", err)
 	}
@@ -322,27 +409,27 @@ func saveCacheAt(data []byte, fallback bool) error {
 		return err
 	}
 	if location.fallback != "" {
-		cleanupOtherFallbackDirectories(location.fallback)
+		cleanupOtherFallbackDirectories(slot, location.fallback)
 	}
 	return nil
 }
 
-func loadTmpfsCache() (*SessionCache, error) {
+func loadTmpfsCache(slot string) (*SessionCache, error) {
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
 		tempRoot := os.TempDir()
 		var cache *SessionCache
 		err := withFallbackLifecycleLock(tempRoot, func() error {
 			var err error
-			cache, err = loadCacheAt()
+			cache, err = loadCacheAt(slot)
 			return err
 		})
 		return cache, err
 	}
-	return loadCacheAt()
+	return loadCacheAt(slot)
 }
 
-func loadCacheAt() (*SessionCache, error) {
-	locations, err := locationsForRead()
+func loadCacheAt(slot string) (*SessionCache, error) {
+	locations, err := locationsForRead(slot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve secure session runtime: %w", err)
 	}
@@ -356,22 +443,187 @@ func loadCacheAt() (*SessionCache, error) {
 			continue
 		}
 		if found != nil {
-			return nil, fmt.Errorf("multiple session caches found in fallback runtime; clear the session")
+			return nil, fmt.Errorf("%w: multiple session caches found for this vault; run: senv session clear --all", ErrSessionUnverifiable)
 		}
 		found = cache
 	}
 	return found, nil
 }
 
-func loadCacheForDataPath(dataPath string) (*SessionCache, error) {
-	cache, err := loadCache()
-	if err != nil || cache == nil {
+// loadLegacyTmpfsCache reads a pre-slot single cache, if any.
+func loadLegacyTmpfsCache() (*SessionCache, error) {
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		var cache *SessionCache
+		err := withFallbackLifecycleLock(tempRoot, func() error {
+			locations, err := discoverLegacyFallbackLocations()
+			if err != nil {
+				return err
+			}
+			for _, location := range locations {
+				found, exists, err := readLocation(location)
+				if err != nil {
+					return fmt.Errorf("failed to read legacy cache file: %w", err)
+				}
+				if !exists {
+					continue
+				}
+				if cache != nil {
+					return fmt.Errorf("%w: multiple legacy session caches found; run: senv session clear --all", ErrSessionUnverifiable)
+				}
+				cache = found
+			}
+			return nil
+		})
+		return cache, err
+	}
+	runtimeRoot, err := validateRuntimeRoot(os.Getenv("XDG_RUNTIME_DIR"))
+	if err != nil {
 		return nil, err
 	}
-	if cache.DataPathHash != hashDataPath(dataPath) {
+	cache, exists, err := readLocation(cacheLocation{root: runtimeRoot, segments: []string{"senv", legacyCacheFileName()}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read legacy cache file: %w", err)
+	}
+	if !exists {
 		return nil, nil
 	}
 	return cache, nil
+}
+
+func clearLegacyTmpfsCache() error {
+	var errs []error
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		err := withFallbackLifecycleLock(tempRoot, func() error {
+			locations, derr := discoverLegacyFallbackLocations()
+			if derr != nil {
+				return derr
+			}
+			for _, location := range locations {
+				cleanupFallbackDirectory(location.root, location.fallback)
+			}
+			return nil
+		})
+		return errors.Join(append(errs, err)...)
+	}
+	runtimeRoot, err := validateRuntimeRoot(os.Getenv("XDG_RUNTIME_DIR"))
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(runtimeRoot)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.Remove("senv", legacyCacheFileName()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("failed to remove legacy cache file: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// loadCacheForDataPath loads the cache bound to dataPath's normalized vault slot.
+func loadCacheForDataPath(dataPath string) (*SessionCache, error) {
+	return loadCache(vaultSlotFor(dataPath))
+}
+
+func loadCache(slot string) (*SessionCache, error) {
+	primary, primaryErr := activeSessionStoreFor(slot).Load(slot)
+	hatch, hatchErr := (diskCacheStore{}).Load(slot)
+
+	if primaryErr == nil && hatchErr == nil {
+		if primary != nil && hatch != nil {
+			return nil, errMultipleSessionCaches
+		}
+		if primary != nil {
+			return primary, nil
+		}
+		if hatch != nil {
+			return hatch, nil
+		}
+		return adoptLegacyCache(slot)
+	}
+	if primaryErr != nil {
+		// A locked/unavailable platform store must not strand a usable
+		// escape-hatch session, but without one the actionable error stays.
+		if hatch != nil {
+			return hatch, nil
+		}
+		return nil, errors.Join(primaryErr, hatchErr)
+	}
+	if primary != nil {
+		return primary, nil
+	}
+	return nil, hatchErr
+}
+
+// adoptLegacyCache promotes a pre-slot single cache whose data path hash
+// matches this vault. Unmatched legacy caches are left untouched so they can
+// still serve as recovery keys, and the user is told once how to clear them.
+func adoptLegacyCache(slot string) (*SessionCache, error) {
+	store := activeSessionStoreFor(slot)
+	if legacy, err := store.LoadLegacy(); err != nil {
+		return nil, err
+	} else if legacy != nil {
+		return adoptLegacyEntry(store, slot, legacy)
+	}
+	if legacy, err := (diskCacheStore{}).LoadLegacy(); err != nil {
+		return nil, err
+	} else if legacy != nil {
+		return adoptLegacyEntry(diskCacheStore{}, slot, legacy)
+	}
+	return nil, nil
+}
+
+func adoptLegacyEntry(store SessionStore, slot string, legacy *SessionCache) (*SessionCache, error) {
+	if legacy.DataPathHash != slot {
+		notifyLegacyCacheOnce()
+		return nil, nil
+	}
+	if err := saveCache(slot, legacy); err != nil {
+		return nil, err
+	}
+	_ = store.ClearLegacy()
+	return legacy, nil
+}
+
+// notifyLegacyCacheOnce writes a marker in the runtime directory so the hint is
+// shown at most once per boot.
+func notifyLegacyCacheOnce() {
+	root, segments, ok := legacyNoticeLocation()
+	if !ok {
+		return
+	}
+	handle, err := securefs.OpenRoot(root)
+	if err != nil {
+		return
+	}
+	defer handle.Close()
+	if _, err := handle.Read(segments...); err == nil {
+		return
+	}
+	if len(segments) > 1 {
+		_ = handle.EnsureDir(segments[:len(segments)-1], 0o700)
+	}
+	if err := handle.AtomicWrite(segments, []byte("shown\n"), 0o600); err != nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, legacyCacheNoticeMessage)
+}
+
+func legacyNoticeLocation() (string, []string, bool) {
+	if os.Getenv("XDG_RUNTIME_DIR") != "" {
+		root, err := validateRuntimeRoot(os.Getenv("XDG_RUNTIME_DIR"))
+		if err != nil {
+			return "", nil, false
+		}
+		return root, []string{"senv", legacyNoticeFileName}, true
+	}
+	root, err := validateRuntimeRoot(os.TempDir())
+	if err != nil {
+		return "", nil, false
+	}
+	return root, []string{fmt.Sprintf(".senv-legacy-notice-%d", os.Getuid())}, true
 }
 
 func cleanupFallbackDirectory(tempRoot, name string) {
@@ -383,8 +635,8 @@ func cleanupFallbackDirectory(tempRoot, name string) {
 	_ = root.RemoveTree(name)
 }
 
-func cleanupOtherFallbackDirectories(keep string) {
-	locations, err := discoverFallbackLocations()
+func cleanupOtherFallbackDirectories(slot, keep string) {
+	locations, err := discoverFallbackLocations(slot)
 	if err != nil {
 		return
 	}
@@ -412,16 +664,16 @@ func removeLegacyRuntimeCache() {
 	}
 }
 
-func clearTmpfsCache() error {
+func clearTmpfsCache(slot string) error {
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
 		tempRoot := os.TempDir()
-		return withFallbackLifecycleLock(tempRoot, clearCacheAt)
+		return withFallbackLifecycleLock(tempRoot, func() error { return clearCacheAt(slot) })
 	}
-	return clearCacheAt()
+	return clearCacheAt(slot)
 }
 
-func clearCacheAt() error {
-	locations, err := locationsForRead()
+func clearCacheAt(slot string) error {
+	locations, err := locationsForRead(slot)
 	if err != nil {
 		return fmt.Errorf("failed to resolve secure session runtime: %w", err)
 	}
@@ -448,15 +700,54 @@ func clearCacheAt() error {
 	return nil
 }
 
-// getCachePath is retained for same-package diagnostics/tests. It never creates
-// a directory and therefore cannot weaken the pre-write validation policy.
-func getCachePath() (string, error) {
-	locations, err := locationsForRead()
-	if err != nil {
-		return "", err
+// clearAllTmpfsCaches removes every vault slot plus any legacy single cache.
+func clearAllTmpfsCaches() error {
+	var errs []error
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		tempRoot := os.TempDir()
+		err := withFallbackLifecycleLock(tempRoot, func() error {
+			locations, derr := discoverAllFallbackDirectories()
+			if derr != nil {
+				return derr
+			}
+			for _, location := range locations {
+				cleanupFallbackDirectory(location.root, location.fallback)
+			}
+			return nil
+		})
+		if err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		runtimeRoot, err := validateRuntimeRoot(os.Getenv("XDG_RUNTIME_DIR"))
+		if err != nil {
+			errs = append(errs, err)
+		} else if root, oerr := securefs.OpenRoot(runtimeRoot); oerr != nil {
+			errs = append(errs, oerr)
+		} else {
+			entries, derr := root.ReadDir("senv")
+			if derr != nil && !errors.Is(derr, os.ErrNotExist) {
+				errs = append(errs, derr)
+			}
+			for _, entry := range entries {
+				if entry.IsDir || !isSessionCacheName(entry.Name) {
+					continue
+				}
+				if rerr := root.Remove("senv", entry.Name); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+					errs = append(errs, rerr)
+				}
+			}
+			_ = root.Close()
+		}
 	}
-	if len(locations) == 0 {
-		return "", os.ErrNotExist
+	removeLegacyRuntimeCache()
+	removeLegacyPersistentCache()
+	return errors.Join(errs...)
+}
+
+func isSessionCacheName(name string) bool {
+	if name == legacyCacheFileName() {
+		return true
 	}
-	return filepath.Join(append([]string{locations[0].root}, locations[0].segments...)...), nil
+	return strings.HasPrefix(name, fmt.Sprintf("session-%d-", os.Getuid()))
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wii/senv/internal/crypto"
@@ -12,6 +13,12 @@ import (
 
 // deriveKeyWithIterations is a package-private seam for session boundary tests.
 var deriveKeyWithIterations = crypto.DeriveKeyWithIterations
+
+// DefaultMaxLifetime is the default absolute ceiling for sliding renewal.
+const DefaultMaxLifetime = 24 * time.Hour
+
+// timeNow is the clock seam for session lifetime tests; production never replaces it.
+var timeNow = time.Now
 
 // Manager handles session management
 type Manager struct {
@@ -28,6 +35,37 @@ func NewManager(configPath string, dataPath string) *Manager {
 		dataPath:    dataPath,
 		auditLogger: auditLogger,
 	}
+}
+
+// slot returns this manager's vault slot identity.
+func (m *Manager) slot() string { return vaultSlotFor(m.dataPath) }
+
+// maxLifetime resolves the configured renewal ceiling, falling back to
+// DefaultMaxLifetime when unset or unparseable.
+func (m *Manager) maxLifetime() time.Duration {
+	settings, err := storage.NewManager(m.configPath, m.dataPath).LoadSettings()
+	if err != nil {
+		return DefaultMaxLifetime
+	}
+	raw := strings.TrimSpace(settings.Session.MaxLifetime)
+	if raw == "" {
+		return DefaultMaxLifetime
+	}
+	parsed, err := ParseTimeout(raw)
+	if err != nil || parsed == nil || parsed.Type != TimeoutDuration || parsed.Value <= 0 {
+		return DefaultMaxLifetime
+	}
+	return parsed.Value
+}
+
+// AutoStartEnabled reports whether password-based commands may rebuild a
+// persistent session (opt-in, default off).
+func (m *Manager) AutoStartEnabled() bool {
+	settings, err := storage.NewManager(m.configPath, m.dataPath).LoadSettings()
+	if err != nil {
+		return false
+	}
+	return settings.Session.AutoStart
 }
 
 // StartSession creates a new session with the given password and timeout.
@@ -73,20 +111,23 @@ func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 			return fmt.Errorf("failed to get boot ID: %w", err)
 		}
 		expiresAt := time.Time{}
+		timeoutSeconds := int64(0)
 		if timeout.Type == TimeoutDuration {
-			expiresAt = time.Now().Add(timeout.Value)
+			expiresAt = timeNow().Add(timeout.Value)
+			timeoutSeconds = int64(timeout.Value.Seconds())
 		}
 		cache := &SessionCache{
-			Key:          base64.StdEncoding.EncodeToString(key),
-			Salt:         metadata.Salt,
-			CreatedAt:    time.Now(),
-			ExpiresAt:    expiresAt,
-			TimeoutType:  string(timeout.Type),
-			BootID:       bootID,
-			DataPathHash: hashDataPath(m.dataPath),
-			SessionID:    sessionID,
+			Key:            base64.StdEncoding.EncodeToString(key),
+			Salt:           metadata.Salt,
+			CreatedAt:      timeNow(),
+			ExpiresAt:      expiresAt,
+			TimeoutType:    string(timeout.Type),
+			BootID:         bootID,
+			DataPathHash:   m.slot(),
+			SessionID:      sessionID,
+			TimeoutSeconds: timeoutSeconds,
 		}
-		if err := saveCache(cache); err != nil {
+		if err := saveCache(m.slot(), cache); err != nil {
 			return fmt.Errorf("failed to save session cache: %w", err)
 		}
 		return nil
@@ -110,28 +151,81 @@ var errInvalidSessionPassword = errors.New("invalid session password")
 
 // GetCachedKey retrieves the cached key if the session is still valid.
 //
-// Non-destructive contract: the stale branches (ErrSessionStaleMetadata /
-// ErrSessionStaleKey) MUST NOT clear the cache. The cached key may be the only
-// remaining credential able to decrypt the user's data files when metadata has
-// diverged from them, so callers must keep it until a recovery path is
-// confirmed (see cmd-layer diagnosis). Only the genuinely-expired branch
-// (ErrSessionExpired) clears, because an expired cache is not a desync recovery
-// key and simply forces re-authentication.
+// Destructive contract: only genuinely unusable caches (ErrSessionExpired /
+// ErrSessionInvalidated) are cleared. Unverifiable caches (environmental
+// failures, corrupt payloads, duplicate slots) and stale caches
+// (ErrSessionStaleMetadata / ErrSessionStaleKey) are preserved, because they may
+// be the only remaining credential able to decrypt the user's data.
 func (m *Manager) GetCachedKey() ([]byte, error) {
 	key, cache, _, err := m.loadValidatedCredential()
 	if err != nil {
-		if m.auditLogger != nil && cache != nil {
-			_ = m.auditLogger.Log(AuditSessionValidate, cache.SessionID, false, "Session validation failed")
-		}
-		if errors.Is(err, ErrSessionExpired) {
-			_ = clearCache()
+		m.auditValidationFailure(cache, err)
+		if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSessionInvalidated) {
+			_ = clearCache(m.slot())
 		}
 		return nil, err
 	}
 	if m.auditLogger != nil {
 		_ = m.auditLogger.Log(AuditSessionValidate, cache.SessionID, true, "Session validated")
 	}
+	m.renewOnUse(cache)
 	return key, nil
+}
+
+// renewOnUse slides a duration session's expiry after a business command reused
+// it. Best-effort: a failed renewal must not break a command that already
+// authenticated, and the absolute ceiling still applies.
+func (m *Manager) renewOnUse(cache *SessionCache) {
+	if cache.TimeoutType != string(TimeoutDuration) || cache.TimeoutSeconds <= 0 {
+		return
+	}
+	now := timeNow()
+	timeout := time.Duration(cache.TimeoutSeconds) * time.Second
+	expiry := renewalExpiry(cache.CreatedAt, timeout, m.maxLifetime(), now)
+	if !expiry.After(cache.ExpiresAt) {
+		return
+	}
+	updated := *cache
+	updated.ExpiresAt = expiry
+	_ = saveCache(m.slot(), &updated)
+}
+
+// renewalExpiry slides expiry to now+timeout without ever crossing the
+// session's absolute ceiling. An explicit timeout larger than the ceiling is
+// never shortened by the default ceiling.
+func renewalExpiry(createdAt time.Time, timeout, maxLifetime time.Duration, now time.Time) time.Time {
+	ceiling := maxLifetime
+	if timeout > ceiling {
+		ceiling = timeout
+	}
+	limit := createdAt.Add(ceiling)
+	expiry := now.Add(timeout)
+	if expiry.After(limit) {
+		expiry = limit
+	}
+	return expiry
+}
+
+func (m *Manager) auditValidationFailure(cache *SessionCache, err error) {
+	if m.auditLogger == nil {
+		return
+	}
+	sessionID := ""
+	if cache != nil {
+		sessionID = cache.SessionID
+	}
+	switch {
+	case errors.Is(err, ErrSessionExpired):
+		_ = m.auditLogger.Log(AuditSessionExpire, sessionID, false, "Session expired")
+	case errors.Is(err, ErrSessionInvalidated):
+		_ = m.auditLogger.Log(AuditSessionInvalidated, sessionID, false, "Session invalidated: "+err.Error())
+	case errors.Is(err, ErrSessionUnverifiable):
+		_ = m.auditLogger.Log(AuditSessionUnverifiable, sessionID, false, "Session unverifiable: "+err.Error())
+	default:
+		if cache != nil {
+			_ = m.auditLogger.Log(AuditSessionValidate, sessionID, false, "Session validation failed")
+		}
+	}
 }
 
 // loadValidatedCredential reads one cache snapshot and validates its binding,
@@ -140,18 +234,27 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 func (m *Manager) loadValidatedCredential() ([]byte, *SessionCache, string, error) {
 	cache, err := loadCacheForDataPath(m.dataPath)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to load cache: %w", err)
+		return nil, nil, "", fmt.Errorf("%w: %w", ErrSessionUnverifiable, err)
 	}
 	if cache == nil {
 		return nil, nil, "", ErrNoSession
 	}
-	valid, err := m.isCacheValid(cache)
-	if err != nil || !valid {
+	reason, err := m.cacheValidity(cache)
+	if err != nil {
+		return nil, cache, "", fmt.Errorf("%w: %w", ErrSessionUnverifiable, err)
+	}
+	switch reason {
+	case ReasonNone:
+	case ReasonExpired:
 		return nil, cache, "", ErrSessionExpired
+	case ReasonRestarted, ReasonVaultChanged:
+		return nil, cache, "", fmt.Errorf("%w: %s", ErrSessionInvalidated, reason)
+	default:
+		return nil, cache, "", fmt.Errorf("%w: %s", ErrSessionUnverifiable, reason)
 	}
 	key, err := base64.StdEncoding.DecodeString(cache.Key)
 	if err != nil {
-		return nil, cache, "", fmt.Errorf("failed to decode key: %w", err)
+		return nil, cache, "", fmt.Errorf("%w: failed to decode key: %w", ErrSessionUnverifiable, err)
 	}
 	storageManager := storage.NewManager(m.configPath, m.dataPath)
 	metadata, err := storageManager.LoadMetadata()
@@ -195,47 +298,146 @@ func (m *Manager) PeekCachedKey() ([]byte, *SessionCache, error) {
 	return key, cache, nil
 }
 
-// isCacheValid checks if the cache is still valid
-func (m *Manager) isCacheValid(cache *SessionCache) (bool, error) {
-	if cache.DataPathHash != hashDataPath(m.dataPath) {
-		return false, fmt.Errorf("data path mismatch")
+// cacheValidity classifies why a cache can or cannot be reused. A returned
+// error means the reason itself could not be determined (unverifiable).
+func (m *Manager) cacheValidity(cache *SessionCache) (InvalidReason, error) {
+	if cache.DataPathHash != m.slot() {
+		return ReasonVaultChanged, nil
 	}
-	currentBootID, err := systemBootID()
-	if err != nil {
-		return false, err
-	}
-	if cache.BootID == "" || cache.BootID != currentBootID {
-		return false, nil
-	}
-
 	switch cache.TimeoutType {
-	case string(TimeoutRestart):
-		return true, nil
+	case string(TimeoutRestart), "never":
+		currentBootID, err := systemBootID()
+		if err != nil {
+			return ReasonUnreadable, err
+		}
+		if cache.BootID == "" || cache.BootID != currentBootID {
+			return ReasonRestarted, nil
+		}
+		return ReasonNone, nil
 	case string(TimeoutDuration):
-		return time.Now().Before(cache.ExpiresAt), nil
+		if timeNow().Before(cache.ExpiresAt) {
+			return ReasonNone, nil
+		}
+		return ReasonExpired, nil
 	default:
-		return false, fmt.Errorf("unknown timeout type: %s", cache.TimeoutType)
+		return ReasonUnknownType, nil
 	}
 }
 
-// ClearSession removes the session cache
+// IsCacheValid checks if the cache is valid (public method for status command).
+func (m *Manager) IsCacheValid(cache *SessionCache) (bool, error) {
+	reason, err := m.cacheValidity(cache)
+	if err != nil {
+		return false, err
+	}
+	return reason == ReasonNone, nil
+}
+
+// CacheStatus is the read-only status of the current vault's session.
+type CacheStatus struct {
+	State     SessionState
+	Reason    InvalidReason
+	Detail    string
+	Cache     *SessionCache
+	Retained  bool
+	ExpiresAt time.Time
+}
+
+// DescribeCache reports the current session state without clearing anything.
+func (m *Manager) DescribeCache() CacheStatus {
+	cache, err := m.LoadCache()
+	if err != nil {
+		return CacheStatus{
+			State:    StateUnverifiable,
+			Reason:   ReasonUnreadable,
+			Detail:   err.Error(),
+			Retained: true,
+		}
+	}
+	if cache == nil {
+		return CacheStatus{State: StateNoSession}
+	}
+	reason, verr := m.cacheValidity(cache)
+	switch {
+	case verr != nil:
+		return CacheStatus{State: StateUnverifiable, Reason: ReasonUnreadable, Detail: verr.Error(), Cache: cache, Retained: true}
+	case reason == ReasonNone:
+		return CacheStatus{State: StateActive, Cache: cache, Retained: true, ExpiresAt: cache.ExpiresAt}
+	case reason == ReasonExpired:
+		return CacheStatus{State: StateExpired, Reason: reason, Cache: cache, Retained: true, ExpiresAt: cache.ExpiresAt}
+	case reason == ReasonRestarted, reason == ReasonVaultChanged:
+		return CacheStatus{State: StateInvalidated, Reason: reason, Cache: cache, Retained: true}
+	default:
+		return CacheStatus{State: StateUnverifiable, Reason: reason, Cache: cache, Retained: true}
+	}
+}
+
+// HasValidSession reports whether the current vault has a reusable session.
+func (m *Manager) HasValidSession() bool {
+	return m.DescribeCache().State == StateActive
+}
+
+// RenewSession extends an already-validated session without a password. An
+// explicit timeout resets the sliding window; the absolute ceiling and
+// CreatedAt are preserved so renewal cannot outlive the vault's session cap.
+func (m *Manager) RenewSession(timeout *SessionTimeout) error {
+	if timeout == nil {
+		return fmt.Errorf("session cache is disabled in configuration")
+	}
+	key, cache, _, err := m.loadValidatedCredential()
+	if err != nil {
+		return err
+	}
+	ZeroKey(key)
+
+	updated := *cache
+	switch timeout.Type {
+	case TimeoutRestart:
+		bootID, err := systemBootID()
+		if err != nil {
+			return fmt.Errorf("failed to get boot ID: %w", err)
+		}
+		updated.TimeoutType = string(TimeoutRestart)
+		updated.ExpiresAt = time.Time{}
+		updated.BootID = bootID
+		updated.TimeoutSeconds = 0
+	case TimeoutDuration:
+		updated.TimeoutType = string(TimeoutDuration)
+		updated.ExpiresAt = renewalExpiry(cache.CreatedAt, timeout.Value, m.maxLifetime(), timeNow())
+		updated.TimeoutSeconds = int64(timeout.Value.Seconds())
+	default:
+		return fmt.Errorf("unknown timeout type: %s", timeout.Type)
+	}
+	if err := saveCache(m.slot(), &updated); err != nil {
+		return fmt.Errorf("failed to save session cache: %w", err)
+	}
+	if m.auditLogger != nil {
+		_ = m.auditLogger.LogWithDetails(AuditSessionStart, updated.SessionID, true,
+			fmt.Sprintf("Session refreshed with timeout: %s", timeout.String()), string(timeout.Type), timeout.String())
+	}
+	return nil
+}
+
+// ClearSession removes the current vault's session cache.
 func (m *Manager) ClearSession() error {
-	cache, _ := loadCache()
+	cache, _ := m.LoadCache()
 	if cache != nil && m.auditLogger != nil {
 		m.auditLogger.Log(AuditSessionClear, cache.SessionID, true, "Session cleared by user")
 	}
+	return clearCache(m.slot())
+}
 
-	return clearCache()
+// ClearAllSessions removes every vault slot plus legacy single-cache residue.
+func (m *Manager) ClearAllSessions() error {
+	if m.auditLogger != nil {
+		m.auditLogger.Log(AuditSessionClear, "", true, "All sessions cleared by user")
+	}
+	return clearAllCaches()
 }
 
 // LoadCache loads the session cache (public method for status command)
 func (m *Manager) LoadCache() (*SessionCache, error) {
 	return loadCacheForDataPath(m.dataPath)
-}
-
-// IsCacheValid checks if the cache is valid (public method for status command)
-func (m *Manager) IsCacheValid(cache *SessionCache) (bool, error) {
-	return m.isCacheValid(cache)
 }
 
 // GetAuditLogger returns the audit logger

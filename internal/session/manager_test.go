@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -67,10 +66,10 @@ func TestGetCachedKeyRejectsStaleKey(t *testing.T) {
 		Salt:         metadata.Salt,
 		CreatedAt:    time.Now(),
 		TimeoutType:  string(TimeoutRestart),
-		DataPathHash: hashDataPath(dataPath),
+		DataPathHash: vaultSlotFor(dataPath),
 		SessionID:    "sess-stale-key",
 	}
-	if err := saveCache(staleCache); err != nil {
+	if err := saveCache(vaultSlotFor(dataPath), staleCache); err != nil {
 		t.Fatalf("save stale cache: %v", err)
 	}
 
@@ -132,10 +131,10 @@ func TestGetCachedKeyRejectsExpiredSession(t *testing.T) {
 		CreatedAt:    time.Now().Add(-2 * time.Hour),
 		ExpiresAt:    time.Now().Add(-time.Hour),
 		TimeoutType:  string(TimeoutDuration),
-		DataPathHash: hashDataPath(dataPath),
+		DataPathHash: vaultSlotFor(dataPath),
 		SessionID:    "sess-test-expired",
 	}
-	if err := saveCache(cache); err != nil {
+	if err := saveCache(vaultSlotFor(dataPath), cache); err != nil {
 		t.Fatalf("save cache: %v", err)
 	}
 
@@ -197,10 +196,10 @@ func TestErrorClass_Expired(t *testing.T) {
 		CreatedAt:    time.Now().Add(-2 * time.Hour),
 		ExpiresAt:    time.Now().Add(-time.Hour),
 		TimeoutType:  string(TimeoutDuration),
-		DataPathHash: hashDataPath(data),
+		DataPathHash: vaultSlotFor(data),
 		SessionID:    "sess-expired",
 	}
-	if err := saveCache(cache); err != nil {
+	if err := saveCache(vaultSlotFor(data), cache); err != nil {
 		t.Fatalf("save cache: %v", err)
 	}
 
@@ -359,40 +358,212 @@ func TestStartSessionRekeyConcurrentLease(t *testing.T) {
 	}
 }
 
-// TestLegacyNeverCacheIsExpired ensures caches written by older versions with
-// timeout_type "never" are classified as expired (unknown type): no crash, no
-// password/data-desync misreport, and the caller is sent back to session start.
-func TestLegacyNeverCacheIsExpired(t *testing.T) {
+// TestLegacyNeverCacheIsAdoptedAsRestart ensures caches written by older
+// versions with timeout_type "never" are adopted (equivalent to restart)
+// instead of forcing a re-authentication.
+func TestLegacyNeverCacheIsAdoptedAsRestart(t *testing.T) {
 	isolateSessionCache(t)
 	configPath, dataPath := setupProject(t, "correct-secret")
 
-	bootID, err := systemBootID()
-	if err != nil {
-		t.Fatalf("boot id: %v", err)
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("restart")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
 	}
-	legacy := &SessionCache{
-		Key:          base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize)),
-		Salt:         "stale",
-		CreatedAt:    time.Now(),
-		TimeoutType:  "never", // written by an older senv version
-		BootID:       bootID,
-		DataPathHash: hashDataPath(dataPath),
-		SessionID:    "sess-legacy-never",
+	cache, err := sm.LoadCache()
+	if err != nil || cache == nil {
+		t.Fatalf("LoadCache: cache=%v err=%v", cache, err)
 	}
-	if err := saveCache(legacy); err != nil {
+	legacy := *cache
+	legacy.TimeoutType = "never" // written by an older senv version
+	if err := saveCache(vaultSlotFor(dataPath), &legacy); err != nil {
 		t.Fatalf("save legacy cache: %v", err)
 	}
 
-	sm := sessionManagerForTest(t, configPath, dataPath)
-	valid, err := sm.IsCacheValid(legacy)
-	if valid {
-		t.Fatal("legacy never cache must not validate")
+	valid, err := sm.IsCacheValid(&legacy)
+	if err != nil || !valid {
+		t.Fatalf("legacy never cache must validate as restart: valid=%v err=%v", valid, err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "unknown timeout type") {
-		t.Fatalf("expected unknown timeout type error, got valid=%v err=%v", valid, err)
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("legacy never cache must be reusable: %v", err)
 	}
 
-	if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionExpired) {
-		t.Fatalf("expected ErrSessionExpired for legacy never cache, got %v", err)
+	// A changed boot ID invalidates restart/never sessions.
+	original := systemBootID
+	systemBootID = func() (string, error) { return "boot-changed", nil }
+	t.Cleanup(func() { systemBootID = original })
+	if err := saveCache(vaultSlotFor(dataPath), &legacy); err != nil {
+		t.Fatalf("re-save legacy cache: %v", err)
+	}
+	if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionInvalidated) {
+		t.Fatalf("expected ErrSessionInvalidated after reboot, got %v", err)
+	}
+}
+
+func TestUnverifiableBootIDKeepsCache(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("restart")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	original := systemBootID
+	systemBootID = func() (string, error) { return "", errors.New("boot id unavailable") }
+	t.Cleanup(func() { systemBootID = original })
+
+	if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionUnverifiable) {
+		t.Fatalf("expected ErrSessionUnverifiable, got %v", err)
+	}
+	if _, cache, err := sm.PeekCachedKey(); err != nil || cache == nil {
+		t.Fatalf("unverifiable failure must keep the cache: cache=%v err=%v", cache, err)
+	}
+
+	systemBootID = original
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("session must be reusable once the environment recovers: %v", err)
+	}
+}
+
+func TestDurationSessionSurvivesReboot(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	original := systemBootID
+	systemBootID = func() (string, error) { return "boot-changed", nil }
+	t.Cleanup(func() { systemBootID = original })
+
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("duration session must survive a reboot: %v", err)
+	}
+}
+
+func TestSessionsArePerVault(t *testing.T) {
+	isolateSessionCache(t)
+	cfgA, dataA := setupProject(t, "secret-a")
+	cfgB, dataB := setupProject(t, "secret-b")
+	timeout, _ := ParseTimeout("restart")
+
+	smA := sessionManagerForTest(t, cfgA, dataA)
+	smB := sessionManagerForTest(t, cfgB, dataB)
+	if err := smA.StartSession("secret-a", timeout); err != nil {
+		t.Fatalf("start A: %v", err)
+	}
+	if err := smB.StartSession("secret-b", timeout); err != nil {
+		t.Fatalf("start B: %v", err)
+	}
+	if _, err := smA.GetCachedKey(); err != nil {
+		t.Fatalf("vault A session was overwritten: %v", err)
+	}
+	if _, err := smB.GetCachedKey(); err != nil {
+		t.Fatalf("vault B session is not reusable: %v", err)
+	}
+	cacheA, _ := smA.LoadCache()
+	cacheB, _ := smB.LoadCache()
+	if cacheA == nil || cacheB == nil || cacheA.DataPathHash == cacheB.DataPathHash {
+		t.Fatal("vault sessions must occupy distinct slots")
+	}
+}
+
+func TestRenewalSlidesExpiryWithinCap(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	cache, _ := sm.LoadCache()
+	if cache == nil || cache.TimeoutSeconds != int64((8*time.Hour).Seconds()) {
+		t.Fatalf("cache missing timeout_seconds: %+v", cache)
+	}
+	created := cache.CreatedAt
+
+	original := timeNow
+	t.Cleanup(func() { timeNow = original })
+	timeNow = func() time.Time { return created.Add(7 * time.Hour) }
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("GetCachedKey: %v", err)
+	}
+	renewed, _ := sm.LoadCache()
+	want := created.Add(15 * time.Hour)
+	if !renewed.ExpiresAt.Equal(want) {
+		t.Fatalf("expiry = %s, want %s", renewed.ExpiresAt, want)
+	}
+
+	timeNow = func() time.Time { return created.Add(14 * time.Hour) }
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("GetCachedKey: %v", err)
+	}
+	slid, _ := sm.LoadCache()
+	if !slid.ExpiresAt.Equal(created.Add(22 * time.Hour)) {
+		t.Fatalf("expiry = %s, want %s", slid.ExpiresAt, created.Add(22*time.Hour))
+	}
+
+	// Past the ceiling, renewal must not cross created_at + 24h.
+	timeNow = func() time.Time { return created.Add(16*time.Hour + 30*time.Minute) }
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("GetCachedKey: %v", err)
+	}
+	capped, _ := sm.LoadCache()
+	if !capped.ExpiresAt.Equal(created.Add(24 * time.Hour)) {
+		t.Fatalf("expiry = %s, want ceiling %s", capped.ExpiresAt, created.Add(24*time.Hour))
+	}
+}
+
+func TestReadOnlyStatusDoesNotRenew(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	before, _ := sm.LoadCache()
+
+	original := timeNow
+	t.Cleanup(func() { timeNow = original })
+	timeNow = func() time.Time { return before.CreatedAt.Add(7 * time.Hour) }
+	for i := 0; i < 3; i++ {
+		if status := sm.DescribeCache(); status.State != StateActive {
+			t.Fatalf("DescribeCache state = %s, want active", status.State)
+		}
+	}
+	after, _ := sm.LoadCache()
+	if !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Fatalf("read-only commands renewed expiry: %s -> %s", before.ExpiresAt, after.ExpiresAt)
+	}
+}
+
+func TestLegacyCacheWithoutTimeoutIsNotRenewed(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	cache, _ := sm.LoadCache()
+	legacy := *cache
+	legacy.TimeoutSeconds = 0
+	if err := saveCache(vaultSlotFor(dataPath), &legacy); err != nil {
+		t.Fatalf("save legacy cache: %v", err)
+	}
+
+	original := timeNow
+	t.Cleanup(func() { timeNow = original })
+	timeNow = func() time.Time { return legacy.CreatedAt.Add(7 * time.Hour) }
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("legacy cache must still be reusable: %v", err)
+	}
+	after, _ := sm.LoadCache()
+	if !after.ExpiresAt.Equal(legacy.ExpiresAt) {
+		t.Fatalf("legacy cache expiry changed: %s -> %s", legacy.ExpiresAt, after.ExpiresAt)
 	}
 }

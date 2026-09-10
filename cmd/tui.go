@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -24,11 +25,12 @@ var tuiCmd = &cobra.Command{
 	Long: `Launch the full-screen TUI to browse, search and edit env, text and config.
 
 Reuses a valid session cache when available; otherwise prompts for a one-time
-password (does not write session). See "TUI mode" in the README for the
-keybinding reference.`,
+password (does not write session). Startup never waits on the network: local
+data renders first and the server sync completes in the background; --refresh
+forces that background pull past the throttle window. See "TUI mode" in the
+README for the keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		autoPull(cmd, refreshRequested(cmd))
 		envMgr, textMgr, configMgr, err := getManagers()
 		if err != nil {
 			return err
@@ -65,7 +67,9 @@ keybinding reference.`,
 			History:     buildTUIHistorySource(),
 			Audit:       tuiAuditSource{},
 			AuditWriter: newTUIAuditWriter(auditMgr),
-			Sync:        newTUISyncSource(),
+			// Refresh 透传 --refresh：启动后台拉取绕过节流窗口（TUI 内不阻塞）。
+			Refresh: refreshRequested(cmd),
+			Sync:    newTUISyncSource(),
 		})
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
@@ -148,6 +152,32 @@ func (s *tuiSyncSource) Push() tui.SyncState {
 		st.Err = err
 	}
 	return st
+}
+
+// Pull 在 autoSyncPullBudget 内做一次 best-effort 拉取。与命令行的 autoPull
+// 不同：结果只体现在返回的 outcome 里（错误栏/toast 由 TUI 决定），不打印、
+// 不退出进程——被屏蔽的提示经错误栏可见。
+func (s *tuiSyncSource) Pull(refresh bool) tui.PullOutcome {
+	ctx, cancel := context.WithTimeout(context.Background(), autoSyncPullBudget)
+	defer cancel()
+	res, _, err := s.sp.AutoPull(ctx, s.sp.SyncThrottleWindow(), refresh)
+	if err != nil {
+		if errors.Is(err, provider.ErrClientBlocked) {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto pull 被屏蔽拦截")
+		} else {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto pull 失败")
+		}
+		return tui.PullOutcome{Err: err}
+	}
+	out := tui.PullOutcome{}
+	if res != nil {
+		out.Applied = res.Applied
+		out.MetadataUpdated = res.MetadataUpdated
+		if out.Applied > 0 || out.MetadataUpdated {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, fmt.Sprintf("auto pull %d 条", out.Applied))
+		}
+	}
+	return out
 }
 
 // tuiAuditWriter 把 session.AuditLogger 适配为 TUI 写路径审计。日志写入是

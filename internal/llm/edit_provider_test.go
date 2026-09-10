@@ -203,7 +203,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		_, err := sm.Switch("claude-code", "main", "")
+		_, err := sm.Switch("claude-code", "main", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "incompatible") {
 			t.Fatalf("Switch error = %v", err)
 		}
@@ -211,7 +211,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 			t.Fatalf("config written despite incompatible shape (stat err = %v)", statErr)
 		}
 		// 同一形态对 OpenAI 兼容 agent 合法。
-		if _, err := sm.Switch("codex", "main", ""); err != nil {
+		if _, err := sm.Switch("codex", "main", nil, ""); err != nil {
 			t.Fatalf("Switch(codex) error = %v", err)
 		}
 	})
@@ -224,7 +224,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		out, err := sm.Switch("claude-code", "main", "")
+		out, err := sm.Switch("claude-code", "main", nil, "")
 		if err != nil {
 			t.Fatalf("Switch error = %v", err)
 		}
@@ -241,7 +241,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		out, err := sm.Switch("claude-code", "main", "")
+		out, err := sm.Switch("claude-code", "main", nil, "")
 		if err != nil {
 			t.Fatalf("Switch error = %v", err)
 		}

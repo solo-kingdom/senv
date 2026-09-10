@@ -139,7 +139,8 @@ func applyAdapter(t *testing.T, a AgentAdapter, credential string) (string, stri
 	configPath := a.ConfigPath(home)
 	req := SwitchRequest{
 		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
-		Model: "m1", Credential: credential, ConfigPath: configPath,
+		Models: []string{"m1"}, DefaultModel: "m1", Credential: credential, ConfigPath: configPath,
+		Home: home,
 	}
 	if err := a.Apply(req); err != nil {
 		t.Fatalf("%s Apply() error = %v", a.ID, err)
@@ -266,13 +267,17 @@ func newTestSwitchManager(t *testing.T) (*SwitchManager, string) {
 
 func TestSwitchEndToEnd(t *testing.T) {
 	sm, home := newTestSwitchManager(t)
-	out, err := sm.Switch("claude-code", "main", "")
+	out, err := sm.Switch("claude-code", "main", nil, "")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	// 省略 --model 时取 default_model。
-	if out.Model != "m1" {
-		t.Fatalf("Model = %q, want m1", out.Model)
+	if out.DefaultModel != "m1" {
+		t.Fatalf("DefaultModel = %q, want m1", out.DefaultModel)
+	}
+	// 省略模型集时取 Provider 模型集全集。
+	if len(out.Models) != 2 || out.Models[0] != "m1" || out.Models[1] != "m2" {
+		t.Fatalf("Models = %v, want [m1 m2]", out.Models)
 	}
 	// 指针落盘且不含凭据。
 	pf, err := LoadPointers(DefaultPointerPath(home))
@@ -280,7 +285,7 @@ func TestSwitchEndToEnd(t *testing.T) {
 		t.Fatalf("LoadPointers() error = %v", err)
 	}
 	p, ok := pf.Get("claude-code")
-	if !ok || p.Provider != "main" || p.Model != "m1" {
+	if !ok || p.Provider != "main" || p.DefaultModel != "m1" || len(p.Models) != 2 {
 		t.Fatalf("pointer = %+v", p)
 	}
 	pointerRaw := string(mustRead(t, DefaultPointerPath(home)))
@@ -296,20 +301,20 @@ func TestSwitchEndToEnd(t *testing.T) {
 
 func TestSwitchValidationFailures(t *testing.T) {
 	sm, _ := newTestSwitchManager(t)
-	if _, err := sm.Switch("cursor", "main", "m1"); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if _, err := sm.Switch("cursor", "main", []string{"m1"}, "m1"); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("Switch(cursor) error = %v", err)
 	}
-	if _, err := sm.Switch("claude-code", "missing", "m1"); err == nil {
+	if _, err := sm.Switch("claude-code", "missing", []string{"m1"}, "m1"); err == nil {
 		t.Fatal("Switch(missing provider) unexpectedly succeeded")
 	}
-	if _, err := sm.Switch("claude-code", "main", "nope"); err == nil || !strings.Contains(err.Error(), "available") {
+	if _, err := sm.Switch("claude-code", "main", []string{"nope"}, "nope"); err == nil || !strings.Contains(err.Error(), "available") {
 		t.Fatalf("Switch(bad model) error = %v", err)
 	}
 }
 
 func TestSwitchCodexGuidesEnvVar(t *testing.T) {
 	sm, _ := newTestSwitchManager(t)
-	out, err := sm.Switch("codex", "main", "m2")
+	out, err := sm.Switch("codex", "main", []string{"m2"}, "m2")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -344,7 +349,7 @@ func TestSwitchRollsBackOnPointerFailure(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	sm := NewSwitchManager(pm, badPointer, home)
-	if _, err := sm.Switch("claude-code", "main", "m1"); err == nil {
+	if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m1"); err == nil {
 		t.Fatal("Switch() unexpectedly succeeded with broken pointer path")
 	}
 	if got := mustRead(t, configPath); string(got) != string(original) {
@@ -357,7 +362,7 @@ func TestSwitchRollsBackOnPointerFailure(t *testing.T) {
 
 func TestStatusMixed(t *testing.T) {
 	sm, _ := newTestSwitchManager(t)
-	if _, err := sm.Switch("opencode", "main", "m1"); err != nil {
+	if _, err := sm.Switch("opencode", "main", []string{"m1"}, "m1"); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	rows, warning, err := sm.Status()
@@ -432,7 +437,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 			home := t.TempDir()
 			sm := NewSwitchManager(pm, "", home)
 
-			out, err := sm.Switch("claude-code", "legacy", "")
+			out, err := sm.Switch("claude-code", "legacy", nil, "")
 			if err != nil {
 				t.Fatalf("Switch(claude-code) error = %v", err)
 			}
@@ -447,7 +452,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 				t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, tc.claudeCode)
 			}
 			// 重复切换幂等：同一档案再切一次，写入值不变。
-			again, err := sm.Switch("claude-code", "legacy", "")
+			again, err := sm.Switch("claude-code", "legacy", nil, "")
 			if err != nil {
 				t.Fatalf("second Switch(claude-code) error = %v", err)
 			}
@@ -455,7 +460,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 				t.Fatalf("repeated switch BaseURL = %q, want %q", again.BaseURL, out.BaseURL)
 			}
 
-			codexOut, err := sm.Switch("codex", "legacy", "")
+			codexOut, err := sm.Switch("codex", "legacy", nil, "")
 			if err != nil {
 				t.Fatalf("Switch(codex) error = %v", err)
 			}

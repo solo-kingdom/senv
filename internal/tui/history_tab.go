@@ -77,6 +77,13 @@ func (t *historyTab) Init() tea.Cmd {
 	return t.load("")
 }
 
+// Reload re-queries history for the currently visible entry (or the recent
+// list); the top level calls it after a background sync applies remote changes.
+func (t *historyTab) Reload() tea.Cmd {
+	t.loaded = false
+	return t.load(t.entryID)
+}
+
 func (t *historyTab) load(entryID string) tea.Cmd {
 	source := t.source
 	return func() tea.Msg {

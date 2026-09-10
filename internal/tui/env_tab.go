@@ -120,6 +120,14 @@ func (t *envTab) Init() tea.Cmd {
 	return t.load()
 }
 
+// Reload drops cached data and reloads; the top level calls it after a
+// background sync applies remote changes. The envLoadedMsg handler preserves
+// cursor and form state.
+func (t *envTab) Reload() tea.Cmd {
+	t.loaded = false
+	return t.load()
+}
+
 func (t *envTab) load() tea.Cmd {
 	mgr := t.mgr.Env
 	return func() tea.Msg {

@@ -3,7 +3,24 @@ package cmd
 import (
 	"fmt"
 	"strings"
+
+	"github.com/wii/senv/internal/session"
 )
+
+func sessionStateText(state session.SessionState) string {
+	switch state {
+	case session.StateActive:
+		return "已登录"
+	case session.StateExpired:
+		return "会话已到期"
+	case session.StateInvalidated:
+		return "会话已失效"
+	case session.StateUnverifiable:
+		return "会话不可判定（缓存保留）"
+	default:
+		return "未登录"
+	}
+}
 
 // sessionMenu displays the session management menu
 func (is *interactiveSession) sessionMenu() {
@@ -12,17 +29,7 @@ func (is *interactiveSession) sessionMenu() {
 		fmt.Println("│  会话管理                           │")
 		fmt.Println("└────────────────────────────────────┘")
 
-		cache, _ := is.sessionManager.LoadCache()
-		if cache != nil {
-			valid, _ := is.sessionManager.IsCacheValid(cache)
-			if valid {
-				fmt.Println("状态: 已登录")
-			} else {
-				fmt.Println("状态: 会话已过期")
-			}
-		} else {
-			fmt.Println("状态: 未登录")
-		}
+		fmt.Printf("状态: %s\n", sessionStateText(is.sessionManager.DescribeCache().State))
 
 		fmt.Println("\n1. 查看会话状态")
 		fmt.Println("2. 清除会话")
@@ -47,33 +54,18 @@ func (is *interactiveSession) sessionMenu() {
 }
 
 func (is *interactiveSession) showSessionStatus() {
-	cache, err := is.sessionManager.LoadCache()
-	if err != nil {
-		fmt.Printf("\n❌ 加载会话失败: %v\n", err)
-		return
+	status := is.sessionManager.DescribeCache()
+	fmt.Printf("\n会话状态: %s\n", sessionStateText(status.State))
+	if status.Cache != nil {
+		fmt.Printf("会话 ID: %s\n", status.Cache.SessionID)
+		fmt.Printf("创建时间: %s\n", status.Cache.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
-
-	if cache == nil {
-		fmt.Println("\n会话状态: 未登录")
-		return
+	if status.Reason != session.ReasonNone {
+		fmt.Printf("原因: %s\n", sessionReasonText(status.Reason))
 	}
-
-	valid, err := is.sessionManager.IsCacheValid(cache)
-	if err != nil {
-		fmt.Printf("\n会话状态: 无效 (%v)\n", err)
-		return
+	if status.State == session.StateUnverifiable {
+		fmt.Println("缓存保留: 是")
 	}
-
-	if !valid {
-		fmt.Println("\n会话状态: 已过期")
-		fmt.Printf("会话 ID: %s\n", cache.SessionID)
-		fmt.Printf("创建时间: %s\n", cache.CreatedAt.Format("2006-01-02 15:04:05"))
-		return
-	}
-
-	fmt.Println("\n会话状态: 已登录")
-	fmt.Printf("会话 ID: %s\n", cache.SessionID)
-	fmt.Printf("创建时间: %s\n", cache.CreatedAt.Format("2006-01-02 15:04:05"))
 
 	is.prompt("\n按回车键继续...")
 }

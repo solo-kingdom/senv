@@ -116,7 +116,7 @@ senv env group deactivate production
 
 ### 4. 导出环境变量到 Shell
 
-先显式启动 session（唯一写盘入口），再在 shell 中注入：
+先显式启动 session，再在 shell 中注入：
 
 ```bash
 # 登录后启动一次（直到系统重启，或按需指定超时）
@@ -130,9 +130,11 @@ eval "$(senv env export --if-session)"
 echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 ```
 
-无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘）。
+无 session 时，`eval $(senv env export)`（stdout 被捕获）**不会**再提示密码，而是提示先执行 `senv session start`。交互式终端上直接运行 `senv env export` 仍可临时输入一次密码（不落盘，除非显式开启 `session.auto_start`）。
 
-Session cache 只会写入平台验证的安全存储：macOS 默认使用 Keychain（静态加密、随 keychain 锁定）；Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法确认平台安全存储时 `session start` 会 fail closed 并输出可行动指引；headless macOS/CI 可显式使用 `senv session start --insecure-cache`（密钥以 0600 明文落盘，会打印醒目警告）。所有 timeout 模式都遵守此限制，且不会跨重启保留。
+会话按 vault 分槽：每个 data path 一份缓存，切换项目不再覆盖上一个 vault 的会话。`duration` 会话在业务命令复用 key 时滑动续期，但不超过 `session.max_lifetime`（默认 24h）；已有有效会话时可直接 `senv session start`（保留原 timeout）或 `senv session refresh` 免密延长，二者都不会弹密码。`senv session status` 会区分 `Active` / `Expired` / `Invalidated` / `Unverifiable`，并给出原因与下一步；不可判定的缓存默认保留、不静默删除。清除默认只影响当前 vault，`senv session clear --all` 才清所有槽位与旧单槽残留。
+
+Session cache 只会写入平台验证的安全存储：macOS 默认使用 Keychain（静态加密、随 keychain 锁定）；Linux 仅接受经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法确认平台安全存储时 `session start` 会 fail closed 并输出可行动指引；headless macOS/CI 可显式使用 `senv session start --insecure-cache`（密钥以 0600 明文落盘，会打印醒目警告）。所有 timeout 模式都遵守此限制；memory-backed 存储本身不跨重启，而 `duration` 会话的到期只由 `expires_at` 决定，不因 boot ID 变化被提前判失效。
 
 **注意**：`default` 分组默认激活，无需手动激活。
 
@@ -291,6 +293,8 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 启动时需要项目已初始化。有有效 session 则免密进入；否则提示密码（仅本次有效，不写入 session）。TUI 是纯交互层，所有持久化仍走现有加密存储。
 
+启动不等待网络：界面先用本地工作副本（本地缓存的数据）立即渲染，server 拉取在后台完成；若应用了远端变更，底部提示「已从 server 更新 N 条」并自动更新各标签数据。`--refresh` 让这次后台拉取绕过节流窗口强制执行；断网时本地数据照常可浏览编辑，同步失败在底部错误栏提示。
+
 #### 快捷键
 
 | 按键 | 作用 |
@@ -317,8 +321,8 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `o` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
 | `f` | Audit Tab：循环预设过滤（全部 / 操作 / 会话） |
-| `s` | AI Tab：以左栏选中的 provider 对右栏选中的 agent 切换（选模型 → 确认；codex 凭据走环境变量，不写入配置） |
-| `m` | AI Tab：对右栏已指向某 provider 的 agent 仅更换模型（provider 不变）；未指向时提示先按 `s` |
+| `s` | AI Tab：以左栏选中的 provider 对右栏选中的 agent 切换（多选 Agent 模型集，进入时默认全选 → 选定默认模型 → 确认；codex 凭据走环境变量，不写入配置） |
+| `m` | AI Tab：对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
 | `r` | 刷新当前 Tab（SSH / AI / Audit / History；Env/Text/Config 中是重命名） |
 | `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/AI，只匹配标识（key/name、host alias/hostname、provider alias），绝不匹配值 |
 | `?` | 键位总览 overlay（全局键 + 当前 Tab 键位） |
@@ -327,13 +331,13 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 SSH Tab 把 host 与 keypair 作为两栏：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、tags，`extra` 走 `$EDITOR`），`i/R/d/m` 管理 keypair。host 列表内联显示所用 keypair 名称与指纹摘要；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
-AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换模型）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
+AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
 重命名与分组管理走存储层的原子重命名（一次 `renameat`，不是「新建 + 删除」）：值/内容、权限与时间戳原样保留，重命名冲突在表单内联报错且不写入。多字段编辑（重命名、元信息、分组名）统一走可复用表单：`tab`/`↑↓` 切换字段、`enter` 提交、`esc` 取消（无副作用），校验失败保持表单打开且不丢已填内容；`$EDITOR` 闭环仍用于多行/自由属性字段。
 
 面板内容一律在宽度内截断（超长以 `…` 结尾，长 `base_url`/模型列表/路径不会折行），完整内容按 `enter` 在详情弹层查看。所有 Tab 的操作结果统一走底部提示条：错误 > 警告 > 成功，成功提示超时自动消失。
 
-TUI 内的写操作（env/text/config/SSH/AI）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态。
+TUI 内的写操作（env/text/config/SSH/AI）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，启动时在后台拉取远端变更（2 秒预算，`--refresh` 绕过节流窗口），写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态，也不发起后台拉取。
 
 #### 安全设计
 
@@ -347,7 +351,7 @@ TUI 内的写操作（env/text/config/SSH/AI）会写入本机操作审计（`se
 
 senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
 
-**工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session；之后每个工具请求都会重新验证 session ID、到期时间、boot ID 与 vault metadata。session 到期、clear、替换或 rekey 后，旧 MCP 进程会拒绝请求，需重启 session 和 MCP server。
+**工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session；之后每个工具请求都会按 `keyHash + saltHash + dataPathHash` 重新验证凭证仍绑定在同一个 vault 上（session ID 只进审计）。**同一 vault 重新 `senv session start` 不会吊销正在运行的 MCP**；只有 `senv session clear`、到期或 salt 变化（`passwd` / rekey）才会拒绝请求，此时需重新开 session 并重启 MCP server。
 
 ```bash
 # 1) 终端里鉴权一次（默认 30 分钟超时；可用 -t restart 直到重启）
@@ -468,7 +472,7 @@ cd ../project-b
 senv init --path ./.senv-data
 senv env set DATABASE_URL "postgres://localhost/project_b"
 
-# 在各自项目中使用（需先 senv session start）
+# 在各自项目中使用（需先 senv session start；每个 data path 各有独立会话槽）
 eval "$(senv env export --if-session)"
 ```
 
@@ -577,6 +581,19 @@ senv ai provider edit acme --key-ref env:llm/ACME_KEY
 ```
 
 > `--api-shape` 声明后成为 `senv ai switch` 的兼容判据：形态与目标 agent 协议族不匹配时拒绝写入，并提示「改档案形态或换 provider」。合法取值：`openai-chat`、`openai-responses`、`anthropic`。
+
+```bash
+# 切换 coding agent 指向：默认写入 provider 的全部模型 + 档案默认模型
+senv ai switch claude-code acme
+
+# 只写入子集并指定本次起始模型（--models 逗号分隔或重复给出，保序）
+senv ai switch codex acme --models m1,m2 --default-model m2
+
+# 查看各 agent 当前指向（provider / 默认模型（N 个模型）；vault 已解锁时附漂移提示）
+senv ai status
+```
+
+> 切换把 **Agent 模型集**按各 agent 原生机制写入，之后可在 agent 自己的模型选择器里换模型：claude-code 写 `modelPicker`（替换内置 lineup）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models.*]`、pi/opencode 写 provider 的模型表。`--default-model` 只覆盖本次写入的起始模型，不改档案。切换会清理上一次 senv 写入、本次不再需要的条目与失效 catalog，用户自有条目与文件保持原样。`--model` 已移除：模型集用 `--models`，起始模型用 `--default-model`。
 
 ```
 senv init                          初始化项目

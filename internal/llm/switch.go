@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -32,11 +33,24 @@ type SwitchRequest struct {
 	AgentID       string
 	ProviderAlias string
 	BaseURL       string
-	Model         string
-	Credential    string
+	// Models 是本次写入的 Agent 模型集（保序、非空）。
+	Models []string
+	// DefaultModel 是 agent 的起始模型，属于 Models。
+	DefaultModel string
+	Credential   string
 	// ConfigPath 由 SwitchManager 按 adapter 与目标 home 预先解析，
 	// 适配器直接使用，不自行解析 home。
 	ConfigPath string
+	// Home 是目标 agent 的 home 目录，供需要额外落盘位置的适配器（codex
+	// 的 catalog 文件）拼接路径。
+	Home string
+	// ModelMetadata 是本次模型集在模型目录里的元数据（可缺失），供各适配器
+	// 填充 agent 原生格式需要的字段。
+	ModelMetadata map[string]ModelMetadata
+	// PriorProvider/PriorModels 是上一次成功切换的本机记录，作为清理差集的
+	// 依据；首次切换时为零值。
+	PriorProvider string
+	PriorModels   []string
 	// tx covers every file the adapter may touch; it is set by SwitchManager.
 	tx *configTransaction
 }
@@ -48,8 +62,12 @@ type AgentAdapter struct {
 	ConfigPath func(home string) string
 	// ConfigPaths returns every writable path (including ConfigPath).
 	ConfigPaths func(home string) []string
-	Apply       func(req SwitchRequest) error
-	Credential  CredentialMode
+	// OwnedArtifacts 返回某 provider alias 派生的 senv 自有文件（配置目录之外，
+	// 如 codex 的 model catalog）。切换把它们纳入同一事务；alias 不再被任何
+	// agent 指针指向时删除。无派生文件的 agent 为 nil。
+	OwnedArtifacts func(home, alias string) []string
+	Apply          func(req SwitchRequest) error
+	Credential     CredentialMode
 	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
 	Protocol ProtocolFamily
 }
@@ -267,8 +285,10 @@ func setTOMLPath(root map[string]any, path []string, value any) {
 // 各 agent 适配器
 // ---------------------------------------------------------------------------
 
-// claudeCodeAdapter：~/.claude/settings.json 顶层 model + env 块
-// （ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN），凭据内联。
+// claudeCodeAdapter：~/.claude/settings.json 顶层 model（默认模型）+
+// modelPicker（Agent 模型集）+ env 块（ANTHROPIC_BASE_URL /
+// ANTHROPIC_AUTH_TOKEN），凭据内联。provider 是自定义接入地址，
+// replaceBuiltInOptions 让内置 lineup 不出现在选择器里（D5）。
 func claudeCodeAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "claude-code",
@@ -283,18 +303,34 @@ func claudeCodeAdapter() AgentAdapter {
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
-				root["model"] = req.Model
+				root["model"] = req.DefaultModel
 				env := ensureSubMap(root, "env")
 				env["ANTHROPIC_BASE_URL"] = req.BaseURL
 				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+				options := make([]map[string]any, 0, len(req.Models))
+				for _, model := range req.Models {
+					meta := req.ModelMetadata[model]
+					option := map[string]any{"model": model, "label": modelLabel(model, meta)}
+					if meta.Description != "" {
+						option["description"] = meta.Description
+					}
+					options = append(options, option)
+				}
+				root["modelPicker"] = map[string]any{
+					"options":               options,
+					"replaceBuiltInOptions": true,
+				}
 				return nil
 			}, req.tx)
 		},
 	}
 }
 
-// codexAdapter：~/.codex/config.toml 顶层 model/model_provider +
-// [model_providers.<senv id>]；凭据只写 env_key 名，明文不落盘。
+// codexAdapter：~/.codex/config.toml 顶层 model/model_provider/
+// model_catalog_json + [model_providers.<senv id>]，并生成
+// ~/.codex/model-catalogs/senv-<alias>.json 作为会话内模型选择器的数据源；
+// 凭据只写 env_key 名，明文不落盘。catalog 文件是 senv 自有派生文件，由
+// SwitchManager 纳入事务并在 alias 失效时清理。
 func codexAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "codex",
@@ -306,12 +342,26 @@ func codexAdapter() AgentAdapter {
 		ConfigPaths: func(home string) []string {
 			return []string{filepath.Join(home, ".codex", "config.toml")}
 		},
+		OwnedArtifacts: func(home, alias string) []string {
+			return []string{codexCatalogPath(home, alias)}
+		},
 		Credential: CredentialEnvVar,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
+			if strings.TrimSpace(req.Home) == "" {
+				return fmt.Errorf("codex switch requires the agent home to write the model catalog")
+			}
+			data, err := buildCodexCatalog(req)
+			if err != nil {
+				return err
+			}
+			if err := writeConfigFile(codexCatalogPath(req.Home, req.ProviderAlias), data, req.tx); err != nil {
+				return err
+			}
 			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
-				root["model"] = req.Model
+				root["model"] = req.DefaultModel
 				root["model_provider"] = id
+				root["model_catalog_json"] = codexCatalogRelPath(req.ProviderAlias)
 				setTOMLPath(root, []string{"model_providers", id}, map[string]any{
 					"name":                 "senv " + req.ProviderAlias,
 					"base_url":             req.BaseURL,
@@ -319,6 +369,9 @@ func codexAdapter() AgentAdapter {
 					"wire_api":             "responses",
 					"requires_openai_auth": false,
 				})
+				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+					deleteTOMLPath(root, []string{"model_providers", senvProviderID(prior)})
+				}
 				return nil
 			}, req.tx)
 		},
@@ -326,7 +379,8 @@ func codexAdapter() AgentAdapter {
 }
 
 // kimiAdapter：~/.kimi-code/config.toml（Kimi Code CLI）——default_model
-// 顶层键 + [providers."senv-*"] + [models."senv-*/<model>"]，api_key 内联。
+// 顶层键 + [providers."senv-*"] + 每个 Agent 模型集成员一条
+// [models."senv-*/<model>"]，api_key 内联。
 func kimiAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "kimi",
@@ -341,7 +395,7 @@ func kimiAdapter() AgentAdapter {
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
-			modelAlias := id + "/" + req.Model
+			modelAlias := id + "/" + req.DefaultModel
 			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
 				root["default_model"] = modelAlias
 				setTOMLPath(root, []string{"providers", id}, map[string]any{
@@ -349,14 +403,27 @@ func kimiAdapter() AgentAdapter {
 					"base_url": req.BaseURL,
 					"api_key":  req.Credential,
 				})
-				// max_context_size 为必填项；senv 无法从档案得知真实上下文，
-				// 取保守值避免压缩阈值虚高。
-				setTOMLPath(root, []string{"models", modelAlias}, map[string]any{
-					"provider":         id,
-					"model":            req.Model,
-					"max_context_size": 131072,
-					"display_name":     req.Model,
-				})
+				models := ensureSubMap(root, "models")
+				// 差集清理：换 provider 时清掉旧命名空间，同 provider 缩集时
+				// 清掉本次未选中的条目；只匹配 senv-<alias>/ 前缀。
+				if prior := req.PriorProvider; prior != "" {
+					priorID := senvProviderID(prior)
+					if prior != req.ProviderAlias {
+						deleteTOMLPath(root, []string{"providers", priorID})
+						removeModelEntries(models, priorID, nil)
+					} else {
+						removeModelEntries(models, id, req.Models)
+					}
+				}
+				for _, model := range req.Models {
+					meta := req.ModelMetadata[model]
+					setTOMLPath(root, []string{"models", id + "/" + model}, map[string]any{
+						"provider":         id,
+						"model":            model,
+						"max_context_size": kimiContextSize(meta),
+						"display_name":     modelLabel(model, meta),
+					})
+				}
 				return nil
 			}, req.tx)
 		},
@@ -385,8 +452,16 @@ func piAdapter() AgentAdapter {
 			id := senvProviderID(req.ProviderAlias)
 			if err := applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
 				providers := ensureSubMap(root, "providers")
-				models := make([]map[string]any, 0, 1)
-				models = append(models, map[string]any{"id": req.Model, "name": req.Model})
+				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+					delete(providers, senvProviderID(prior))
+				}
+				models := make([]map[string]any, 0, len(req.Models))
+				for _, model := range req.Models {
+					models = append(models, map[string]any{
+						"id":   model,
+						"name": modelLabel(model, req.ModelMetadata[model]),
+					})
+				}
 				providers[id] = map[string]any{
 					"baseUrl": req.BaseURL,
 					"api":     "openai-completions",
@@ -400,7 +475,7 @@ func piAdapter() AgentAdapter {
 			settings := filepath.Join(filepath.Dir(req.ConfigPath), "settings.json")
 			return applyJSONMerge(settings, func(root map[string]any) error {
 				root["defaultProvider"] = id
-				root["defaultModel"] = req.Model
+				root["defaultModel"] = req.DefaultModel
 				return nil
 			}, req.tx)
 		},
@@ -408,8 +483,8 @@ func piAdapter() AgentAdapter {
 }
 
 // opencodeAdapter：~/.config/opencode/opencode.json provider.<senv id>
-// （npm openai-compatible + options.baseURL/apiKey + models map）+ 顶层
-// model = "<id>/<model>"。
+// （npm openai-compatible + options.baseURL/apiKey + models map，含全部
+// Agent 模型集成员）+ 顶层 model = "<id>/<默认模型>"。
 func opencodeAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "opencode",
@@ -426,6 +501,13 @@ func opencodeAdapter() AgentAdapter {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
 				id := senvProviderID(req.ProviderAlias)
 				providers := ensureSubMap(root, "provider")
+				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+					delete(providers, senvProviderID(prior))
+				}
+				models := make(map[string]any, len(req.Models))
+				for _, model := range req.Models {
+					models[model] = map[string]any{"name": modelLabel(model, req.ModelMetadata[model])}
+				}
 				providers[id] = map[string]any{
 					"npm":  "@ai-sdk/openai-compatible",
 					"name": "senv " + req.ProviderAlias,
@@ -433,15 +515,80 @@ func opencodeAdapter() AgentAdapter {
 						"baseURL": req.BaseURL,
 						"apiKey":  req.Credential,
 					},
-					"models": map[string]any{
-						req.Model: map[string]any{"name": req.Model},
-					},
+					"models": models,
 				}
-				root["model"] = id + "/" + req.Model
+				root["model"] = id + "/" + req.DefaultModel
 				return nil
 			}, req.tx)
 		},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 适配器共用的投影与清理原语
+// ---------------------------------------------------------------------------
+
+// modelLabel 返回模型在 agent 选择器里的展示名：目录有 name 用 name，否则
+// 回退模型 id（目录是可选增强）。
+func modelLabel(model string, meta ModelMetadata) string {
+	if name := strings.TrimSpace(meta.Name); name != "" {
+		return name
+	}
+	return model
+}
+
+// kimiMaxContextSizeFallback 是目录缺 limit.context 时的保守回退值：Kimi
+// Code 的 max_context_size 是必填项，宁低估不虚高压缩阈值。
+const kimiMaxContextSizeFallback = 131072
+
+// kimiContextSize 取目录里的真实上下文长度，缺失时回退保守值。
+func kimiContextSize(meta ModelMetadata) int {
+	if meta.ContextLimit > 0 {
+		return meta.ContextLimit
+	}
+	return kimiMaxContextSizeFallback
+}
+
+// removeModelEntries 删除 models 表里 providerID 命名空间（`<id>/` 前缀）下
+// 不在 keep 中的条目；keep 为 nil 表示整段命名空间都删。用户自有条目不带
+// senv 前缀，因此不受影响。
+func removeModelEntries(models map[string]any, providerID string, keep []string) {
+	prefix := providerID + "/"
+	keepKeys := make(map[string]struct{}, len(keep))
+	for _, model := range keep {
+		keepKeys[prefix+model] = struct{}{}
+	}
+	for key := range models {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if _, ok := keepKeys[key]; ok {
+			continue
+		}
+		delete(models, key)
+	}
+}
+
+// deleteTOMLPath 删除一个点分路径；中间表不存在时视为已删除（幂等）。
+func deleteTOMLPath(root map[string]any, path []string) {
+	current := root
+	for _, key := range path[:len(path)-1] {
+		next, _ := current[key].(map[string]any)
+		if next == nil {
+			return
+		}
+		current = next
+	}
+	delete(current, path[len(path)-1])
+}
+
+// writeConfigFile 写入一个 senv 自有文件：有事务时走事务（失败可回滚），
+// 无事务时退化为带备份的原子写（适配器被直接调用时）。
+func writeConfigFile(path string, data []byte, tx *configTransaction) error {
+	if tx != nil {
+		return tx.write(path, data)
+	}
+	return atomicWriteWithBackup(path, data)
 }
 
 // ---------------------------------------------------------------------------
@@ -513,10 +660,11 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 
 // SwitchOutput 携带切换结果与给用户的后续提示。
 type SwitchOutput struct {
-	AgentID   string
-	AgentName string
-	Provider  string
-	Model     string
+	AgentID      string
+	AgentName    string
+	Provider     string
+	Models       []string
+	DefaultModel string
 	// BaseURL 是按该 agent 协议族转换后实际写入配置的接入地址。
 	BaseURL       string
 	ConfigPath    string
@@ -524,7 +672,7 @@ type SwitchOutput struct {
 }
 
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
-func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOutput, error) {
+func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string) (*SwitchOutput, error) {
 	home, pointerPath, err := sm.resolvePaths()
 	if err != nil {
 		return nil, err
@@ -537,19 +685,15 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 	if err != nil {
 		return nil, err
 	}
-	if model == "" {
-		model = entry.DefaultModel
-		if model == "" {
-			if len(entry.Models) == 1 {
-				model = entry.Models[0]
-			} else {
-				return nil, fmt.Errorf("provider %q has no default model; pass --model (available: %s)",
-					providerAlias, strings.Join(entry.Models, ", "))
-			}
-		}
-	} else if !sortedContains(entry.Models, model) {
-		return nil, fmt.Errorf("model %q is not in provider %q; available: %s",
-			model, providerAlias, strings.Join(entry.Models, ", "))
+
+	// Agent 模型集与默认模型先解析、后校验，任何非法输入都不触碰文件。
+	agentModels, err := resolveAgentModels(providerAlias, entry, models)
+	if err != nil {
+		return nil, err
+	}
+	defaultModel, err = resolveDefaultModel(providerAlias, entry, agentModels, defaultModel)
+	if err != nil {
+		return nil, err
 	}
 
 	// api_shape 显式声明时，形态必须与目标 agent 的协议族一致；不兼容时拒绝
@@ -576,10 +720,29 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 	// 转换（Anthropic 族剥离末段 /v1）。归一幂等，存量档案无需迁移。
 	baseURL := baseURLForFamily(entry.BaseURL, adapter.Protocol)
 
+	// 指针先读后写：既取上一次指向作为清理依据，也保证损坏的指针文件在写
+	// 配置之前就暴露出来。
+	pf, err := LoadPointers(pointerPath)
+	if err != nil {
+		if errors.Is(err, ErrPointerNotFound) {
+			pf = &PointerFile{}
+		} else {
+			return nil, fmt.Errorf("load agent pointers: %w", err)
+		}
+	}
+	prior, _ := pf.Get(agentID)
+
 	configPath := adapter.ConfigPath(home)
 	txPaths := []string{configPath}
 	if adapter.ConfigPaths != nil {
 		txPaths = adapter.ConfigPaths(home)
+	}
+	// 派生自有文件（codex catalog）纳入同一事务：本次要写的 alias 与指针里
+	// 出现过的所有 alias 都要快照，缩集/换 provider 后的清理才能回滚。
+	if adapter.OwnedArtifacts != nil {
+		for alias := range pointerAliases(pf, providerAlias) {
+			txPaths = append(txPaths, adapter.OwnedArtifacts(home, alias)...)
+		}
 	}
 	txPaths = append(txPaths, pointerPath)
 	tx, err := newConfigTransaction(txPaths...)
@@ -596,24 +759,33 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 		AgentID:       agentID,
 		ProviderAlias: providerAlias,
 		BaseURL:       baseURL,
-		Model:         model,
+		Models:        agentModels,
+		DefaultModel:  defaultModel,
 		Credential:    credential,
 		ConfigPath:    configPath,
+		Home:          home,
+		ModelMetadata: LoadModelMetadata(DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels),
+		PriorProvider: prior.Provider,
+		PriorModels:   prior.Models,
 		tx:            tx,
 	}
 	if err := adapter.Apply(req); err != nil {
 		return nil, fmt.Errorf("write %s config: %w", agentID, err)
 	}
 
-	pf, err := LoadPointers(pointerPath)
-	if err != nil {
-		if errors.Is(err, ErrPointerNotFound) {
-			pf = &PointerFile{}
-		} else {
-			return nil, fmt.Errorf("load agent pointers: %w", err)
+	// 清理不再被任何 agent 指针指向的 provider 派生文件（如失效的 codex
+	// catalog）。删除先于指针落盘，失败走同一个回滚。
+	if adapter.OwnedArtifacts != nil {
+		for _, alias := range stalePointerAliases(pf, agentID, providerAlias) {
+			for _, path := range adapter.OwnedArtifacts(home, alias) {
+				if err := tx.remove(path); err != nil {
+					return nil, fmt.Errorf("remove stale %s artifact: %w", agentID, err)
+				}
+			}
 		}
 	}
-	pf.Set(agentID, providerAlias, model)
+
+	pf.Set(agentID, providerAlias, agentModels, defaultModel)
 	if err := SavePointers(pointerPath, pf); err != nil {
 		if rbErr := tx.rollback(); rbErr != nil {
 			return nil, fmt.Errorf("save pointers: %v; restore config also failed: %w", err, rbErr)
@@ -626,12 +798,13 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 	}
 
 	out := &SwitchOutput{
-		AgentID:    agentID,
-		AgentName:  adapter.Name,
-		Provider:   providerAlias,
-		Model:      model,
-		BaseURL:    baseURL,
-		ConfigPath: configPath,
+		AgentID:      agentID,
+		AgentName:    adapter.Name,
+		Provider:     providerAlias,
+		Models:       agentModels,
+		DefaultModel: defaultModel,
+		BaseURL:      baseURL,
+		ConfigPath:   configPath,
 	}
 	if adapter.Credential == CredentialEnvVar {
 		out.CredentialEnv = credential
@@ -646,6 +819,9 @@ type StatusRow struct {
 	Supported  bool
 	Pointer    *AgentPointer
 	ConfigPath string
+	// Drift 非空表示指针里的 Agent 模型集已与档案不一致（档案缩集或改名）；
+	// 档案不可得（未解锁、档案被删）时为空，status 不因此报错。
+	Drift string
 }
 
 // Status 汇总全部 agent 的当前指向。指针文件缺失或损坏时已切换行为空、
@@ -665,6 +841,7 @@ func (sm *SwitchManager) Status() (rows []StatusRow, warning string, err error) 
 		if p, ok := pf.Get(a.ID); ok {
 			p := p
 			row.Pointer = &p
+			row.Drift = sm.driftDetail(p)
 		}
 		rows = append(rows, row)
 	}
@@ -673,6 +850,30 @@ func (sm *SwitchManager) Status() (rows []StatusRow, warning string, err error) 
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].AgentID < rows[j].AgentID })
 	return rows, warning, nil
+}
+
+// driftDetail 判定漂移：指针记录的模型已不在档案当前模型集中（档案缩集或
+// 改名）时给出可操作提示。指针是子集（用户显式缩小过模型集）不算漂移。
+// 不读 agent 配置文件；档案不可得时返回空串，绝不因此让 status 失败。
+func (sm *SwitchManager) driftDetail(p AgentPointer) string {
+	if sm.providerManager == nil || p.Provider == "" || len(p.Models) == 0 {
+		return ""
+	}
+	entry, err := sm.providerManager.GetProvider(p.Provider)
+	if err != nil {
+		return ""
+	}
+	var missing []string
+	for _, model := range p.Models {
+		if !slices.Contains(entry.Models, model) {
+			missing = append(missing, model)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("档案 %s 已不含模型 %s，重新执行 senv ai switch 可对齐",
+		p.Provider, strings.Join(missing, ", "))
 }
 
 // unsupportedConfigPath 返回不支持 agent 的信息性路径（无写回用途）。
@@ -695,6 +896,48 @@ func supportedAgentIDs() []string {
 	return ids
 }
 
+// pointerAliases 返回指针文件里出现过的 provider alias 与本次 alias 的并集，
+// 用于把可能被清理的派生文件全部纳入事务快照。
+func pointerAliases(pf *PointerFile, providerAlias string) map[string]struct{} {
+	aliases := map[string]struct{}{providerAlias: {}}
+	if pf == nil {
+		return aliases
+	}
+	for _, p := range pf.Agents {
+		if p.Provider != "" {
+			aliases[p.Provider] = struct{}{}
+		}
+	}
+	return aliases
+}
+
+// stalePointerAliases 返回本次切换完成后不再被任何 agent 指向的 provider
+// alias（升序）：senv 自有派生文件按这些 alias 清理。
+func stalePointerAliases(pf *PointerFile, agentID, providerAlias string) []string {
+	live := map[string]struct{}{providerAlias: {}}
+	before := map[string]struct{}{}
+	if pf != nil {
+		for id, p := range pf.Agents {
+			if p.Provider == "" {
+				continue
+			}
+			before[p.Provider] = struct{}{}
+			if id != agentID {
+				live[p.Provider] = struct{}{}
+			}
+		}
+	}
+	var stale []string
+	for alias := range before {
+		if _, ok := live[alias]; ok {
+			continue
+		}
+		stale = append(stale, alias)
+	}
+	sort.Strings(stale)
+	return stale
+}
+
 // reqCredential 计算 EnvVar 模式下的环境变量名（不解密档案）。
 func reqCredential(adapter AgentAdapter, alias string) string {
 	if adapter.Credential == CredentialEnvVar {
@@ -710,4 +953,53 @@ func sortedContains(sorted []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// resolveAgentModels 解析本次写入的 Agent 模型集：未显式给出（nil 或空）
+// 时取 Provider 模型集全集；显式给出时保序去重，且每个模型都必须属于档案。
+func resolveAgentModels(providerAlias string, entry *storage.LLMProviderEntry, models []string) ([]string, error) {
+	if len(models) == 0 {
+		if len(entry.Models) == 0 {
+			return nil, fmt.Errorf("provider %q has no models", providerAlias)
+		}
+		return append([]string(nil), entry.Models...), nil
+	}
+	out := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		if !slices.Contains(entry.Models, model) {
+			return nil, fmt.Errorf("model %q is not in provider %q; available: %s",
+				model, providerAlias, strings.Join(entry.Models, ", "))
+		}
+		if _, dup := seen[model]; dup {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("agent model set is empty")
+	}
+	return out, nil
+}
+
+// resolveDefaultModel 解析默认模型：显式值优先，其次档案默认模型，最后在
+// Agent 模型集恰有一个时取它；都不成立时报错，MUST NOT 静默取首项。
+func resolveDefaultModel(providerAlias string, entry *storage.LLMProviderEntry, models []string, explicit string) (string, error) {
+	candidate := explicit
+	if candidate == "" {
+		candidate = entry.DefaultModel
+	}
+	if candidate == "" {
+		if len(models) == 1 {
+			return models[0], nil
+		}
+		return "", fmt.Errorf("provider %q has no default model; specify the default model explicitly (available: %s)",
+			providerAlias, strings.Join(models, ", "))
+	}
+	if !slices.Contains(models, candidate) {
+		return "", fmt.Errorf("default model %q is not in the selected model set (available: %s)",
+			candidate, strings.Join(models, ", "))
+	}
+	return candidate, nil
 }

@@ -19,8 +19,13 @@ type Tab interface {
 	// global shortcuts (q, 1/2/3, Tab).
 	InputMode() bool
 
-	// Init performs initial command setup for the tab.
+	// Init performs initial command setup for the tab. Tabs load lazily on
+	// first focus; subsequent calls are no-ops.
 	Init() tea.Cmd
+
+	// Reload drops cached data and reloads from the managers. The top level
+	// calls it after a background sync applies remote changes.
+	Reload() tea.Cmd
 
 	// Update handles a message and returns the (possibly mutated) tab.
 	Update(msg tea.Msg) (Tab, tea.Cmd)

@@ -144,7 +144,7 @@ func (m *Manager) Initialize(password string) error {
 	}
 
 	// Derive key from password with the vault's KDF parameters
-	key := deriveKeyWithIterations(password, salt, crypto.DefaultIterations)
+	key := deriveKeyWithIterations(password, salt, crypto.IterationsForNewVault())
 
 	// Generate a verification key (encrypted hash of the password)
 	passwordHash := crypto.HashPassword(password)

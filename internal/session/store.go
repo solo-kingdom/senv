@@ -5,37 +5,46 @@ import (
 	"runtime"
 )
 
-// SessionStore persists the session cache in a platform-verified secure store.
-// Load returns (nil, nil) when no cache exists so callers can distinguish
-// "no session" from store failures.
+// SessionStore persists one vault's session cache in a platform-verified
+// secure store. Load returns (nil, nil) when the slot holds no cache so callers
+// can distinguish "no session" from store failures.
 type SessionStore interface {
-	Save(cache *SessionCache) error
-	Load() (*SessionCache, error)
-	Clear() error
+	Save(slot string, cache *SessionCache) error
+	Load(slot string) (*SessionCache, error)
+	Clear(slot string) error
+	// ClearAll removes every vault slot plus legacy single-cache residue.
+	ClearAll() error
+	// LoadLegacy reads a pre-slot (single-cache) entry left by older releases.
+	LoadLegacy() (*SessionCache, error)
+	// ClearLegacy removes that entry after adoption.
+	ClearLegacy() error
 }
 
 // tmpfsStore keeps the historical memory-backed filesystem implementation:
 // XDG runtime with random 0700 fallback directories, flock serialization, and
-// securefs no-follow anchoring.
+// securefs no-follow anchoring. Files are named per vault slot.
 type tmpfsStore struct{}
 
-func (tmpfsStore) Save(cache *SessionCache) error { return saveTmpfsCache(cache) }
-func (tmpfsStore) Load() (*SessionCache, error)   { return loadTmpfsCache() }
-func (tmpfsStore) Clear() error                   { return clearTmpfsCache() }
+func (tmpfsStore) Save(slot string, cache *SessionCache) error { return saveTmpfsCache(slot, cache) }
+func (tmpfsStore) Load(slot string) (*SessionCache, error)     { return loadTmpfsCache(slot) }
+func (tmpfsStore) Clear(slot string) error                     { return clearTmpfsCache(slot) }
+func (tmpfsStore) ClearAll() error                             { return clearAllTmpfsCaches() }
+func (tmpfsStore) LoadLegacy() (*SessionCache, error)          { return loadLegacyTmpfsCache() }
+func (tmpfsStore) ClearLegacy() error                          { return clearLegacyTmpfsCache() }
 
-// defaultSessionStore selects the platform-verified secure store: the macOS
+// defaultSessionStoreFor selects the platform-verified secure store: the macOS
 // login keychain on darwin, and the hardened memory-backed filesystem
 // implementation elsewhere.
-func defaultSessionStore() SessionStore {
+func defaultSessionStoreFor(slot string) SessionStore {
 	if runtime.GOOS == "darwin" {
-		return keychainStore{}
+		return keychainStore{slot: slot}
 	}
 	return tmpfsStore{}
 }
 
 // errMultipleSessionCaches protects the single-session invariant when both the
 // platform store and the escape hatch hold valid-looking caches.
-var errMultipleSessionCaches = errors.New("multiple session caches found; clear the session")
+var errMultipleSessionCaches = errors.New("multiple session caches found; run: senv session clear --all")
 
 // insecureCacheEnabled records the explicit --insecure-cache opt-in from the
 // CLI. It only redirects writes; reads always inspect both stores.
@@ -52,15 +61,15 @@ func EnableInsecureCache() {
 	insecureCacheEnabled = true
 }
 
-// activeSessionStore is the package-level store seam; tests may inject fakes.
-var activeSessionStore SessionStore = defaultSessionStore()
+// activeSessionStoreFor is the package-level store seam; tests may inject fakes.
+var activeSessionStoreFor func(slot string) SessionStore = defaultSessionStoreFor
 
-func saveCache(cache *SessionCache) error {
+func saveCache(slot string, cache *SessionCache) error {
 	var err error
 	if insecureCacheEnabled {
-		err = (diskCacheStore{}).Save(cache)
+		err = (diskCacheStore{}).Save(slot, cache)
 	} else {
-		err = activeSessionStore.Save(cache)
+		err = activeSessionStoreFor(slot).Save(slot, cache)
 	}
 	if err != nil {
 		return err
@@ -71,30 +80,11 @@ func saveCache(cache *SessionCache) error {
 	return nil
 }
 
-func loadCache() (*SessionCache, error) {
-	primary, primaryErr := activeSessionStore.Load()
-	hatch, err := diskCacheStore{}.Load()
-	if err != nil {
-		return nil, err
-	}
-	if primaryErr != nil {
-		// A locked or unavailable platform store must not strand an existing
-		// escape-hatch session (headless macOS/CI), but without a hatch cache
-		// the actionable platform error stays visible.
-		if hatch != nil {
-			return hatch, nil
-		}
-		return nil, primaryErr
-	}
-	if primary != nil && hatch != nil {
-		return nil, errMultipleSessionCaches
-	}
-	if primary != nil {
-		return primary, nil
-	}
-	return hatch, nil
+func clearCache(slot string) error {
+	return errors.Join(activeSessionStoreFor(slot).Clear(slot), (diskCacheStore{}).Clear(slot))
 }
 
-func clearCache() error {
-	return errors.Join(activeSessionStore.Clear(), diskCacheStore{}.Clear())
+// clearAllCaches removes every vault slot plus legacy single-cache residue.
+func clearAllCaches() error {
+	return errors.Join(activeSessionStoreFor("").ClearAll(), (diskCacheStore{}).ClearAll())
 }

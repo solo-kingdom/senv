@@ -1,9 +1,11 @@
 package session
 
 import (
+	"encoding/base64"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordingSessionStore struct {
@@ -14,7 +16,7 @@ type recordingSessionStore struct {
 	cleared bool
 }
 
-func (r *recordingSessionStore) Save(cache *SessionCache) error {
+func (r *recordingSessionStore) Save(slot string, cache *SessionCache) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.saves++
@@ -22,20 +24,26 @@ func (r *recordingSessionStore) Save(cache *SessionCache) error {
 	return nil
 }
 
-func (r *recordingSessionStore) Load() (*SessionCache, error) {
+func (r *recordingSessionStore) Load(slot string) (*SessionCache, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.loads++
 	return r.cache, nil
 }
 
-func (r *recordingSessionStore) Clear() error {
+func (r *recordingSessionStore) Clear(slot string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cleared = true
 	r.cache = nil
 	return nil
 }
+
+func (r *recordingSessionStore) ClearAll() error { return r.Clear("") }
+
+func (r *recordingSessionStore) LoadLegacy() (*SessionCache, error) { return nil, nil }
+
+func (r *recordingSessionStore) ClearLegacy() error { return nil }
 
 func (r *recordingSessionStore) loadCount() int {
 	r.mu.Lock()
@@ -60,7 +68,7 @@ func TestAuthorizeMCPRequestReloadsSessionEachTime(t *testing.T) {
 	if err := manager.StartSession("correct-secret", timeout); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	cache, err := loadCache()
+	cache, err := loadCache(vaultSlotFor(data))
 	if err != nil || cache == nil {
 		t.Fatalf("loadCache() = (%v, %v)", cache, err)
 	}
@@ -85,10 +93,21 @@ func TestAuthorizeMCPRequestReloadsSessionEachTime(t *testing.T) {
 		t.Fatalf("store loads = %d, want 4 (one per startup/request)", got)
 	}
 
+	// A new session instance for the same vault and key must NOT revoke a
+	// running MCP server (ADR-0010).
 	replaced := *cache
 	replaced.SessionID = "sess-replaced"
+	replaced.ExpiresAt = cache.ExpiresAt.Add(time.Hour)
 	store.replace(&replaced)
+	if _, err := manager.AuthorizeMCPRequest(authorization); err != nil {
+		t.Fatalf("AuthorizeMCPRequest after new session instance error = %v, want nil", err)
+	}
+
+	// A different derived key must revoke it.
+	rotated := *cache
+	rotated.Key = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	store.replace(&rotated)
 	if _, err := manager.AuthorizeMCPRequest(authorization); !errors.Is(err, ErrMCPRevoked) {
-		t.Fatalf("AuthorizeMCPRequest after replacement error = %v, want ErrMCPRevoked", err)
+		t.Fatalf("AuthorizeMCPRequest after key change error = %v, want ErrMCPRevoked", err)
 	}
 }

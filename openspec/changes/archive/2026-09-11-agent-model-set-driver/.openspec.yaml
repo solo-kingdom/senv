@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-11
+skip_specs: true
+goal: AI 切换语义修正：对 agent 切换 provider 时选定 Agent 模型集（默认全选）与默认模型，并让 agent 自身的选择器能在集合内切换

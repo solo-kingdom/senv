@@ -46,6 +46,12 @@ type ProviderConfig struct {
 type SessionConfig struct {
 	Enabled bool   `json:"enabled"` // Whether session cache is enabled
 	Timeout string `json:"timeout"` // Default session timeout (e.g., "8h", "1d", "restart")
+	// MaxLifetime caps sliding renewal as an absolute ceiling (default 24h).
+	// An explicit --timeout larger than this is never shortened.
+	MaxLifetime string `json:"max_lifetime,omitempty"`
+	// AutoStart rebuilds a persistent session after a successful password
+	// prompt. Off by default: password auth normally stays ephemeral.
+	AutoStart bool `json:"auto_start,omitempty"`
 }
 
 // EnvGroup represents an environment variable group
@@ -209,7 +215,7 @@ func NewMetadata(salt, passwordKey string) *Metadata {
 		UpdatedAt:     now,
 		Salt:          salt,
 		PasswordKey:   passwordKey,
-		KDFIterations: crypto.DefaultIterations,
+		KDFIterations: crypto.IterationsForNewVault(),
 	}
 }
 
@@ -219,8 +225,9 @@ func NewSettings() *Settings {
 		ActiveGroups: []string{},
 		DefaultGroup: "default",
 		Session: SessionConfig{
-			Enabled: true,
-			Timeout: "8h",
+			Enabled:     true,
+			Timeout:     "8h",
+			MaxLifetime: "24h",
 		},
 		Provider:  ProviderConfig{SyncThrottle: "30s"},
 		UpdatedAt: time.Now().Format(time.RFC3339),

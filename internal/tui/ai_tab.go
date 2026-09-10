@@ -53,8 +53,12 @@ type aiTab struct {
 	flow          aiFlow
 	flowAgent     int    // rows 下标（右栏选中的 agent）
 	flowProvider  string // 目标 provider alias
-	flowOnlyModel bool   // true = m（仅换模型），false = s（完整切换）
-	modelIndex    int
+	flowOnlyModel bool   // true = m（仅换默认模型），false = s（完整切换）
+	// flowCandidates 是本次向导的候选模型（保序）；flowSelected 是多选步骤的
+	// 勾选状态；flowCursor 是当前步骤列表里的游标。
+	flowCandidates []string
+	flowSelected   map[string]bool
+	flowCursor     int
 }
 
 // aiMode is the destructive confirmation state.
@@ -71,6 +75,7 @@ type aiFlow int
 const (
 	aiFlowNone aiFlow = iota
 	aiFlowSelectModel
+	aiFlowSelectDefault
 	aiFlowConfirm
 )
 
@@ -118,14 +123,16 @@ func (t *aiTab) Help() string {
 	}
 	switch t.flow {
 	case aiFlowSelectModel:
-		return "↑↓/jk 选模型 · enter 下一步 · esc 取消"
+		return "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消"
+	case aiFlowSelectDefault:
+		return "↑↓/jk 选默认模型 · enter 下一步 · esc 返回"
 	case aiFlowConfirm:
 		return "enter/y 确认 · esc/n 取消"
 	}
 	if t.mode == aiModeDeleteProvider {
 		return "enter/y 确认 · esc/n 取消"
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · s 切换 · m 换模型 · r 刷新"
+	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · s 切换 · m 换默认模型 · r 刷新"
 }
 
 // InputMode reports that the tab owns the keyboard: forms, the switch wizard and
@@ -142,6 +149,13 @@ func (t *aiTab) Init() tea.Cmd {
 	if t.loaded {
 		return nil
 	}
+	return t.load()
+}
+
+// Reload drops cached data and reloads; the top level calls it after a
+// background sync applies remote changes.
+func (t *aiTab) Reload() tea.Cmd {
+	t.loaded = false
 	return t.load()
 }
 
@@ -275,9 +289,10 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t, func() tea.Msg { return errMsg{err: err} }
 		}
 		out := msg.out
-		notice := fmt.Sprintf("%s → %s（模型 %s）", out.AgentName, out.Provider, out.Model)
+		notice := fmt.Sprintf("%s → %s（默认 %s，%d 个模型）",
+			out.AgentName, out.Provider, out.DefaultModel, len(out.Models))
 		if msg.onlyModel {
-			notice = fmt.Sprintf("%s 仅换模型 → %s", out.AgentName, out.Model)
+			notice = fmt.Sprintf("%s 仅换默认模型 → %s", out.AgentName, out.DefaultModel)
 		}
 		if out.CredentialEnv != "" {
 			notice += fmt.Sprintf("；%s 从环境变量 %s 读取凭据", out.AgentName, out.CredentialEnv)
@@ -352,24 +367,58 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 }
 
 func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
-	models := t.flowModels()
 	switch t.flow {
 	case aiFlowSelectModel:
 		switch msg.String() {
 		case "up", "k":
-			if t.modelIndex > 0 {
-				t.modelIndex--
+			if t.flowCursor > 0 {
+				t.flowCursor--
 			}
 		case "down", "j":
-			if t.modelIndex < len(models)-1 {
-				t.modelIndex++
+			if t.flowCursor < len(t.flowCandidates)-1 {
+				t.flowCursor++
+			}
+		case " ":
+			if model, ok := t.cursorCandidate(); ok {
+				if t.flowSelected[model] {
+					delete(t.flowSelected, model)
+				} else {
+					t.flowSelected[model] = true
+				}
+			}
+		case "enter":
+			// 空集在提交前拦截：不进入下一步，也不触碰 SwitchManager。
+			if len(t.flowSelectedModels()) == 0 {
+				return t, warnToast("Agent 模型集不能为空：至少勾选一个模型")
+			}
+			t.flowCursor = t.defaultModelCursor()
+			t.flow = aiFlowSelectDefault
+		case "esc":
+			t.cancelMode()
+		}
+	case aiFlowSelectDefault:
+		models := t.flowSelectedModels()
+		switch msg.String() {
+		case "up", "k":
+			if t.flowCursor > 0 {
+				t.flowCursor--
+			}
+		case "down", "j":
+			if t.flowCursor < len(models)-1 {
+				t.flowCursor++
 			}
 		case "enter":
 			if len(models) > 0 {
 				t.flow = aiFlowConfirm
 			}
 		case "esc":
-			t.cancelMode()
+			if t.flowOnlyModel {
+				t.cancelMode()
+				break
+			}
+			// 回到多选步骤重挑 Agent 模型集。
+			t.flow = aiFlowSelectModel
+			t.flowCursor = 0
 		}
 	case aiFlowConfirm:
 		switch msg.String() {
@@ -405,9 +454,12 @@ func (t *aiTab) cancelMode() {
 	t.flow = aiFlowNone
 	t.flowProvider = ""
 	t.flowOnlyModel = false
+	t.flowCandidates = nil
+	t.flowSelected = nil
+	t.flowCursor = 0
 }
 
-// startSwitch begins the switch (onlyModel=false) or model-change
+// startSwitch begins the switch (onlyModel=false) or default-model-change
 // (onlyModel=true) wizard for the agent selected in the right pane.
 func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 	if len(t.rows) == 0 {
@@ -439,33 +491,97 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 	t.flowProvider = alias
 	t.flowAgent = clamp(t.agentIndex, 0, len(t.rows)-1)
 	t.flowOnlyModel = onlyModel
-	t.modelIndex = modelIndexOf(entry, entry.DefaultModel)
-	if onlyModel && row.Pointer.Model != "" {
-		t.modelIndex = modelIndexOf(entry, row.Pointer.Model)
+	if onlyModel {
+		// m 只在已写入该 agent 的 Agent 模型集内换默认模型，不动模型集。
+		candidates := append([]string(nil), row.Pointer.Models...)
+		if len(candidates) == 0 {
+			return t, warnToast("指针未记录 Agent 模型集，请先按 s 重新切换")
+		}
+		t.flowCandidates = candidates
+		t.flowSelected = allModelsSelected(candidates)
+		t.flowCursor = t.defaultModelCursor()
+		t.flow = aiFlowSelectDefault
+		return t, nil
 	}
+	t.flowCandidates = append([]string(nil), entry.Models...)
+	t.flowSelected = allModelsSelected(entry.Models)
+	t.flowCursor = 0
 	t.flow = aiFlowSelectModel
 	return t, nil
 }
 
-func (t *aiTab) flowModels() []string {
-	entry := t.providerByAlias(t.flowProvider)
-	if entry == nil {
+// allModelsSelected 返回候选集合的「默认全选」状态（grill D3）。
+func allModelsSelected(models []string) map[string]bool {
+	selected := make(map[string]bool, len(models))
+	for _, model := range models {
+		selected[model] = true
+	}
+	return selected
+}
+
+// cursorCandidate 返回多选步骤游标下的候选模型。
+func (t *aiTab) cursorCandidate() (string, bool) {
+	if t.flowCursor < 0 || t.flowCursor >= len(t.flowCandidates) {
+		return "", false
+	}
+	return t.flowCandidates[t.flowCursor], true
+}
+
+// flowRow 返回本次向导选中的 agent 行。
+func (t *aiTab) flowRow() *llm.StatusRow {
+	if t.flowAgent < 0 || t.flowAgent >= len(t.rows) {
 		return nil
 	}
-	return entry.Models
+	return &t.rows[t.flowAgent]
+}
+
+// flowSelectedModels 返回当前勾选的 Agent 模型集（按候选顺序，保序）。
+func (t *aiTab) flowSelectedModels() []string {
+	models := make([]string, 0, len(t.flowCandidates))
+	for _, model := range t.flowCandidates {
+		if t.flowSelected[model] {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+// defaultModelCursor 返回默认模型步骤的初始游标：优先档案默认模型（m 时优先
+// 当前默认模型），不在已勾选集合内时落首项。
+func (t *aiTab) defaultModelCursor() int {
+	models := t.flowSelectedModels()
+	if len(models) == 0 {
+		return 0
+	}
+	preferred := ""
+	if entry := t.providerByAlias(t.flowProvider); entry != nil {
+		preferred = entry.DefaultModel
+	}
+	if t.flowOnlyModel {
+		if row := t.flowRow(); row != nil && row.Pointer != nil && row.Pointer.DefaultModel != "" {
+			preferred = row.Pointer.DefaultModel
+		}
+	}
+	for i, model := range models {
+		if model == preferred {
+			return i
+		}
+	}
+	return 0
 }
 
 func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
-	models := t.flowModels()
-	if len(models) == 0 || t.flowAgent < 0 || t.flowAgent >= len(t.rows) {
+	models := t.flowSelectedModels()
+	row := t.flowRow()
+	if len(models) == 0 || row == nil {
 		return nil
 	}
-	agentID := t.rows[t.flowAgent].AgentID
+	agentID := row.AgentID
 	provider := t.flowProvider
-	model := models[clamp(t.modelIndex, 0, len(models)-1)]
+	defaultModel := models[clamp(t.flowCursor, 0, len(models)-1)]
 	sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 	return func() tea.Msg {
-		out, err := sm.Switch(agentID, provider, model)
+		out, err := sm.Switch(agentID, provider, models, defaultModel)
 		return aiSwitchResultMsg{out: out, err: err, onlyModel: onlyModel}
 	}
 }
@@ -778,7 +894,7 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 	used := false
 	for _, r := range t.rows {
 		if r.Pointer != nil && r.Pointer.Provider == p.Alias {
-			lines = append(lines, "  "+r.AgentID+" · "+r.Pointer.Model)
+			lines = append(lines, "  "+r.AgentID+" · "+r.Pointer.DefaultModel)
 			used = true
 		}
 	}
@@ -797,7 +913,7 @@ func agentDetailLines(row llm.StatusRow) []string {
 	case !row.Supported:
 		state = "不支持"
 	case row.Pointer != nil:
-		state = row.Pointer.Provider + " / " + row.Pointer.Model
+		state = row.Pointer.Provider + " / " + row.Pointer.DefaultModel
 	}
 	lines := []string{
 		"agent:       " + row.AgentID,
@@ -900,18 +1016,6 @@ func parseModelList(raw string) []string {
 	return out
 }
 
-// modelIndexOf returns the index of model within entry's model set, or 0.
-func modelIndexOf(entry *storage.LLMProviderEntry, model string) int {
-	if model != "" {
-		for i, m := range entry.Models {
-			if m == model {
-				return i
-			}
-		}
-	}
-	return 0
-}
-
 // --- view ---
 
 func (t *aiTab) View() string {
@@ -1006,7 +1110,11 @@ func (t *aiTab) agentLines(width int) []string {
 		case !r.Supported:
 			state = "不支持"
 		case r.Pointer != nil:
-			state = r.Pointer.Provider + " / " + r.Pointer.Model
+			state = fmt.Sprintf("%s / %s（%d 个模型）",
+				r.Pointer.Provider, r.Pointer.DefaultModel, len(r.Pointer.Models))
+			if r.Drift != "" {
+				state += " ⚠"
+			}
 		}
 		line := fmt.Sprintf("%s · %s", r.AgentID, state)
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.agentIndex))
@@ -1023,33 +1131,50 @@ func (t *aiTab) renderModal() string {
 	return ""
 }
 
-// renderFlow renders the model picker and the final confirmation. The full
-// model list is windowed so a large model set cannot push the modal off-screen.
+// renderFlow renders the multi-select model set, the default-model picker and
+// the final confirmation. The full model list is windowed so a large model set
+// cannot push the modal off-screen.
 func (t *aiTab) renderFlow() string {
-	models := t.flowModels()
 	agent := "agent"
-	if t.flowAgent >= 0 && t.flowAgent < len(t.rows) {
-		agent = t.rows[t.flowAgent].AgentID
+	if row := t.flowRow(); row != nil {
+		agent = row.AgentID
 	}
-	if t.flow == aiFlowConfirm {
+	switch t.flow {
+	case aiFlowConfirm:
+		models := t.flowSelectedModels()
 		model := "-"
 		if len(models) > 0 {
-			model = models[clamp(t.modelIndex, 0, len(models)-1)]
+			model = models[clamp(t.flowCursor, 0, len(models)-1)]
 		}
 		action := "切换"
 		if t.flowOnlyModel {
-			action = "仅换模型"
+			action = "仅换默认模型"
 		}
 		return modalBox("确认"+action,
-			fmt.Sprintf("%s → %s / %s", agent, t.flowProvider, model), "enter/y 确认 · esc/n 取消")
+			fmt.Sprintf("%s → %s / %s（%d 个模型）", agent, t.flowProvider, model, len(models)),
+			"enter/y 确认 · esc/n 取消")
+	case aiFlowSelectDefault:
+		models := t.flowSelectedModels()
+		lines := make([]string, 0, len(models))
+		for i, m := range models {
+			label := truncateWidth(m, max(t.width-10, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(models)-1)))
+		}
+		title := fmt.Sprintf("选择默认模型（%d 个模型）— %s → %s", len(models), agent, t.flowProvider)
+		return modalBox(title, strings.Join(lines, "\n"), "↑↓/jk 选择 · enter 下一步 · esc 返回")
 	}
-	lines := make([]string, 0, len(models))
-	for i, m := range models {
-		label := truncateWidth(m, max(t.width-10, 12))
-		lines = append(lines, cursorLine(label, i == clamp(t.modelIndex, 0, len(models)-1)))
+	lines := make([]string, 0, len(t.flowCandidates))
+	for i, m := range t.flowCandidates {
+		mark := "[ ]"
+		if t.flowSelected[m] {
+			mark = "[x]"
+		}
+		label := mark + " " + truncateWidth(m, max(t.width-14, 12))
+		lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(t.flowCandidates)-1)))
 	}
-	title := "选择模型 — " + agent + " → " + t.flowProvider
-	return modalBox(title, strings.Join(lines, "\n"), "↑↓/jk 选择 · enter 下一步 · esc 取消")
+	title := fmt.Sprintf("选择 Agent 模型集（已选 %d/%d）— %s → %s",
+		len(t.flowSelectedModels()), len(t.flowCandidates), agent, t.flowProvider)
+	return modalBox(title, strings.Join(lines, "\n"), "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消")
 }
 
 func orDash(s string) string {

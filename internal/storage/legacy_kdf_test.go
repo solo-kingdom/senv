@@ -26,8 +26,8 @@ func TestLegacyMetadataUnlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidatedKDFIterations: %v", err)
 	}
-	if iterations != crypto.DefaultIterations {
-		t.Fatalf("precondition: fresh vault should use %d iterations", crypto.DefaultIterations)
+	if iterations != crypto.IterationsForNewVault() {
+		t.Fatalf("precondition: fresh vault should use %d iterations", crypto.IterationsForNewVault())
 	}
 	newSalt, _ := crypto.GenerateSalt()
 	key := crypto.DeriveKeyWithIterations(password, newSalt, crypto.LegacyIterations)
