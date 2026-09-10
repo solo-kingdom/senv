@@ -67,7 +67,7 @@ func TestLLMProviderValidation(t *testing.T) {
 			e := validProviderEntry("main")
 			e.BaseURL = "ftp://x"
 			return e
-		}(), "invalid base URL"},
+		}(), "base URL"},
 		{"missing credential ref", func() *LLMProviderEntry {
 			e := validProviderEntry("main")
 			e.CredentialRef = ""

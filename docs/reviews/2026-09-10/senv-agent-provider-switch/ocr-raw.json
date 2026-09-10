@@ -1,0 +1,1224 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 60 finding(s) across 22 selected item(s).",
+  "summary": {
+    "files_reviewed": 22,
+    "comments": 60,
+    "total_tokens": 23593980,
+    "input_tokens": 23221906,
+    "output_tokens": 372074,
+    "cache_read_tokens": 21575323,
+    "elapsed": "18m10s"
+  },
+  "tool_calls": {
+    "total": 801,
+    "by_tool": {
+      "code_comment": 25,
+      "code_search": 311,
+      "file_find": 28,
+      "file_read": 425,
+      "file_read_diff": 12
+    },
+    "failure": 18,
+    "failure_by_tool": {
+      "code_search": 3,
+      "file_read": 15
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 72,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai_switch.go",
+        "arguments": "{\"end_line\":100,\"file_path\":\"internal/llm/switch.go\",\"start_line\":490}",
+        "error": "invalid line range: start_line 490 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 166,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai.go",
+        "arguments": "{\"end_line\":25,\"file_path\":\"cmd/ai.go\",\"start_line\":35}",
+        "error": "invalid line range: start_line 35 is greater than end_line 25"
+      },
+      {
+        "tool_call_number": 214,
+        "tool_name": "file_read",
+        "file_path": "cmd/mcp.go",
+        "arguments": "{\"end_line\":120,\"file_path\":\"internal/llm/switch.go\",\"start_line\":596}",
+        "error": "invalid line range: start_line 596 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 265,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai.go",
+        "arguments": "{\"end_line\": 200, \"file_path\": \"internal/llm/switch.go\", \"start_line\": 500}",
+        "error": "invalid line range: start_line 500 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 303,
+        "tool_name": "file_read",
+        "file_path": "internal/llm/switch.go",
+        "arguments": "{\"end_line\":150,\"file_path\":\"internal/llm/switch.go\",\"start_line\":580}",
+        "error": "invalid line range: start_line 580 is greater than end_line 150"
+      },
+      {
+        "tool_call_number": 315,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai_switch.go",
+        "arguments": "{\"end_line\":70,\"file_path\":\"internal/llm/switch.go\",\"start_line\":505}",
+        "error": "invalid line range: start_line 505 is greater than end_line 70"
+      },
+      {
+        "tool_call_number": 317,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai_provider.go",
+        "arguments": "{\"end_line\":80,\"file_path\":\"cmd/ai_provider.go\",\"start_line\":140}",
+        "error": "invalid line range: start_line 140 is greater than end_line 80"
+      },
+      {
+        "tool_call_number": 319,
+        "tool_name": "file_read",
+        "file_path": "internal/llm/switch.go",
+        "arguments": "{\"end_line\":120,\"file_path\":\"internal/llm/switch.go\",\"start_line\":220}",
+        "error": "invalid line range: start_line 220 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 354,
+        "tool_name": "file_read",
+        "file_path": "cmd/ai_provider.go",
+        "arguments": "{\"end_line\":70,\"file_path\":\"internal/securefs/backend_unix.go\",\"start_line\":115}",
+        "error": "invalid line range: start_line 115 is greater than end_line 70"
+      },
+      {
+        "tool_call_number": 399,
+        "tool_name": "file_read",
+        "file_path": "internal/llm/provider.go",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"internal/llm/provider_test.go\", \"start_line\": 150}",
+        "error": "invalid line range: start_line 150 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 418,
+        "tool_name": "file_read",
+        "file_path": "internal/storage/llm_provider.go",
+        "arguments": "{\"end_line\": 260, \"file_path\": \"internal/storage/validation.go\", \"start_line\": 1}",
+        "error": "file \"internal/storage/validation.go\" not found: git show HEAD:internal/storage/validation.go: exit status 128: fatal: path 'internal/storage/validation.go' does not exist in 'HEAD'\n"
+      },
+      {
+        "tool_call_number": 422,
+        "tool_name": "file_read",
+        "file_path": "internal/storage/ssh.go",
+        "arguments": "{\"end_line\":60,\"file_path\":\"internal/storage/ssh.go\",\"start_line\":240}",
+        "error": "invalid line range: start_line 240 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 425,
+        "tool_name": "code_search",
+        "file_path": "internal/storage/llm_provider.go",
+        "arguments": "{\"case_sensitive\": true, \"file_patterns\": [\"internal/storage/\"], \"search_text\": \"func (.*ReadDir|ReadDir(\", \"use_perl_regexp\": true}",
+        "error": "git grep failed: exit status 128: fatal: -e option, 'func (.*ReadDir|ReadDir(': missing closing parenthesis"
+      },
+      {
+        "tool_call_number": 436,
+        "tool_name": "code_search",
+        "file_path": "internal/storage/llm_provider.go",
+        "arguments": "{\"case_sensitive\": true, \"file_patterns\": [\"internal/storage/\"], \"search_text\": \"type Trusted|func (.*ReadDir|ReadDir\", \"use_perl_regexp\": true}",
+        "error": "git grep failed: exit status 128: fatal: -e option, 'type Trusted|func (.*ReadDir|ReadDir': missing closing parenthesis"
+      },
+      {
+        "tool_call_number": 491,
+        "tool_name": "file_read",
+        "file_path": "internal/storage/types.go",
+        "arguments": "{\"end_line\":100,\"file_path\":\"internal/llm/switch.go\",\"start_line\":555}",
+        "error": "invalid line range: start_line 555 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 626,
+        "tool_name": "code_search",
+        "file_path": "internal/storage/llm_provider.go",
+        "arguments": "{\"case_sensitive\": true, \"file_patterns\": [\"internal/storage/rekey.go\", \"internal/storage/manager.go\", \"internal/storage/consistency.go\"], \"search_text\": \"func classifyRekeyEntry|classifyRekeyEntry(\", \"use_perl_regexp\": true}",
+        "error": "git grep failed: exit status 128: fatal: -e option, 'func classifyRekeyEntry|classifyRekeyEntry(': missing closing parenthesis"
+      },
+      {
+        "tool_call_number": 650,
+        "tool_name": "file_read",
+        "file_path": "internal/llm/provider.go",
+        "arguments": "{\"end_line\":60,\"file_path\":\"internal/storage/ssh.go\",\"start_line\":181}",
+        "error": "invalid line range: start_line 181 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 705,
+        "tool_name": "file_read",
+        "file_path": "internal/llm/provider.go",
+        "arguments": "{\"end_line\":180,\"file_path\":\"internal/llm/provider.go\",\"start_line\":270}",
+        "error": "invalid line range: start_line 270 is greater than end_line 180"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "cmd/ai_switch.go",
+      "content": "Passing `nil` for the provider manager here is intentional (Status() only reads pointers and config paths, no vault access), but the contract is non-obvious and easy to break: any future change in SwitchManager.Status that touches providerManager will panic. Add a one-line comment here (e.g. `// nil is safe: Status() never resolves providers or credentials`) so a future reader doesn't try to \"fix\" it.",
+      "existing_code": "sm := llm.NewSwitchManager(nil, agentPointerPath(), agentHomeDir())",
+      "start_line": 75,
+      "end_line": 75,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/mcp_llm.go",
+      "content": "`llm_agent_status` only reads the local `agent-pointers.json` file (no vault access), so calling `m.pullBeforeRead()` here triggers AutoPull (potentially network I/O for the server provider) on a path that does not depend on remote vault state. For consistency with the design intent (\"pointer is local state, never requires unlocking the vault\"), this should drop the pre-read pull — the peer `llmProviderList` legitimately needs it because it reads encrypted profiles, but status does not.",
+      "suggestion_code": "func (m *managers) llmAgentStatus(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {\n\t// Status only reads the local pointer file (no vault access), so no AutoPull.\n\tsm := llm.NewSwitchManager(m.llm, m.llmPointer, m.llmHome)",
+      "existing_code": "func (m *managers) llmAgentStatus(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {\n\tm.pullBeforeRead()\n\tsm := llm.NewSwitchManager(m.llm, m.llmPointer, m.llmHome)",
+      "start_line": 60,
+      "end_line": 62,
+      "category": "performance",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/mcp.go",
+      "content": "The pointer file path is recomputed on every MCP request via `filepath.Join(configPath, \"agent-pointers.json\")` inside the request-closure. This duplicates the resolution in `agentPointerPath()` (`cmd/ai_switch.go:16`) and TUI wiring (`cmd/tui.go:43`). Consider sharing a single helper to keep the canonical location (`~/.config/senv/agent-pointers.json` per spec/ADR 0003) in one place — if the path ever changes, every caller must be updated in lockstep.",
+      "existing_code": "llm:        llm.NewProviderManagerWithKey(store, key),\n\t\t\tllmPointer: filepath.Join(configPath, \"agent-pointers.json\"),\n\t\t\tllmHome:    agentHomeDir(),",
+      "start_line": 128,
+      "end_line": 130,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "Command-line `--api-key` flag leaks the LLM provider credential into the process argv (visible via `/proc/<pid>/cmdline`, `ps`, `top`), shell history (`.bash_history`/`.zsh_history`), system audit logs, and any crash dumps. This contradicts the file's own stated goal of credential storage in the vault — even if at-rest storage is encrypted, the input path here is plaintext across the whole process boundary. The same file already routes through `resolveAuth(..., authPrompt)` for vault unlock, proving a secure interactive prompt pathway exists in this package; the new command should read the LLM API key via TTY prompt (`authPrompt`-style helper), stdin, or an env/file indirection — never a positional flag value.",
+      "suggestion_code": "\t\t// 示例：从 stdin/TTY 读取后填入 opts.APIKey，避免出现在 argv 上\n\t\tapiKey:          readAPIKeySecurely(),",
+      "existing_code": "+\taiProviderAddCmd.Flags().StringVar(&providerAddAPIKey, \"api-key\", \"\", \"API key (stored encrypted in vault)\")",
+      "start_line": 172,
+      "end_line": 172,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "The `--api-key` flag string is captured as a long-lived package-level variable `providerAddAPIKey` and survives until the next `senv` invocation overwrites the flag binding. Cobra does not zero it after use. Anyone able to read the process memory (core dump, `/proc/<pid>/mem` with sufficient privileges, debugger) after the command returns can recover the raw key. Combine this with the argv exposure (see companion comment) and the key has at least three independent plaintext footprints. Prefer reading into a local, `defer`ing an explicit zeroize (`for i := range buf { buf[i] = 0 }`) on a `[]byte`, and avoid keeping the secret in a process-global flag binding longer than necessary.",
+      "suggestion_code": "var (\n\tproviderAddBaseURL string\n\t// providerAddAPIKey 故意不放在这里；改用本地变量 + defer zeroize，\n\t// 避免凭据在包级变量中残留到下次命令调用。\n\tproviderAddKeyRef  string\n\tproviderAddCatalog string\n\tproviderAddModels  []string\n\tproviderAddDefault string\n\tproviderAddForce   bool\n)",
+      "existing_code": "var (\n\tproviderAddBaseURL string\n\tproviderAddAPIKey  string\n\tproviderAddKeyRef  string\n\tproviderAddCatalog string\n\tproviderAddModels  []string\n\tproviderAddDefault string\n\tproviderAddForce   bool\n)",
+      "start_line": 33,
+      "end_line": 41,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "Audit log subject on the `add` failure path uses raw `args[0]`, while the success path uses `res.Entry.Alias`. `internal/llm/provider.go` normalizes via `strings.TrimSpace(opts.Alias)` before storage and validation, so for any input with leading/trailing whitespace the two log lines for the same logical operation will not correlate (`provider:foo` vs `provider: foo`). This also defeats audit correlation if the alias is ever lowercased or otherwise canonicalized downstream. Use a single normalized form (resolve through `mgr` / a helper, or recompute `strings.TrimSpace(args[0])` on the failure path). Peer command `cmd/ssh.go` consistently uses `args[0]` for both branches; pick one convention for the new command family.",
+      "suggestion_code": "\t\talias := strings.TrimSpace(args[0])\n\t\tif err != nil {\n\t\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+alias, false, \"add 失败\")\n\t\t\treturn err\n\t\t}\n\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+alias, true, \"add\")",
+      "existing_code": "\t\tif err != nil {\n\t\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+args[0], false, \"add 失败\")\n\t\t\treturn err\n\t\t}\n\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+res.Entry.Alias, true, \"add\")",
+      "start_line": 68,
+      "end_line": 72,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "`args[0]` is concatenated directly into the audit log subject (`\"provider:\"+args[0]`) and into the success message (`✓ 已删除 LLM Provider %s`). Because `storage.ValidateName` permits a wide character set and the audit pipeline forwards `target` verbatim into the audit log, an alias containing tab/newline/CR/control characters could break log parsing in `cmd/audit.go` consumers (and any downstream aggregator that splits on whitespace or assumes single-line records). Either reject aliases containing control characters up front (`strings.ContainsAny(alias, \"\\t\\r\\n\")`) or scrub before logging. The same hazard exists in `cmd/ssh.go` and is worth fixing centrally rather than only here.",
+      "suggestion_code": "\t\tauditAlias := sanitizeAuditSubject(\"provider:\" + args[0])\n\t\tauditOp(session.AuditOpLLMProvider, auditAlias, true, \"remove\")",
+      "existing_code": "\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+args[0], true, \"remove\")",
+      "start_line": 150,
+      "end_line": 150,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "The CLI never warns that `--base-url` is not pinned to an https-only scheme and trusts whatever the operator types. `internal/llm/provider.go` `parseHTTPURL` accepts both `http://` and `https://`, so a user can `senv ai provider add foo --base-url http://attacker.example.com --key-ref ...` and the resulting provider will happily ship LLM traffic (including prompts and, for non-Codex agents, the API key as `Authorization: Bearer ...`) in cleartext to an attacker-controlled host. Either (a) reject non-https at the CLI layer with a clear error, or (b) require an explicit `--insecure-http` opt-in flag. At minimum, surface a stderr warning when the scheme is `http:`.",
+      "suggestion_code": "\t\tif strings.HasPrefix(strings.ToLower(strings.TrimSpace(providerAddBaseURL)), \"http://\") {\n\t\t\tfmt.Fprintln(cmd.ErrOrStderr(), \"⚠ base URL 使用明文 http，凭据将以明文发送；建议改用 https\")\n\t\t}\n\t\tres, err := mgr.AddProvider(llm.AddProviderOptions{",
+      "existing_code": "\t\tres, err := mgr.AddProvider(llm.AddProviderOptions{\n\t\t\tAlias:           args[0],\n\t\t\tBaseURL:         providerAddBaseURL,\n\t\t\tAPIKey:          providerAddAPIKey,\n\t\t\tKeyRef:          providerAddKeyRef,",
+      "start_line": 57,
+      "end_line": 61,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "CLI-level help text and human-facing messages here mix English flag descriptions with Chinese status/audit messages (`\"暂无 LLM Provider...\"`, `\"凭据为外部引用，已保留\"`, `\"add 失败\"`). The other audit-log sites (`cmd/env.go`, `cmd/text.go`, `cmd/ssh.go`, `cmd/sync.go`) use English detail strings uniformly; this file introduces the first Chinese audit details and the first Chinese success messages in the CLI surface. Pick one language for `auditOp(...detail...)` and stdout/stderr messages to keep log-aggregation rules locale-independent; if localization is the goal, route through the existing i18n mechanism rather than hard-coding strings.",
+      "suggestion_code": "\t\tfmt.Fprintln(cmd.OutOrStdout(), \"no LLM providers configured; use 'senv ai provider add' to create one\")",
+      "existing_code": "\t\tfmt.Fprintln(cmd.OutOrStdout(), \"暂无 LLM Provider，使用 senv ai provider add 添加\")",
+      "start_line": 100,
+      "end_line": 100,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/catalog.go",
+      "content": "SSRF: `client.Get(source)` follows HTTP redirects with Go's default policy (up to 10 hops, any host). The only caller (`cmd/ai.go` line 42) passes the `--source` flag value straight through, so a user-supplied URL can 302-redirect to internal endpoints (e.g. `http://169.254.169.254/...`, `http://localhost:...`) and have the body persisted as the catalog cache or used for timing / internal-CSRF probing. Configure a custom `*http.Client` with `CheckRedirect` that pins the host to the original `source` (or refuses redirects entirely) before exposing this to user input.",
+      "suggestion_code": "// 仅在 source 与原始 URL 同主机时跟随跳转，否则直接拒绝。\n\tclient.CheckRedirect = func(req *http.Request, via []*http.Request) error {\n\t\tif len(via) == 0 {\n\t\t\treturn nil\n\t\t}\n\t\tif req.URL.Host != via[0].URL.Host {\n\t\t\treturn http.ErrUseLastResponse\n\t\t}\n\t\treturn nil\n\t}\n\tresp, err := client.Get(source)",
+      "existing_code": "resp, err := client.Get(source)",
+      "start_line": 55,
+      "end_line": 55,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/catalog.go",
+      "content": "Defense-in-depth: there is no `Content-Type` check before consuming the body. Combined with the unconstrained redirect behaviour above, a redirect target can serve `text/html` (or any non-JSON) and have it written into the response slice before `Parse` rejects it on JSON shape. The `validateProviders` check is a safety net but it still runs after a full read of attacker-controlled bytes; verify `resp.Header.Get(\"Content-Type\")` starts with `application/json` (or similar) before reading, and require HTTPS scheme on `source` up-front.",
+      "suggestion_code": "if resp.StatusCode != http.StatusOK {\n\t\treturn nil, fmt.Errorf(\"fetch catalog: unexpected status %s\", resp.Status)\n\t}\n\tif ct := resp.Header.Get(\"Content-Type\"); !strings.HasPrefix(ct, \"application/json\") {\n\t\treturn nil, fmt.Errorf(\"fetch catalog: unexpected content-type %q\", ct)\n\t}",
+      "existing_code": "if resp.StatusCode != http.StatusOK {\n\t\treturn nil, fmt.Errorf(\"fetch catalog: unexpected status %s\", resp.Status)\n\t}",
+      "start_line": 60,
+      "end_line": 62,
+      "category": "security",
+      "severity": "low",
+      "priority": "P0"
+    },
+    {
+      "path": "cmd/ai.go",
+      "content": "`cat.Counts()` before `Save` does not add real validation: `llm.Fetch` already calls `Parse`, which runs `validateProviders` on the same payload, so by the time we reach this line the catalog is already valid and `Counts()` cannot fail in practice. The \"validate-then-save\" comment is misleading; the order is correct (no save on Fetch failure) but the extra `Counts()` call provides no additional guard.\n\n→ Suggestion: drop the `Counts()` call here and just call it once in the print path, or remove the misleading comment.",
+      "suggestion_code": "cat, err := llm.Fetch(source, nil)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// 先拉取并校验、后落盘（Fetch 内部已校验），保证失败时旧缓存原样保留。\n\t\tif err := llm.Save(catalogCachePath(), cat); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tproviders, models, err := cat.Counts()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(cmd.OutOrStdout(), \"已刷新模型目录：%d 个 provider，%d 个 model（来源 %s）\\n\",\n\t\t\tproviders, models, cat.Source)",
+      "existing_code": "cat, err := llm.Fetch(source, nil)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tproviders, models, err := cat.Counts()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// 先拉取并校验、后落盘，保证失败时旧缓存原样保留。\n\t\tif err := llm.Save(catalogCachePath(), cat); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tfmt.Fprintf(cmd.OutOrStdout(), \"已刷新模型目录：%d 个 provider，%d 个 model（来源 %s）\\n\",\n\t\t\tproviders, models, cat.Source)",
+      "start_line": 42,
+      "end_line": 55,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai.go",
+      "content": "The `--source` flag value is forwarded to `llm.Fetch` and handed straight to `client.Get(source)` with no scheme/host validation. While the flag is user-typed on a CLI, the change set also wires catalog access into MCP and TUI paths; any future caller that derives `--source` from configuration or env would have no guardrail against `file://`, `http://` to internal hosts, or unintended redirects (Go's default `http.Client` follows redirects).\n\n→ Suggestion: at minimum document that `--source` must be an HTTPS URL pointing to a public models.dev mirror, or validate scheme (`https` only) and reject known internal ranges before calling `Fetch`.",
+      "existing_code": "func init() {\n\trootCmd.AddCommand(aiCmd)\n\taiRefreshCmd.Flags().StringVar(&aiRefreshSource, \"source\", \"\",\n\t\t\"catalog source URL (default \"+llm.DefaultCatalogURL+\")\")\n\taiCmd.AddCommand(aiRefreshCmd)\n\taiCmd.AddCommand(aiCatalogCmd)",
+      "start_line": 95,
+      "end_line": 100,
+      "category": "security",
+      "severity": "low",
+      "priority": "P0"
+    },
+    {
+      "path": "cmd/ai.go",
+      "content": "All non-`ErrCacheNotFound` errors from `llm.Load` (including permission denied, I/O errors, JSON corruption, version mismatch) are collapsed into the same `\"模型目录缓存损坏\"` message. A user who hit a `permission denied` on `~/.config/senv/cache/models-dev.json` would be told the cache is corrupt and asked to rerun `senv ai refresh`, which would hit the same permission error and look like the tool is broken.\n\n→ Suggestion: branch on `errors.Is(err, llm.ErrCacheCorrupt)` to give a distinct message, and leave the catch-all for genuine I/O errors (e.g., `\"无法读取模型目录缓存（%v）；请检查文件权限或重新执行 senv ai refresh\"`).",
+      "suggestion_code": "cat, err := llm.Load(catalogCachePath())\n\t\tif errors.Is(err, llm.ErrCacheNotFound) {\n\t\t\treturn fmt.Errorf(\"本地暂无模型目录缓存，请先执行 senv ai refresh\")\n\t\t}\n\t\tif errors.Is(err, llm.ErrCacheCorrupt) {\n\t\t\treturn fmt.Errorf(\"模型目录缓存损坏（%v）；请重新执行 senv ai refresh\", err)\n\t\t}\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"无法读取模型目录缓存（%v）；请检查文件权限或重新执行 senv ai refresh\", err)\n\t\t}",
+      "existing_code": "cat, err := llm.Load(catalogCachePath())\n\t\tif errors.Is(err, llm.ErrCacheNotFound) {\n\t\t\treturn fmt.Errorf(\"本地暂无模型目录缓存，请先执行 senv ai refresh\")\n\t\t}\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"模型目录缓存损坏（%v）；请重新执行 senv ai refresh\", err)\n\t\t}",
+      "start_line": 71,
+      "end_line": 77,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_switch.go",
+      "content": "agentHomeDir silently falls back to \".\" when os.UserHomeDir fails (e.g., daemon/cron with no HOME and no passwd entry). That \".\" is then joined into agent config paths like filepath.Join(\".\", \".claude\", \"settings.json\") = \".claude/settings.json\" — a relative path. The Switch command will then write the provider config to the current working directory instead of erroring, leaving the user with an unexpected file under cwd and a pointer record pointing at nothing. The Status command will similarly read relative paths. cmd/mcp_install.go already shows the correct pattern: return an error so the caller can surface it. agentHomeDir is called from three places (ai switch/status, mcp llmHome, tui LLMHome), and the resulting relative paths propagate uniformly — fix here to fail fast.",
+      "suggestion_code": "// agentHomeDir 返回 agent 配置写入的 home 目录（测试可经 HOME 覆盖）。\n// 无法确定 home 时返回错误：filepath.Join(\".\", \".claude\", ...) 会生成相对路径，\n// 把 agent 配置写到 cwd 是无意义的副作用，必须让调用方显式失败。\nfunc agentHomeDir() (string, error) {\n\treturn os.UserHomeDir()\n}",
+      "existing_code": "// agentHomeDir 返回 agent 配置写入的 home 目录（测试可经 HOME 覆盖）。\nfunc agentHomeDir() string {\n\thome, err := os.UserHomeDir()\n\tif err != nil {\n\t\treturn \".\"\n\t}\n\treturn home\n}",
+      "start_line": 20,
+      "end_line": 27,
+      "category": "maintainability",
+      "severity": "high",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "Plaintext credentials persisted to user agent configs and `.senv-bak` backups with no zeroization or cleanup. Four of five supported agents (Claude Code, Kimi, Pi, OpenCode) write the decrypted API key into `ANTHROPIC_AUTH_TOKEN` / `api_key` / `apiKey` fields. Combined with `.senv-bak` files that are created next to every touched config and never removed (only `os.WriteFile(path+\".senv-bak\", existing, 0o600)` at line 154, no matching cleanup), the prior credentialed config sits on disk in addition to the new one. `req.Credential` carries the raw plaintext string through the entire call chain, and `os.MkdirAll(dir, 0o700)` does not tighten an already-existing directory, so the \"0600 收敛\" claim in the docstring above is misleading — the parent directory permissions are inherited as-is and the `.senv-bak` retains the prior plaintext key. The docstring should at minimum warn the user; ideally the package offers an env-var mode for the other adapters too, and removes the `.senv-bak` after a successful switch (or moves it out of the agent's config dir).",
+      "existing_code": "Apply: func(req SwitchRequest) error {\n\t\t\treturn applyJSONMerge(req.ConfigPath, func(root map[string]any) error {\n\t\t\t\troot[\"model\"] = req.Model\n\t\t\t\tenv := ensureSubMap(root, \"env\")\n\t\t\t\tenv[\"ANTHROPIC_BASE_URL\"] = req.BaseURL\n\t\t\t\tenv[\"ANTHROPIC_AUTH_TOKEN\"] = req.Credential\n\t\t\t\treturn nil\n\t\t\t})\n\t\t},",
+      "start_line": 337,
+      "end_line": 345,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "piAdapter writes two files with no coordinated rollback. The first `applyJSONMerge` succeeds and replaces `~/.pi/agent/models.json`; if the second `applyJSONMerge` (for `settings.json`) then fails, this function returns the error and `Switch()` propagates it without calling `restoreFromBackup` (lines 595-597 of `Switch` only restore on pointer-file errors, not on `adapter.Apply` errors). Result: models.json contains the new provider while settings.json still names the previous `defaultProvider`, and pi will fail to start because the selected provider isn't in `models.json` (or will silently fall back). The package comment promises \"失败 → 回滚配置\", so the missing restore on `adapter.Apply` failure is a contract violation specifically for pi. Either wrap the two writes in a small helper that registers both files for rollback on the first error, or have `Switch()` track all touched files and restore them whenever `adapter.Apply` returns an error.",
+      "existing_code": "Apply: func(req SwitchRequest) error {\n\t\t\tid := senvProviderID(req.ProviderAlias)\n\t\t\tif err := applyJSONMerge(req.ConfigPath, func(root map[string]any) error {\n\t\t\t\tproviders := ensureSubMap(root, \"providers\")\n\t\t\t\tmodels := make([]map[string]any, 0, 1)\n\t\t\t\tmodels = append(models, map[string]any{\"id\": req.Model, \"name\": req.Model})\n\t\t\t\tproviders[id] = map[string]any{\n\t\t\t\t\t\"baseUrl\": req.BaseURL,\n\t\t\t\t\t\"api\":     \"openai-completions\",\n\t\t\t\t\t\"apiKey\":  req.Credential,\n\t\t\t\t\t\"models\":  models,\n\t\t\t\t}\n\t\t\t\treturn nil\n\t\t\t}); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\tsettings := filepath.Join(filepath.Dir(req.ConfigPath), \"settings.json\")\n\t\t\treturn applyJSONMerge(settings, func(root map[string]any) error {\n\t\t\t\troot[\"defaultProvider\"] = id\n\t\t\t\troot[\"defaultModel\"] = req.Model\n\t\t\t\treturn nil\n\t\t\t})\n\t\t},",
+      "start_line": 425,
+      "end_line": 447,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "Line-based TOML editing is unsafe for valid TOML. `applyTOMLEdits` splits the file on `\"\\n\"` and `upsertTopLevelLine` / `upsertTOMLBlock` only look at trimmed line prefixes. This ignores multi-line basic strings (`\"\"\"...\"\"\"`), multi-line literal strings (`'''...'''`), multi-line arrays, inline tables, and arrays of tables (`[[...]]`); the header detector explicitly skips `[[` but the body of an array-of-tables block is still treated as in-block-or-not via `inBlock`, so adding a sibling `[[...]]` for an unrelated agent section will be silently dropped when replacing a header block. If the user's existing config has a multi-line string or array, an insert at the computed `insertAt` can land inside the literal and the next time the agent parses the file it will refuse to start. Either use a real TOML library (e.g. `github.com/pelletier/go-toml/v2`) or restrict the primitive to keys whose value is provably a single-line scalar; for arrays/strings/tables, append to the file end and let the user re-order.",
+      "existing_code": "// applyTOMLEdits 逐条应用编辑并原子写回。topLevel 行替换同名顶层赋值；\n// 不存在时插入到首个表头之前（TOML 顶层键不允许出现在表头之后）。\nfunc applyTOMLEdits(path string, edits []tomlEdit) error {\n\tsrc, err := os.ReadFile(path)\n\tif err != nil && !os.IsNotExist(err) {\n\t\treturn fmt.Errorf(\"read %s: %w\", path, err)\n\t}\n\tlines := strings.Split(string(src), \"\\n\")\n\n\tfor _, e := range edits {\n\t\tkey := topLevelKey(e)\n\t\tif key != \"\" {\n\t\t\tlines = upsertTopLevelLine(lines, key, e.topLevel...)\n\t\t}\n\t\tif e.header != \"\" {\n\t\t\tlines = upsertTOMLBlock(lines, e.header, e.block)\n\t\t}\n\t}\n\treturn atomicWriteWithBackup(path, []byte(strings.Join(lines, \"\\n\")))\n}",
+      "start_line": 215,
+      "end_line": 234,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "No fsync on the temp file before `os.Rename`, and the rename is not followed by a parent-dir fsync. The package comment claims \"temp+rename 原子替换\", but `os.Rename` is only atomic on the directory entry; without `tmp.Sync()` (or `f.Sync()`) before close, a power loss between the rename and the page cache flush can leave an empty / zero-length / partially-written file at `~/.codex/config.toml` etc. Combined with the `restoreFromBackup` chain below, the only good copy can be lost. Add `tmp.Sync()` before `tmp.Close()`, and ideally `dirF, _ := os.Open(dir); dirF.Sync(); dirF.Close()` after the rename to durably commit the directory entry. (This is not switch.go-specific — no other writer in the repo fsyncs either — but the docstring claims atomicity so this is the file to fix first.)",
+      "existing_code": "if _, err := tmp.Write(data); err != nil {\n\t\tcleanup()\n\t\treturn fmt.Errorf(\"write temp file: %w\", err)\n\t}\n\tif err := tmp.Chmod(0o600); err != nil {\n\t\tcleanup()\n\t\treturn fmt.Errorf(\"chmod temp file: %w\", err)\n\t}\n\tif err := tmp.Close(); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"close temp file: %w\", err)\n\t}\n\tif err := os.Rename(tmpName, path); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"replace config: %w\", err)\n\t}\n\treturn nil\n}",
+      "start_line": 169,
+      "end_line": 186,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "`restoreFromBackup` overwrites the only good copy before restoring it. It reads `path.senv-bak` (the original content) and then calls `atomicWriteWithBackup(path, original)`, whose first step is to read the current (modified) `path` and write it into `path.senv-bak`. If the subsequent rename fails (ENOSPC, EIO, permission), the original content has just been clobbered in the backup and there is no good copy left. The restore should write `original` to a fresh temp file in `dir` and `os.Rename` it to `path` directly, never touching the `.senv-bak` slot — only remove the backup once the rename has succeeded.",
+      "existing_code": "// restoreFromBackup 用 <path>.senv-bak 恢复原配置；备份不存在时删除 path。\n// 恢复错误原样返回，由调用方并入最终错误。\nfunc restoreFromBackup(path string) error {\n\tbackup := path + \".senv-bak\"\n\tdata, err := os.ReadFile(backup)\n\tif err != nil {\n\t\tif os.IsNotExist(err) {\n\t\t\treturn os.Remove(path)\n\t\t}\n\t\treturn err\n\t}\n\tif err := atomicWriteWithBackup(path, data); err != nil {\n\t\treturn err\n\t}\n\treturn os.Remove(backup)\n}",
+      "start_line": 188,
+      "end_line": 203,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "`os.MkdirAll(dir, 0o700)` does not tighten an existing directory's permissions. If `~/.claude` (or any other agent config dir) already exists with `0755` from a prior install, the new `0600` settings.json inside is still discoverable by other local users, and `~/.senv-bak` containing the previous plaintext credentialed config is reachable the same way. The `applyJSONMerge` docstring claims \"文件权限收敛 0600\" but only the file is tightened — the directory inherits. Either explicitly `os.Chmod(dir, 0o700)` when the directory pre-exists (taking care not to widen permissions on a dir the user intentionally set loosely), or document that the caller must pre-create the directory with the desired mode.",
+      "existing_code": "// atomicWriteWithBackup 将原文件复制为 <path>.senv-bak，再以 temp+rename\n// 原子替换 path。原文件不存在时跳过备份。\nfunc atomicWriteWithBackup(path string, data []byte) error {\n\tdir := filepath.Dir(path)\n\tif err := os.MkdirAll(dir, 0o700); err != nil {\n\t\treturn fmt.Errorf(\"create config dir: %w\", err)\n\t}",
+      "start_line": 146,
+      "end_line": 152,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "No synchronization around `SwitchManager.Switch`. Both `internal/tui/ai_tab.go` (via `switchCmd()` returning a `tea.Cmd` that calls `sm.Switch`) and `cmd/mcp_llm.go` (added in this change) can drive `Switch` concurrently with each other or with a CLI invocation. There is no `sync.Mutex` anywhere in `internal/llm/`. Interleaving `adapter.Apply` (which writes `<path>.senv-bak`) with another goroutine's `restoreFromBackup` (which reads and then overwrites `<path>.senv-bak` before the rename) can destroy the only good copy and leave both agents pointing at half-written configs. Either add a process-wide mutex inside `SwitchManager` (keyed on absolute config path so different agents don't block each other) or document explicitly that concurrent switching for the same agent is unsupported and have `Switch` detect/reject it.",
+      "existing_code": "// Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。\nfunc (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOutput, error) {",
+      "start_line": 554,
+      "end_line": 555,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "Error-wrapping inconsistency loses the primary cause. The dual-failure path uses `%v` for the primary `err` (`fmt.Errorf(\"save pointers: %v; restore config also failed: %w\", err, rbErr)`) so callers cannot `errors.Is(err, ErrPointerNotFound)` or any other sentinel wrapped by `SavePointers`. `Status()`'s warning similarly uses `%v` for the pointer parse error, hiding it from any caller that wants to log/inspect the sentinel. Use `%w` for both so the original chain is preserved — the format string can still show both via the `%w` + a wrapped secondary.",
+      "existing_code": "if err := SavePointers(sm.pointerPath, pf); err != nil {\n\t\tif rbErr := restoreFromBackup(configPath); rbErr != nil {\n\t\t\treturn nil, fmt.Errorf(\"save pointers: %v; restore config also failed: %w\", err, rbErr)\n\t\t}\n\t\treturn nil, fmt.Errorf(\"save pointers: %w (config restored)\", err)\n\t}",
+      "start_line": 609,
+      "end_line": 614,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "`upsertTopLevelLine` is O(N) on the slice and builds three full intermediate slices per call (lines[:existing], lines[:insertAt], lines[insertAt:]). On every `applyTOMLEdits` invocation, we now scan the entire file up to the first header once per edit. For a kimi switch with three edits and a real-world config containing many top-level keys or comments, this is wasteful — but more importantly, `applyTOMLEdits` is called even for unchanged keys because `topLevelKey` always returns the first key in `e.topLevel`. For codex (lines 358-385) both `model` and `model_provider` end up in the same edit's `topLevel` slice, and `topLevelKey` returns only `\"model\"`; if `model_provider` already exists in the file, the upsert will replace the `model` line and then the next render will be the unmodified `model_provider` line sitting adjacent. This works in practice but means the function relies on the two keys always being inserted in the same edit, which is fragile if a future caller splits them. Either compute per-key replacement in a loop, or document and assert that `e.topLevel` always contains exactly one entry.",
+      "existing_code": "for _, e := range edits {\n\t\tkey := topLevelKey(e)\n\t\tif key != \"\" {\n\t\t\tlines = upsertTopLevelLine(lines, key, e.topLevel...)\n\t\t}\n\t\tif e.header != \"\" {\n\t\t\tlines = upsertTOMLBlock(lines, e.header, e.block)\n\t\t}\n\t}",
+      "start_line": 224,
+      "end_line": 232,
+      "category": "bug",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/pointer.go",
+      "content": "LoadPointers's per-agent validation produces a duplicated \"agent pointer file corrupt\" prefix. SwitchedAtTime returns `fmt.Errorf(\"%w: bad switched_at %q: %v\", ErrPointerCorrupt, p.SwitchedAt, err)` which wraps ErrPointerCorrupt via %w and embeds the time.Parse error with %v. LoadPointers then does `fmt.Errorf(\"%w: agent %q: %v\", ErrPointerCorrupt, id, errors.Unwrap(err))`. Because errors.Unwrap on the inner error returns ErrPointerCorrupt itself (it is the first wrapped target in the chain), the outer %w wraps the sentinel a second time and %v prints the sentinel's literal string into the message, yielding e.g. `agent pointer file corrupt: agent \"id\": agent pointer file corrupt: bad switched_at \"x\": parse error ...`. The underlying time.ParseError is also lost because SwitchedAtTime used %v instead of %w. errors.Is still matches the sentinel, but the diagnostic is misleading and the parse cause is irrecoverable. Replace with `fmt.Errorf(\"agent %q: %w\", id, err)` (preserving the full chain from SwitchedAtTime) or restructure so the parse error is wrapped as the cause.",
+      "suggestion_code": "\tfor id, p := range pf.Agents {\n\t\tif _, err := p.SwitchedAtTime(); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"agent %q: %w\", id, err)\n\t\t}\n\t}",
+      "existing_code": "\tfor id, p := range pf.Agents {\n\t\tif _, err := p.SwitchedAtTime(); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%w: agent %q: %v\", ErrPointerCorrupt, id, errors.Unwrap(err))\n\t\t}\n\t}",
+      "start_line": 87,
+      "end_line": 91,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/pointer.go",
+      "content": "PointerFile.Set accepts (agentID, provider, model) without validating that provider and model are non-empty, and LoadPointers only validates SwitchedAt, not Provider/Model. A caller that invokes Set with an empty string (e.g., a partial switch propagating an unset field) silently persists a broken record, and a hand-edited JSON file with empty Provider/Model is accepted on load. Status code in switch.go will then report e.g. `provider_alias / gpt-4 (timestamp)` for an unset provider, and downstream catalog/provider lookups in switch.go (LookupAgent, entry lookup) will route on the empty string and silently fail or hit a wrong provider. Add an explicit non-empty check in Set (return an error from a new signature `Set(agentID, provider, model string) error`) and reject entries with empty Provider/Model during the LoadPointers validation loop, returning ErrPointerCorrupt.",
+      "suggestion_code": "// Set 记录或覆盖 agent 指针，时间戳取当前时刻。\nfunc (pf *PointerFile) Set(agentID, provider, model string) error {\n\tif agentID == \"\" {\n\t\treturn errors.New(\"agent id is empty\")\n\t}\n\tif provider == \"\" || model == \"\" {\n\t\treturn fmt.Errorf(\"pointer for %q: provider and model must be non-empty\", agentID)\n\t}\n\tif pf.Agents == nil {\n\t\tpf.Agents = map[string]AgentPointer{}\n\t}\n\tpf.Agents[agentID] = AgentPointer{\n\t\tProvider:   provider,\n\t\tModel:      model,\n\t\tSwitchedAt: time.Now().Format(time.RFC3339),\n\t}\n\treturn nil\n}",
+      "existing_code": "// Set 记录或覆盖 agent 指针，时间戳取当前时刻。\nfunc (pf *PointerFile) Set(agentID, provider, model string) {\n\tif pf.Agents == nil {\n\t\tpf.Agents = map[string]AgentPointer{}\n\t}\n\tpf.Agents[agentID] = AgentPointer{\n\t\tProvider:   provider,\n\t\tModel:      model,\n\t\tSwitchedAt: time.Now().Format(time.RFC3339),\n\t}\n}",
+      "start_line": 59,
+      "end_line": 69,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/pointer.go",
+      "content": "SavePointers relies on `os.MkdirAll(dir, pointerDirMode)` to enforce a 0700 directory, but MkdirAll is a no-op on the mode of an existing directory. The pointer path lives at `~/.config/senv/agent-pointers.json` (cmd/ai_switch.go:17), and `~/.config/senv` is also created by other call sites in this codebase with looser modes (e.g., `cmd/mcp_install.go:240` uses `os.MkdirAll(dir, 0o755)`, several tests use `0o755`). If the config dir was created earlier with mode 0755, the pointer file lands in a world-readable/traversable directory, even though the file itself is 0600. This contradicts the package's stated \"收紧权限\" intent and is inconsistent with the `WriteSensitiveFile` helper added in the 2026-09-02 security-hardening change, which explicitly stats-then-chmods to tighten a loose directory. Either route the pointer write through `storage.WriteSensitiveFile` (stat → loosen-or-tighten as needed → MkdirAll → WriteFile 0600) or replicate the stat-then-chmod sequence here before MkdirAll so the 0700 intent is enforced on every save, not just on first creation.",
+      "suggestion_code": "\tdir := filepath.Dir(path)\n\tif info, statErr := os.Stat(dir); statErr == nil {\n\t\tif !info.IsDir() {\n\t\t\treturn fmt.Errorf(\"pointer dir %s is not a directory\", dir)\n\t\t}\n\t\tif info.Mode().Perm() != pointerDirMode {\n\t\t\tif err := os.Chmod(dir, pointerDirMode); err != nil {\n\t\t\t\treturn fmt.Errorf(\"tighten pointer dir perms: %w\", err)\n\t\t\t}\n\t\t}\n\t} else if os.IsNotExist(statErr) {\n\t\tif err := os.MkdirAll(dir, pointerDirMode); err != nil {\n\t\t\treturn fmt.Errorf(\"create pointer dir: %w\", err)\n\t\t}\n\t} else {\n\t\treturn fmt.Errorf(\"stat pointer dir: %w\", statErr)\n\t}",
+      "existing_code": "\tdir := filepath.Dir(path)\n\tif err := os.MkdirAll(dir, pointerDirMode); err != nil {\n\t\treturn fmt.Errorf(\"create pointer dir: %w\", err)\n\t}",
+      "start_line": 111,
+      "end_line": 114,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/pointer.go",
+      "content": "LoadPointers and SavePointers perform no internal serialization, and the atomic temp+rename only guards a single write. Per the package doc this file is the single source of truth for status/switch, and the change group ships both an interactive TUI (`internal/tui/ai_tab.go` calls `sm.Switch` → SavePointers, and `sm.Status` → LoadPointers) and a CLI (`cmd/ai_switch.go`'s `ai switch` / `ai status`). A user who keeps the TUI open in one terminal and runs `senv ai switch` in another will have two independent OS processes loading, mutating, and saving the same `~/.config/senv/agent-pointers.json`. The last writer wins and earlier updates silently drop — the pointer will diverge from the agent configs that were successfully written, and `senv ai status` will report a wrong (provider, model) until the next switch. No `flock`/`syscall.Flock`/`FileLock` exists in `internal/llm`, `internal/tui`, or `cmd`. Guard the load-mutate-save window with a process-level `flock(LOCK_EX)` on the pointer file (or a sibling `.lock` file), or document the single-writer invariant in the package comment and refuse to write when an existing lock is held. As written, this race is reachable from shipped entry points and contradicts the \"pointer is the only source of truth\" invariant.",
+      "suggestion_code": "// LoadPointers takes a process-level flock(LOCK_SH) on path before reading so\n// concurrent writers (e.g. TUI + CLI) cannot interleave a save with this read.\nfunc LoadPointers(path string) (*PointerFile, error) {\n\tlockPath := path + \".lock\"\n\tlf, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, pointerFileMode)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"open pointer lock: %w\", err)\n\t}\n\tdefer lf.Close()\n\tif err := syscall.Flock(int(lf.Fd()), syscall.LOCK_SH); err != nil {\n\t\treturn nil, fmt.Errorf(\"acquire pointer shared lock: %w\", err)\n\t}\n\tdefer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)\n\t// ...existing body...\n}",
+      "existing_code": "func LoadPointers(path string) (*PointerFile, error) {\n\tdata, err := os.ReadFile(path)\n\tif err != nil {\n\t\tif os.IsNotExist(err) {\n\t\t\treturn nil, ErrPointerNotFound\n\t\t}\n\t\treturn nil, fmt.Errorf(\"read agent pointer file: %w\", err)\n\t}\n\tvar pf PointerFile\n\tif err := json.Unmarshal(data, &pf); err != nil {\n\t\treturn nil, fmt.Errorf(\"%w: %v\", ErrPointerCorrupt, err)\n\t}\n\tif pf.Version != 1 {\n\t\treturn nil, fmt.Errorf(\"%w: unsupported version %d\", ErrPointerCorrupt, pf.Version)\n\t}\n\tfor id, p := range pf.Agents {\n\t\tif _, err := p.SwitchedAtTime(); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%w: agent %q: %v\", ErrPointerCorrupt, id, errors.Unwrap(err))\n\t\t}\n\t}\n\treturn &pf, nil\n}",
+      "start_line": 72,
+      "end_line": 93,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "cmd/mcp.go",
+      "content": "Confirmed finding (prior pass): the inline `filepath.Join(configPath, \"agent-pointers.json\")` duplicates the path resolution in `cmd/ai_switch.go:16` (`agentPointerPath()`) and the same inline expression in `cmd/tui.go:43`. Route both call sites through the existing `agentPointerPath()` helper so the pointer filename and parent directory stay in lockstep with the AI switch/status CLI surface and the spec at `openspec/specs/llm-provider-switch/spec.md` (single canonical location: `~/.config/senv/agent-pointers.json`).",
+      "existing_code": "llmPointer: filepath.Join(configPath, \"agent-pointers.json\"),",
+      "start_line": 129,
+      "end_line": 129,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/ssh.go",
+      "content": "Hardcoded \"SSH\" prefix left in the error message. After generalizing sshKindForDir to entryKindForDir (and dropping \"SSH\" from sibling messages), this encrypt-failure message still reads \"failed to encrypt SSH %s entry\" — for an LLM provider save it becomes \"failed to encrypt SSH llm_providers entry\", which is wrong. Drop the \"SSH\" literal so it matches the sibling \"failed to serialize %s entry\" message on line 164.",
+      "suggestion_code": "\t\treturn fmt.Errorf(\"failed to encrypt %s entry: %w\", dir, err)",
+      "existing_code": "\t\treturn fmt.Errorf(\"failed to encrypt SSH %s entry: %w\", dir, err)",
+      "start_line": 168,
+      "end_line": 168,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/ssh.go",
+      "content": "deleteSSHEntry still validates via validateSSHIdentity, which prepends \"invalid SSH \" to the kind. When DeleteLLMProvider calls this with kind=\"LLM provider\", an invalid alias surfaces as \"invalid SSH LLM provider %q\", which is misleading. Use validateEntryIdentity (the kind-neutral helper introduced in this diff) so SSH and non-SSH callers share the same shape and the message no longer hardcodes \"SSH\".",
+      "suggestion_code": "func (m *Manager) deleteSSHEntry(dir, name, kind string) error {\n\tif err := validateEntryIdentity(kind, name); err != nil {\n\t\treturn err\n\t}",
+      "existing_code": "func (m *Manager) deleteSSHEntry(dir, name, kind string) error {\n\tif err := validateSSHIdentity(kind, name); err != nil {\n\t\treturn err\n\t}",
+      "start_line": 209,
+      "end_line": 212,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/ssh.go",
+      "content": "Hardcoded \"SSH\" prefix left in the deletion error message. With DeleteLLMProvider passing kind=\"LLM provider\", the wrapped error becomes \"failed to delete SSH LLM provider %q\", which contradicts the design doc's stated goal of removing the SSH prefix from shared helper messages. Drop the \"SSH\" literal to match the load entry error wording.",
+      "suggestion_code": "\t\treturn fmt.Errorf(\"failed to delete %s %q: %w\", kind, name, err)",
+      "existing_code": "\t\treturn fmt.Errorf(\"failed to delete SSH %s %q: %w\", kind, name, err)",
+      "start_line": 222,
+      "end_line": 222,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/llm_provider.go",
+      "content": "Validation is only enforced on save; nothing in `LoadLLMProvider`/`LoadLLMProviderWithKey` re-runs `ValidateLLMProvider`. A tampered or partial ciphertext that decrypts to JSON with `BaseURL` outside http(s, or with an empty `Models` slice, is happily handed to `ProviderManager.GetProvider`/`ListProviders`, then consumed at `internal/llm/switch.go:590` (BaseURL written into agent config) and through MCP/TUI views. Call `ValidateLLMProvider` (or equivalent) inside `LoadLLMProviderWithKey` after `loadSSHEntry` so the constraints cannot be bypassed by anything other than a brand-new save.",
+      "suggestion_code": "func (m *Manager) LoadLLMProviderWithKey(alias string, cryptoKey []byte) (*LLMProviderEntry, error) {\n\tvar entry LLMProviderEntry\n\tif err := m.loadSSHEntry(LLMProviderDirName, alias, &entry, cryptoKey); err != nil {\n\t\treturn nil, err\n\t}\n\tif err := entry.ValidateLLMProvider(); err != nil {\n\t\treturn nil, fmt.Errorf(\"provider %q failed validation: %w\", alias, err)\n\t}\n\treturn &entry, nil\n}",
+      "existing_code": "func (m *Manager) LoadLLMProviderWithKey(alias string, cryptoKey []byte) (*LLMProviderEntry, error) {\n\tvar entry LLMProviderEntry\n\tif err := m.loadSSHEntry(LLMProviderDirName, alias, &entry, cryptoKey); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &entry, nil\n}",
+      "start_line": 44,
+      "end_line": 50,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/storage/types.go",
+      "content": "`url.Parse` accepts userinfo (`https://user:pw@host`) and is otherwise very permissive; combined with the load-time bypass noted above, a maliciously crafted entry can carry embedded credentials in `BaseURL`. `url.Parse(\"https://\")` returns nil error with empty Host, which the current check catches, but `https://evil.example/` with embedded userinfo passes. Use `u, err := url.ParseRequestURI(e.BaseURL)` plus a `u.Hostname()`/`u.Port()` check, or strip userinfo with `u.User = nil`, before accepting. Apply the same change to the parallel check in `internal/llm/provider.go:parseHTTPURL` so the on-disk and on-write rules agree.",
+      "suggestion_code": "u, err := url.ParseRequestURI(e.BaseURL)\n\tif err != nil || (u.Scheme != \"http\" && u.Scheme != \"https\") || u.Host == \"\" || u.User != nil {\n\t\treturn fmt.Errorf(\"provider %q has invalid base URL %q\", e.Alias, e.BaseURL)\n\t}",
+      "existing_code": "u, err := url.Parse(e.BaseURL)\n\tif err != nil || (u.Scheme != \"http\" && u.Scheme != \"https\") || u.Host == \"\" {\n\t\treturn fmt.Errorf(\"provider %q has invalid base URL %q\", e.Alias, e.BaseURL)\n\t}",
+      "start_line": 131,
+      "end_line": 134,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/catalog.go",
+      "content": "Fetch lacks a `context.Context` parameter. It performs a 30s network call via `client.Get(source)` (which uses `context.Background()` internally), so callers cannot cancel an in-flight request, apply a per-call deadline different from the hardcoded 30s, or propagate tracing. For a CLI invoked from TUI/MCP, a hung fetch can block the caller for the full client timeout with no way to interrupt. The standard Go pattern is `Fetch(ctx context.Context, source string, client *http.Client)` with `http.NewRequestWithContext` + `client.Do`.",
+      "suggestion_code": "// Fetch 从 source 拉取目录并解析校验；client 为 nil 时使用默认 client。\nfunc Fetch(ctx context.Context, source string, client *http.Client) (*Catalog, error) {\n\tif client == nil {\n\t\tclient = defaultCatalogClient\n\t}\n\treq, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"fetch catalog: %w\", err)\n\t}\n\tresp, err := client.Do(req)",
+      "existing_code": "// Fetch 从 source 拉取目录并解析校验；client 为 nil 时使用默认 client。\nfunc Fetch(source string, client *http.Client) (*Catalog, error) {\n\tif client == nil {\n\t\tclient = defaultCatalogClient\n\t}\n\tresp, err := client.Get(source)",
+      "start_line": 50,
+      "end_line": 55,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/types.go",
+      "content": "`ValidateLLMProvider` is only invoked from `SaveLLMProviderWithKey`. The corresponding `LoadLLMProviderWithKey`/`LoadLLMProvider` in `internal/storage/llm_provider.go` returns the deserialized entry without re-running this check, and downstream consumers (`ProviderManager.GetProvider`/`ListProviders`, `internal/llm/switch.go:590`, the MCP and TUI views in `cmd/mcp_llm.go` and `internal/tui/ai_tab.go`) use `BaseURL`/`CredentialRef`/`Models` directly. Anything that can write JSON into the encrypted entry (tampered ciphertext, partial migration, future buggy code path) therefore bypasses the http(s) scheme allowlist and the `DefaultModel ⊆ Models` invariant. Either add a load-side call to `ValidateLLMProvider` from `LoadLLMProviderWithKey`, or document in this comment that the function is advisory only and not a trust boundary.",
+      "suggestion_code": "// ValidateLLMProvider checks cross-field invariants of a provider entry.\n// It must be invoked on both save AND load (see internal/storage/llm_provider.go)\n// because the persistence layer is the trust boundary for these constraints.\nfunc (e *LLMProviderEntry) ValidateLLMProvider() error {",
+      "existing_code": "// ValidateLLMProvider checks cross-field invariants of a provider entry.\nfunc (e *LLMProviderEntry) ValidateLLMProvider() error {",
+      "start_line": 126,
+      "end_line": 127,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "Force overwrite of `--api-key` silently destroys the previous credential in `llm-keys/<alias>`. `text.Manager.Set` is a blind overwrite with no backup or warning, so users updating only the model list or base URL can lose API key access with no way to recover. Consider either (a) refusing the operation when `opts.APIKey != \"\"` and an existing credential is present without an explicit `--rotate-credential` flag, or (b) preserving the existing credential and only updating profile metadata unless the caller opts into replacement.\n\nReproduction: `AddProvider(Alias:\"p\", APIKey:\"old\")` then `AddProvider(Alias:\"p\", APIKey:\"new\", Force:true)` — `tm.Get(\"llm-keys\",\"p\")` now returns `\"new\"` and `\"old\"` is gone forever.",
+      "suggestion_code": "\t\t// 先写凭据后写档案；档案失败时回删新建凭据（vault mutation 是锁非事务）。\n\t\tif opts.APIKey != \"\" {\n\t\t\tif _, existed := locked.textManager().Get(LLMKeysGroup, alias); existed == nil && opts.Force {\n\t\t\t\t// rotating an existing credential -- consider requiring an explicit --rotate flag\n\t\t\t}\n\t\t\tif err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {\n\t\t\t\treturn fmt.Errorf(\"store credential: %w\", err)\n\t\t\t}\n\t\t}",
+      "existing_code": "\t\t// 先写凭据后写档案；档案失败时回删新建凭据（vault mutation 是锁非事务）。\n\t\tif opts.APIKey != \"\" {\n\t\t\tif err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {\n\t\t\t\treturn fmt.Errorf(\"store credential: %w\", err)\n\t\t\t}\n\t\t}",
+      "start_line": 154,
+      "end_line": 159,
+      "category": "security",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "`GetProvider` detects `os.ErrNotExist` via `errors.Is` and then constructs a fresh `fmt.Errorf` that does NOT wrap the original error. The underlying `loadSSHEntry` chain (`\"%s %q not found: %w\"`) does preserve `os.ErrNotExist`, so this replacement breaks `errors.Is(err, os.ErrNotExist)` for any future caller that wants to distinguish \"missing\" from \"corrupt/denied\". Use `%w` to wrap rather than replace.",
+      "suggestion_code": "func (m *ProviderManager) GetProvider(alias string) (*storage.LLMProviderEntry, error) {\n\tentry, err := m.load(alias)\n\tif errors.Is(err, os.ErrNotExist) {\n\t\treturn nil, fmt.Errorf(\"provider %q not found: %w\", alias, err)\n\t}\n\treturn entry, err\n}",
+      "existing_code": "func (m *ProviderManager) GetProvider(alias string) (*storage.LLMProviderEntry, error) {\n\tentry, err := m.load(alias)\n\tif errors.Is(err, os.ErrNotExist) {\n\t\treturn nil, fmt.Errorf(\"provider %q not found\", alias)\n\t}\n\treturn entry, err\n}",
+      "start_line": 269,
+      "end_line": 275,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "Same `errors.Is`/replace pattern as `GetProvider`: this branch swaps the storage-level \"not found\" error (which wraps `os.ErrNotExist`) for a fresh string error, breaking sentinel detection. Use `%w` so `errors.Is(err, os.ErrNotExist)` still matches.",
+      "suggestion_code": "\t\tentry, loadErr := locked.load(alias)\n\t\tif errors.Is(loadErr, os.ErrNotExist) {\n\t\t\treturn fmt.Errorf(\"provider %q not found: %w\", alias, loadErr)\n\t\t}",
+      "existing_code": "\t\tentry, loadErr := locked.load(alias)\n\t\tif errors.Is(loadErr, os.ErrNotExist) {\n\t\t\treturn fmt.Errorf(\"provider %q not found\", alias)\n\t\t}",
+      "start_line": 299,
+      "end_line": 302,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "Profile is deleted BEFORE its owned credential. If `DeleteLLMProvider` succeeds but the subsequent `textManager().Delete(LLMKeysGroup, alias)` fails, the credential becomes an orphan: there is no profile pointing at it, no API to list owned credentials, and no recovery command. Either reorder (delete credential first, profile second — same partial-failure shape but the orphan is a profile, which `ListProviders` can surface) or add a sweep helper that lists `llm-keys/*` entries whose owning profile is absent and report them so the user can clean up.",
+      "suggestion_code": "\t\t// Delete credential first so a partial failure leaves a dangling profile\n\t\t// (visible via ListProviders) rather than an orphan credential that no\n\t\t// listing path can discover.\n\t\towned := entry.CredentialRef == OwnedCredentialRef(alias)\n\t\tif owned {\n\t\t\tif err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil {\n\t\t\t\treturn fmt.Errorf(\"delete credential: %w\", err)\n\t\t\t}\n\t\t\tcredRemoved = true\n\t\t}\n\t\tif err := locked.storage.DeleteLLMProvider(alias); err != nil {\n\t\t\treturn err\n\t\t}",
+      "existing_code": "\t\tif err := locked.storage.DeleteLLMProvider(alias); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif entry.CredentialRef == OwnedCredentialRef(alias) {\n\t\t\tif err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil {\n\t\t\t\treturn fmt.Errorf(\"delete credential: %w\", err)\n\t\t\t}\n\t\t\tcredRemoved = true\n\t\t}",
+      "start_line": 306,
+      "end_line": 314,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "`parseHTTPURL` does not reject URLs that contain userinfo (`https://user:pass@host`). The userinfo is preserved in `entry.BaseURL` and then echoed verbatim by `cmd/ai_provider.go` (list and show), `cmd/mcp_llm.go` (MCP JSON), and `internal/tui/ai_tab.go` (TUI detail panel). If a user follows a typical \"URL with embedded credentials\" pattern from a provider's docs, the credential will leak to stdout, log files, and MCP responses. Reject `u.User != nil` (and ideally normalize the URL via `u.Redacted()` before storing so the stored form also drops any userinfo).",
+      "suggestion_code": "func parseHTTPURL(raw string) (*url.URL, error) {\n\tu, err := url.Parse(raw)\n\tif err != nil || (u.Scheme != \"http\" && u.Scheme != \"https\") || u.Host == \"\" {\n\t\treturn nil, fmt.Errorf(\"not an http(s) URL\")\n\t}\n\tif u.User != nil {\n\t\treturn nil, fmt.Errorf(\"base URL must not contain userinfo\")\n\t}\n\treturn u, nil\n}",
+      "existing_code": "func parseHTTPURL(raw string) (*url.URL, error) {\n\tu, err := url.Parse(raw)\n\tif err != nil || (u.Scheme != \"http\" && u.Scheme != \"https\") || u.Host == \"\" {\n\t\treturn nil, fmt.Errorf(\"not an http(s) URL\")\n\t}\n\treturn u, nil\n}",
+      "start_line": 176,
+      "end_line": 182,
+      "category": "security",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "`validateCredentialInput` only validates the syntax of `--key-ref` (group/key names) via `ValidateCredentialRef`; it does NOT verify that the referenced credential actually exists in the vault. A user can save a profile whose `CredentialRef` points at a non-existent `env:openai/KEY` or `text:secrets/OPENAI`, and the failure only surfaces when `SwitchManager.Switch` calls `resolveCredential` (in `internal/llm/switch.go`) at runtime — far from the save command, with a misleading \"decrypt credential\" error message. Consider a best-effort existence check at save time (returning a non-fatal warning, mirroring the stale-catalog warning pattern), or at minimum surface the missing-credential error with a clearer message (\"credential env:openai/KEY not found; create it with `senv text set` first\").",
+      "suggestion_code": "func validateCredentialInput(opts AddProviderOptions) error {\n\thasKey := strings.TrimSpace(opts.APIKey) != \"\"\n\thasRef := strings.TrimSpace(opts.KeyRef) != \"\"\n\tswitch {\n\tcase hasKey && hasRef:\n\t\treturn fmt.Errorf(\"--api-key and --key-ref are mutually exclusive\")\n\tcase hasKey:\n\t\treturn nil\n\tcase hasRef:\n\t\treturn ValidateCredentialRef(opts.KeyRef)\n\tdefault:\n\t\treturn fmt.Errorf(\"either --api-key or --key-ref is required\")\n\t}\n}\n\n// credentialRefExists returns nil when a `env:` / `text:` ref can be resolved\n// in the current vault, or a descriptive error otherwise. Used to warn at save\n// time so users do not discover the problem only at `senv ai switch`.",
+      "existing_code": "func validateCredentialInput(opts AddProviderOptions) error {\n\thasKey := strings.TrimSpace(opts.APIKey) != \"\"\n\thasRef := strings.TrimSpace(opts.KeyRef) != \"\"\n\tswitch {\n\tcase hasKey && hasRef:\n\t\treturn fmt.Errorf(\"--api-key and --key-ref are mutually exclusive\")\n\tcase hasKey:\n\t\treturn nil\n\tcase hasRef:\n\t\treturn ValidateCredentialRef(opts.KeyRef)\n\tdefault:\n\t\treturn fmt.Errorf(\"either --api-key or --key-ref is required\")\n\t}\n}",
+      "start_line": 192,
+      "end_line": 205,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "This error message mixes Chinese (`（孤儿凭据未清理：%s）`) with English, breaking the otherwise consistent English error contract used by `AddProvider`'s other paths and making the string hard to grep for English-locale users. Use English (\"orphan credential not cleaned up: %s\") or move the parenthetical hint to a separate warning channel.",
+      "suggestion_code": "\t\t\t\treturn fmt.Errorf(\"save provider: %w (orphan credential not cleaned up: %s)\", err, OwnedCredentialRef(alias))",
+      "existing_code": "\t\t\t\treturn fmt.Errorf(\"save provider: %w（孤儿凭据未清理：%s）\", err, OwnedCredentialRef(alias))",
+      "start_line": 163,
+      "end_line": 163,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "Same mixed-language issue: this warning string contains Chinese characters (`模型目录缓存已超过 7 天...建议执行 senv ai refresh`) inconsistent with the English warnings/errors elsewhere. Translate to English so users with `LANG=en_*` can grep and parse it.",
+      "suggestion_code": "\t\t\twarnings = append(warnings, fmt.Sprintf(\n\t\t\t\t\"model catalog cache is older than 7 days (fetched %s); run `senv ai refresh`\",\n\t\t\t\tat.Local().Format(\"2006-01-02\")))",
+      "existing_code": "\t\t\twarnings = append(warnings, fmt.Sprintf(\n\t\t\t\t\"模型目录缓存已超过 7 天（拉取于 %s），建议执行 senv ai refresh\",\n\t\t\t\tat.Local().Format(\"2006-01-02\")))",
+      "start_line": 247,
+      "end_line": 249,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "`aiProviderListCmd` formats output with `\\t` column separators (line 106). `securefs.ValidateSegment` only rejects `\\x00:/\\\\` in alias names, so a tab character passes validation. An alias containing a literal tab would split across the column boundary and break `senv ai provider list` output. The natural mitigation is to refuse whitespace-containing aliases at `AddProvider` time so list/show/remove all reject them uniformly, or to render the alias with %q / escape tabs here.",
+      "existing_code": "fmt.Fprintf(out, \"%s\\t%s\\t模型数 %d\\t默认 %s\\t目录 %s\\n\",\n\t\t\t\te.Alias, e.BaseURL, len(e.Models), orDash(e.DefaultModel), orDash(e.CatalogProvider))",
+      "start_line": 105,
+      "end_line": 106,
+      "category": "other",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "The success message at line 74 prints `res.Entry.Alias` (trimmed) while the failure message at line 73 prints `args[0]` (untrimmed). This mirrors the audit-log asymmetry already flagged in confirmed finding #3 — same root cause: alias whitespace normalization happens inside `AddProvider`, not at the CLI boundary. Recommend either trimming `args[0]` at the CLI boundary (and rejecting empty after trim) or having `AddProvider` return the canonical alias on failure too.",
+      "existing_code": "if err != nil {\n\t\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+args[0], false, \"add 失败\")\n\t\t\treturn err\n\t\t}\n\t\tauditOp(session.AuditOpLLMProvider, \"provider:\"+res.Entry.Alias, true, \"add\")\n\t\tfor _, w := range res.Warnings {\n\t\t\tfmt.Fprintf(cmd.ErrOrStderr(), \"⚠ %s\\n\", w)\n\t\t}\n\t\tdetail := res.Entry.DefaultModel\n\t\tif detail == \"\" {\n\t\t\tdetail = \"无\"\n\t\t}\n\t\tfmt.Fprintf(cmd.OutOrStdout(), \"✓ 已保存 LLM Provider %s（%d 个模型，默认 %s）\\n\",\n\t\t\tres.Entry.Alias, len(res.Entry.Models), detail)",
+      "start_line": 68,
+      "end_line": 81,
+      "category": "other",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "`auditOp` is invoked before `getAIProviderManager()` completes its prompt. If `getAIProviderManager()` itself fails (vault unavailable, wrong password retries exhausted, etc.), no audit record is written. This is the right call for a missing manager (nothing meaningful to log) but is worth noting for completeness: failed invocations that never reach the provider manager (e.g., user aborts password prompt with Ctrl+C / EOF) leave no audit trail. Confirm whether session-level audit requires recording these aborted attempts at the CLI layer.",
+      "existing_code": "RunE: func(cmd *cobra.Command, args []string) error {\n\t\tmgr, err := getAIProviderManager()\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tres, err := mgr.AddProvider(llm.AddProviderOptions{\n\t\t\tAlias:           args[0],\n\t\t\tBaseURL:         providerAddBaseURL,\n\t\t\tAPIKey:          providerAddAPIKey,\n\t\t\tKeyRef:          providerAddKeyRef,",
+      "start_line": 52,
+      "end_line": 61,
+      "category": "other",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "`Long:` help text (lines 41-44) describes the model set as \"the union of models from --catalog-provider (models.dev cache) and custom --model values\" but does not mention: (1) `--api-key` and `--key-ref` are mutually exclusive and one is required; (2) the model set is deduplicated and sorted alphabetically (the storage shape is `[m1,m2,...]` not insertion order); (3) `--default-model`, if set, must appear in the union. These are enforced by `validateCredentialInput` / `assembleModels` / default-model check in `provider.go` but not advertised in `--help`.",
+      "existing_code": "Long: `Save an LLM provider profile with base URL, credential reference and\nmodel set. The model set is the union of models from --catalog-provider\n(models.dev cache) and custom --model values. The credential is provided via\n--api-key (stored into the reserved vault text group) or --key-ref (reference\nan existing env/text entry).`,",
+      "start_line": 46,
+      "end_line": 50,
+      "category": "documentation",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/pointer.go",
+      "content": "SavePointers renames the temp file without an intervening tmp.Sync(), so the new pointer file may not be on durable storage when rename returns. close(2) only releases the file descriptor; the data may still sit in the OS page cache. A crash between os.Rename and the kernel's writeback can leave a zero-byte or partially-written agent-pointers.json even though the rename itself was atomic. Since the package doc declares this file the unique source of truth (`唯一事实源`) for agent status and multiple writers (cmd/ai_switch.go, internal/tui/ai_tab.go) call SavePointers on user-driven switch operations, the lost write silently regresses the pointer to whatever the previous successful save was — or to ErrPointerNotFound. Add tmp.Sync() (with its own error path that removes the temp file) between the existing Chmod and Close, or between Close and Rename.",
+      "suggestion_code": "if err := tmp.Chmod(pointerFileMode); err != nil {\n\t\tcleanup()\n\t\treturn fmt.Errorf(\"chmod temp file: %w\", err)\n\t}\n\tif err := tmp.Sync(); err != nil {\n\t\tcleanup()\n\t\treturn fmt.Errorf(\"sync temp file: %w\", err)\n\t}\n\tif err := tmp.Close(); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"close temp file: %w\", err)\n\t}\n\tif err := os.Rename(tmpName, path); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"replace agent pointer file: %w\", err)\n\t}",
+      "existing_code": "if err := tmp.Chmod(pointerFileMode); err != nil {\n\t\tcleanup()\n\t\treturn fmt.Errorf(\"chmod temp file: %w\", err)\n\t}\n\tif err := tmp.Close(); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"close temp file: %w\", err)\n\t}\n\tif err := os.Rename(tmpName, path); err != nil {\n\t\tos.Remove(tmpName)\n\t\treturn fmt.Errorf(\"replace agent pointer file: %w\", err)\n\t}",
+      "start_line": 128,
+      "end_line": 139,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "cmd/ai_provider.go",
+      "content": "Existing test `TestAIProviderFullLifecycle` (`cmd/ai_provider_test.go`) does not cover: (1) alias with leading/trailing whitespace (would exercise the audit-log asymmetry — confirmed finding #3); (2) alias containing tab/newline characters (would exercise the list-output column separator issue flagged above); (3) `--base-url` with `http://` scheme (would exercise the HTTPS-pinning gap — confirmed finding #5); (4) empty `--api-key` + non-empty `--key-ref` (would exercise `validateCredentialInput` mutual-exclusion). Test gap only — recommend deterministic unit tests for each.",
+      "existing_code": "aiProviderAddCmd.Flags().StringVar(&providerAddBaseURL, \"base-url\", \"\", \"provider base URL (https)\")\naiProviderAddCmd.Flags().StringVar(&providerAddAPIKey, \"api-key\", \"\", \"API key (stored encrypted in vault)\")\naiProviderAddCmd.Flags().StringVar(&providerAddKeyRef, \"key-ref\", \"\", \"reference to an existing entry: env:<group>/<key> or text:<group>/<key>\")",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "test",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "Duplicate top-level keys after switching. `topLevelKey(e)` only looks at the first line of `e.topLevel` (\"model\" here), but `upsertTopLevelLine(lines, \"model\", rendered...)` is then called with **both** rendered lines. When the existing config already has `model = \"...\"` followed by `model_provider = \"...\"`, the function replaces the matched `model` line with both new lines and keeps the old `model_provider` line, leaving the file with two `model_provider` entries. The same happens on first switch if the user previously edited the file by hand. Note: `TestUpsertTOMLTopLevelAndBlock` invokes `upsertTopLevelLine` once per key (the intended usage), so this regression isn't covered. Fix by either calling `upsertTopLevelLine` per key inside `applyTOMLEdits`, or by iterating `e.topLevel` and keying on each line individually.",
+      "suggestion_code": "\t\tif key := topLevelKey(e); key != \"\" {\n\t\t\tlines = upsertTopLevelLine(lines, key, e.topLevel[0])\n\t\t}\n\t\tfor _, extra := range e.topLevel[1:] {\n\t\t\tif k, _, ok := strings.Cut(extra, \"=\"); ok {\n\t\t\t\tlines = upsertTopLevelLine(lines, strings.TrimSpace(k), extra)\n\t\t\t}\n\t\t}",
+      "existing_code": "\t\tkey := topLevelKey(e)\n\t\tif key != \"\" {\n\t\t\tlines = upsertTopLevelLine(lines, key, e.topLevel...)\n\t\t}",
+      "start_line": 225,
+      "end_line": 228,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/llm/switch.go",
+      "content": "Rollback error silently dropped on pointer-load failure. When `LoadPointers` returns a non-`ErrPointerNotFound` error (e.g. permission denied, partial write, malformed JSON that happens to unmarshal), `_ = restoreFromBackup(configPath)` swallows the restore error. The user only sees \"load agent pointers: <err>\" while the agent config may still hold the just-written plaintext API key and the real rollback failure (e.g. backup file also gone) is hidden. This is asymmetric with the `SavePointers` branch below, which threads `rbErr` into the returned error.",
+      "suggestion_code": "\tpf, err := LoadPointers(sm.pointerPath)\n\tif err != nil {\n\t\tif errors.Is(err, ErrPointerNotFound) {\n\t\t\tpf = &PointerFile{}\n\t\t} else if rbErr := restoreFromBackup(configPath); rbErr != nil {\n\t\t\treturn nil, fmt.Errorf(\"load agent pointers: %w; restore config also failed: %v\", err, rbErr)\n\t\t} else {\n\t\t\treturn nil, fmt.Errorf(\"load agent pointers: %w (config restored)\", err)\n\t\t}\n\t}",
+      "existing_code": "\tpf, err := LoadPointers(sm.pointerPath)\n\tif err != nil {\n\t\tif errors.Is(err, ErrPointerNotFound) {\n\t\t\tpf = &PointerFile{}\n\t\t} else {\n\t\t\t_ = restoreFromBackup(configPath)\n\t\t\treturn nil, fmt.Errorf(\"load agent pointers: %w\", err)\n\t\t}\n\t}",
+      "start_line": 599,
+      "end_line": 607,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/ssh.go",
+      "content": "The diff intentionally converts the decrypt/not-found/parse error messages in loadSSHEntry (and listSSHEntries' identity check) to use entryKindForDir(dir) so non-SSH collections render friendly kind names like \"LLM provider\" instead of the raw directory name. The matching serialize error on line 164 was missed: it still interpolates dir (\"llm_providers\"/\"keypairs\"/\"hosts\"). For an LLM provider save that fails to marshal, the user sees \"failed to serialize llm_providers entry: ...\" rather than the \"LLM provider\" wording used everywhere else in this helper. Recommend switching to entryKindForDir(dir) for consistency with the other messages touched by this same diff.",
+      "suggestion_code": "return fmt.Errorf(\"failed to serialize %s entry: %w\", entryKindForDir(dir), err)",
+      "existing_code": "return fmt.Errorf(\"failed to serialize %s entry: %w\", dir, err)",
+      "start_line": 164,
+      "end_line": 164,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/tui/ai_tab.go",
+      "content": "In `aiFlowConfirm`'s `y`/`enter` branch the handler resets `t.flow = aiFlowNone` *before* returning the `switchCmd()` closure. Because the actual `Switch()` runs inside the bubbletea command, `InputMode()` returns false for the entire async window, so global shortcuts (digits/tab/`q`/etc.) are re-enabled. The user can press `s` and start a second switch flow, or press `r` to reload `t.providers`, while the first `Switch` is still writing to the agent config and pointer file. The two flows then race in the `aiSwitchResultMsg` / `aiLoadedMsg` handlers and overwrite each other's `t.notice` and `t.rows`. Keep `t.flow != aiFlowNone` (or introduce an `aiFlowPending`) until the `aiSwitchResultMsg` for this switch is processed, so `InputMode()` stays true while the I/O is in flight.",
+      "suggestion_code": "\tcase \"y\", \"enter\":\n\t\t// Keep t.flow != aiFlowNone until aiSwitchResultMsg arrives so that\n\t\t// InputMode() stays true and global shortcuts (s/r/digits) cannot\n\t\t// race the in-flight Switch.\n\t\treturn t, t.switchCmd()",
+      "existing_code": "\tcase \"y\", \"enter\":\n\t\tt.flow = aiFlowNone\n\t\treturn t, t.switchCmd()",
+      "start_line": 184,
+      "end_line": 186,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/tui/ai_tab.go",
+      "content": "The half-width computation in `View()` is dead/confusing: `half := t.width / 2; if half < 20 { half = max(t.width/2, 1) }` can never widen the right pane — `max(t.width/2, 1)` is always ≥ `t.width/2`, so the branch is a no-op for `t.width >= 2` and only upgrades `half` from 0 to 1 when `t.width <= 1`. Either drop the branch or implement the apparent intent (e.g. give the right pane more room on narrow terminals) so the next reader doesn't have to prove the branch is inert.",
+      "suggestion_code": "\thalf := t.width / 2\n\tif half < 1 {\n\t\thalf = 1\n\t}",
+      "existing_code": "\thalf := t.width / 2\n\tif half < 20 {\n\t\thalf = max(t.width/2, 1)\n\t}",
+      "start_line": 299,
+      "end_line": 302,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/storage/llm_provider.go",
+      "content": "`llm_providers` is a new top-level encrypted collection, but the storage lifecycle only knows the existing collections. `rekeyPreflight` has no `llm_providers` case, so any provider causes password changes/rekey to fail with an unknown-identity error; `HasOrphanedData` also ignores this directory, so initializing a vault with only provider files can mint a new key and permanently orphan the existing ciphertext. `CheckConsistency` likewise omits provider files, allowing a provider-only key/desynchronization failure to be reported as healthy. Register this collection alongside the other encrypted collections in orphan detection, consistency probing, and rekey classification, and cover the password-change path with a test.",
+      "suggestion_code": "const LLMProviderDirName = \"llm_providers\" // register with all encrypted collection lifecycle scans",
+      "existing_code": "const LLMProviderDirName = \"llm_providers\"",
+      "start_line": 9,
+      "end_line": 9,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P0"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "Orphan credential on owned→external ref switch: when re-issuing `add <alias> --key-ref env:foo/KEY --force` (or any external ref) on an existing profile whose current `CredentialRef` is `text:llm-keys/<alias>`, the previous text entry is left behind as an orphan. `opts.APIKey == \"\"` skips the Set path, so there is no new credential to roll back, and the success path never deletes the prior owned entry. Result: an encrypted key persists in `llm-keys/<alias>` that nothing references, `senv text list llm-keys` keeps showing it, and there is no CLI path to discover or clean it up (the reverse direction is fine: external→owned only writes a new owned entry and leaves the external ref alone, which is by design). Fix: in the mutate closure, if `existing != nil && existing.CredentialRef == OwnedCredentialRef(alias) && entry.CredentialRef != OwnedCredentialRef(alias)`, also delete the previous text entry (idempotent — use storage.DeleteTextFile or ignore \"not found\" from text.Manager.Delete).",
+      "suggestion_code": "// 凭据切换语义：owned→owned 用 Set 覆盖；owned→external 删旧；\n\t\t// external→owned/无凭据变化 不动外部凭据（不属于本管理器）。\n\t\tswitch {\n\t\tcase opts.APIKey != \"\":\n\t\t\tif err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {\n\t\t\t\treturn fmt.Errorf(\"store credential: %w\", err)\n\t\t\t}\n\t\tcase existing != nil && existing.CredentialRef == OwnedCredentialRef(alias):\n\t\t\tif err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil && !errors.Is(err, os.ErrNotExist) {\n\t\t\t\treturn fmt.Errorf(\"delete previous credential: %w\", err)\n\t\t\t}\n\t\t}\n\t\tif err := locked.save(alias, entry); err != nil {",
+      "existing_code": "// 先写凭据后写档案；档案失败时回删新建凭据（vault mutation 是锁非事务）。\n\t\tif opts.APIKey != \"\" {\n\t\t\tif err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {\n\t\t\t\treturn fmt.Errorf(\"store credential: %w\", err)\n\t\t\t}\n\t\t}\n\t\tif err := locked.save(alias, entry); err != nil {",
+      "start_line": 154,
+      "end_line": 160,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/llm/provider.go",
+      "content": "RemoveProvider treats a missing credential as an error and returns it to the caller after the profile is already gone. `text.Manager.Delete` calls `loadTextFile` first and returns the wrapped `os.ErrNotExist` when the text entry has already been removed (e.g. via `senv text delete`, or via the orphan-on-update path above). At that point `DeleteLLMProvider` has already succeeded, so the user sees \"delete credential: ... not found\" and an `auditOp(..., false, \"remove 失败\")` audit entry even though the profile is gone. The retry then fails with \"provider not found\", leaving the operator confused about whether the operation succeeded. Fix: ignore `errors.Is(err, os.ErrNotExist)` for the cleanup delete (or use the already-idempotent `storage.DeleteTextFile` directly), so a missing owned credential is treated as success.",
+      "suggestion_code": "if entry.CredentialRef == OwnedCredentialRef(alias) {\n\t\t\tif err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil && !errors.Is(err, os.ErrNotExist) {\n\t\t\t\treturn fmt.Errorf(\"delete credential: %w\", err)\n\t\t\t}\n\t\t\tcredRemoved = true\n\t\t}",
+      "existing_code": "if entry.CredentialRef == OwnedCredentialRef(alias) {\n\t\t\tif err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil {\n\t\t\t\treturn fmt.Errorf(\"delete credential: %w\", err)\n\t\t\t}\n\t\t\tcredRemoved = true\n\t\t}",
+      "start_line": 309,
+      "end_line": 314,
+      "category": "bug",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/tui/ai_tab.go",
+      "content": "On a failed switch the previous success notice is left in `t.notice`, so the right pane continues to render `✓ ... → ...` while the bottom bar shows the failure error — misleading on retry-after-failure. Clear `t.notice` (or set it to a failure message) before returning the `errMsg` command so the UI does not contradict itself.",
+      "suggestion_code": "case aiSwitchResultMsg:\n\t\tif msg.err != nil {\n\t\t\t// 失败走顶层错误横幅；指针与配置由 SwitchManager 保证不变。\n\t\t\t// 清空 notice，避免上一条成功提示与本次失败同时显示造成误导。\n\t\t\tt.notice = \"\"\n\t\t\terr := msg.err\n\t\t\treturn t, func() tea.Msg { return errMsg{err: err} }\n\t\t}",
+      "existing_code": "case aiSwitchResultMsg:\n\t\tif msg.err != nil {\n\t\t\t// 失败走顶层错误横幅；指针与配置由 SwitchManager 保证不变。\n\t\t\terr := msg.err\n\t\t\treturn t, func() tea.Msg { return errMsg{err: err} }\n\t\t}",
+      "start_line": 124,
+      "end_line": 129,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/storage/llm_provider.go",
+      "content": "DeleteLLMProvider routes through `deleteSSHEntry`, which calls `validateSSHIdentity(kind, name)` where `kind = \"LLM provider\"`. That helper prefixes the error as `\"invalid SSH \"+kind`, so a bad alias surfaces to the CLI as e.g. `invalid SSH LLM provider \"../bad\": ...` — both the \"SSH\" label and the user-facing message are wrong for an LLM profile. The same helper also wraps delete failures with `fmt.Errorf(\"failed to delete SSH %s %q\", kind, ...)`. Either thread `validateLLMProviderIdentity`/`entryKindForDir(LLMProviderDirName)` through `deleteSSHEntry`, or duplicate a tiny `deleteLLMEntry` helper that uses the correct kind — `loadSSHEntry` already gets this right via `entryKindForDir`.",
+      "suggestion_code": "// DeleteLLMProvider removes one provider profile. A missing alias is not an\n// error, matching the existing idempotent entry deletion behavior.\nfunc (m *Manager) DeleteLLMProvider(alias string) error {\n\treturn m.deleteLLMEntry(LLMProviderDirName, alias, \"LLM provider\")\n}\n\nfunc (m *Manager) deleteLLMEntry(dir, name, kind string) error {\n\tif err := validateEntryIdentity(kind, name); err != nil {\n\t\treturn err\n\t}\n\tif !m.mutationLocked {\n\t\treturn m.mutate(func(locked *Manager) error { return locked.deleteLLMEntry(dir, name, kind) })\n\t}\n\troot, err := m.openDataRoot()\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer root.Close()\n\tif err := removeManagedFile(root, dir, name+ConfigFileSuffix); err != nil {\n\t\treturn fmt.Errorf(\"failed to delete %s %q: %w\", kind, name, err)\n\t}\n\treturn nil\n}",
+      "existing_code": "// DeleteLLMProvider removes one provider profile. A missing alias is not an\n// error, matching the existing idempotent entry deletion behavior.\nfunc (m *Manager) DeleteLLMProvider(alias string) error {\n\treturn m.deleteSSHEntry(LLMProviderDirName, alias, \"LLM provider\")\n}",
+      "start_line": 62,
+      "end_line": 66,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P2"
+    }
+  ],
+  "groups": [
+    {
+      "label": "cmd/ai.go",
+      "files": [
+        "cmd/ai.go"
+      ]
+    },
+    {
+      "label": "cmd/ai_provider.go",
+      "files": [
+        "cmd/ai_provider.go"
+      ]
+    },
+    {
+      "label": "cmd/ai_switch.go",
+      "files": [
+        "cmd/ai_switch.go"
+      ]
+    },
+    {
+      "label": "cmd/mcp.go",
+      "files": [
+        "cmd/mcp.go"
+      ]
+    },
+    {
+      "label": "cmd/mcp_llm.go",
+      "files": [
+        "cmd/mcp_llm.go"
+      ]
+    },
+    {
+      "label": "cmd/tui.go",
+      "files": [
+        "cmd/tui.go"
+      ]
+    },
+    {
+      "label": "internal/llm/catalog.go",
+      "files": [
+        "internal/llm/catalog.go"
+      ]
+    },
+    {
+      "label": "internal/llm/pointer.go",
+      "files": [
+        "internal/llm/pointer.go"
+      ]
+    },
+    {
+      "label": "internal/llm/provider.go",
+      "files": [
+        "internal/llm/provider.go"
+      ]
+    },
+    {
+      "label": "internal/llm/switch.go",
+      "files": [
+        "internal/llm/switch.go"
+      ]
+    },
+    {
+      "label": "internal/session/types.go",
+      "files": [
+        "internal/session/types.go"
+      ]
+    },
+    {
+      "label": "internal/storage/llm_provider.go",
+      "files": [
+        "internal/storage/llm_provider.go"
+      ]
+    },
+    {
+      "label": "internal/storage/ssh.go",
+      "files": [
+        "internal/storage/ssh.go"
+      ]
+    },
+    {
+      "label": "internal/storage/types.go",
+      "files": [
+        "internal/storage/types.go"
+      ]
+    },
+    {
+      "label": "internal/tui/ai_tab.go",
+      "files": [
+        "internal/tui/ai_tab.go"
+      ]
+    },
+    {
+      "label": "internal/tui/model.go",
+      "files": [
+        "internal/tui/model.go"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-agents/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-agents/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-catalog/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-catalog/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-driver/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-driver/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-mcp/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-mcp/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-store/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-store/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/archive/2026-09-10-agent-provider-switch-tui/.openspec.yaml",
+      "files": [
+        "openspec/changes/archive/2026-09-10-agent-provider-switch-tui/.openspec.yaml"
+      ]
+    }
+  ],
+  "session_id": "1eb92ea1-9ae4-4b19-a85d-e70a060fa4d1",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "1eb92ea1-9ae4-4b19-a85d-e70a060fa4d1",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "07a859200c4b5d605cba559ce7b75e3026174610f1d6c54da48ae384a2624fc0"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "origin/main",
+      "requested_head": "HEAD",
+      "resolved_base": "9a2e78ca0cbf9de79ddf2e475eebf87604af2fd3",
+      "resolved_head": "e9bd974c8de2c87c771b06062605fa29dbf1c538",
+      "exact_range": "9a2e78ca0cbf9de79ddf2e475eebf87604af2fd3..e9bd974c8de2c87c771b06062605fa29dbf1c538",
+      "source_artifact_sha256": "555365222d142f04224babe2c4b348732723dc0a1d4fca3eeb8e20c5b2ef1421"
+    },
+    "execution": {
+      "ocr_version": "v1.11.7",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "ce9e75a06cc5750ff90f027209c5ef79d05afec74b3ac88a5163b1029f589a97",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "04c69cd483c6632cf0ad2cddb8817da683d6b74a5d575d9a94b078686633d502",
+          "path": "internal/llm/pointer.go",
+          "fingerprint": "d65b51c473b04079a452b4dd6038d4368c382b7958faaade50042dd4df6bde1a"
+        },
+        {
+          "item_id": "1b30b8417a4dd3cd4ecf54b70bd35d04ead2394f9d53ce5a038199ac40d9d28e",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-tui/.openspec.yaml",
+          "fingerprint": "0bf94e55d275ffa7e32bda6cb28e4320d0fde74c29344b5788735046345a9a96"
+        },
+        {
+          "item_id": "1d81a9f3cdf42b995b962bc18a828a0e571e47199d5fee54032cab7d11d546ab",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-agents/.openspec.yaml",
+          "fingerprint": "add406eb8cdf7ddafdbf1a2637bd042cde226d819dfa1e4f52fc877eb0854363"
+        },
+        {
+          "item_id": "20bf9b4007c6d8f83e4ed02b5ce6e18c14ac0104f74c29385bf12e614a3fffef",
+          "path": "cmd/ai.go",
+          "fingerprint": "3baf4a18ea5d39632bc09b807bbdeb07bcf03a4b404dba8485adccde34e8f84b"
+        },
+        {
+          "item_id": "2aae967b9e2a5755bd76bdce6dad3e3b0c464176ca9f312dd1da952a84a72a63",
+          "path": "internal/llm/catalog.go",
+          "fingerprint": "05623e43b59f19569afac788cefc9cd04f439f8b22f1786735697f81b698a6fd"
+        },
+        {
+          "item_id": "2f66b89de3e3312be16652d9367e32f5f4d78ab6170d94e2b388427b993783ee",
+          "path": "internal/storage/ssh.go",
+          "fingerprint": "339f5048aae2ecf3b57ffdbd4a7feba1eac3005a2a918b0e6fa4aa547dfee82b"
+        },
+        {
+          "item_id": "302973552123321567bf55acdc7048ff1742e5cde8b8d0275156c3deb3bf071c",
+          "path": "cmd/mcp.go",
+          "fingerprint": "15f8e479d5fa843c8555109e43916a76eb28700d2f9b06ae81d0e50c278be7ca"
+        },
+        {
+          "item_id": "4dc2d4d00eb95ec95d6cec478905880aaca79937b43d34980ad5cedceb7ccd8d",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-mcp/.openspec.yaml",
+          "fingerprint": "ec18635a23e8e3fc1422fa532960161ab2c62ff5fb05ff82f03bda28b21e7400"
+        },
+        {
+          "item_id": "5b4a3ae2b59f519a47b9d7a4fa8b8779cec8077ad3de35b636906f20b52c0af1",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-store/.openspec.yaml",
+          "fingerprint": "4755b4ed6096fe95972856186378eec52aec1b14f3f18049d20068a6821a3c44"
+        },
+        {
+          "item_id": "640e5d3f204d24f1a9cc71ace30db9fbba9d249c24de32dbde02586b7f197e16",
+          "path": "internal/storage/llm_provider.go",
+          "fingerprint": "5ed25dc3315052f9d7576857e35d3b7dc2f9823339deb8040735ed01c73591fc"
+        },
+        {
+          "item_id": "751122e695764039b4f41a2fac5057e48934bfd172d1735cda65b982c22708d7",
+          "path": "cmd/mcp_llm.go",
+          "fingerprint": "9651809a676d406ba8f3e4e7a09998b54bdb2898ba3cb936ffbf9724ab6ab097"
+        },
+        {
+          "item_id": "93a0c0e89c34329dffd03bff7de7465c87c21347589087637e009f03d3cb39ed",
+          "path": "internal/llm/switch.go",
+          "fingerprint": "9988e01bc21e182520de986a4177c493055ae982f87757bf26c8d4328a0e3952"
+        },
+        {
+          "item_id": "9b2aa503d5b8878fff2fd63626590fa744348282cf7870a4247ac77f421fca80",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-catalog/.openspec.yaml",
+          "fingerprint": "c88cdcf5761f9226b2ec43238ce2b6491d5d00bb4a973e45931ee3accbc25932"
+        },
+        {
+          "item_id": "9e43c5bdb6324c03e172683a5a986fa583c1454d7d67fe585af41fc8eb0f6877",
+          "path": "internal/tui/ai_tab.go",
+          "fingerprint": "85fd05922636f63f60972235197598bbbcde055593b43309f309a8545051f5a2"
+        },
+        {
+          "item_id": "a3db3732a09522e98dadd0b87e78c2d8a358b117eb8f3c6a8219933c4bb49cf0",
+          "path": "internal/tui/model.go",
+          "fingerprint": "7a4d482f363ef4df7bcc6bd57dcd6bcb907e51ebd3763b2c1d4f033dfdcfc5e3"
+        },
+        {
+          "item_id": "a55e01d2a2c084c34abba657d7733cb2c26f6d350f698d157b85bb3af87a07e7",
+          "path": "cmd/ai_provider.go",
+          "fingerprint": "25548d0072e8698e675912ed7847ac2910560c9ed481ccf1a4089b4ab21b3ed6"
+        },
+        {
+          "item_id": "ac77bb94d39114296761e4659f450efb76ff80db5b934dc5cb981a5ad3ac7198",
+          "path": "cmd/tui.go",
+          "fingerprint": "8288628375fd922c2566aadaa4c7f418f9e27c4ab9de92e88fd37e42a4981b05"
+        },
+        {
+          "item_id": "afa9d73935b6193bcf6fd9080af45221a63c23c9cf26bc2c93ae5ca604fda8f0",
+          "path": "internal/llm/provider.go",
+          "fingerprint": "2a8fcc414f41449b79ae7d92d3cdd22397283b49fc3c1111c47f07d24bc0913f"
+        },
+        {
+          "item_id": "cac08b1d9b599f96b5d2e20b84e5d9cde833a1d83a8d58c6877b34521b7ae546",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-driver/.openspec.yaml",
+          "fingerprint": "64f88aba739a91eb6f488131cd722c6a5a2bb72035dd4f658d8cf4899a218c80"
+        },
+        {
+          "item_id": "dae36a8f0fa929f12a88f012777fe9da7aee2109692a06d0a143f64b5c869d07",
+          "path": "internal/storage/types.go",
+          "fingerprint": "00fbc80e7097e9cbaf21880d6534656e19f2a412062c9ed63fdb70885f84f499"
+        },
+        {
+          "item_id": "e4a2097811a8d424afe5543fe20fb0566b0060f7531b0aac7ca0d612861aa7c4",
+          "path": "internal/session/types.go",
+          "fingerprint": "72e3e2c777404accfcb0133d97dcb610db90c30502e1793612889c008fa4a00c"
+        },
+        {
+          "item_id": "f380c1685db781ad268c2ced81354dd3510884e42aa5ec1422ca342bec6b10f6",
+          "path": "cmd/ai_switch.go",
+          "fingerprint": "9161407ba498f61222ea152b161437b902edababdb2ab3c1c60f3a0f09a5762a"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "04c69cd483c6632cf0ad2cddb8817da683d6b74a5d575d9a94b078686633d502",
+          "path": "internal/llm/pointer.go",
+          "fingerprint": "d65b51c473b04079a452b4dd6038d4368c382b7958faaade50042dd4df6bde1a"
+        },
+        {
+          "item_id": "1b30b8417a4dd3cd4ecf54b70bd35d04ead2394f9d53ce5a038199ac40d9d28e",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-tui/.openspec.yaml",
+          "fingerprint": "0bf94e55d275ffa7e32bda6cb28e4320d0fde74c29344b5788735046345a9a96"
+        },
+        {
+          "item_id": "1d81a9f3cdf42b995b962bc18a828a0e571e47199d5fee54032cab7d11d546ab",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-agents/.openspec.yaml",
+          "fingerprint": "add406eb8cdf7ddafdbf1a2637bd042cde226d819dfa1e4f52fc877eb0854363"
+        },
+        {
+          "item_id": "20bf9b4007c6d8f83e4ed02b5ce6e18c14ac0104f74c29385bf12e614a3fffef",
+          "path": "cmd/ai.go",
+          "fingerprint": "3baf4a18ea5d39632bc09b807bbdeb07bcf03a4b404dba8485adccde34e8f84b"
+        },
+        {
+          "item_id": "2aae967b9e2a5755bd76bdce6dad3e3b0c464176ca9f312dd1da952a84a72a63",
+          "path": "internal/llm/catalog.go",
+          "fingerprint": "05623e43b59f19569afac788cefc9cd04f439f8b22f1786735697f81b698a6fd"
+        },
+        {
+          "item_id": "2f66b89de3e3312be16652d9367e32f5f4d78ab6170d94e2b388427b993783ee",
+          "path": "internal/storage/ssh.go",
+          "fingerprint": "339f5048aae2ecf3b57ffdbd4a7feba1eac3005a2a918b0e6fa4aa547dfee82b"
+        },
+        {
+          "item_id": "302973552123321567bf55acdc7048ff1742e5cde8b8d0275156c3deb3bf071c",
+          "path": "cmd/mcp.go",
+          "fingerprint": "15f8e479d5fa843c8555109e43916a76eb28700d2f9b06ae81d0e50c278be7ca"
+        },
+        {
+          "item_id": "4dc2d4d00eb95ec95d6cec478905880aaca79937b43d34980ad5cedceb7ccd8d",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-mcp/.openspec.yaml",
+          "fingerprint": "ec18635a23e8e3fc1422fa532960161ab2c62ff5fb05ff82f03bda28b21e7400"
+        },
+        {
+          "item_id": "5b4a3ae2b59f519a47b9d7a4fa8b8779cec8077ad3de35b636906f20b52c0af1",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-store/.openspec.yaml",
+          "fingerprint": "4755b4ed6096fe95972856186378eec52aec1b14f3f18049d20068a6821a3c44"
+        },
+        {
+          "item_id": "640e5d3f204d24f1a9cc71ace30db9fbba9d249c24de32dbde02586b7f197e16",
+          "path": "internal/storage/llm_provider.go",
+          "fingerprint": "5ed25dc3315052f9d7576857e35d3b7dc2f9823339deb8040735ed01c73591fc"
+        },
+        {
+          "item_id": "751122e695764039b4f41a2fac5057e48934bfd172d1735cda65b982c22708d7",
+          "path": "cmd/mcp_llm.go",
+          "fingerprint": "9651809a676d406ba8f3e4e7a09998b54bdb2898ba3cb936ffbf9724ab6ab097"
+        },
+        {
+          "item_id": "93a0c0e89c34329dffd03bff7de7465c87c21347589087637e009f03d3cb39ed",
+          "path": "internal/llm/switch.go",
+          "fingerprint": "9988e01bc21e182520de986a4177c493055ae982f87757bf26c8d4328a0e3952"
+        },
+        {
+          "item_id": "9b2aa503d5b8878fff2fd63626590fa744348282cf7870a4247ac77f421fca80",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-catalog/.openspec.yaml",
+          "fingerprint": "c88cdcf5761f9226b2ec43238ce2b6491d5d00bb4a973e45931ee3accbc25932"
+        },
+        {
+          "item_id": "9e43c5bdb6324c03e172683a5a986fa583c1454d7d67fe585af41fc8eb0f6877",
+          "path": "internal/tui/ai_tab.go",
+          "fingerprint": "85fd05922636f63f60972235197598bbbcde055593b43309f309a8545051f5a2"
+        },
+        {
+          "item_id": "a3db3732a09522e98dadd0b87e78c2d8a358b117eb8f3c6a8219933c4bb49cf0",
+          "path": "internal/tui/model.go",
+          "fingerprint": "7a4d482f363ef4df7bcc6bd57dcd6bcb907e51ebd3763b2c1d4f033dfdcfc5e3"
+        },
+        {
+          "item_id": "a55e01d2a2c084c34abba657d7733cb2c26f6d350f698d157b85bb3af87a07e7",
+          "path": "cmd/ai_provider.go",
+          "fingerprint": "25548d0072e8698e675912ed7847ac2910560c9ed481ccf1a4089b4ab21b3ed6"
+        },
+        {
+          "item_id": "ac77bb94d39114296761e4659f450efb76ff80db5b934dc5cb981a5ad3ac7198",
+          "path": "cmd/tui.go",
+          "fingerprint": "8288628375fd922c2566aadaa4c7f418f9e27c4ab9de92e88fd37e42a4981b05"
+        },
+        {
+          "item_id": "afa9d73935b6193bcf6fd9080af45221a63c23c9cf26bc2c93ae5ca604fda8f0",
+          "path": "internal/llm/provider.go",
+          "fingerprint": "2a8fcc414f41449b79ae7d92d3cdd22397283b49fc3c1111c47f07d24bc0913f"
+        },
+        {
+          "item_id": "cac08b1d9b599f96b5d2e20b84e5d9cde833a1d83a8d58c6877b34521b7ae546",
+          "path": "openspec/changes/archive/2026-09-10-agent-provider-switch-driver/.openspec.yaml",
+          "fingerprint": "64f88aba739a91eb6f488131cd722c6a5a2bb72035dd4f658d8cf4899a218c80"
+        },
+        {
+          "item_id": "dae36a8f0fa929f12a88f012777fe9da7aee2109692a06d0a143f64b5c869d07",
+          "path": "internal/storage/types.go",
+          "fingerprint": "00fbc80e7097e9cbaf21880d6534656e19f2a412062c9ed63fdb70885f84f499"
+        },
+        {
+          "item_id": "e4a2097811a8d424afe5543fe20fb0566b0060f7531b0aac7ca0d612861aa7c4",
+          "path": "internal/session/types.go",
+          "fingerprint": "72e3e2c777404accfcb0133d97dcb610db90c30502e1793612889c008fa4a00c"
+        },
+        {
+          "item_id": "f380c1685db781ad268c2ced81354dd3510884e42aa5ec1422ca342bec6b10f6",
+          "path": "cmd/ai_switch.go",
+          "fingerprint": "9161407ba498f61222ea152b161437b902edababdb2ab3c1c60f3a0f09a5762a"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 1089954
+  },
+  "retry_report": {
+    "schema_version": "ocr.llm-retry-report/v1",
+    "total_requests": 656,
+    "retried_requests": 0,
+    "total_retries": 0,
+    "recovered_requests": 0,
+    "failed_requests": 0,
+    "cancelled_requests": 1,
+    "requests": [
+      {
+        "logical_request_id": "50830704ef1ec4a95fb18ba9b490f1e8b3866a2a22b09c4217b98e193f97c777",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "internal/llm/provider.go",
+        "task_type": "memory_compression_task",
+        "request_no": 1,
+        "outcome": "cancelled",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "cancelled",
+            "failure_phase": "context",
+            "duration_to_headers_ms": 6381
+          }
+        ]
+      }
+    ]
+  }
+}

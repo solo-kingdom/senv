@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -36,6 +37,8 @@ type SwitchRequest struct {
 	// ConfigPath 由 SwitchManager 按 adapter 与目标 home 预先解析，
 	// 适配器直接使用，不自行解析 home。
 	ConfigPath string
+	// tx covers every file the adapter may touch; it is set by SwitchManager.
+	tx *configTransaction
 }
 
 // AgentAdapter 描述一个受支持的 coding agent 及其配置写回方式。
@@ -43,8 +46,10 @@ type AgentAdapter struct {
 	ID         string
 	Name       string
 	ConfigPath func(home string) string
-	Apply      func(req SwitchRequest) error
-	Credential CredentialMode
+	// ConfigPaths returns every writable path (including ConfigPath).
+	ConfigPaths func(home string) []string
+	Apply       func(req SwitchRequest) error
+	Credential  CredentialMode
 }
 
 // unsupportedAgents 明确不支持的 agent：cursor 配置无法覆盖（D2），
@@ -112,7 +117,7 @@ func LookupAgent(id string) (AgentAdapter, bool) {
 
 // applyJSONMerge 读取 path 的 JSON（不存在视为空对象），用 mutate 做结构性
 // 修改后以「备份 + temp + rename」原子写回；文件权限收敛 0600。
-func applyJSONMerge(path string, mutate func(root map[string]any) error) error {
+func applyJSONMerge(path string, mutate func(root map[string]any) error, txs ...*configTransaction) error {
 	root := map[string]any{}
 	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
 		if err := json.Unmarshal(existing, &root); err != nil {
@@ -129,6 +134,9 @@ func applyJSONMerge(path string, mutate func(root map[string]any) error) error {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	data = append(data, '\n')
+	if len(txs) > 0 && txs[0] != nil {
+		return txs[0].write(path, data)
+	}
 	return atomicWriteWithBackup(path, data)
 }
 
@@ -214,110 +222,43 @@ type tomlEdit struct {
 
 // applyTOMLEdits 逐条应用编辑并原子写回。topLevel 行替换同名顶层赋值；
 // 不存在时插入到首个表头之前（TOML 顶层键不允许出现在表头之后）。
-func applyTOMLEdits(path string, edits []tomlEdit) error {
+func applyTOMLMerge(path string, mutate func(root map[string]any) error, txs ...*configTransaction) error {
 	src, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	lines := strings.Split(string(src), "\n")
-
-	for _, e := range edits {
-		key := topLevelKey(e)
-		if key != "" {
-			lines = upsertTopLevelLine(lines, key, e.topLevel...)
-		}
-		if e.header != "" {
-			lines = upsertTOMLBlock(lines, e.header, e.block)
+	root := map[string]any{}
+	if len(src) > 0 {
+		if err := toml.Unmarshal(src, &root); err != nil {
+			return fmt.Errorf("parse TOML %s: %w", path, err)
 		}
 	}
-	return atomicWriteWithBackup(path, []byte(strings.Join(lines, "\n")))
+	if err := mutate(root); err != nil {
+		return err
+	}
+	data, err := toml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encode TOML %s: %w", path, err)
+	}
+	if len(txs) > 0 && txs[0] != nil {
+		return txs[0].write(path, data)
+	}
+	return atomicWriteWithBackup(path, data)
 }
 
-// topLevelKey 返回该编辑携带的顶层键名（`k = v` 行的 k）。
-func topLevelKey(e tomlEdit) string {
-	for _, line := range e.topLevel {
-		if k, _, ok := strings.Cut(line, "="); ok {
-			return strings.TrimSpace(k)
+// setTOMLPath updates one dotted path without interpreting literal values as
+// TOML source. Missing intermediate tables are created as maps.
+func setTOMLPath(root map[string]any, path []string, value any) {
+	current := root
+	for _, key := range path[:len(path)-1] {
+		next, _ := current[key].(map[string]any)
+		if next == nil {
+			next = map[string]any{}
+			current[key] = next
 		}
+		current = next
 	}
-	return ""
-}
-
-// upsertTopLevelLine 替换首个同名顶层赋值行；没有则插入到首个顶层表头前，
-// 与相邻同类键保持簇状排布（追加到已有顶层赋值区末尾）。
-func upsertTopLevelLine(lines []string, key string, rendered ...string) []string {
-	firstHeader := -1
-	existing := -1
-	lastTopLevel := -1
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if isTOMLHeader(trimmed) {
-			firstHeader = i
-			break
-		}
-		if strings.HasPrefix(trimmed, key+"=") || strings.HasPrefix(trimmed, key+" =") {
-			existing = i
-		}
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			lastTopLevel = i
-		}
-	}
-	if existing >= 0 {
-		out := append([]string{}, lines[:existing]...)
-		out = append(out, rendered...)
-		out = append(out, lines[existing+1:]...)
-		return out
-	}
-	insertAt := lastTopLevel + 1
-	if firstHeader >= 0 && firstHeader < insertAt {
-		insertAt = firstHeader
-	}
-	if insertAt == 0 && (len(lines) == 1 && lines[0] == "") {
-		lines = nil
-	}
-	out := append([]string{}, lines[:insertAt]...)
-	out = append(out, rendered...)
-	out = append(out, lines[insertAt:]...)
-	return out
-}
-
-func isTOMLHeader(trimmed string) bool {
-	return strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[")
-}
-
-// upsertTOMLBlock 替换 header 精确匹配的块（连同其子表），缺失则追加到
-// 文件末尾。子表归属按 `[header.` 前缀判定。
-func upsertTOMLBlock(lines []string, header, block string) []string {
-	subPrefix := strings.TrimSuffix(header, "]") + "."
-	replaced := false
-	var out []string
-	inBlock := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if isTOMLHeader(trimmed) {
-			if inBlock {
-				inBlock = false
-			}
-			if trimmed == header || strings.HasPrefix(trimmed, subPrefix) {
-				inBlock = true
-				if !replaced {
-					out = append(out, strings.TrimRight(block, "\n"))
-					replaced = true
-				}
-				continue
-			}
-		}
-		if !inBlock {
-			out = append(out, line)
-		}
-	}
-	if !replaced {
-		if len(out) > 0 {
-			out = append(out, "")
-		}
-		out = append(out, strings.TrimRight(block, "\n"))
-	}
-	return out
+	current[path[len(path)-1]] = value
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +274,9 @@ func claudeCodeAdapter() AgentAdapter {
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".claude", "settings.json")
 		},
+		ConfigPaths: func(home string) []string {
+			return []string{filepath.Join(home, ".claude", "settings.json")}
+		},
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
@@ -341,7 +285,7 @@ func claudeCodeAdapter() AgentAdapter {
 				env["ANTHROPIC_BASE_URL"] = req.BaseURL
 				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
 				return nil
-			})
+			}, req.tx)
 		},
 	}
 }
@@ -355,24 +299,24 @@ func codexAdapter() AgentAdapter {
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".codex", "config.toml")
 		},
+		ConfigPaths: func(home string) []string {
+			return []string{filepath.Join(home, ".codex", "config.toml")}
+		},
 		Credential: CredentialEnvVar,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
-			var b strings.Builder
-			fmt.Fprintf(&b, "[model_providers.%s]\n", id)
-			fmt.Fprintf(&b, "name = %q\n", "senv "+req.ProviderAlias)
-			fmt.Fprintf(&b, "base_url = %q\n", req.BaseURL)
-			fmt.Fprintf(&b, "env_key = %q\n", req.Credential)
-			b.WriteString("wire_api = \"responses\"\n")
-			b.WriteString("requires_openai_auth = false\n")
-			return applyTOMLEdits(req.ConfigPath, []tomlEdit{{
-				topLevel: []string{
-					fmt.Sprintf("model = %q", req.Model),
-					fmt.Sprintf("model_provider = %q", id),
-				},
-				header: fmt.Sprintf("[model_providers.%s]", id),
-				block:  b.String(),
-			}})
+			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
+				root["model"] = req.Model
+				root["model_provider"] = id
+				setTOMLPath(root, []string{"model_providers", id}, map[string]any{
+					"name":                 "senv " + req.ProviderAlias,
+					"base_url":             req.BaseURL,
+					"env_key":              req.Credential,
+					"wire_api":             "responses",
+					"requires_openai_auth": false,
+				})
+				return nil
+			}, req.tx)
 		},
 	}
 }
@@ -386,40 +330,49 @@ func kimiAdapter() AgentAdapter {
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".kimi-code", "config.toml")
 		},
+		ConfigPaths: func(home string) []string {
+			return []string{filepath.Join(home, ".kimi-code", "config.toml")}
+		},
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
 			modelAlias := id + "/" + req.Model
-			var provider strings.Builder
-			fmt.Fprintf(&provider, "[providers.%q]\n", id)
-			provider.WriteString("type = \"openai\"\n")
-			fmt.Fprintf(&provider, "base_url = %q\n", req.BaseURL)
-			fmt.Fprintf(&provider, "api_key = %q\n", req.Credential)
-			var model strings.Builder
-			fmt.Fprintf(&model, "[models.%q]\n", modelAlias)
-			fmt.Fprintf(&model, "provider = %q\n", id)
-			fmt.Fprintf(&model, "model = %q\n", req.Model)
-			// max_context_size 为必填项；senv 无法从档案得知真实上下文，
-			// 取保守值避免压缩阈值虚高。
-			model.WriteString("max_context_size = 131072\n")
-			fmt.Fprintf(&model, "display_name = %q\n", req.Model)
-			return applyTOMLEdits(req.ConfigPath, []tomlEdit{
-				{topLevel: []string{fmt.Sprintf("default_model = %q", modelAlias)}},
-				{header: fmt.Sprintf("[providers.%q]", id), block: provider.String()},
-				{header: fmt.Sprintf("[models.%q]", modelAlias), block: model.String()},
-			})
+			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
+				root["default_model"] = modelAlias
+				setTOMLPath(root, []string{"providers", id}, map[string]any{
+					"type":     "openai",
+					"base_url": req.BaseURL,
+					"api_key":  req.Credential,
+				})
+				// max_context_size 为必填项；senv 无法从档案得知真实上下文，
+				// 取保守值避免压缩阈值虚高。
+				setTOMLPath(root, []string{"models", modelAlias}, map[string]any{
+					"provider":         id,
+					"model":            req.Model,
+					"max_context_size": 131072,
+					"display_name":     req.Model,
+				})
+				return nil
+			}, req.tx)
 		},
 	}
 }
 
 // piAdapter：~/.pi/agent/models.json 写 provider 定义（含 apiKey），
-// ~/.pi/agent/settings.json 写 defaultProvider/defaultModel。
+// ~/.pi/agent/settings.json 写 defaultProvider/defaultModel。两份文件属于
+// 同一事务，第二份失败时第一份由 SwitchManager 统一回滚。
 func piAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:   "pi",
 		Name: "Pi",
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".pi", "agent", "models.json")
+		},
+		ConfigPaths: func(home string) []string {
+			return []string{
+				filepath.Join(home, ".pi", "agent", "models.json"),
+				filepath.Join(home, ".pi", "agent", "settings.json"),
+			}
 		},
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
@@ -435,7 +388,7 @@ func piAdapter() AgentAdapter {
 					"models":  models,
 				}
 				return nil
-			}); err != nil {
+			}, req.tx); err != nil {
 				return err
 			}
 			settings := filepath.Join(filepath.Dir(req.ConfigPath), "settings.json")
@@ -443,7 +396,7 @@ func piAdapter() AgentAdapter {
 				root["defaultProvider"] = id
 				root["defaultModel"] = req.Model
 				return nil
-			})
+			}, req.tx)
 		},
 	}
 }
@@ -457,6 +410,9 @@ func opencodeAdapter() AgentAdapter {
 		Name: "OpenCode",
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".config", "opencode", "opencode.json")
+		},
+		ConfigPaths: func(home string) []string {
+			return []string{filepath.Join(home, ".config", "opencode", "opencode.json")}
 		},
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
@@ -476,7 +432,7 @@ func opencodeAdapter() AgentAdapter {
 				}
 				root["model"] = id + "/" + req.Model
 				return nil
-			})
+			}, req.tx)
 		},
 	}
 }
@@ -490,15 +446,20 @@ type SwitchManager struct {
 	providerManager *ProviderManager
 	pointerPath     string
 	home            string
+	homeErr         error
 }
 
 // NewSwitchManager 构造切换管理器；pointerPath/home 为空时使用默认位置。
 func NewSwitchManager(pm *ProviderManager, pointerPath, home string) *SwitchManager {
+	if home == "" {
+		resolved, err := os.UserHomeDir()
+		if err != nil {
+			return &SwitchManager{providerManager: pm, pointerPath: pointerPath, homeErr: fmt.Errorf("resolve home directory: %w", err)}
+		}
+		home = resolved
+	}
 	if pointerPath == "" {
 		pointerPath = DefaultPointerPath(home)
-	}
-	if home == "" {
-		home = defaultHome()
 	}
 	return &SwitchManager{providerManager: pm, pointerPath: pointerPath, home: home}
 }
@@ -508,12 +469,14 @@ func DefaultPointerPath(home string) string {
 	return filepath.Join(home, ".config", "senv", "agent-pointers.json")
 }
 
-func defaultHome() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "."
+func (sm *SwitchManager) resolvePaths() (string, string, error) {
+	if sm.homeErr != nil {
+		return "", "", sm.homeErr
 	}
-	return home
+	if sm.home == "" || sm.pointerPath == "" {
+		return "", "", fmt.Errorf("agent home or pointer path is unresolved")
+	}
+	return sm.home, sm.pointerPath, nil
 }
 
 // resolveCredential 解密档案凭据引用：text: 经 text manager，env: 经 env
@@ -553,6 +516,10 @@ type SwitchOutput struct {
 
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
 func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOutput, error) {
+	home, pointerPath, err := sm.resolvePaths()
+	if err != nil {
+		return nil, err
+	}
 	adapter, ok := LookupAgent(agentID)
 	if !ok {
 		return nil, fmt.Errorf("agent %q is not supported; supported: %s", agentID, strings.Join(supportedAgentIDs(), ", "))
@@ -583,7 +550,22 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 		}
 	}
 
-	configPath := adapter.ConfigPath(sm.home)
+	configPath := adapter.ConfigPath(home)
+	txPaths := []string{configPath}
+	if adapter.ConfigPaths != nil {
+		txPaths = adapter.ConfigPaths(home)
+	}
+	txPaths = append(txPaths, pointerPath)
+	tx, err := newConfigTransaction(txPaths...)
+	if err != nil {
+		return nil, fmt.Errorf("start %s config transaction: %w", agentID, err)
+	}
+	defer func() {
+		if !tx.committed {
+			_ = tx.rollback()
+			tx.unlock()
+		}
+	}()
 	req := SwitchRequest{
 		AgentID:       agentID,
 		ProviderAlias: providerAlias,
@@ -591,26 +573,30 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 		Model:         model,
 		Credential:    credential,
 		ConfigPath:    configPath,
+		tx:            tx,
 	}
 	if err := adapter.Apply(req); err != nil {
 		return nil, fmt.Errorf("write %s config: %w", agentID, err)
 	}
 
-	pf, err := LoadPointers(sm.pointerPath)
+	pf, err := LoadPointers(pointerPath)
 	if err != nil {
 		if errors.Is(err, ErrPointerNotFound) {
 			pf = &PointerFile{}
 		} else {
-			_ = restoreFromBackup(configPath)
 			return nil, fmt.Errorf("load agent pointers: %w", err)
 		}
 	}
 	pf.Set(agentID, providerAlias, model)
-	if err := SavePointers(sm.pointerPath, pf); err != nil {
-		if rbErr := restoreFromBackup(configPath); rbErr != nil {
+	if err := SavePointers(pointerPath, pf); err != nil {
+		if rbErr := tx.rollback(); rbErr != nil {
 			return nil, fmt.Errorf("save pointers: %v; restore config also failed: %w", err, rbErr)
 		}
 		return nil, fmt.Errorf("save pointers: %w (config restored)", err)
+	}
+	tx.committed = true
+	if err := tx.commit(); err != nil {
+		return nil, err
 	}
 
 	out := &SwitchOutput{
@@ -637,14 +623,18 @@ type StatusRow struct {
 
 // Status 汇总全部 agent 的当前指向。指针文件缺失或损坏时已切换行为空、
 // 不视为错误（status 不依赖 vault，也应尽量可用；损坏时返回 warning）。
-func (sm *SwitchManager) Status() (rows []StatusRow, warning string) {
-	pf, err := LoadPointers(sm.pointerPath)
+func (sm *SwitchManager) Status() (rows []StatusRow, warning string, err error) {
+	home, pointerPath, err := sm.resolvePaths()
+	if err != nil {
+		return nil, "", err
+	}
+	pf, err := LoadPointers(pointerPath)
 	if err != nil && !errors.Is(err, ErrPointerNotFound) {
 		warning = fmt.Sprintf("指针文件损坏（%v），按未切换展示；可删除后重新切换", err)
 		pf = &PointerFile{}
 	}
 	for _, a := range SupportedAgents() {
-		row := StatusRow{AgentID: a.ID, AgentName: a.Name, Supported: true, ConfigPath: a.ConfigPath(sm.home)}
+		row := StatusRow{AgentID: a.ID, AgentName: a.Name, Supported: true, ConfigPath: a.ConfigPath(home)}
 		if p, ok := pf.Get(a.ID); ok {
 			p := p
 			row.Pointer = &p
@@ -652,10 +642,10 @@ func (sm *SwitchManager) Status() (rows []StatusRow, warning string) {
 		rows = append(rows, row)
 	}
 	for _, id := range UnsupportedAgents() {
-		rows = append(rows, StatusRow{AgentID: id, AgentName: id, Supported: false, ConfigPath: unsupportedConfigPath(id, sm.home)})
+		rows = append(rows, StatusRow{AgentID: id, AgentName: id, Supported: false, ConfigPath: unsupportedConfigPath(id, home)})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].AgentID < rows[j].AgentID })
-	return rows, warning
+	return rows, warning, nil
 }
 
 // unsupportedConfigPath 返回不支持 agent 的信息性路径（无写回用途）。

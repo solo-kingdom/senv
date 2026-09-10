@@ -17,6 +17,13 @@ func ValidateSegment(segment string) error {
 	if strings.ContainsAny(segment, "\x00:/\\") {
 		return invalidSegment(segment)
 	}
+	// Control characters can alter terminal output, audit lines, and editor
+	// behavior even when they are valid filename bytes on one platform.
+	for _, r := range segment {
+		if r < 0x20 || r == 0x7f {
+			return invalidSegment(segment)
+		}
+	}
 	if filepath.IsAbs(segment) || filepath.VolumeName(segment) != "" {
 		return invalidSegment(segment)
 	}

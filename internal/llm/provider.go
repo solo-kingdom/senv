@@ -6,7 +6,6 @@ package llm
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"slices"
 	"sort"
@@ -36,6 +35,10 @@ type ProviderManager struct {
 	key            []byte
 	password       string
 	mutationLocked bool
+	// removeHooks are package-private seams for compensation tests; production
+	// managers leave both nil.
+	removeCredential func() error
+	removeProfile    func() error
 }
 
 func NewProviderManager(store *storage.Manager, password string) *ProviderManager {
@@ -91,6 +94,7 @@ func (m *ProviderManager) load(alias string) (*storage.LLMProviderEntry, error) 
 type AddProviderOptions struct {
 	Alias           string
 	BaseURL         string
+	AllowHTTP       bool
 	APIKey          string // 与 KeyRef 二选一；写入 llm-keys 组
 	KeyRef          string // 形如 env:<g>/<k> 或 text:<g>/<k>
 	CatalogPath     string // 模型目录缓存路径
@@ -114,8 +118,8 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		return nil, fmt.Errorf("invalid provider alias %q: %w", opts.Alias, err)
 	}
 	baseURL := strings.TrimSpace(opts.BaseURL)
-	if _, err := parseHTTPURL(baseURL); err != nil {
-		return nil, fmt.Errorf("invalid base URL %q", opts.BaseURL)
+	if err := storage.ValidateLLMProviderURL(baseURL, opts.AllowHTTP); err != nil {
+		return nil, fmt.Errorf("invalid base URL %q: %w", opts.BaseURL, err)
 	}
 	if err := validateCredentialInput(opts); err != nil {
 		return nil, err
@@ -133,12 +137,15 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	entry := &storage.LLMProviderEntry{
 		Alias:           alias,
 		BaseURL:         baseURL,
-		CredentialRef:   credentialRefFor(opts, alias),
+		CredentialRef:   opts.KeyRef,
 		CatalogProvider: strings.TrimSpace(opts.CatalogProvider),
 		Models:          models,
 		DefaultModel:    defaultModel,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+	if opts.APIKey != "" {
+		entry.CredentialRef = OwnedCredentialRef(alias)
 	}
 	err = m.mutate(func(locked *ProviderManager) error {
 		existing, loadErr := locked.load(alias)
@@ -151,19 +158,63 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 			}
 			entry.CreatedAt = existing.CreatedAt
 		}
-		// 先写凭据后写档案；档案失败时回删新建凭据（vault mutation 是锁非事务）。
-		if opts.APIKey != "" {
-			if err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {
-				return fmt.Errorf("store credential: %w", err)
-			}
+		if existing == nil && opts.APIKey == "" && opts.KeyRef == "" {
+			return fmt.Errorf("either the interactive credential prompt, --api-key-stdin, or --key-ref is required")
 		}
-		if err := locked.save(alias, entry); err != nil {
+		if existing != nil && opts.APIKey == "" && opts.KeyRef == "" {
+			// A forced metadata-only update must never destroy the old owned
+			// credential or replace its reference.
+			entry.CredentialRef = existing.CredentialRef
+		}
+
+		oldOwned := existing != nil && existing.CredentialRef == OwnedCredentialRef(alias)
+		newOwned := entry.CredentialRef == OwnedCredentialRef(alias)
+
+		if newOwned {
+			var oldValue string
+			hadOld := false
+			if oldOwned {
+				value, getErr := locked.textManager().Get(LLMKeysGroup, alias)
+				if getErr != nil && !errors.Is(getErr, os.ErrNotExist) {
+					return fmt.Errorf("read old credential: %w", getErr)
+				}
+				oldValue, hadOld = value, getErr == nil
+			}
 			if opts.APIKey != "" {
-				if delErr := locked.textManager().Delete(LLMKeysGroup, alias); delErr != nil {
-					return fmt.Errorf("save provider: %w（孤儿凭据未清理：%s）", err, OwnedCredentialRef(alias))
+				if err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {
+					return fmt.Errorf("store credential: %w", err)
 				}
 			}
+			if err := locked.save(alias, entry); err != nil {
+				// Vault mutation is a lock, not a cross-collection transaction,
+				// so restore the exact prior credential before returning.
+				var restoreErr error
+				if hadOld {
+					restoreErr = locked.textManager().Set(LLMKeysGroup, alias, oldValue)
+				} else {
+					restoreErr = locked.textManager().Delete(LLMKeysGroup, alias)
+				}
+				if restoreErr != nil {
+					return fmt.Errorf("save provider: %v; restore credential also failed: %w", err, restoreErr)
+				}
+				return fmt.Errorf("save provider: %w", err)
+			}
+			return nil
+		}
+
+		// New external profiles need no credential mutation. Save first so a
+		// storage failure cannot affect credential state.
+		if err := locked.save(alias, entry); err != nil {
 			return fmt.Errorf("save provider: %w", err)
+		}
+		if oldOwned {
+			if err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil && !errors.Is(err, os.ErrNotExist) {
+				// Keep the old profile until cleanup is known to succeed.
+				if restoreErr := locked.save(alias, existing); restoreErr != nil {
+					return fmt.Errorf("delete old credential: %v; restore old provider also failed: %w", err, restoreErr)
+				}
+				return fmt.Errorf("delete old credential after provider update: %w", err)
+			}
 		}
 		return nil
 	})
@@ -173,22 +224,8 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	return &AddProviderResult{Entry: entry, Warnings: warnings}, nil
 }
 
-func parseHTTPURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("not an http(s) URL")
-	}
-	return u, nil
-}
-
-func credentialRefFor(opts AddProviderOptions, alias string) string {
-	if opts.APIKey != "" {
-		return OwnedCredentialRef(alias)
-	}
-	return opts.KeyRef
-}
-
-// validateCredentialInput 校验 --api-key / --key-ref 恰选其一且引用语法合法。
+// validateCredentialInput 校验自有凭据 / --key-ref 恰选其一；force 允许两者
+// 都缺失以保留既有引用。
 func validateCredentialInput(opts AddProviderOptions) error {
 	hasKey := strings.TrimSpace(opts.APIKey) != ""
 	hasRef := strings.TrimSpace(opts.KeyRef) != ""
@@ -199,8 +236,10 @@ func validateCredentialInput(opts AddProviderOptions) error {
 		return nil
 	case hasRef:
 		return ValidateCredentialRef(opts.KeyRef)
+	case opts.Force:
+		return nil
 	default:
-		return fmt.Errorf("either --api-key or --key-ref is required")
+		return fmt.Errorf("either the interactive credential prompt, --api-key-stdin, or --key-ref is required")
 	}
 }
 
@@ -292,10 +331,16 @@ func (m *ProviderManager) ListProviders() ([]*storage.LLMProviderEntry, error) {
 	return entries, nil
 }
 
-// RemoveProvider 删除档案。当凭据引用指向本管理器管理的保留组条目时
-// 一并删除并返回 true；外部引用保留不动。
-func (m *ProviderManager) RemoveProvider(alias string) (credRemoved bool, err error) {
-	err = m.mutate(func(locked *ProviderManager) error {
+// RemoveProviderResult describes credential cleanup for CLI output.
+type RemoveProviderResult struct {
+	CredentialRemoved bool
+	CredentialMissing bool
+}
+
+// RemoveProvider 先处理自有凭据，再删除档案；档案删除失败时用旧值补偿凭据。
+func (m *ProviderManager) RemoveProvider(alias string) (RemoveProviderResult, error) {
+	var result RemoveProviderResult
+	err := m.mutate(func(locked *ProviderManager) error {
 		entry, loadErr := locked.load(alias)
 		if errors.Is(loadErr, os.ErrNotExist) {
 			return fmt.Errorf("provider %q not found", alias)
@@ -303,16 +348,50 @@ func (m *ProviderManager) RemoveProvider(alias string) (credRemoved bool, err er
 		if loadErr != nil {
 			return loadErr
 		}
-		if err := locked.storage.DeleteLLMProvider(alias); err != nil {
-			return err
-		}
-		if entry.CredentialRef == OwnedCredentialRef(alias) {
-			if err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil {
-				return fmt.Errorf("delete credential: %w", err)
+		if entry.CredentialRef != OwnedCredentialRef(alias) {
+			if locked.removeProfile == nil {
+				return locked.storage.DeleteLLMProvider(alias)
 			}
-			credRemoved = true
+			return locked.removeProfile()
+		}
+
+		oldValue, getErr := locked.textManager().Get(LLMKeysGroup, alias)
+		credExists := getErr == nil
+		if getErr != nil && !errors.Is(getErr, os.ErrNotExist) {
+			return fmt.Errorf("read credential: %w", getErr)
+		}
+		var delErr error
+		if locked.removeCredential == nil {
+			delErr = locked.textManager().Delete(LLMKeysGroup, alias)
+		} else {
+			delErr = locked.removeCredential()
+		}
+		if errors.Is(delErr, os.ErrNotExist) {
+			result.CredentialMissing = true
+		} else if delErr != nil {
+			return fmt.Errorf("delete credential; provider kept for retry: %w", delErr)
+		} else if credExists {
+			result.CredentialRemoved = true
+		} else {
+			result.CredentialMissing = true
+		}
+
+		var deleteErr error
+		if locked.removeProfile == nil {
+			deleteErr = locked.storage.DeleteLLMProvider(alias)
+		} else {
+			deleteErr = locked.removeProfile()
+		}
+		if deleteErr != nil {
+			if credExists {
+				if restoreErr := locked.textManager().Set(LLMKeysGroup, alias, oldValue); restoreErr != nil {
+					return fmt.Errorf("delete provider: %v; restore credential also failed: %w", deleteErr, restoreErr)
+				}
+			}
+			result = RemoveProviderResult{}
+			return deleteErr
 		}
 		return nil
 	})
-	return credRemoved, err
+	return result, err
 }

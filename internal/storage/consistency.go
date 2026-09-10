@@ -28,6 +28,7 @@ type ConsistencyReport struct {
 	ConfigFiles   FileProbes
 	HostFiles     FileProbes
 	KeyPairFiles  FileProbes
+	ProviderFiles FileProbes
 	// QuarantinedConfigNames lists legacy config entries whose identities are
 	// structurally consistent but non-portable. They are skipped (not probed,
 	// not counted) and surfaced separately as repair guidance.
@@ -41,7 +42,8 @@ func (r *ConsistencyReport) AllOK() bool {
 		r.TextFiles.OK == r.TextFiles.Total &&
 		r.ConfigFiles.OK == r.ConfigFiles.Total &&
 		r.HostFiles.OK == r.HostFiles.Total &&
-		r.KeyPairFiles.OK == r.KeyPairFiles.Total
+		r.KeyPairFiles.OK == r.KeyPairFiles.Total &&
+		r.ProviderFiles.OK == r.ProviderFiles.Total
 }
 
 // CheckConsistency probes whether the given key can decrypt the metadata
@@ -196,6 +198,24 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		}
 	}
 
+	providerNames, err := m.ListLLMProviders()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list LLM providers: %w", err)
+	}
+	for _, name := range providerNames {
+		ciphertext, err := dataRoot.Read(LLMProviderDirName, name+ConfigFileSuffix)
+		if err != nil {
+			return nil, err
+		}
+		rel := filepath.Join(LLMProviderDirName, name+ConfigFileSuffix)
+		report.ProviderFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.ProviderFiles.OK++
+		} else {
+			report.ProviderFiles.Failed = append(report.ProviderFiles.Failed, rel)
+		}
+	}
+
 	return report, nil
 }
 
@@ -241,6 +261,9 @@ func (m *Manager) HasOrphanedData() bool {
 				return true
 			}
 			if name == KeypairDirName && hasManagedEncFiles(m.dataPath, KeypairDirName) {
+				return true
+			}
+			if name == LLMProviderDirName && hasManagedEncFiles(m.dataPath, LLMProviderDirName) {
 				return true
 			}
 			continue

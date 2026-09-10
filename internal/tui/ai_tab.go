@@ -90,7 +90,10 @@ func (t *aiTab) load() tea.Cmd {
 			return aiLoadedMsg{err: err}
 		}
 		sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
-		rows, warning := sm.Status()
+		rows, warning, err := sm.Status()
+		if err != nil {
+			return aiLoadedMsg{err: err}
+		}
 		return aiLoadedMsg{providers: providers, rows: rows, warning: warning}
 	}
 }

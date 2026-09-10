@@ -129,7 +129,7 @@ func TestAddProviderFailures(t *testing.T) {
 		_, err := mgr.AddProvider(AddProviderOptions{
 			Alias: "main", BaseURL: "https://a", Models: []string{"m"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "--api-key or --key-ref") {
+		if err == nil || !strings.Contains(err.Error(), "--api-key-stdin") {
 			t.Fatalf("error = %v", err)
 		}
 	})
@@ -188,7 +188,7 @@ func TestRemoveProviderCredentialDisposition(t *testing.T) {
 			t.Fatalf("add: %v", err)
 		}
 		removed, err := mgr.RemoveProvider("main")
-		if err != nil || !removed {
+		if err != nil || !removed.CredentialRemoved {
 			t.Fatalf("RemoveProvider() = %v, %v; want removed", removed, err)
 		}
 		tm := text.NewManager(store, "test-password")
@@ -204,7 +204,7 @@ func TestRemoveProviderCredentialDisposition(t *testing.T) {
 			t.Fatalf("add: %v", err)
 		}
 		removed, err := mgr.RemoveProvider("ext")
-		if err != nil || removed {
+		if err != nil || removed.CredentialRemoved {
 			t.Fatalf("RemoveProvider() = %v, %v; want kept", removed, err)
 		}
 	})

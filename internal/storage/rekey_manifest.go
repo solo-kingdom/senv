@@ -22,9 +22,12 @@ const (
 type rekeyManifestEntryKind string
 
 const (
-	rekeyManifestEntryEnv    rekeyManifestEntryKind = "env"
-	rekeyManifestEntryText   rekeyManifestEntryKind = "text"
-	rekeyManifestEntryConfig rekeyManifestEntryKind = "config"
+	rekeyManifestEntryEnv      rekeyManifestEntryKind = "env"
+	rekeyManifestEntryText     rekeyManifestEntryKind = "text"
+	rekeyManifestEntryConfig   rekeyManifestEntryKind = "config"
+	rekeyManifestEntryHost     rekeyManifestEntryKind = "host"
+	rekeyManifestEntryKeyPair  rekeyManifestEntryKind = "keypair"
+	rekeyManifestEntryProvider rekeyManifestEntryKind = "provider"
 )
 
 type rekeyStage string
@@ -149,6 +152,12 @@ func rekeyManifestKind(kind rekeyEntryKind) rekeyManifestEntryKind {
 		return rekeyManifestEntryText
 	case rekeyEntryConfig:
 		return rekeyManifestEntryConfig
+	case rekeyEntryHost:
+		return rekeyManifestEntryHost
+	case rekeyEntryKeyPair:
+		return rekeyManifestEntryKeyPair
+	case rekeyEntryProvider:
+		return rekeyManifestEntryProvider
 	default:
 		panic("unknown rekey entry kind")
 	}
@@ -186,7 +195,8 @@ func (m *Manager) validateManifest(manifest *rekeyManifest) error {
 	seen := make(map[string]struct{}, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		switch entry.Kind {
-		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryConfig:
+		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryConfig,
+			rekeyManifestEntryHost, rekeyManifestEntryKeyPair, rekeyManifestEntryProvider:
 		default:
 			return fmt.Errorf("invalid rekey entry kind %q", entry.Kind)
 		}

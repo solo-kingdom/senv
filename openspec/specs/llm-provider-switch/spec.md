@@ -3,6 +3,7 @@
 ## Purpose
 把「切换 coding agent 的 LLM Provider」从手工改配置文件变成一条 senv 命令：以本机指针记录每个 agent 当前指向，切换时从 vault 解密凭据并按 agent 原生格式原子写回配置，失败不留半写状态。
 ## Requirements
+
 ### Requirement: 切换 agent 指向
 `senv ai switch <agent> <provider>` SHALL 校验 agent 属于支持的注册表（claude-code、codex、zcode、kimi、pi、opencode）且 provider 档案存在；`--model` 省略时取档案 `default_model`（为空且模型集恰有一个时取该模型，否则报错要求显式指定）；`--model` 显式给出时必须属于档案模型集。校验通过后 SHALL 解密凭据引用并调用该 agent 的适配器写回配置，再更新本机指针。
 
@@ -27,19 +28,39 @@
 - **THEN** 命令以非 0 退出并要求显式指定 `--model`，不写任何文件
 
 ### Requirement: 原子写回与失败回滚
-适配器写回 SHALL 保留目标配置文件中与本功能无关的既有内容（merge 而非整文件重写）；写入 SHALL 以临时文件+重命名完成原子替换，替换前对原文件留备份（`<config>.senv-bak`）。指针更新发生在配置写回成功之后；指针更新失败时 SHALL 从备份恢复配置，保证指针与配置一致。
+适配器写回 SHALL 保留目标配置中与本功能无关的既有内容，并保持 JSON/TOML 语法有效：本功能 MUST NOT 把值插入多行 scalar、多行数组或错误表块。涉及一个 agent 的多份配置时 SHALL 作为一次事务处理：任一文件失败时，已成功的文件 SHALL 恢复到切换前内容。每次写回 SHALL 使用临时文件加同目录 rename 原子替换，替换前在安全备份中保存原内容；恢复 MUST NOT 覆盖唯一好备份。同一 agent 配置路径的切换 SHALL 串行执行。切换完全成功后 SHALL 清理本功能创建的备份；切换失败且无法恢复时 SHALL 保留可用备份并在错误中说明。
 
 #### Scenario: merge 保留既有内容
 - **WHEN** 目标配置已含与本功能无关的键且执行切换
 - **THEN** 写回后这些键原样保留，仅本功能负责的字段被更新
 
+#### Scenario: 合法 TOML 不被破坏
+- **WHEN** Codex TOML 已含多行数组或多行字符串等合法 TOML 值且执行切换
+- **THEN** 新文件仍可被 TOML parser 解析，既有值语义不变，且不产生重复顶层键
+
+#### Scenario: 多文件适配器回滚
+- **WHEN** Pi 的第一份配置写回成功但第二份配置写回失败
+- **THEN** 第一份配置恢复为切换前内容，第二份保持原状，指针不变，命令非 0 退出
+
 #### Scenario: 写回失败不留半写
-- **WHEN** 适配器写回过程出错（序列化、重命名等）
+- **WHEN** 单文件适配器在序列化、重命名等写回过程出错
 - **THEN** 原配置保持不变（或从备份恢复），指针不变，命令以非 0 退出
 
 #### Scenario: 指针更新失败回滚配置
 - **WHEN** 配置已写回但指针保存失败
-- **THEN** 配置从备份恢复为切换前内容，指针不变，命令以非 0 退出
+- **THEN** 全部已写回配置恢复为切换前内容，指针不变，命令以非 0 退出
+
+#### Scenario: 恢复失败保留好备份
+- **WHEN** 指针更新失败且恢复操作也失败
+- **THEN** 磁盘上保留切换前内容的有效备份，错误说明恢复失败，命令以非 0 退出
+
+#### Scenario: 并发切换串行化
+- **WHEN** CLI、TUI 或 MCP 同时对同一 agent 发起两次切换
+- **THEN** 两次切换按路径串行完成，最终配置和指针只反映后完成的一次，不出现交叉写或备份互相覆盖
+
+#### Scenario: 成功后清理备份
+- **WHEN** 切换、指针更新和恢复检查全部成功
+- **THEN** 本功能为本次切换创建的 `.senv-bak` 备份被删除，新配置和指针保留
 
 ### Requirement: 本机指针存储
 指针 SHALL 存于 `~/.config/senv/agent-pointers.json`（权限 0600），按 agent id 记录 `(provider, model, switched_at)`。指针是本机状态：MUST NOT 写入 vault，MUST NOT 随 vault 同步。`senv ai status` 与 switch 输出以指针为唯一事实源，不解析 agent 配置文件推断状态。
@@ -84,4 +105,3 @@
 #### Scenario: status 无需解锁
 - **WHEN** vault 锁定且用户执行 status
 - **THEN** 正常显示指针状态，不提示口令
-

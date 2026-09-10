@@ -89,7 +89,12 @@ func hasStructuralIdentityHazard(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return true
 	}
-	if strings.ContainsAny(name, "\x00/\\") {
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	if strings.ContainsAny(name, "/\\") {
 		return true
 	}
 	if filepath.IsAbs(name) {

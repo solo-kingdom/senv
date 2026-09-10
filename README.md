@@ -512,6 +512,32 @@ A: 多半是 `metadata.json` 与加密数据文件不是同一套密钥（多机
 
 ### 命令列表
 
+#### LLM Provider
+
+```bash
+# 交互式输入 API key（不回显；默认要求 HTTPS）
+senv ai provider add acme \
+  --base-url https://api.acme.com/v1 \
+  --catalog-provider acme \
+  --default-model m1
+
+# 脚本中从 stdin 提供 API key，凭据不进入 argv 或 shell history
+printf '%s' "$ACME_KEY" | senv ai provider add acme \
+  --base-url https://api.acme.com/v1 \
+  --api-key-stdin \
+  --catalog-provider acme \
+  --default-model m1
+
+# 本地模型服务确需 HTTP 时必须显式豁免
+senv ai provider add local \
+  --base-url http://127.0.0.1:11434/v1 \
+  --allow-http \
+  --key-ref env:llm/LOCAL_KEY \
+  --model qwen3
+```
+
+> `senv ai provider add` 不支持 `--api-key`；请使用 TTY prompt、`--api-key-stdin` 或 `--key-ref`。
+
 ```
 senv init                          初始化项目
 senv tui                           启动全屏 TUI（浏览/搜索/编辑 env·text·config）

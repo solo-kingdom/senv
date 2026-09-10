@@ -2,11 +2,12 @@ package llm
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 func TestApplyJSONMergePreservesUnknownKeys(t *testing.T) {
@@ -66,54 +67,58 @@ func TestAtomicWriteKeepsOldOnTempFailure(t *testing.T) {
 	}
 }
 
-func TestUpsertTOMLTopLevelAndBlock(t *testing.T) {
-	src := `# 顶部注释
+func TestTOMLMergePreservesSemantics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	src := `# user comment
 model = "old"
-model_provider = "minimax"
-model_context_window = 1000
 
-[model_providers.minimax]
-name = "MiniMax"
-base_url = "https://api.minimaxi.com/v1"
+[[items]]
+name = "keep"
 
 [mcp_servers.senv]
 command = "senv"
 `
-	lines := strings.Split(src, "\n")
-	lines = upsertTopLevelLine(lines, "model", `model = "new"`)
-	lines = upsertTopLevelLine(lines, "model_provider", `model_provider = "senv-main"`)
-	lines = upsertTOMLBlock(lines,
-		"[model_providers.senv-main]",
-		"[model_providers.senv-main]\nname = \"senv main\"\nbase_url = \"https://x\"\n")
-	out := strings.Join(lines, "\n")
-	if !strings.Contains(out, "model = \"new\"") || !strings.Contains(out, "model_provider = \"senv-main\"") {
-		t.Fatalf("top-level edits missing:\n%s", out)
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
-	if strings.Contains(out, `model = "old"`) || strings.Contains(out, `model_provider = "minimax"`) {
-		t.Fatalf("old top-level lines kept:\n%s", out)
+	err := applyTOMLMerge(path, func(root map[string]any) error {
+		root["model"] = "new"
+		root["model_provider"] = "senv-main"
+		setTOMLPath(root, []string{"model_providers", "senv-main"}, map[string]any{
+			"name":     "senv main",
+			"base_url": "https://x",
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("applyTOMLMerge() error = %v", err)
 	}
-	if !strings.Contains(out, "# 顶部注释") || !strings.Contains(out, "model_context_window = 1000") {
-		t.Fatalf("comments/unknown keys lost:\n%s", out)
+	var root map[string]any
+	if err := toml.Unmarshal(mustRead(t, path), &root); err != nil {
+		t.Fatalf("TOML round-trip: %v", err)
 	}
-	if !strings.Contains(out, "[model_providers.minimax]") {
-		t.Fatalf("unrelated block lost:\n%s", out)
+	if root["model"] != "new" || root["model_provider"] != "senv-main" {
+		t.Fatalf("root = %v", root)
 	}
-	// senv 块追加在文件末尾（minimax 块之后），既有 mcp 块保留在其前。
-	senvIdx := strings.Index(out, "[model_providers.senv-main]")
-	minimaxIdx := strings.Index(out, "[model_providers.minimax]")
-	mcpIdx := strings.Index(out, "[mcp_servers.senv]")
-	if !(senvIdx > minimaxIdx && mcpIdx >= 0 && mcpIdx < senvIdx) {
-		t.Fatalf("block order wrong: minimax@%d senv@%d mcp@%d\n%s", minimaxIdx, senvIdx, mcpIdx, out)
+	items, ok := root["items"].([]any)
+	if !ok || len(items) != 1 || items[0].(map[string]any)["name"] != "keep" {
+		t.Fatalf("array of tables = %#v", root["items"])
 	}
-	// 重复 upsert 不产生重复块。
-	lines = upsertTOMLBlock(strings.Split(out, "\n"), "[model_providers.senv-main]",
-		"[model_providers.senv-main]\nname = \"updated\"\n")
-	out2 := strings.Join(lines, "\n")
-	if strings.Count(out2, "[model_providers.senv-main]") != 1 {
-		t.Fatalf("duplicate block after re-upsert:\n%s", out2)
+	if _, ok := root["mcp_servers"].(map[string]any)["senv"]; !ok {
+		t.Fatal("unrelated table lost")
 	}
-	if !strings.Contains(out2, `name = "updated"`) {
-		t.Fatalf("block not replaced:\n%s", out2)
+	var count int
+	for _, line := range strings.Split(string(mustRead(t, path)), "\n") {
+		if strings.HasPrefix(line, "model = ") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("model top-level key count = %d", count)
 	}
 }
 
@@ -158,17 +163,19 @@ func TestClaudeCodeAdapter(t *testing.T) {
 
 func TestCodexAdapterNoSecretOnDisk(t *testing.T) {
 	out, path := applyAdapter(t, codexAdapter(), senvEnvKeyName("main"))
+	var cfg map[string]any
+	if err := toml.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("codex TOML parse: %v", err)
+	}
 	if strings.Contains(out, "sk-secret") {
 		t.Fatal("plaintext key leaked into codex config")
 	}
-	for _, want := range []string{
-		`model = "m1"`, `model_provider = "senv-main"`,
-		`env_key = "SENV_MAIN_API_KEY"`, "requires_openai_auth = false",
-		`base_url = "https://api.example.com"`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("codex config missing %q:\n%s", want, out)
-		}
+	if cfg["model"] != "m1" || cfg["model_provider"] != "senv-main" {
+		t.Fatalf("codex top-level = %v", cfg)
+	}
+	provider := cfg["model_providers"].(map[string]any)["senv-main"].(map[string]any)
+	if provider["env_key"] != "SENV_MAIN_API_KEY" || provider["base_url"] != "https://api.example.com" || provider["requires_openai_auth"] != false {
+		t.Fatalf("codex provider = %v", provider)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -181,18 +188,20 @@ func TestCodexAdapterNoSecretOnDisk(t *testing.T) {
 
 func TestKimiAdapter(t *testing.T) {
 	out, _ := applyAdapter(t, kimiAdapter(), "sk-secret")
-	for _, want := range []string{
-		`default_model = "senv-main/m1"`,
-		`[providers."senv-main"]`,
-		`base_url = "https://api.example.com"`,
-		`api_key = "sk-secret"`,
-		`[models."senv-main/m1"]`,
-		`provider = "senv-main"`,
-		`model = "m1"`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("kimi config missing %q:\n%s", want, out)
-		}
+	var cfg map[string]any
+	if err := toml.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("kimi TOML parse: %v", err)
+	}
+	if cfg["default_model"] != "senv-main/m1" {
+		t.Fatalf("default_model = %v", cfg["default_model"])
+	}
+	provider := cfg["providers"].(map[string]any)["senv-main"].(map[string]any)
+	model := cfg["models"].(map[string]any)["senv-main/m1"].(map[string]any)
+	if provider["base_url"] != "https://api.example.com" || provider["api_key"] != "sk-secret" {
+		t.Fatalf("kimi provider = %v", provider)
+	}
+	if model["provider"] != "senv-main" || model["model"] != "m1" {
+		t.Fatalf("kimi model = %v", model)
 	}
 }
 
@@ -340,8 +349,8 @@ func TestSwitchRollsBackOnPointerFailure(t *testing.T) {
 	if got := mustRead(t, configPath); string(got) != string(original) {
 		t.Fatalf("config not restored: %s", got)
 	}
-	if _, err := os.Stat(configPath + ".senv-bak"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("backup left behind: %v", err)
+	if matches, _ := filepath.Glob(configPath + ".senv-bak*"); len(matches) != 0 {
+		t.Fatalf("backups left behind: %v", matches)
 	}
 }
 
@@ -350,7 +359,10 @@ func TestStatusMixed(t *testing.T) {
 	if _, err := sm.Switch("opencode", "main", "m1"); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
-	rows, warning := sm.Status()
+	rows, warning, err := sm.Status()
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
 	if warning != "" {
 		t.Fatalf("unexpected warning %q", warning)
 	}

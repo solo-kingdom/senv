@@ -3,7 +3,6 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"slices"
 	"time"
 
@@ -128,12 +127,16 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 	if e.Alias == "" {
 		return fmt.Errorf("provider alias is empty")
 	}
-	u, err := url.Parse(e.BaseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("provider %q has invalid base URL %q", e.Alias, e.BaseURL)
+	// Existing profiles may explicitly use HTTP; load validation therefore
+	// accepts both schemes but still rejects malformed URLs and userinfo.
+	if err := ValidateLLMProviderURL(e.BaseURL, true); err != nil {
+		return fmt.Errorf("provider %q: %w", e.Alias, err)
 	}
 	if e.CredentialRef == "" {
 		return fmt.Errorf("provider %q is missing credential ref", e.Alias)
+	}
+	if err := ValidateLLMCredentialRef(e.CredentialRef); err != nil {
+		return fmt.Errorf("provider %q: %w", e.Alias, err)
 	}
 	if len(e.Models) == 0 {
 		return fmt.Errorf("provider %q has no models", e.Alias)

@@ -39,8 +39,13 @@ keybinding reference.`,
 		// 不注册，TUI 其余功能不受影响。
 		llmMgr, llmErr := getAIProviderManager()
 		var llmPointer string
+		var llmHome string
 		if llmErr == nil {
 			llmPointer = filepath.Join(getConfigPath(), "agent-pointers.json")
+			llmHome, err = agentHomeDir()
+			if err != nil {
+				return err
+			}
 		}
 
 		m := tui.New(tui.Managers{
@@ -50,7 +55,7 @@ keybinding reference.`,
 			SSH:        sshMgr,
 			LLM:        llmMgr,
 			LLMPointer: llmPointer,
-			LLMHome:    agentHomeDir(),
+			LLMHome:    llmHome,
 			History:    buildTUIHistorySource(),
 			Audit:      tuiAuditSource{},
 		})

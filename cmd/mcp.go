@@ -120,6 +120,10 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		store := storage.NewManager(configPath, dataPath)
 		// 指针文件路径随 configPath 解析；agent 配置根为用户 home（本机状态，
 		// 读取不经 vault，但工具统一走 guard 鉴权）。
+		home, err := agentHomeDir()
+		if err != nil {
+			return nil, nil, err
+		}
 		requestManagers := &managers{
 			env:        env.NewManagerWithKey(store, key),
 			text:       text.NewManagerWithKey(store, key),
@@ -127,7 +131,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			ssh:        ssh.NewManagerWithKey(store, key),
 			llm:        llm.NewProviderManagerWithKey(store, key),
 			llmPointer: filepath.Join(configPath, "agent-pointers.json"),
-			llmHome:    agentHomeDir(),
+			llmHome:    home,
 		}
 		release := func() {
 			session.ZeroKey(key)

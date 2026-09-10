@@ -18,12 +18,12 @@ func agentPointerPath() string {
 }
 
 // agentHomeDir 返回 agent 配置写入的 home 目录（测试可经 HOME 覆盖）。
-func agentHomeDir() string {
+func agentHomeDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "."
+		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return home
+	return home, nil
 }
 
 var aiSwitchModel string
@@ -32,8 +32,8 @@ var aiSwitchCmd = &cobra.Command{
 	Use:   "switch <agent> <provider>",
 	Short: "Switch a coding agent to a saved LLM provider/model",
 	Long: `Point a coding agent at a saved LLM provider profile: the agent's
-native config file is merged and rewritten atomically (a .senv-bak backup is
-kept), and the local pointer records the new (provider, model).
+native config files are merged in one transaction, rewritten with temporary
+backups, and backups are removed after the pointer is committed.
 
 Supported agents: claude-code, codex, kimi, pi, opencode. Codex reads its
 credential from an environment variable, so the key never touches its config.
@@ -45,7 +45,11 @@ Omitting --model uses the provider's default model when unambiguous.`,
 		if err != nil {
 			return err
 		}
-		sm := llm.NewSwitchManager(mgr, agentPointerPath(), agentHomeDir())
+		home, err := agentHomeDir()
+		if err != nil {
+			return err
+		}
+		sm := llm.NewSwitchManager(mgr, agentPointerPath(), home)
 		out, err := sm.Switch(args[0], args[1], aiSwitchModel)
 		if err != nil {
 			auditOp(session.AuditOpLLMSwitch, "agent:"+args[0], false, "switch 失败")
@@ -72,8 +76,15 @@ The pointer describes the last switch performed by senv; it never requires
 unlocking the vault.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sm := llm.NewSwitchManager(nil, agentPointerPath(), agentHomeDir())
-		rows, warning := sm.Status()
+		home, err := agentHomeDir()
+		if err != nil {
+			return err
+		}
+		sm := llm.NewSwitchManager(nil, agentPointerPath(), home)
+		rows, warning, err := sm.Status()
+		if err != nil {
+			return err
+		}
 		if warning != "" {
 			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ %s\n", warning)
 		}

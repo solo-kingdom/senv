@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 // 指针文件与目录权限：指针不含密钥，但沿用仓库惯例收紧权限。
@@ -109,7 +111,9 @@ func SavePointers(path string, pf *PointerFile) error {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, pointerDirMode); err != nil {
+	// EnsurePrivateDir also tightens a pre-existing 0755 pointer directory
+	// before the private pointer file is written.
+	if err := storage.EnsurePrivateDir(dir, pointerDirMode); err != nil {
 		return fmt.Errorf("create pointer dir: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".agent-pointers-*.tmp")

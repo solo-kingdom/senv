@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -31,9 +32,9 @@ func runAISwitchCmd(t *testing.T, cmd *cobra.Command, args []string) (string, st
 func addAIProviderForSwitchTest(t *testing.T, alias string) {
 	t.Helper()
 	writeAIProviderTestCatalog(t)
+	setProviderCredentialReader(t, "sk-secret-value")
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
-		providerAddAPIKey = "sk-secret-value"
 		providerAddCatalog = "p1"
 		providerAddDefault = "m1"
 	})
@@ -136,10 +137,16 @@ func TestAISwitchCodexNoSecretAndGuidance(t *testing.T) {
 	if strings.Contains(string(cfg), "sk-secret-value") {
 		t.Fatal("codex config contains plaintext key")
 	}
-	for _, want := range []string{`model = "m1"`, `model_provider = "senv-main"`, `env_key = "SENV_MAIN_API_KEY"`} {
-		if !strings.Contains(string(cfg), want) {
-			t.Fatalf("codex config missing %q:\n%s", want, cfg)
-		}
+	var config map[string]any
+	if err := toml.Unmarshal(cfg, &config); err != nil {
+		t.Fatalf("parse codex TOML: %v", err)
+	}
+	if config["model"] != "m1" || config["model_provider"] != "senv-main" {
+		t.Fatalf("codex top-level = %v", config)
+	}
+	provider := config["model_providers"].(map[string]any)["senv-main"].(map[string]any)
+	if provider["env_key"] != "SENV_MAIN_API_KEY" {
+		t.Fatalf("codex provider = %v", provider)
 	}
 }
 

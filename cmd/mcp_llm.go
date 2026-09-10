@@ -60,7 +60,10 @@ func (m *managers) llmProviderList(_ context.Context, _ *mcp.CallToolRequest, _ 
 func (m *managers) llmAgentStatus(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
 	sm := llm.NewSwitchManager(m.llm, m.llmPointer, m.llmHome)
-	rows, warning := sm.Status()
+	rows, warning, err := sm.Status()
+	if err != nil {
+		return errResult(err)
+	}
 	out := make([]llmAgentStatusView, 0, len(rows))
 	for _, r := range rows {
 		view := llmAgentStatusView{

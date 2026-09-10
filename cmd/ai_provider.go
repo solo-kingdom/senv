@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/session"
+	"golang.org/x/term"
 )
 
 // getAIProviderManager 构造已认证的 Provider 管理器（复用既有认证流程）。
@@ -31,13 +34,18 @@ var aiProviderCmd = &cobra.Command{
 }
 
 var (
-	providerAddBaseURL string
-	providerAddAPIKey  string
-	providerAddKeyRef  string
-	providerAddCatalog string
-	providerAddModels  []string
-	providerAddDefault string
-	providerAddForce   bool
+	providerAddBaseURL     string
+	providerAddAPIKeyStdin bool
+	providerAddAllowHTTP   bool
+	providerAddKeyRef      string
+	providerAddCatalog     string
+	providerAddModels      []string
+	providerAddDefault     string
+	providerAddForce       bool
+
+	// providerCredentialReader is a test seam; production input never becomes
+	// a flag value and is dropped when AddProvider returns.
+	providerCredentialReader = readProviderCredential
 )
 
 var aiProviderAddCmd = &cobra.Command{
@@ -45,19 +53,28 @@ var aiProviderAddCmd = &cobra.Command{
 	Short: "Save an LLM provider profile (credential stored in vault)",
 	Long: `Save an LLM provider profile with base URL, credential reference and
 model set. The model set is the union of models from --catalog-provider
-(models.dev cache) and custom --model values. The credential is provided via
---api-key (stored into the reserved vault text group) or --key-ref (reference
-an existing env/text entry).`,
+(models.dev cache) and custom --model values. Provide the credential through a
+TTY prompt or --api-key-stdin, or reference an existing entry with --key-ref.
+The --api-key flag is unsupported because argv and shell history leak secrets.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := getAIProviderManager()
 		if err != nil {
 			return err
 		}
+		var apiKey string
+		if providerAddKeyRef == "" {
+			credential, err := providerCredentialReader(cmd.InOrStdin(), cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			apiKey = string(credential)
+		}
 		res, err := mgr.AddProvider(llm.AddProviderOptions{
 			Alias:           args[0],
 			BaseURL:         providerAddBaseURL,
-			APIKey:          providerAddAPIKey,
+			AllowHTTP:       providerAddAllowHTTP,
+			APIKey:          apiKey,
 			KeyRef:          providerAddKeyRef,
 			CatalogPath:     catalogCachePath(),
 			CatalogProvider: providerAddCatalog,
@@ -142,7 +159,7 @@ var aiProviderRemoveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		credRemoved, err := mgr.RemoveProvider(args[0])
+		credResult, err := mgr.RemoveProvider(args[0])
 		if err != nil {
 			auditOp(session.AuditOpLLMProvider, "provider:"+args[0], false, "remove 失败")
 			return err
@@ -150,8 +167,10 @@ var aiProviderRemoveCmd = &cobra.Command{
 		auditOp(session.AuditOpLLMProvider, "provider:"+args[0], true, "remove")
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "✓ 已删除 LLM Provider %s\n", args[0])
-		if credRemoved {
+		if credResult.CredentialRemoved {
 			fmt.Fprintln(out, "已同时删除其自有凭据条目")
+		} else if credResult.CredentialMissing {
+			fmt.Fprintln(out, "自有凭据已不存在，仅删除档案")
 		} else {
 			fmt.Fprintln(out, "凭据为外部引用，已保留")
 		}
@@ -166,10 +185,40 @@ func orDash(s string) string {
 	return s
 }
 
+// readProviderCredential isolates terminal and stdin input from Cobra flag
+// binding. The secret is used directly by the provider manager and never
+// retained by package state.
+func readProviderCredential(stdin io.Reader, stderr io.Writer) ([]byte, error) {
+	if providerAddAPIKeyStdin {
+		value, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read API key from stdin: %w", err)
+		}
+		if len(value) == 0 {
+			return nil, fmt.Errorf("stdin API key is empty")
+		}
+		return value, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf("credentials are not read from flags: use a TTY prompt or pipe with --api-key-stdin")
+	}
+	fmt.Fprint(stderr, "API key: ")
+	value, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(stderr)
+	if err != nil {
+		return nil, fmt.Errorf("read API key prompt: %w", err)
+	}
+	if len(value) == 0 {
+		return nil, fmt.Errorf("API key is empty")
+	}
+	return value, nil
+}
+
 func init() {
-	rootCmd.AddCommand(aiProviderCmd)
+	aiCmd.AddCommand(aiProviderCmd)
 	aiProviderAddCmd.Flags().StringVar(&providerAddBaseURL, "base-url", "", "provider base URL (https)")
-	aiProviderAddCmd.Flags().StringVar(&providerAddAPIKey, "api-key", "", "API key (stored encrypted in vault)")
+	aiProviderAddCmd.Flags().BoolVar(&providerAddAPIKeyStdin, "api-key-stdin", false, "read the API key from stdin (no echo, no argv)")
+	aiProviderAddCmd.Flags().BoolVar(&providerAddAllowHTTP, "allow-http", false, "explicitly allow an HTTP base URL (default requires HTTPS)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddKeyRef, "key-ref", "", "reference to an existing entry: env:<group>/<key> or text:<group>/<key>")
 	aiProviderAddCmd.Flags().StringVar(&providerAddCatalog, "catalog-provider", "", "models.dev provider id for auto model loading")
 	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModels, "model", nil, "custom model id (repeatable)")
