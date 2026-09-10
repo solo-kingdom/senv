@@ -1,8 +1,8 @@
 ---
 name: senv-cli
-description: 使用 senv（加密的环境变量/文本块/配置管理 CLI 与 MCP 服务）读写密钥、管理分组、同步数据。当任务涉及读取或写入本机的 senv 数据、调用 senv CLI/MCP 工具、或为 agent 配置 senv MCP 接入时使用。维护者注意：senv 命令或 MCP 工具变更时必须同步更新本文档。
+description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.1"
+  version: "1.2"
 ---
 
 # senv：agent 使用指南
@@ -11,15 +11,16 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## 维护约定（给开发本仓库的 agent）
 
-- 本文档是 agent 使用 senv 的权威说明。**新增/修改/删除 `cmd/` 下的命令、flag，或 `mcp` 工具列表变化时，必须同步更新本文档**，并与 PR 一并提交。
+- 本文档是 agent 使用 senv 的权威说明。**新增/修改/删除 `cmd/` 下用户可见的命令、flag、交互/安全约束，或 MCP 工具清单与语义变化时，必须同步更新本文档**，并与功能变更一并提交。
 - 事实来源：`senv --help`、`senv <cmd> --help`、`senv mcp list-tools`。不要凭记忆写命令用法。本机已安装的二进制可能落后于仓库 HEAD，开发本仓库时以 `go run . <cmd> --help` 为准。
+- 子命令 help 无法覆盖的行为（交互提示、明文落盘、外部配置改写、凭据是否进入 argv/config）以实现、测试和 ADR 为准；有变化时也要回写本指南。
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接用 `senv_*` 工具（16 个，完整清单见 `senv mcp list-tools`），如 `senv_env_get`、`senv_text_set`、`senv_config_export`、`senv_group_list`。
-2. **CLI 兜底**：直接执行 `senv ...` 命令。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 20 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。
+2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/materialize、LLM Provider 写入与 coding agent 切换。
 
-给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`（`--print` 只打印配置不落盘，`--all` 安装全部，`--scope project` 部分 agent 支持项目级配置）。安装后需重启 agent 生效。
+给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。
 
 ## 非交互执行规则（重要）
 
@@ -27,6 +28,8 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 需要 env 注入 shell 时用 `eval "$(senv env export --if-session)"`：无会话时静默退出 0，不会卡。
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
 - headless/CI 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。
+- 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
+- `senv mcp install`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
 ## 关键行为
 
@@ -36,6 +39,20 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **最小暴露**：`env list` 会输出 `key=value`（值超过 50 字符截断），MCP `senv_env_list` 返回完整 key→值映射；`text list` 只显示 key、大小、更新时间。不要把 list 输出或密钥值复述进日志、回复。
 - **默认分组**：未指定时用 `default`；`env export` 只导出已 activate 的 env 分组（`senv env group activate <name>`）。
+
+## SSH 资产
+
+- `keypair` 只导入既有 private key，不生成新密钥：`senv keypair import <name> --file <private-key>`；`list` 只看指纹/元数据。
+- `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/<name>`（目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件。
+- `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
+- `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。
+
+## LLM Provider 与 coding agent
+
+- 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
+- 档案与凭据存 vault：`senv ai provider add/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
+- `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--model <model>]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。仅按用户指定的 agent/provider/model 执行。
+- MCP 只提供 provider 档案与 agent 指向的只读查询；不能通过 MCP 添加 provider 或切换 agent。
 
 ## server 模式
 
@@ -64,6 +81,9 @@ senv push -m "msg"                       # 等价 git add+commit+push；--only �
 senv sync                                # 按 settings 走 git 或 server provider
 senv doctor                              # metadata 与数据文件密钥一致性诊断（git pull 后可跑）
 senv audit --since 2026-09-01            # 本机审计日志（只记元数据不记值）
+senv keypair list                        # 只看 SSH keypair 元数据/指纹
+senv host list                           # 只看 SSH host 连接元数据
+senv ai status                           # 查看 coding agent 的 provider/model 指向
 ```
 
 完整清单以 `senv --help` 与 `senv mcp list-tools` 为准；本文档滞后时以命令输出为准并回写修正。
