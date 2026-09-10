@@ -117,7 +117,11 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if err := storage.ValidateName(alias); err != nil {
 		return nil, fmt.Errorf("invalid provider alias %q: %w", opts.Alias, err)
 	}
-	baseURL := strings.TrimSpace(opts.BaseURL)
+	// 接入地址统一按 OpenAI 兼容形态落库（补末段 /v1、收敛尾斜杠）；切换时
+	// 再按 agent 协议族转换。归一不改写校验语义：userinfo、空 host 与非允许
+	// 的 HTTP 仍由 ValidateLLMProviderURL 拒绝。
+	rawBaseURL := strings.TrimSpace(opts.BaseURL)
+	baseURL := baseURLForFamily(rawBaseURL, ProtocolOpenAICompatible)
 	if err := storage.ValidateLLMProviderURL(baseURL, opts.AllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid base URL %q: %w", opts.BaseURL, err)
 	}
@@ -220,6 +224,9 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	})
 	if err != nil {
 		return nil, err
+	}
+	if baseURL != rawBaseURL {
+		warnings = append([]string{fmt.Sprintf("base URL 已规范为 %s", baseURL)}, warnings...)
 	}
 	return &AddProviderResult{Entry: entry, Warnings: warnings}, nil
 }

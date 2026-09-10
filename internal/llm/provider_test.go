@@ -42,7 +42,7 @@ func TestAddProviderWithCatalogAndCustomModels(t *testing.T) {
 
 	res, err := mgr.AddProvider(AddProviderOptions{
 		Alias:           "main",
-		BaseURL:         "https://api.example.com",
+		BaseURL:         "https://api.example.com/v1",
 		APIKey:          "sk-secret",
 		CatalogPath:     catalogPath,
 		CatalogProvider: "p1",
@@ -75,7 +75,7 @@ func TestAddProviderFailures(t *testing.T) {
 	t.Run("catalog cache missing", func(t *testing.T) {
 		mgr, _, catalogPath := newTestProviderManager(t)
 		_, err := mgr.AddProvider(AddProviderOptions{
-			Alias: "main", BaseURL: "https://a", CatalogPath: catalogPath,
+			Alias: "main", BaseURL: "https://a/v1", CatalogPath: catalogPath,
 			CatalogProvider: "p1", APIKey: "k",
 		})
 		if err == nil || !strings.Contains(err.Error(), "senv ai refresh") {
@@ -137,14 +137,14 @@ func TestAddProviderFailures(t *testing.T) {
 		mgr, _, catalogPath := newTestProviderManager(t)
 		writeTestCatalog(t, catalogPath, catalogPayload, time.Now().Add(-10*24*time.Hour))
 		res, err := mgr.AddProvider(AddProviderOptions{
-			Alias: "main", BaseURL: "https://a", CatalogPath: catalogPath,
+			Alias: "main", BaseURL: "https://a/v1", CatalogPath: catalogPath,
 			CatalogProvider: "p1", APIKey: "k",
 		})
 		if err != nil {
 			t.Fatalf("AddProvider() error = %v", err)
 		}
 		if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "senv ai refresh") {
-			t.Fatalf("warnings = %v, want stale hint", res.Warnings)
+			t.Fatalf("warnings = %v, want only the stale hint (use an already normalized base URL here)", res.Warnings)
 		}
 	})
 }

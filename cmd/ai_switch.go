@@ -38,6 +38,10 @@ backups, and backups are removed after the pointer is committed.
 Supported agents: claude-code, codex, kimi, pi, opencode. Codex reads its
 credential from an environment variable, so the key never touches its config.
 
+The provider's base URL is written in the shape the agent's API family
+expects: Claude Code without the /v1 suffix (its SDK appends /v1/messages),
+OpenAI-compatible agents with it.
+
 Omitting --model uses the provider's default model when unambiguous.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -57,8 +61,8 @@ Omitting --model uses the provider's default model when unambiguous.`,
 		}
 		auditOp(session.AuditOpLLMSwitch, "agent:"+out.AgentID, true,
 			"provider:"+out.Provider+" model:"+out.Model)
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（模型 %s）\n  配置：%s\n",
-			out.AgentName, out.Provider, out.Model, out.ConfigPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（模型 %s）\n  接入地址：%s\n  配置：%s\n",
+			out.AgentName, out.Provider, out.Model, out.BaseURL, out.ConfigPath)
 		if out.CredentialEnv != "" {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"⚠ %s 从环境变量读取凭据（不写入配置文件）：请确保 %s 已设置，可用 senv env 能力在启动该 agent 的环境中暴露\n",

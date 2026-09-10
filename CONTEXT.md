@@ -77,6 +77,14 @@ _Avoid_: 跳板（指 ProxyJump 时）
 一份 AI 服务接入档案：以别名为唯一标识，含接入地址、凭据引用与可用模型集；凭据本体存于 vault。与同步后端 provider（git/server）无关。
 _Avoid_: provider（单独使用，易与同步后端混淆）、服务商
 
+**接入地址（Base URL）**:
+LLM Provider 记录的统一接入点，按 OpenAI 兼容形态保存：路径以 `/v1` 结尾。它不是任何单个 Coding Agent 最终请求的地址。
+_Avoid_: 端点（指具体 API 路径时）、服务地址
+
+**协议族**:
+Coding Agent 使用的 API 方言，分 Anthropic Messages 与 OpenAI 兼容两族；同一份接入地址写进不同族 agent 的配置时形态不同。
+_Avoid_: 兼容性处理（实现意味）、适配（泛指时）
+
 **Coding Agent**:
 接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider 与模型。
 _Avoid_: agent（泛指时）、客户端

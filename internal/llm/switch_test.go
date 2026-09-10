@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/wii/senv/internal/storage"
 )
 
 func TestApplyJSONMergePreservesUnknownKeys(t *testing.T) {
@@ -395,4 +396,115 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("ReadFile(%s) error = %v", path, err)
 	}
 	return data
+}
+
+// TestSwitchBaseURLPerProtocolFamily 覆盖存量档案（直接落库、未经过 add 归一）
+// 在切换时按 agent 协议族转换：Anthropic 族剥离末段 /v1，OpenAI 兼容族保持带
+// 版本形态，且重复切换幂等。
+func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
+	cases := []struct {
+		name       string
+		stored     string
+		claudeCode string
+		codex      string
+	}{
+		{"存量档案缺版本段", "https://api.example.com",
+			"https://api.example.com", "https://api.example.com/v1"},
+		{"存量档案带版本段", "https://api.example.com/v1",
+			"https://api.example.com", "https://api.example.com/v1"},
+		{"存量档案带尾斜杠", "https://api.example.com/v1/",
+			"https://api.example.com", "https://api.example.com/v1"},
+		{"带路径前缀", "https://api.example.com/api/llm/v1",
+			"https://api.example.com/api/llm", "https://api.example.com/api/llm/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pm, _, _ := newTestProviderManager(t)
+			if err := pm.save("legacy", &storage.LLMProviderEntry{
+				Alias: "legacy", BaseURL: tc.stored,
+				CredentialRef: "text:llm-keys/legacy", Models: []string{"m1"},
+			}); err != nil {
+				t.Fatalf("save legacy provider: %v", err)
+			}
+			if err := pm.textManager().Set(LLMKeysGroup, "legacy", "sk-secret"); err != nil {
+				t.Fatalf("store credential: %v", err)
+			}
+			home := t.TempDir()
+			sm := NewSwitchManager(pm, "", home)
+
+			out, err := sm.Switch("claude-code", "legacy", "")
+			if err != nil {
+				t.Fatalf("Switch(claude-code) error = %v", err)
+			}
+			if out.BaseURL != tc.claudeCode {
+				t.Fatalf("claude-code BaseURL = %q, want %q", out.BaseURL, tc.claudeCode)
+			}
+			var claudeCfg map[string]any
+			if err := json.Unmarshal([]byte(string(mustRead(t, out.ConfigPath))), &claudeCfg); err != nil {
+				t.Fatalf("parse claude-code config: %v", err)
+			}
+			if got := claudeCfg["env"].(map[string]any)["ANTHROPIC_BASE_URL"]; got != tc.claudeCode {
+				t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, tc.claudeCode)
+			}
+			// 重复切换幂等：同一档案再切一次，写入值不变。
+			again, err := sm.Switch("claude-code", "legacy", "")
+			if err != nil {
+				t.Fatalf("second Switch(claude-code) error = %v", err)
+			}
+			if again.BaseURL != out.BaseURL {
+				t.Fatalf("repeated switch BaseURL = %q, want %q", again.BaseURL, out.BaseURL)
+			}
+
+			codexOut, err := sm.Switch("codex", "legacy", "")
+			if err != nil {
+				t.Fatalf("Switch(codex) error = %v", err)
+			}
+			if codexOut.BaseURL != tc.codex {
+				t.Fatalf("codex BaseURL = %q, want %q", codexOut.BaseURL, tc.codex)
+			}
+			var codexCfg map[string]any
+			if err := toml.Unmarshal(mustRead(t, codexOut.ConfigPath), &codexCfg); err != nil {
+				t.Fatalf("parse codex config: %v", err)
+			}
+			provider := codexCfg["model_providers"].(map[string]any)["senv-legacy"].(map[string]any)
+			if provider["base_url"] != tc.codex {
+				t.Fatalf("codex base_url = %v, want %q", provider["base_url"], tc.codex)
+			}
+		})
+	}
+}
+
+// TestAddProviderNormalizesBaseURL 覆盖写入侧归一与改写提示。
+func TestAddProviderNormalizesBaseURL(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		wantStored  string
+		wantWarning bool
+	}{
+		{"缺版本段被补齐", "https://api.example.com", "https://api.example.com/v1", true},
+		{"尾斜杠被收敛", "https://api.example.com/v1/", "https://api.example.com/v1", true},
+		{"已归一静默通过", "https://api.example.com/v1", "https://api.example.com/v1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pm, _, _ := newTestProviderManager(t)
+			res, err := pm.AddProvider(AddProviderOptions{
+				Alias: "main", BaseURL: tc.input, APIKey: "sk-secret", Models: []string{"m1"},
+			})
+			if err != nil {
+				t.Fatalf("AddProvider() error = %v", err)
+			}
+			if res.Entry.BaseURL != tc.wantStored {
+				t.Fatalf("stored BaseURL = %q, want %q", res.Entry.BaseURL, tc.wantStored)
+			}
+			gotWarning := len(res.Warnings) > 0
+			if gotWarning != tc.wantWarning {
+				t.Fatalf("warnings = %v, want warning=%v", res.Warnings, tc.wantWarning)
+			}
+			if tc.wantWarning && !strings.Contains(res.Warnings[0], tc.wantStored) {
+				t.Fatalf("warning %q does not mention %q", res.Warnings[0], tc.wantStored)
+			}
+		})
+	}
 }

@@ -55,7 +55,10 @@ var aiProviderAddCmd = &cobra.Command{
 model set. The model set is the union of models from --catalog-provider
 (models.dev cache) and custom --model values. Provide the credential through a
 TTY prompt or --api-key-stdin, or reference an existing entry with --key-ref.
-The --api-key flag is unsupported because argv and shell history leak secrets.`,
+The --api-key flag is unsupported because argv and shell history leak secrets.
+The base URL is normalized to the OpenAI-compatible shape (a trailing /v1 is
+appended when missing, trailing slashes are trimmed) so every agent can derive
+its own shape at switch time; the command reports the normalized value.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := getAIProviderManager()

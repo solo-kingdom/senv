@@ -69,6 +69,25 @@ func TestAITabBrowseNoSecretLeak(t *testing.T) {
 	if strings.Contains(view, "sk-tui-secret") {
 		t.Fatal("view leaked credential plaintext")
 	}
+	if !strings.Contains(view, "▸ main") {
+		t.Fatalf("selected provider missing marker:\n%s", view)
+	}
+	if !strings.Contains(view, "claude-code") || !strings.Contains(view, "当前指向") {
+		t.Fatalf("agent pointers missing separate column:\n%s", view)
+	}
+}
+
+func TestAITabSwitchFlowVisibleColumns(t *testing.T) {
+	tab, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+
+	view := tab.View()
+	for _, want := range []string{"▸ Agents", "Providers", "Models", "▸ claude-code", "▸ main", "m1 · 默认"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("switch flow view missing %q:\n%s", want, view)
+		}
+	}
 }
 
 func TestAITabEmptyState(t *testing.T) {

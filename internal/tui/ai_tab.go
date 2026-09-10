@@ -262,17 +262,74 @@ func (t *aiTab) View() string {
 			emptyStateStyle.Render("暂无 LLM Provider 档案；执行 senv ai provider add 添加后按 r 刷新"))
 	}
 
+	if t.flow != aiFlowNone {
+		return stackWithOverlay(t.height, t.renderFlow(), t.viewBaseAt)
+	}
+	return t.viewBaseAt(t.height)
+}
+
+func (t *aiTab) viewBaseAt(height int) string {
+	if len(t.providers) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			paneTitleStyle.Render("AI"),
+			emptyStateStyle.Render("暂无 LLM Provider 档案；执行 senv ai provider add 添加后按 r 刷新"))
+	}
+
+	// Three bordered columns + two 1-column gaps consume 8 columns outside
+	// the Width passed to lipgloss.
+	leftW := t.width / 4
+	if leftW > 26 {
+		leftW = 26
+	}
+	if leftW < 16 {
+		leftW = 16
+	}
+	remaining := t.width - leftW - 8
+	middleW := remaining / 2
+	if middleW > 32 {
+		middleW = 32
+	}
+	if middleW < 16 {
+		middleW = 16
+	}
+	rightW := remaining - middleW
+	if rightW < 16 {
+		rightW = 16
+	}
+
 	// 左栏：provider 列表。
 	providerLines := make([]string, 0, len(t.providers))
-	for _, p := range t.providers {
+	currentPointers := make(map[string][]string)
+	for _, r := range t.rows {
+		if r.Pointer != nil {
+			currentPointers[r.Pointer.Provider] = append(currentPointers[r.Pointer.Provider], r.AgentID)
+		}
+	}
+	for i, p := range t.providers {
 		def := p.DefaultModel
 		if def == "" {
 			def = "-"
 		}
-		providerLines = append(providerLines, fmt.Sprintf("%s · 默认 %s · %d 模型", p.Alias, def, len(p.Models)))
+		line := fmt.Sprintf("%s · 默认 %s · %d 模型", p.Alias, def, len(p.Models))
+		if agents := currentPointers[p.Alias]; len(agents) > 0 {
+			line += " ●"
+		}
+		providerLines = append(providerLines, cursorLine(line, i == t.providerIndex))
 	}
 
-	// 右栏：详情 + 指针区 + 提示。
+	// 中栏：每个 coding agent 的当前指向。
+	agentLines := make([]string, 0, len(t.rows))
+	for _, r := range t.rows {
+		state := "未切换"
+		if !r.Supported {
+			state = "不支持"
+		} else if r.Pointer != nil {
+			state = fmt.Sprintf("%s / %s", r.Pointer.Provider, r.Pointer.Model)
+		}
+		agentLines = append(agentLines, cursorPrefix(false)+fmt.Sprintf("%-12s %s", r.AgentID, state))
+	}
+
+	// 右栏：选中 provider 详情。
 	p := t.providers[t.providerIndex]
 	detail := []string{
 		fmt.Sprintf("alias: %s", p.Alias),
@@ -281,59 +338,103 @@ func (t *aiTab) View() string {
 		fmt.Sprintf("目录来源: %s", orDash(p.CatalogProvider)),
 		fmt.Sprintf("模型: %s", strings.Join(p.Models, ", ")),
 	}
-	pointerLines := make([]string, 0, len(t.rows))
-	for _, r := range t.rows {
-		pointerLines = append(pointerLines, t.pointerLine(r))
-	}
-	right := lipgloss.JoinVertical(lipgloss.Left,
-		paneTitleStyle.Render("Provider 详情"),
-		strings.Join(detail, "\n"),
-		"",
-		paneTitleStyle.Render("当前指向"),
-		strings.Join(pointerLines, "\n"),
-	)
 	if t.warning != "" {
-		right = lipgloss.JoinVertical(lipgloss.Left, right, "⚠ "+t.warning)
+		detail = append(detail, "", "⚠ "+t.warning)
 	}
 	if t.notice != "" {
-		right = lipgloss.JoinVertical(lipgloss.Left, right, t.notice)
+		detail = append(detail, "", t.notice)
 	}
 
-	half := t.width / 2
-	if half < 20 {
-		half = max(t.width/2, 1)
-	}
-	left := windowedPane("Providers", providerLines, t.providerIndex, t.height, half)
-	rightPane := windowedPane("详情与指向", wrapPlain(right, half), 0, t.height, t.width-half)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 2), rightPane)
+	left := windowedPane("Providers", providerLines, t.providerIndex, height, leftW)
+	middle := windowedPane("当前指向", agentLines, 0, height, middleW)
+	right := windowedPane("Provider 详情", detail, 0, height, rightW)
+
+	left = paneStyle.Width(leftW).Height(height).Render(left)
+	middle = paneStyle.Width(middleW).Height(height).Render(middle)
+	right = paneStyle.Width(rightW).Height(height).Render(right)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		left, strings.Repeat(" ", 1), middle, strings.Repeat(" ", 1), right)
 }
 
-// pointerLine 渲染一行指针状态，语义与 senv ai status 一致。
-func (t *aiTab) pointerLine(r llm.StatusRow) string {
-	if !r.Supported {
-		return fmt.Sprintf("%-12s 不支持", r.AgentID)
+// renderFlow makes the otherwise hidden switch wizard visible. All three
+// dimensions stay side by side so the user can always see the pending choice
+// and each agent's current pointer.
+func (t *aiTab) renderFlow() string {
+	if t.flow == aiFlowConfirm {
+		agents := llm.SupportedAgents()
+		model := "-"
+		if t.modelIndex >= 0 && t.modelIndex < len(t.currentModels()) {
+			model = t.currentModels()[t.modelIndex]
+		}
+		agent := "agent"
+		if t.agentIndex >= 0 && t.agentIndex < len(agents) {
+			agent = agents[t.agentIndex].Name
+		}
+		provider := "provider"
+		if t.providerIndex >= 0 && t.providerIndex < len(t.providers) {
+			provider = t.providers[t.providerIndex].Alias
+		}
+		return modalBox("确认切换", fmt.Sprintf("%s → %s / %s", agent, provider, model), "enter/y confirm · esc/n cancel")
 	}
-	if r.Pointer == nil {
-		return fmt.Sprintf("%-12s 未切换", r.AgentID)
-	}
-	when := ""
-	if ts, err := r.Pointer.SwitchedAtTime(); err == nil {
-		when = ts.Local().Format("2006-01-02 15:04")
-	}
-	return fmt.Sprintf("%-12s %s / %s（%s）", r.AgentID, r.Pointer.Provider, r.Pointer.Model, when)
-}
 
-// wrapPlain 把纯文本按显式换行拆为行切片（供 windowedPane 装配）。
-func wrapPlain(s string, width int) []string {
-	limit := width
-	if limit < 20 {
-		limit = 20
+	agentTitle := "Agents"
+	providerTitle := "Providers"
+	modelTitle := "Models"
+	switch t.flow {
+	case aiFlowSelectAgent:
+		agentTitle = "▸ Agents"
+	case aiFlowSelectModel:
+		modelTitle = "▸ Models"
 	}
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lines[i] = truncateRunes(line, limit)
+
+	agents := llm.SupportedAgents()
+	current := make(map[string]llm.StatusRow, len(t.rows))
+	for _, r := range t.rows {
+		current[r.AgentID] = r
 	}
-	return lines
+	agentLines := make([]string, 0, len(agents))
+	for i, a := range agents {
+		line := a.ID
+		if r, ok := current[a.ID]; ok && r.Pointer != nil {
+			line += fmt.Sprintf(" · %s / %s", r.Pointer.Provider, r.Pointer.Model)
+		} else {
+			line += " · 未切换"
+		}
+		agentLines = append(agentLines, cursorLine(line, i == t.agentIndex))
+	}
+
+	providerLines := make([]string, 0, len(t.providers))
+	for i, p := range t.providers {
+		providerLines = append(providerLines, cursorLine(p.Alias, i == t.providerIndex))
+	}
+
+	models := t.currentModels()
+	defaultModel := ""
+	if t.providerIndex >= 0 && t.providerIndex < len(t.providers) {
+		defaultModel = t.providers[t.providerIndex].DefaultModel
+	}
+	modelLines := make([]string, 0, len(models))
+	for i, m := range models {
+		label := m
+		if m == defaultModel {
+			label += " · 默认"
+		}
+		modelLines = append(modelLines, cursorLine(label, i == t.modelIndex))
+	}
+
+	third := max(t.width/3, 16)
+	agentsPane := windowedPane(agentTitle, agentLines, t.agentIndex, t.height/2, third)
+	providersPane := windowedPane(providerTitle, providerLines, t.providerIndex, t.height/2, third)
+	modelsPane := windowedPane(modelTitle, modelLines, t.modelIndex, t.height/2, third)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, agentsPane, "  ", providersPane, "  ", modelsPane)
+
+	title := "选择 Agent"
+	hint := "↑↓/jk move · enter next · esc cancel"
+	if t.flow == aiFlowSelectModel {
+		title = "选择模型"
+	}
+	return modalBox(title, body, hint)
 }
 
 func orDash(s string) string {

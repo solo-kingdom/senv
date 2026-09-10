@@ -50,6 +50,8 @@ type AgentAdapter struct {
 	ConfigPaths func(home string) []string
 	Apply       func(req SwitchRequest) error
 	Credential  CredentialMode
+	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
+	Protocol ProtocolFamily
 }
 
 // unsupportedAgents 明确不支持的 agent：cursor 配置无法覆盖（D2），
@@ -269,8 +271,9 @@ func setTOMLPath(root map[string]any, path []string, value any) {
 // （ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN），凭据内联。
 func claudeCodeAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:   "claude-code",
-		Name: "Claude Code",
+		ID:       "claude-code",
+		Name:     "Claude Code",
+		Protocol: ProtocolAnthropic,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".claude", "settings.json")
 		},
@@ -294,8 +297,9 @@ func claudeCodeAdapter() AgentAdapter {
 // [model_providers.<senv id>]；凭据只写 env_key 名，明文不落盘。
 func codexAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:   "codex",
-		Name: "Codex (OpenAI)",
+		ID:       "codex",
+		Name:     "Codex (OpenAI)",
+		Protocol: ProtocolOpenAICompatible,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".codex", "config.toml")
 		},
@@ -325,8 +329,9 @@ func codexAdapter() AgentAdapter {
 // 顶层键 + [providers."senv-*"] + [models."senv-*/<model>"]，api_key 内联。
 func kimiAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:   "kimi",
-		Name: "Kimi Code",
+		ID:       "kimi",
+		Name:     "Kimi Code",
+		Protocol: ProtocolOpenAICompatible,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".kimi-code", "config.toml")
 		},
@@ -363,8 +368,9 @@ func kimiAdapter() AgentAdapter {
 // 同一事务，第二份失败时第一份由 SwitchManager 统一回滚。
 func piAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:   "pi",
-		Name: "Pi",
+		ID:       "pi",
+		Name:     "Pi",
+		Protocol: ProtocolOpenAICompatible,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".pi", "agent", "models.json")
 		},
@@ -406,8 +412,9 @@ func piAdapter() AgentAdapter {
 // model = "<id>/<model>"。
 func opencodeAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:   "opencode",
-		Name: "OpenCode",
+		ID:       "opencode",
+		Name:     "OpenCode",
+		Protocol: ProtocolOpenAICompatible,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".config", "opencode", "opencode.json")
 		},
@@ -506,10 +513,12 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 
 // SwitchOutput 携带切换结果与给用户的后续提示。
 type SwitchOutput struct {
-	AgentID       string
-	AgentName     string
-	Provider      string
-	Model         string
+	AgentID   string
+	AgentName string
+	Provider  string
+	Model     string
+	// BaseURL 是按该 agent 协议族转换后实际写入配置的接入地址。
+	BaseURL       string
 	ConfigPath    string
 	CredentialEnv string // 非空表示凭据需经该环境变量暴露
 }
@@ -550,6 +559,10 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 		}
 	}
 
+	// 档案接入地址统一按 OpenAI 兼容形态落库，写进配置前按该 agent 的协议族
+	// 转换（Anthropic 族剥离末段 /v1）。归一幂等，存量档案无需迁移。
+	baseURL := baseURLForFamily(entry.BaseURL, adapter.Protocol)
+
 	configPath := adapter.ConfigPath(home)
 	txPaths := []string{configPath}
 	if adapter.ConfigPaths != nil {
@@ -569,7 +582,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 	req := SwitchRequest{
 		AgentID:       agentID,
 		ProviderAlias: providerAlias,
-		BaseURL:       entry.BaseURL,
+		BaseURL:       baseURL,
 		Model:         model,
 		Credential:    credential,
 		ConfigPath:    configPath,
@@ -604,6 +617,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 		AgentName:  adapter.Name,
 		Provider:   providerAlias,
 		Model:      model,
+		BaseURL:    baseURL,
 		ConfigPath: configPath,
 	}
 	if adapter.Credential == CredentialEnvVar {

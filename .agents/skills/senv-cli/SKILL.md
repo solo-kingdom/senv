@@ -51,7 +51,8 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
 - 档案与凭据存 vault：`senv ai provider add/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
-- `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--model <model>]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。仅按用户指定的 agent/provider/model 执行。
+- 接入地址统一按 OpenAI 兼容形态落库：`add` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
+- `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--model <model>]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。接入地址按 agent 协议族写回：claude-code（Anthropic Messages）剥离末段 `/v1`，其余保持带版本形态；命令输出实际写入的接入地址。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。仅按用户指定的 agent/provider/model 执行。
 - MCP 只提供 provider 档案与 agent 指向的只读查询；不能通过 MCP 添加 provider 或切换 agent。
 
 ## server 模式

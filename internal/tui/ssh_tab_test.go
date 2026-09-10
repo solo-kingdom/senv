@@ -49,3 +49,30 @@ func TestSSHTabMasksPrivateKey(t *testing.T) {
 		t.Fatalf("SSH view leaked private-key material:\n%s", view)
 	}
 }
+
+func TestSSHTabShowsSelectedRows(t *testing.T) {
+	base := t.TempDir()
+	store := storage.NewManager(filepath.Join(base, "config"), filepath.Join(base, "data"))
+	if err := store.Initialize("test-password"); err != nil {
+		t.Fatal(err)
+	}
+	mgr := ssh.NewManager(store, "test-password")
+	if err := mgr.AddHost(&storage.HostEntry{Alias: "web", Hostname: "web.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.AddHost(&storage.HostEntry{Alias: "db", Hostname: "db.example"}); err != nil {
+		t.Fatal(err)
+	}
+
+	tab := newSSHTab(Managers{SSH: mgr})
+	tab.SetSize(80, 20)
+	next, _ := tab.Update(sshLoadedMsg{
+		hosts:    []storage.HostEntry{{Alias: "web"}, {Alias: "db"}},
+		keyPairs: []ssh.KeyPairSummary{{Name: "old", Fingerprint: "SHA256:old"}, {Name: "new", Fingerprint: "SHA256:new"}},
+	})
+	tab = next.(*sshTab)
+	view := tab.View()
+	if !strings.Contains(view, "▸ web") || !strings.Contains(view, "▸ old") {
+		t.Fatalf("selected rows missing markers:\n%s", view)
+	}
+}
