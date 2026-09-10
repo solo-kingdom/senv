@@ -2,6 +2,9 @@ package storage
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
+	"slices"
 	"time"
 
 	"github.com/wii/senv/internal/crypto"
@@ -100,6 +103,48 @@ type HostEntry struct {
 	Tags        []string          `json:"tags,omitempty"`
 	Extra       map[string]string `json:"extra,omitempty"`
 	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// LLMProviderEntry represents a saved LLM provider profile. The credential is
+// never stored here: CredentialRef points at a vault entry (for example the
+// reserved text group "llm-keys") so profile metadata can be listed safely.
+type LLMProviderEntry struct {
+	Alias           string    `json:"alias"`
+	BaseURL         string    `json:"base_url"`
+	CredentialRef   string    `json:"credential_ref"`
+	CatalogProvider string    `json:"catalog_provider,omitempty"`
+	Models          []string  `json:"models"`
+	DefaultModel    string    `json:"default_model,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up
+// the entry size.
+const MaxLLMProviderModels = 10000
+
+// ValidateLLMProvider checks cross-field invariants of a provider entry.
+func (e *LLMProviderEntry) ValidateLLMProvider() error {
+	if e.Alias == "" {
+		return fmt.Errorf("provider alias is empty")
+	}
+	u, err := url.Parse(e.BaseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("provider %q has invalid base URL %q", e.Alias, e.BaseURL)
+	}
+	if e.CredentialRef == "" {
+		return fmt.Errorf("provider %q is missing credential ref", e.Alias)
+	}
+	if len(e.Models) == 0 {
+		return fmt.Errorf("provider %q has no models", e.Alias)
+	}
+	if len(e.Models) > MaxLLMProviderModels {
+		return fmt.Errorf("provider %q exceeds %d models", e.Alias, MaxLLMProviderModels)
+	}
+	if e.DefaultModel != "" && !slices.Contains(e.Models, e.DefaultModel) {
+		return fmt.Errorf("provider %q default model %q is not in models", e.Alias, e.DefaultModel)
+	}
+	return nil
 }
 
 // MaxTextSize is the maximum allowed size for a text value (512KB)

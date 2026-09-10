@@ -17,8 +17,18 @@ const (
 )
 
 func validateSSHIdentity(kind, name string) error {
+	return wrapInvalidIdentity("invalid SSH "+kind, name)
+}
+
+// validateEntryIdentity is the kind-neutral variant used by shared entry
+// helpers so non-SSH collections render accurate error messages.
+func validateEntryIdentity(kind, name string) error {
+	return wrapInvalidIdentity("invalid "+kind, name)
+}
+
+func wrapInvalidIdentity(prefix, name string) error {
 	if err := ValidateName(name); err != nil {
-		return fmt.Errorf("invalid SSH %s %q: %w", kind, name, err)
+		return fmt.Errorf("%s %q: %w", prefix, name, err)
 	}
 	return nil
 }
@@ -151,7 +161,7 @@ func (m *Manager) saveSSHEntry(dir, name string, entry any, cryptoKey []byte) er
 	}
 	data, err := ToJSON(entry)
 	if err != nil {
-		return fmt.Errorf("failed to serialize SSH %s entry: %w", dir, err)
+		return fmt.Errorf("failed to serialize %s entry: %w", dir, err)
 	}
 	encrypted, err := crypto.Encrypt(cryptoKey, data)
 	if err != nil {
@@ -169,7 +179,7 @@ func (m *Manager) saveSSHEntry(dir, name string, entry any, cryptoKey []byte) er
 }
 
 func (m *Manager) loadSSHEntry(dir, name string, target any, cryptoKey []byte) error {
-	if err := validateSSHIdentity(sshKindForDir(dir), name); err != nil {
+	if err := validateEntryIdentity(entryKindForDir(dir), name); err != nil {
 		return err
 	}
 	if !m.mutationLocked {
@@ -184,14 +194,14 @@ func (m *Manager) loadSSHEntry(dir, name string, target any, cryptoKey []byte) e
 	defer root.Close()
 	encrypted, err := root.Read(dir, name+ConfigFileSuffix)
 	if err != nil {
-		return fmt.Errorf("SSH %s %q not found: %w", sshKindForDir(dir), name, err)
+		return fmt.Errorf("%s %q not found: %w", entryKindForDir(dir), name, err)
 	}
 	decrypted, err := crypto.Decrypt(cryptoKey, string(encrypted))
 	if err != nil {
-		return fmt.Errorf("failed to decrypt SSH %s %q: %w", sshKindForDir(dir), name, err)
+		return fmt.Errorf("failed to decrypt %s %q: %w", entryKindForDir(dir), name, err)
 	}
 	if err := FromJSON(decrypted, target); err != nil {
-		return fmt.Errorf("failed to parse SSH %s %q: %w", sshKindForDir(dir), name, err)
+		return fmt.Errorf("failed to parse %s %q: %w", entryKindForDir(dir), name, err)
 	}
 	return nil
 }
@@ -241,7 +251,7 @@ func (m *Manager) listSSHEntries(dir string) ([]string, error) {
 		if !strings.HasSuffix(entry.Name, ConfigFileSuffix) {
 			return nil, fmt.Errorf("invalid managed %s entry %q", dir, entry.Name)
 		}
-		if err := validateSSHIdentity(sshKindForDir(dir), name); err != nil {
+		if err := validateEntryIdentity(entryKindForDir(dir), name); err != nil {
 			return nil, fmt.Errorf("invalid managed %s identity: %w", dir, err)
 		}
 		names = append(names, name)
@@ -249,9 +259,13 @@ func (m *Manager) listSSHEntries(dir string) ([]string, error) {
 	return names, nil
 }
 
-func sshKindForDir(dir string) string {
-	if dir == KeypairDirName {
-		return "keypair"
+func entryKindForDir(dir string) string {
+	switch dir {
+	case KeypairDirName:
+		return "SSH keypair"
+	case LLMProviderDirName:
+		return "LLM provider"
+	default:
+		return "SSH host"
 	}
-	return "host"
 }

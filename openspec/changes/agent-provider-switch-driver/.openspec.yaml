@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-09
+skip_specs: true
+goal: 保存多个 LLM provider，支持为多个 coding agent 切换对应 provider（含 api url 与模型）；支持从
+  models.dev 拉取 provider 和 model，添加时自动加载最新模型，也支持自定义模型

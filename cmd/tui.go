@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -34,14 +35,24 @@ keybinding reference.`,
 		if err != nil {
 			return err
 		}
+		// LLM 管理器在 vault 可用时注入；不可用（如 git 模式）时 AI Tab
+		// 不注册，TUI 其余功能不受影响。
+		llmMgr, llmErr := getAIProviderManager()
+		var llmPointer string
+		if llmErr == nil {
+			llmPointer = filepath.Join(getConfigPath(), "agent-pointers.json")
+		}
 
 		m := tui.New(tui.Managers{
-			Env:     envMgr,
-			Text:    textMgr,
-			Config:  configMgr,
-			SSH:     sshMgr,
-			History: buildTUIHistorySource(),
-			Audit:   tuiAuditSource{},
+			Env:        envMgr,
+			Text:       textMgr,
+			Config:     configMgr,
+			SSH:        sshMgr,
+			LLM:        llmMgr,
+			LLMPointer: llmPointer,
+			LLMHome:    agentHomeDir(),
+			History:    buildTUIHistorySource(),
+			Audit:      tuiAuditSource{},
 		})
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {

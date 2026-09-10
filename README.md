@@ -14,6 +14,8 @@
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 浏览与 MCP 只读查询
+- ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
+- ✅ **LLM Provider 管理** - `senv ai provider add/list/show/remove` 加密保存 AI 服务档案，凭据存 vault、模型集自动从 models.dev 目录装配
 
 ## 安装
 
@@ -277,7 +279,7 @@ senv keypair materialize web-key
 
 ### 9. TUI 模式（全屏界面）
 
-通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑 env/text/config，并浏览 SSH host/keypair 元数据。
+通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑 env/text/config，浏览 SSH host/keypair 元数据，以及浏览 LLM provider 档案并切换各 coding agent 的指向。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -289,7 +291,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 | 按键 | 作用 |
 | --- | --- |
-| `Tab` / 数字键 | 切换 Env / Text / Config / SSH 标签（SSH 仅有注入时显示；导航状态保留） |
+| `Tab` / 数字键 | 切换 Env / Text / Config / SSH / AI 标签（SSH 仅有注入时显示，AI 仅有 vault 解锁时显示；导航状态保留） |
 | `↑` `↓` / `j` `k` | 列表导航 |
 | `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text Tab） |
 | `enter` | 查看详情（Config）/ 解开当前 env 明文 |
@@ -303,6 +305,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `y` | 复制值到剪贴板 |
 | `o` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（仅匹配 key/name，忽略大小写） |
+| `s` | AI Tab：对选中 provider 发起切换（选 agent → 选模型 → 确认；codex 凭据走环境变量，不写入配置） |
 | `S` | 全局跨类型搜索 overlay（只搜 key/name，绝不搜值） |
 | `esc` | 关闭 overlay / 取消操作 |
 | `q` | 退出 TUI |

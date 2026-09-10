@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
@@ -70,11 +72,14 @@ var mcpListToolsCmd = &cobra.Command{
 
 // managers exists only for the lifetime of one authorized tool request.
 type managers struct {
-	env      *env.Manager
-	text     *text.Manager
-	config   *config.Manager
-	ssh      *ssh.Manager
-	autoPull func()
+	env        *env.Manager
+	text       *text.Manager
+	config     *config.Manager
+	ssh        *ssh.Manager
+	llm        *llm.ProviderManager
+	llmPointer string
+	llmHome    string
+	autoPull   func()
 }
 
 type mcpRequestAuthorizer func() (*managers, func(), error)
@@ -113,11 +118,16 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		// Business managers are constructed only after the centralized guard has
 		// validated the exact startup session.
 		store := storage.NewManager(configPath, dataPath)
+		// 指针文件路径随 configPath 解析；agent 配置根为用户 home（本机状态，
+		// 读取不经 vault，但工具统一走 guard 鉴权）。
 		requestManagers := &managers{
-			env:    env.NewManagerWithKey(store, key),
-			text:   text.NewManagerWithKey(store, key),
-			config: config.NewManagerWithKey(store, key),
-			ssh:    ssh.NewManagerWithKey(store, key),
+			env:        env.NewManagerWithKey(store, key),
+			text:       text.NewManagerWithKey(store, key),
+			config:     config.NewManagerWithKey(store, key),
+			ssh:        ssh.NewManagerWithKey(store, key),
+			llm:        llm.NewProviderManagerWithKey(store, key),
+			llmPointer: filepath.Join(configPath, "agent-pointers.json"),
+			llmHome:    agentHomeDir(),
 		}
 		release := func() {
 			session.ZeroKey(key)
@@ -125,6 +135,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			requestManagers.text = nil
 			requestManagers.config = nil
 			requestManagers.ssh = nil
+			requestManagers.llm = nil
 		}
 		return requestManagers, release, nil
 	}
@@ -498,6 +509,8 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool(authorize, autoPull, (*managers).groupDeactivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostList))
 	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_get", Description: "Get one SSH host connection metadata record (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool(authorize, autoPull, (*managers).llmProviderList))
+	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool(authorize, autoPull, (*managers).llmAgentStatus))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -521,6 +534,8 @@ func toolCatalogue() []toolDef {
 		{"senv_group_deactivate", "Deactivate an env group."},
 		{"ssh_host_list", "List SSH host connection metadata (read-only; no private keys)."},
 		{"ssh_host_get", "Get one SSH host metadata record (read-only; no private keys)."},
+		{"llm_provider_list", "List saved LLM provider profiles (read-only; credential references only)."},
+		{"llm_agent_status", "Show each coding agent's current provider/model pointer (read-only)."},
 	}
 }
 
