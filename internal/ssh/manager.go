@@ -177,6 +177,84 @@ func (m *Manager) GetKeyPairSummary(name string) (*KeyPairSummary, error) {
 	return &summary, nil
 }
 
+// RenameKeyPair renames a keypair and rewrites every host reference in the
+// same vault mutation, so a host can never be left pointing at a keypair that
+// does not exist. Key material and metadata are stored verbatim under the new
+// name. The returned aliases are the hosts whose identityKey was updated.
+func (m *Manager) RenameKeyPair(oldName, newName string) ([]string, error) {
+	if err := storage.ValidateName(oldName); err != nil {
+		return nil, fmt.Errorf("invalid keypair name %q: %w", oldName, err)
+	}
+	if err := storage.ValidateName(newName); err != nil {
+		return nil, fmt.Errorf("invalid keypair name %q: %w", newName, err)
+	}
+	if oldName == newName {
+		return nil, nil
+	}
+	var updated []string
+	err := m.mutate(func(locked *Manager) error {
+		updated = nil
+		entry, err := locked.loadKeyPair(oldName)
+		if err != nil {
+			return err
+		}
+		if _, err := locked.loadKeyPair(newName); err == nil {
+			return fmt.Errorf("keypair %q %w", newName, ErrExists)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		renamed := *entry
+		renamed.Name = newName
+		if err := locked.saveKeyPair(&renamed); err != nil {
+			return fmt.Errorf("write renamed keypair %q: %w", newName, err)
+		}
+
+		// Rewrite references before dropping the old entry: a failure at any
+		// point still leaves every host pointing at an existing keypair.
+		hosts, err := locked.storage.ListHosts()
+		if err != nil {
+			return err
+		}
+		rollback := func(cause error) error {
+			for _, alias := range updated {
+				if host, err := locked.loadHost(alias); err == nil {
+					host.IdentityKey = oldName
+					host.Alias = alias
+					_ = locked.saveHost(host)
+				}
+			}
+			_ = locked.storage.DeleteKeyPair(newName)
+			return cause
+		}
+		for _, alias := range hosts {
+			host, err := locked.loadHost(alias)
+			if err != nil {
+				return rollback(err)
+			}
+			if host.IdentityKey != oldName {
+				continue
+			}
+			host.IdentityKey = newName
+			host.UpdatedAt = time.Now().UTC()
+			host.Alias = alias
+			if err := locked.saveHost(host); err != nil {
+				return rollback(fmt.Errorf("update host %q: %w", alias, err))
+			}
+			updated = append(updated, alias)
+		}
+		if err := locked.storage.DeleteKeyPair(oldName); err != nil {
+			return rollback(fmt.Errorf("remove old keypair %q: %w", oldName, err))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(updated)
+	return updated, nil
+}
+
 // MaterializePath is the stable public convention documented by ADR-0001.
 func MaterializePath(name string) (string, error) {
 	home, err := os.UserHomeDir()

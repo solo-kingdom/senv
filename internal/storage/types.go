@@ -108,14 +108,18 @@ type HostEntry struct {
 // never stored here: CredentialRef points at a vault entry (for example the
 // reserved text group "llm-keys") so profile metadata can be listed safely.
 type LLMProviderEntry struct {
-	Alias           string    `json:"alias"`
-	BaseURL         string    `json:"base_url"`
-	CredentialRef   string    `json:"credential_ref"`
-	CatalogProvider string    `json:"catalog_provider,omitempty"`
-	Models          []string  `json:"models"`
-	DefaultModel    string    `json:"default_model,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Alias           string `json:"alias"`
+	BaseURL         string `json:"base_url"`
+	CredentialRef   string `json:"credential_ref"`
+	CatalogProvider string `json:"catalog_provider,omitempty"`
+	// APIShape optionally declares the wire protocol this profile speaks
+	// (openai-chat | openai-responses | anthropic). Empty keeps the legacy
+	// behavior of deriving the shape from the target agent (ADR-0006).
+	APIShape     string    `json:"api_shape,omitempty"`
+	Models       []string  `json:"models"`
+	DefaultModel string    `json:"default_model,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up
@@ -130,6 +134,9 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 	// Existing profiles may explicitly use HTTP; load validation therefore
 	// accepts both schemes but still rejects malformed URLs and userinfo.
 	if err := ValidateLLMProviderURL(e.BaseURL, true); err != nil {
+		return fmt.Errorf("provider %q: %w", e.Alias, err)
+	}
+	if err := ValidateLLMProviderAPIShape(e.APIShape); err != nil {
 		return fmt.Errorf("provider %q: %w", e.Alias, err)
 	}
 	if e.CredentialRef == "" {

@@ -48,22 +48,7 @@ func hasConfigItem(t *configTab, name string) bool {
 	return false
 }
 
-func flushConfig(t *configTab, cmd tea.Cmd) *configTab {
-	const max = 16
-	for i := 0; i < max; i++ {
-		if cmd == nil {
-			break
-		}
-		msg := cmd()
-		if msg == nil {
-			break
-		}
-		next, nextCmd := t.Update(msg)
-		t = next.(*configTab)
-		cmd = nextCmd
-	}
-	return t
-}
+func flushConfig(t *configTab, cmd tea.Cmd) *configTab { return flushTab(t, cmd).(*configTab) }
 
 func TestConfigLoadAndOps(t *testing.T) {
 	mgr := newTestConfigManager(t)

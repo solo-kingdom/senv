@@ -31,6 +31,19 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
 - `senv mcp install`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
+## TUI 键位（人机交互，agent 不驱动）
+
+`senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。
+
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname、provider alias，不匹配值/私钥/凭据）；`?` 键位总览；`q` 退出（仍有待推送时先提示一次）。
+- 编辑面：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名（分组栏改分组/条目栏改 key）、`a`/`x` 激活停用分组、`+` 新建分组、`y` 复制；Text/Config `e` 走 vim、`n`/`d`、`r` 重命名；Text 另有 `i` 从文件导入、`o` 导出；Config 另有 `m` 编辑分组与描述、`x` 导出、`i`/`u`（`I`/`U` 批量）安装卸载（需在计划页确认）。
+- 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。
+- SSH Tab：两栏（host / keypair）。host 栏 `n` 新建、`e` 表单编辑、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段；keypair 栏 `n`/`i` 导入、`R` 重命名（自动联动 host `identityKey`）、`d` 删除、`m` materialize、`x` 导出全部。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`。
+- AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换、`m` 对已指向的 agent 仅换模型（未指向时提示先按 `s`）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。
+- 只读详情：Config/SSH/AI 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
+- 同步状态：server 模式且未关闭 `auto_sync` 时底部常驻「N 条待推送 / 已同步 时间」，写操作后后台异步推送（2 秒预算）；git 模式不显示。
+- TUI 写操作会进本机操作审计（`senv audit` 可见），target 只含 group/key/name 等标识，不含值。
+
 ## 关键行为
 
 - **寻址**：多数命令接受 `group:key` 地址（如 `prod:API_KEY`），地址中的 group 优先于 `-g/--group`。
@@ -43,6 +56,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 ## SSH 资产
 
 - `keypair` 只导入既有 private key，不生成新密钥：`senv keypair import <name> --file <private-key>`；`list` 只看指纹/元数据。
+- `senv keypair rename <old> <new>` 在同一次 mutation 内原子改写引用它的 host `identityKey`；目标名已存在时拒绝且不写入。
 - `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/<name>`（目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件。
 - `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
 - `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。
@@ -50,9 +64,12 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 ## LLM Provider 与 coding agent
 
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
-- 档案与凭据存 vault：`senv ai provider add/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
-- 接入地址统一按 OpenAI 兼容形态落库：`add` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
+- 档案与凭据存 vault：`senv ai provider add/edit/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
+- `senv ai provider edit <alias>` 就地编辑：alias 是主键不可改；只改传入的字段，省略的保持原值。轮换自有凭据用 `--rotate-key`（TTY）或 `--api-key-stdin`；改走外部引用用 `--key-ref`（会删除原自有凭据）。任一步失败不留部分更新。
+- 接入地址统一按 OpenAI 兼容形态落库：`add`/`edit` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
+- `--api-shape`（`openai-chat` | `openai-responses` | `anthropic`）可选声明接口形态；`--api-shape ""` 清除回推断。留空时 `switch` 按目标 agent 协议族归一接入地址；声明后成为兼容判据，形态与目标 agent 协议族不匹配时 `switch` 拒绝写文件并提示「改档案形态或换 provider」。
 - `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--model <model>]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。接入地址按 agent 协议族写回：claude-code（Anthropic Messages）剥离末段 `/v1`，其余保持带版本形态；命令输出实际写入的接入地址。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。仅按用户指定的 agent/provider/model 执行。
+- `senv ai switch <agent> <provider> --model <model>` 可为已指向同一 provider 的 agent 仅更换模型：provider、接入地址与凭据引用不变。
 - MCP 只提供 provider 档案与 agent 指向的只读查询；不能通过 MCP 添加 provider 或切换 agent。
 
 ## server 模式
@@ -85,6 +102,7 @@ senv audit --since 2026-09-01            # 本机审计日志（只记元数据�
 senv keypair list                        # 只看 SSH keypair 元数据/指纹
 senv host list                           # 只看 SSH host 连接元数据
 senv ai status                           # 查看 coding agent 的 provider/model 指向
+senv ai provider edit <alias> [flags]    # 就地编辑档案（别名不可改；--api-shape 声明/清除形态）
 ```
 
 完整清单以 `senv --help` 与 `senv mcp list-tools` 为准；本文档滞后时以命令输出为准并回写修正。

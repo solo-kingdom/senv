@@ -94,6 +94,39 @@ func clipLines(s string, n int) string {
 	return strings.Join(lines[:n], "\n")
 }
 
+// fitLines truncates every line to at most width runes. Applied to *unstyled*
+// text before styling, so lipgloss Width can never wrap a row into extra rows.
+func fitLines(lines []string, width int) []string {
+	if width <= 1 {
+		return lines
+	}
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, truncateWidth(l, width))
+	}
+	return out
+}
+
+// truncateWidth truncates s to at most maxCols display columns, appending "…".
+// Unlike truncateRunes it accounts for double-width (CJK) runes, so a line can
+// never be wider on screen than the pane it is rendered into.
+func truncateWidth(s string, maxCols int) string {
+	if maxCols <= 0 || lipgloss.Width(s) <= maxCols {
+		return s
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > maxCols-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + "…"
+}
+
 // windowedPane renders a titled list that stays within height rows, scrolling
 // so that cursor remains visible. When the list is longer than the pane, the
 // title shows the visible 1-based range (e.g. "Groups (12)  4–12"). width is
@@ -106,7 +139,7 @@ func windowedPane(title string, lines []string, cursor, height, width int) strin
 		title = fmt.Sprintf("%s  %d–%d", title, start+1, end)
 	}
 	if width > 4 {
-		title = truncateRunes(title, width-4)
+		title = truncateWidth(title, width-4)
 	}
 	parts := make([]string, 0, 1+end-start)
 	parts = append(parts, paneTitleStyle.Render(title))

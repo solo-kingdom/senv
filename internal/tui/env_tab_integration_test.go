@@ -24,22 +24,7 @@ func newTestEnvManager(t *testing.T) *env.Manager {
 // flush executes a command and feeds the resulting message chain back into the
 // tab until no command remains (capped to avoid runaway loops). It skips the
 // textinput blink loop naturally because an unrecognized msg yields a nil cmd.
-func flush(t *envTab, cmd tea.Cmd) *envTab {
-	const max = 16
-	for i := 0; i < max; i++ {
-		if cmd == nil {
-			break
-		}
-		msg := cmd()
-		if msg == nil {
-			break
-		}
-		next, nextCmd := t.Update(msg)
-		t = next.(*envTab)
-		cmd = nextCmd
-	}
-	return t
-}
+func flush(t *envTab, cmd tea.Cmd) *envTab { return flushTab(t, cmd).(*envTab) }
 
 func hasEnvItem(t *envTab, group, key, value string) bool {
 	for _, it := range t.itemsByGroup[group] {
@@ -111,11 +96,17 @@ func TestEnvManagerOpsDirect(t *testing.T) {
 	}
 
 	// Deleting the default group via deactivate must be refused. The tab layer
-	// intercepts the default group locally (returns a nil command + flash).
+	// intercepts the default group locally and reports a warning toast instead of
+	// calling the manager.
 	tab.groupIndex = 0 // default
 	cmd := tab.doDeactivate()
-	if cmd != nil {
-		t.Errorf("expected tab to refuse deactivating default locally, got a command")
+	msgs := runCmd(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("expected one warning toast, got %#v", msgs)
+	}
+	tm, ok := msgs[0].(toastMsg)
+	if !ok || tm.level != toastWarn {
+		t.Fatalf("expected warning toast, got %#v", msgs[0])
 	}
 
 	// Delete a variable and confirm it disappears.

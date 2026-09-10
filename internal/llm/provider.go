@@ -101,7 +101,10 @@ type AddProviderOptions struct {
 	CatalogProvider string // models.dev provider id
 	Models          []string
 	DefaultModel    string
-	Force           bool
+	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
+	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
+	APIShape string
+	Force    bool
 }
 
 // AddProviderResult 携带保存结果与非致命警告（如目录缓存过期）。
@@ -125,6 +128,9 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if err := storage.ValidateLLMProviderURL(baseURL, opts.AllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid base URL %q: %w", opts.BaseURL, err)
 	}
+	if err := storage.ValidateLLMProviderAPIShape(strings.TrimSpace(opts.APIShape)); err != nil {
+		return nil, err
+	}
 	if err := validateCredentialInput(opts); err != nil {
 		return nil, err
 	}
@@ -143,6 +149,7 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		BaseURL:         baseURL,
 		CredentialRef:   opts.KeyRef,
 		CatalogProvider: strings.TrimSpace(opts.CatalogProvider),
+		APIShape:        strings.TrimSpace(opts.APIShape),
 		Models:          models,
 		DefaultModel:    defaultModel,
 		CreatedAt:       now,
@@ -229,6 +236,168 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		warnings = append([]string{fmt.Sprintf("base URL 已规范为 %s", baseURL)}, warnings...)
 	}
 	return &AddProviderResult{Entry: entry, Warnings: warnings}, nil
+}
+
+// EditProviderOptions 描述一次档案编辑。指针字段区分「未提供」（nil，保留
+// 原值）与「显式清空」（指向空字符串）；alias 是主键，不在可改字段之列。
+type EditProviderOptions struct {
+	Alias       string
+	BaseURL     *string
+	AllowHTTP   bool
+	APIKey      string  // 新自有凭据（轮换）；与 KeyRef 互斥
+	KeyRef      *string // 外部引用；指向空字符串表示不改变
+	CatalogPath string
+	// CatalogProvider 非 nil 且非空时，模型集从该目录 provider 重新装配；
+	// nil 表示保留原目录来源。
+	CatalogProvider *string
+	// Models 非 nil 时替换模型集（与 CatalogProvider 一起装配）；nil 表示保留。
+	Models       []string
+	DefaultModel *string
+	APIShape     *string
+}
+
+// EditProvider 更新既有档案。alias 不可改；未提供的字段保持原值。凭据轮换
+// 语义与 AddProvider 一致：新自有凭据覆盖旧值、改外部引用删除原自有凭据、
+// 未提供凭据来源则保留。任一步失败都不留下部分更新。
+func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderResult, error) {
+	alias := strings.TrimSpace(opts.Alias)
+	if err := storage.ValidateName(alias); err != nil {
+		return nil, fmt.Errorf("invalid provider alias %q: %w", opts.Alias, err)
+	}
+	apiKey := strings.TrimSpace(opts.APIKey)
+	hasKeyRef := opts.KeyRef != nil && strings.TrimSpace(*opts.KeyRef) != ""
+	if apiKey != "" && hasKeyRef {
+		return nil, fmt.Errorf("--api-key and --key-ref are mutually exclusive")
+	}
+	if opts.KeyRef != nil && strings.TrimSpace(*opts.KeyRef) != "" {
+		if err := ValidateCredentialRef(*opts.KeyRef); err != nil {
+			return nil, err
+		}
+	}
+
+	existing, err := m.GetProvider(alias)
+	if err != nil {
+		return nil, err
+	}
+	entry := *existing
+	var warnings []string
+
+	if opts.BaseURL != nil {
+		rawBaseURL := strings.TrimSpace(*opts.BaseURL)
+		baseURL := baseURLForFamily(rawBaseURL, ProtocolOpenAICompatible)
+		if err := storage.ValidateLLMProviderURL(baseURL, opts.AllowHTTP); err != nil {
+			return nil, fmt.Errorf("invalid base URL %q: %w", *opts.BaseURL, err)
+		}
+		if baseURL != rawBaseURL {
+			warnings = append(warnings, fmt.Sprintf("base URL 已规范为 %s", baseURL))
+		}
+		entry.BaseURL = baseURL
+	}
+	if opts.APIShape != nil {
+		shape := strings.TrimSpace(*opts.APIShape)
+		if err := storage.ValidateLLMProviderAPIShape(shape); err != nil {
+			return nil, err
+		}
+		entry.APIShape = shape
+	}
+	if opts.CatalogProvider != nil {
+		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
+	}
+	if opts.Models != nil || opts.CatalogProvider != nil {
+		models, modelWarnings, err := m.assembleModels(AddProviderOptions{
+			CatalogPath:     opts.CatalogPath,
+			CatalogProvider: entry.CatalogProvider,
+			Models:          opts.Models,
+		})
+		if err != nil {
+			return nil, err
+		}
+		entry.Models = models
+		warnings = append(warnings, modelWarnings...)
+	}
+	if opts.DefaultModel != nil {
+		entry.DefaultModel = strings.TrimSpace(*opts.DefaultModel)
+	}
+	if entry.DefaultModel != "" && !slices.Contains(entry.Models, entry.DefaultModel) {
+		return nil, fmt.Errorf("default model %q is not in the final model set", entry.DefaultModel)
+	}
+
+	if apiKey != "" {
+		entry.CredentialRef = OwnedCredentialRef(alias)
+	} else if hasKeyRef {
+		entry.CredentialRef = strings.TrimSpace(*opts.KeyRef)
+	}
+	if err := entry.ValidateLLMProvider(); err != nil {
+		return nil, err
+	}
+	entry.UpdatedAt = time.Now().Truncate(time.Second).UTC()
+	updated := entry
+
+	err = m.mutate(func(locked *ProviderManager) error {
+		current, loadErr := locked.load(alias)
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return fmt.Errorf("provider %q not found", alias)
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		updated.CreatedAt = current.CreatedAt
+		oldOwned := current.CredentialRef == OwnedCredentialRef(alias)
+		newOwned := updated.CredentialRef == OwnedCredentialRef(alias)
+
+		if newOwned {
+			var oldValue string
+			hadOld := false
+			if oldOwned {
+				value, getErr := locked.textManager().Get(LLMKeysGroup, alias)
+				if getErr != nil && !errors.Is(getErr, os.ErrNotExist) {
+					return fmt.Errorf("read old credential: %w", getErr)
+				}
+				oldValue, hadOld = value, getErr == nil
+			}
+			if apiKey != "" {
+				if err := locked.textManager().Set(LLMKeysGroup, alias, apiKey); err != nil {
+					return fmt.Errorf("store credential: %w", err)
+				}
+			}
+			if err := locked.save(alias, &updated); err != nil {
+				var restoreErr error
+				if hadOld {
+					restoreErr = locked.textManager().Set(LLMKeysGroup, alias, oldValue)
+				} else {
+					restoreErr = locked.textManager().Delete(LLMKeysGroup, alias)
+				}
+				if restoreErr != nil {
+					return fmt.Errorf("save provider: %v; restore credential also failed: %w", err, restoreErr)
+				}
+				return fmt.Errorf("save provider: %w", err)
+			}
+			return nil
+		}
+
+		// 新档案改走外部引用：先保存，再清理原自有凭据；清理失败回滚档案。
+		if err := locked.save(alias, &updated); err != nil {
+			return fmt.Errorf("save provider: %w", err)
+		}
+		if oldOwned {
+			if err := locked.textManager().Delete(LLMKeysGroup, alias); err != nil && !errors.Is(err, os.ErrNotExist) {
+				if restoreErr := locked.save(alias, current); restoreErr != nil {
+					return fmt.Errorf("delete old credential: %v; restore old provider also failed: %w", err, restoreErr)
+				}
+				return fmt.Errorf("delete old credential after provider update: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// entry 是更新前快照上的副本；重新读回保证返回值与落盘一致。
+	saved, err := m.GetProvider(alias)
+	if err != nil {
+		return nil, err
+	}
+	return &AddProviderResult{Entry: saved, Warnings: warnings}, nil
 }
 
 // validateCredentialInput 校验自有凭据 / --key-ref 恰选其一；force 允许两者

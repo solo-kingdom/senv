@@ -280,3 +280,44 @@ func TestHostAddInteractiveKeypairSelection(t *testing.T) {
 		t.Fatalf("interactive selection = %q", host.IdentityKey)
 	}
 }
+
+func TestKeypairRenameCLIFlow(t *testing.T) {
+	dir := newSSHTestProject(t)
+	keyPath := writeTestEd25519Key(t, dir, "id_test", "rename@test")
+	keypairImportFile = keyPath
+	t.Cleanup(func() { keypairImportFile, keypairImportForce = "", false })
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"web-key", "--file", keyPath}))
+
+	hostAddHostname = "10.0.0.9"
+	hostAddKeypair = "web-key"
+	t.Cleanup(func() { hostAddHostname, hostAddKeypair = "", "" })
+	runSSHCommand(t, hostAddCmd.RunE(&cobra.Command{}, []string{"web"}))
+
+	// Capture stdout: the command reports the number of updated host references.
+	stdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	renameErr := keypairRenameCmd.RunE(&cobra.Command{}, []string{"web-key", "prod-key"})
+	writer.Close()
+	os.Stdout = stdout
+	if renameErr != nil {
+		t.Fatalf("keypair rename: %v", renameErr)
+	}
+	captured, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := string(captured); !strings.Contains(out, "prod-key") || !strings.Contains(out, "1 host reference") {
+		t.Errorf("rename output = %q, want new name and reference count", out)
+	}
+
+	// Renaming onto an existing name must fail without touching the vault.
+	keypairImportFile = keyPath
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"other-key", "--file", keyPath}))
+	if err := keypairRenameCmd.RunE(&cobra.Command{}, []string{"prod-key", "other-key"}); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("conflicting rename error = %v", err)
+	}
+}

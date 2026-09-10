@@ -32,6 +32,36 @@ func ValidateLLMProviderURL(raw string, allowHTTP bool) error {
 	return nil
 }
 
+// Accepted LLM provider API shapes. A profile may leave api_shape empty, in
+// which case switch-time normalization follows the target agent's protocol
+// family (ADR-0006 keeps guessing out of the security path).
+const (
+	LLMAPIShapeOpenAIChat      = "openai-chat"
+	LLMAPIShapeOpenAIResponses = "openai-responses"
+	LLMAPIShapeAnthropic       = "anthropic"
+)
+
+// LLMAPIShapes lists every accepted api_shape value in display order.
+var LLMAPIShapes = []string{
+	LLMAPIShapeOpenAIChat,
+	LLMAPIShapeOpenAIResponses,
+	LLMAPIShapeAnthropic,
+}
+
+// ValidateLLMProviderAPIShape accepts an empty shape (legacy behavior) or one
+// of the declared values.
+func ValidateLLMProviderAPIShape(shape string) error {
+	if shape == "" {
+		return nil
+	}
+	for _, candidate := range LLMAPIShapes {
+		if shape == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid api_shape %q: want one of %s", shape, strings.Join(LLMAPIShapes, ", "))
+}
+
 // ValidateLLMCredentialRef validates the profile-side credential reference.
 func ValidateLLMCredentialRef(ref string) error {
 	kind, rest, found := strings.Cut(ref, ":")

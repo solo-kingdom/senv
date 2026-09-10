@@ -552,6 +552,19 @@ func (sm *SwitchManager) Switch(agentID, providerAlias, model string) (*SwitchOu
 			model, providerAlias, strings.Join(entry.Models, ", "))
 	}
 
+	// api_shape 显式声明时，形态必须与目标 agent 的协议族一致；不兼容时拒绝
+	// 且不写任何文件（ADR-0006）。空值走既有行为：只按 agent 协议族归一。
+	if shape, err := ParseAPIShape(entry.APIShape); err != nil {
+		return nil, err
+	} else if shape != "" {
+		family, ok := shape.Protocol()
+		if !ok || family != adapter.Protocol {
+			return nil, fmt.Errorf(
+				"provider %q declares api_shape %s, which is incompatible with agent %s (%s); change the provider api_shape or switch to a different provider",
+				providerAlias, shape, adapter.Name, DescribeProtocol(adapter.Protocol))
+		}
+	}
+
 	credential := reqCredential(adapter, providerAlias)
 	if adapter.Credential == CredentialInline {
 		if credential, err = resolveCredential(entry, sm.providerManager); err != nil {

@@ -58,13 +58,13 @@ func (t *historyTab) Title() string { return "History" }
 func (t *historyTab) Help() string {
 	switch t.mode {
 	case historyModeEntry:
-		return "↑↓/jk move · enter view · r restore · esc back"
+		return "↑↓/jk 移动 · enter 查看 · r 恢复 · esc 返回"
 	case historyModeDetail:
-		return "r restore · esc back"
+		return "r 恢复 · esc 返回"
 	case historyModeConfirm:
 		return "enter/y 确认恢复 · esc/n 取消"
 	default:
-		return "↑↓/jk move · enter 单条目历史 · r restore"
+		return "↑↓/jk 移动 · enter 单条目历史 · r 恢复"
 	}
 }
 

@@ -38,23 +38,7 @@ func hasTextGroup(t *textTab, name string) bool {
 	return false
 }
 
-// flushText mirrors flush but for the text tab type.
-func flushText(t *textTab, cmd tea.Cmd) *textTab {
-	const max = 16
-	for i := 0; i < max; i++ {
-		if cmd == nil {
-			break
-		}
-		msg := cmd()
-		if msg == nil {
-			break
-		}
-		next, nextCmd := t.Update(msg)
-		t = next.(*textTab)
-		cmd = nextCmd
-	}
-	return t
-}
+func flushText(t *textTab, cmd tea.Cmd) *textTab { return flushTab(t, cmd).(*textTab) }
 
 func TestTextManagerLoadAndOps(t *testing.T) {
 	mgr := newTestTextManager(t)

@@ -480,3 +480,61 @@ func expandHome(path string) string {
 	}
 	return path
 }
+
+// RenameKey atomically renames a text block inside its group. Contents, size
+// and timestamps are preserved; the destination key must be free.
+func (m *Manager) RenameKey(group, oldKey, newKey string) error {
+	if err := validateIdentity(group, oldKey); err != nil {
+		return err
+	}
+	if err := validateIdentity(group, newKey); err != nil {
+		return err
+	}
+	if oldKey == newKey {
+		return nil
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameKey(group, oldKey, newKey) })
+	}
+	if _, err := m.loadTextFile(group, oldKey); err != nil {
+		return fmt.Errorf("text block %s/%s not found: %w", group, oldKey, err)
+	}
+	if _, err := m.loadTextFile(group, newKey); err == nil {
+		return fmt.Errorf("text block %s already exists in group %s", newKey, group)
+	}
+	return m.storage.RenameTextFile(group, oldKey, newKey)
+}
+
+// RenameGroup renames a text group directory; every block inside keeps its
+// content.
+func (m *Manager) RenameGroup(oldName, newName string) error {
+	if err := validateGroup(oldName); err != nil {
+		return err
+	}
+	if err := validateGroup(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return nil
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameGroup(oldName, newName) })
+	}
+	groups, err := m.storage.ListTextGroups()
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+	found := false
+	for _, group := range groups {
+		if group == newName {
+			return fmt.Errorf("group %s already exists", newName)
+		}
+		if group == oldName {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("group %s does not exist", oldName)
+	}
+	return m.storage.RenameTextGroup(oldName, newName)
+}

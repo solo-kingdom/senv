@@ -2,17 +2,21 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/storage"
+	"github.com/wii/senv/internal/text"
 )
 
-func newAITestTab(t *testing.T) (*aiTab, string) {
+func newAITestTab(t *testing.T) (*aiTab, string, *fakeAuditWriter) {
 	t.Helper()
 	base := t.TempDir()
 	store := storage.NewManager(filepath.Join(base, "config"), filepath.Join(base, "data"))
@@ -27,10 +31,17 @@ func newAITestTab(t *testing.T) (*aiTab, string) {
 		t.Fatalf("AddProvider: %v", err)
 	}
 	home := t.TempDir()
-	mgr := Managers{LLM: pm, LLMPointer: llm.DefaultPointerPath(home), LLMHome: home}
+	w := &fakeAuditWriter{}
+	mgr := Managers{
+		Env:  env.NewManager(store, "test-password"),
+		Text: text.NewManager(store, "test-password"),
+		LLM:  pm, LLMPointer: llm.DefaultPointerPath(home), LLMHome: home,
+		LLMCatalog:  filepath.Join(base, "cache", "models-dev.json"),
+		AuditWriter: w,
+	}
 	tab := newAITab(mgr)
 	tab.SetSize(100, 24)
-	return tab, home
+	return tab, home, w
 }
 
 func runAITabLoad(t *testing.T, tab *aiTab) {
@@ -46,6 +57,20 @@ func runAITabLoad(t *testing.T, tab *aiTab) {
 	}
 }
 
+// submitAIForm fills a form's fields by key and presses enter, returning the
+// settled tab (the form stays open when validation fails).
+func submitAIForm(t *testing.T, tab *aiTab, values map[string]string) *aiTab {
+	t.Helper()
+	if tab.form == nil {
+		t.Fatal("expected an open form")
+	}
+	for key, value := range values {
+		tab.form.SetValue(key, value)
+	}
+	out, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return flushTab(out, cmd).(*aiTab)
+}
+
 func TestAITabRegistration(t *testing.T) {
 	if tabs := New(Managers{}); len(tabs.tabs) != 3 {
 		t.Fatalf("base tab count = %d, want 3 (no AI without LLM)", len(tabs.tabs))
@@ -58,10 +83,10 @@ func TestAITabRegistration(t *testing.T) {
 }
 
 func TestAITabBrowseNoSecretLeak(t *testing.T) {
-	tab, _ := newAITestTab(t)
+	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	view := tab.View()
-	for _, want := range []string{"main", "https://api.example.com", "text:llm-keys/main", "未切换", "不支持", "zcode", "cursor"} {
+	for _, want := range []string{"main", "未切换", "不支持", "zcode", "cursor", "当前指向"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -72,21 +97,457 @@ func TestAITabBrowseNoSecretLeak(t *testing.T) {
 	if !strings.Contains(view, "▸ main") {
 		t.Fatalf("selected provider missing marker:\n%s", view)
 	}
-	if !strings.Contains(view, "claude-code") || !strings.Contains(view, "当前指向") {
-		t.Fatalf("agent pointers missing separate column:\n%s", view)
+	// Provider details (base_url, credential ref) live in the `enter` overlay so
+	// long values can never wrap the browse panes.
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	detail := tab.View()
+	for _, want := range []string{"https://api.example.com/v1", "text:llm-keys/main", "api_shape"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail overlay missing %q:\n%s", want, detail)
+		}
+	}
+	if strings.Contains(detail, "sk-tui-secret") {
+		t.Fatal("detail overlay leaked credential plaintext")
 	}
 }
 
-func TestAITabSwitchFlowVisibleColumns(t *testing.T) {
-	tab, _ := newAITestTab(t)
+func TestAITabFocusSwitchesPanes(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
-	tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 
-	view := tab.View()
-	for _, want := range []string{"▸ Agents", "Providers", "Models", "▸ claude-code", "▸ main", "m1 · 默认"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("switch flow view missing %q:\n%s", want, view)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+	tab.agentIndex = 0
+	out, _ := tab.Update(runeKey("l"))
+	tab = out.(*aiTab)
+	if tab.focusLeft {
+		t.Fatal("l should move focus to the agent pane")
+	}
+	out, _ = tab.Update(runeKey("j"))
+	tab = out.(*aiTab)
+	if tab.agentIndex != 1 {
+		t.Fatalf("agentIndex = %d, want 1 after j", tab.agentIndex)
+	}
+	if tab.providerIndex != 0 {
+		t.Fatalf("provider selection changed while the agent pane was focused: %d", tab.providerIndex)
+	}
+	out, _ = tab.Update(runeKey("h"))
+	tab = out.(*aiTab)
+	if !tab.focusLeft {
+		t.Fatal("h should move focus back to the provider pane")
+	}
+}
+
+// driveAISwitch walks the model picker: focus the agent pane, pick the agent,
+// press the trigger key, move to the wanted model and confirm.
+func driveAISwitch(t *testing.T, tab *aiTab, agentSteps, modelSteps int, trigger string) tea.Msg {
+	t.Helper()
+	tab.focusLeft = false
+	for i := 0; i < agentSteps; i++ {
+		tab.Update(runeKey("j"))
+	}
+	if _, cmd := tab.Update(runeKey(trigger)); cmd != nil {
+		t.Fatal("flow start unexpectedly returned a command")
+	}
+	if tab.flow != aiFlowSelectModel {
+		t.Fatalf("flow = %v, want selectModel", tab.flow)
+	}
+	for i := 0; i < modelSteps; i++ {
+		tab.Update(runeKey("j"))
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("flow = %v, want confirm", tab.flow)
+	}
+	_, cmd := tab.Update(runeKey("y"))
+	if cmd == nil {
+		t.Fatal("confirm did not return switch command")
+	}
+	return cmd()
+}
+
+// collectAIToasts applies a result message and returns the toasts it produced.
+func collectAIToasts(t *testing.T, tab *aiTab, msg tea.Msg) []string {
+	t.Helper()
+	next, cmd := tab.Update(msg)
+	tab = next.(*aiTab)
+	var notices []string
+	for _, m := range runCmd(cmd) {
+		if tm, ok := m.(toastMsg); ok {
+			notices = append(notices, tm.text)
+			continue
 		}
+		next, _ = tab.Update(m)
+		tab = next.(*aiTab)
+	}
+	return notices
+}
+
+func TestAITabSwitchSuccess(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+
+	msg := driveAISwitch(t, tab, 0, 0, "s") // claude-code + m1
+	result, ok := msg.(aiSwitchResultMsg)
+	if !ok || result.err != nil {
+		t.Fatalf("switch msg = %#v", msg)
+	}
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "Claude Code → main") {
+		t.Fatalf("notice = %q", notices)
+	}
+	if !strings.Contains(tab.View(), "claude-code") || !strings.Contains(tab.View(), "main / m1") {
+		t.Fatalf("pointer not refreshed:\n%s", tab.View())
+	}
+
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil || !strings.Contains(string(raw), "sk-tui-secret") {
+		t.Fatalf("settings.json = %s, %v", raw, err)
+	}
+}
+
+func TestAITabSwitchFailureBanner(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	// 指针路径挂在普通文件下使保存必败。
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tab.mgr.LLMPointer = filepath.Join(blocker, "pointers.json")
+
+	msg := driveAISwitch(t, tab, 0, 0, "s")
+	result := msg.(aiSwitchResultMsg)
+	if result.err == nil {
+		t.Fatal("switch unexpectedly succeeded")
+	}
+	_, cmd := tab.Update(result)
+	if cmd == nil {
+		t.Fatal("failure did not produce error banner command")
+	}
+	if _, ok := cmd().(errMsg); !ok {
+		t.Fatalf("banner msg = %#v", cmd())
+	}
+}
+
+func TestAITabSwitchCodexGuidance(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+
+	msg := driveAISwitch(t, tab, 1, 1, "s") // codex + m2
+	result := msg.(aiSwitchResultMsg)
+	if result.err != nil {
+		t.Fatalf("switch error: %v", result.err)
+	}
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "SENV_MAIN_API_KEY") {
+		t.Fatalf("codex guidance missing: %q", notices)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-tui-secret") {
+		t.Fatal("codex config leaked credential")
+	}
+}
+
+func TestAITabModelOnlyChange(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	_ = home
+
+	// 先切换到 main/m1。
+	first := driveAISwitch(t, tab, 0, 0, "s").(aiSwitchResultMsg)
+	if first.err != nil {
+		t.Fatalf("initial switch: %#v", first)
+	}
+	collectAIToasts(t, tab, first)
+	if !strings.Contains(tab.View(), "main / m1") {
+		t.Fatalf("pointer not set:\n%s", tab.View())
+	}
+
+	// m：仅换模型到 m2。
+	msg := driveAISwitch(t, tab, 0, 1, "m")
+	result := msg.(aiSwitchResultMsg)
+	if result.err != nil {
+		t.Fatalf("model-only change error: %v", result.err)
+	}
+	if !result.onlyModel || result.out.Provider != "main" || result.out.Model != "m2" {
+		t.Fatalf("model-only result = %+v", result.out)
+	}
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "仅换模型") {
+		t.Fatalf("notice = %q", notices)
+	}
+	if !strings.Contains(tab.View(), "main / m2") {
+		t.Fatalf("pointer not refreshed:\n%s", tab.View())
+	}
+}
+
+func TestAITabModelOnlyRequiresPointer(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = 0
+	_, cmd := tab.Update(runeKey("m"))
+	if tab.flow != aiFlowNone {
+		t.Fatal("m without a pointer must not start a flow")
+	}
+	msgs := runCmd(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	tm, ok := msgs[0].(toastMsg)
+	if !ok || !strings.Contains(tm.text, "请先按 s") {
+		t.Fatalf("expected guidance toast, got %#v", msgs)
+	}
+}
+
+func TestAITabFlowEscape(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.Update(runeKey("s"))
+	if !tab.InputMode() {
+		t.Fatal("flow should enable InputMode")
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if tab.flow != aiFlowNone || tab.InputMode() {
+		t.Fatalf("esc did not cancel flow: %v", tab.flow)
+	}
+}
+
+func TestAITabCreateProviderViaForm(t *testing.T) {
+	tab, _, w := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	if tab.form == nil {
+		t.Fatal("n should open the provider create form")
+	}
+	if !tab.InputMode() {
+		t.Error("open form must report InputMode")
+	}
+	if tab.form.fieldIndex("alias") == -1 {
+		t.Fatal("create form must expose the alias field")
+	}
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias":         "second",
+		"base_url":      "https://second.example.com",
+		"api_shape":     string(llm.APIShapeAnthropic),
+		"models":        "s1, s2",
+		"default_model": "s2",
+		"credential":    aiNewCredential,
+		"api_key":       "sk-second-secret",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)
+	}
+	p := tab.providerByAlias("second")
+	if p == nil {
+		t.Fatalf("provider not created: %#v", tab.providers)
+	}
+	if p.APIShape != string(llm.APIShapeAnthropic) || p.DefaultModel != "s2" || len(p.Models) != 2 {
+		t.Fatalf("unexpected provider: %+v", p)
+	}
+	if p.BaseURL != "https://second.example.com/v1" {
+		t.Fatalf("BaseURL = %q", p.BaseURL)
+	}
+	if p.CredentialRef != llm.OwnedCredentialRef("second") {
+		t.Fatalf("CredentialRef = %q", p.CredentialRef)
+	}
+	if view := tab.View(); strings.Contains(view, "sk-second-secret") {
+		t.Fatalf("view leaked the new credential:\n%s", view)
+	}
+	var sawAdd bool
+	for _, c := range w.calls {
+		if c.target == "provider:second" && c.detail == "add" && c.success {
+			sawAdd = true
+		}
+	}
+	if !sawAdd {
+		t.Fatalf("create not audited: %#v", w.calls)
+	}
+}
+
+func TestAITabCreateFormRequiresCredential(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias": "second", "base_url": "https://second.example.com",
+		"models": "s1", "credential": aiNewCredential,
+	})
+	if tab.form == nil {
+		t.Fatal("missing own credential must keep the form open")
+	}
+	index := tab.form.fieldIndex("api_key")
+	if index < 0 || !strings.Contains(tab.form.errs[index], "API key") {
+		t.Fatalf("inline error missing: %#v", tab.form.errs)
+	}
+	if tab.providerByAlias("second") != nil {
+		t.Fatal("invalid form wrote a provider")
+	}
+}
+
+func TestAITabEditProviderFormKeepsAliasAndCredential(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+
+	out, _ := tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	if tab.form == nil {
+		t.Fatal("e should open the provider edit form")
+	}
+	if tab.form.fieldIndex("alias") != -1 {
+		t.Fatal("edit form must not expose the alias field")
+	}
+	values := tab.form.Values()
+	if values["base_url"] != "https://api.example.com/v1" {
+		t.Fatalf("base_url prefill = %q", values["base_url"])
+	}
+	if values["models"] != "m1, m2" || values["default_model"] != "m1" {
+		t.Fatalf("model prefill = %#v", values)
+	}
+
+	tab = submitAIForm(t, tab, map[string]string{
+		"api_shape":     string(llm.APIShapeOpenAIResponses),
+		"default_model": "m2",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close after a successful edit: %#v", tab.form.errs)
+	}
+	p := tab.providerByAlias("main")
+	if p == nil || p.Alias != "main" {
+		t.Fatalf("provider lost: %#v", p)
+	}
+	if p.APIShape != string(llm.APIShapeOpenAIResponses) || p.DefaultModel != "m2" {
+		t.Fatalf("edit not applied: %+v", p)
+	}
+	// 未改凭据字段时保留原自有凭据引用。
+	if p.CredentialRef != llm.OwnedCredentialRef("main") {
+		t.Fatalf("credential ref changed: %q", p.CredentialRef)
+	}
+}
+
+func TestAITabEditFormReopensOnBackendError(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+	out, _ := tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+
+	// 非法 api_shape 绕过枚举（模拟粘贴/旧数据）时后端拒绝，表单重开并内联报错。
+	tab = submitAIForm(t, tab, map[string]string{"api_shape": "openai"})
+	if tab.form == nil {
+		t.Fatal("backend rejection must reopen the form")
+	}
+	index := tab.form.fieldIndex("api_shape")
+	if index < 0 || !strings.Contains(tab.form.errs[index], "api_shape") {
+		t.Fatalf("inline error missing: %#v", tab.form.errs)
+	}
+	if tab.form.Values()["api_shape"] != "openai" {
+		t.Fatalf("form input lost on reopen: %#v", tab.form.Values())
+	}
+	p := tab.providerByAlias("main")
+	if p.APIShape != "" {
+		t.Fatalf("invalid edit wrote api_shape %q", p.APIShape)
+	}
+}
+
+func TestAITabCredentialPickerListsExistingEntries(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	if err := tab.mgr.Env.Set("llm", "KEY", "env-secret"); err != nil {
+		t.Fatalf("env set: %v", err)
+	}
+	if err := tab.mgr.Text.Set("notes", "TOKEN", "text-secret"); err != nil {
+		t.Fatalf("text set: %v", err)
+	}
+	runAITabLoad(t, tab)
+
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	index := tab.form.fieldIndex("credential")
+	if index < 0 {
+		t.Fatal("credential field missing")
+	}
+	options := tab.form.fields[index].enumOptions()
+	for _, want := range []string{aiNewCredential, "env:llm/KEY", "text:notes/TOKEN"} {
+		if !containsString(options, want) {
+			t.Fatalf("credential options missing %q: %#v", want, options)
+		}
+	}
+	// 聚焦凭据字段后视图渲染候选列表，但不含任何值明文。
+	tab.form.index = index
+	tab.form.syncInput()
+	view := tab.View()
+	if !strings.Contains(view, "env:llm/KEY") {
+		t.Fatalf("candidate list not rendered:\n%s", view)
+	}
+	for _, secret := range []string{"env-secret", "text-secret"} {
+		if strings.Contains(view, secret) {
+			t.Fatalf("credential picker leaked %q:\n%s", secret, view)
+		}
+	}
+}
+
+func TestAITabDeleteProviderConfirmAndAudit(t *testing.T) {
+	tab, _, w := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+
+	out, _ := tab.Update(runeKey("d"))
+	tab = out.(*aiTab)
+	if tab.mode != aiModeDeleteProvider {
+		t.Fatalf("d should stage a delete, mode=%v", tab.mode)
+	}
+	if view := tab.View(); !strings.Contains(view, "删除 provider main") {
+		t.Fatalf("confirm modal missing:\n%s", view)
+	}
+	// esc 取消不删除。
+	out, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tab = out.(*aiTab)
+	if tab.providerByAlias("main") == nil {
+		t.Fatal("esc should not delete the provider")
+	}
+
+	out, _ = tab.Update(runeKey("d"))
+	tab = out.(*aiTab)
+	out, cmd := tab.Update(runeKey("y"))
+	tab = flushTab(out, cmd).(*aiTab)
+	if tab.providerByAlias("main") != nil {
+		t.Fatalf("provider still present: %#v", tab.providers)
+	}
+	var sawRemove bool
+	for _, c := range w.calls {
+		if c.target == "provider:main" && c.detail == "remove" && c.success {
+			sawRemove = true
+		}
+	}
+	if !sawRemove {
+		t.Fatalf("delete not audited: %#v", w.calls)
+	}
+}
+
+func TestAITabNotPointedModelChangeNoSwitchManager(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	// 让右栏选中 zcode（不支持）时按 s 也不进入流程。
+	runAITabLoad(t, tab)
+	for i, row := range tab.rows {
+		if !row.Supported {
+			tab.agentIndex = i
+			break
+		}
+	}
+	tab.focusLeft = false
+	tab.Update(runeKey("s"))
+	if tab.flow != aiFlowNone {
+		t.Fatalf("unsupported agent must not start a flow, flow=%v", tab.flow)
 	}
 }
 
@@ -104,127 +565,8 @@ func TestAITabEmptyState(t *testing.T) {
 	}
 }
 
-// driveAITabSwitch 走完 agent→model→confirm 选择流并返回 switch 结果 msg。
-func driveAITabSwitch(t *testing.T, tab *aiTab, agentSteps int) tea.Msg {
-	t.Helper()
-	if _, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")}); cmd != nil {
-		t.Fatal("flow start unexpectedly returned a command")
-	}
-	if tab.flow != aiFlowSelectAgent {
-		t.Fatalf("flow = %v, want selectAgent", tab.flow)
-	}
-	for i := 0; i < agentSteps; i++ {
-		tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	}
-	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if tab.flow != aiFlowSelectModel {
-		t.Fatalf("flow = %v, want selectModel", tab.flow)
-	}
-	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 确认默认选中模型
-	if tab.flow != aiFlowConfirm {
-		t.Fatalf("flow = %v, want confirm", tab.flow)
-	}
-	_, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	if cmd == nil {
-		t.Fatal("confirm did not return switch command")
-	}
-	return cmd()
-}
-
-func TestAITabSwitchSuccess(t *testing.T) {
-	tab, home := newAITestTab(t)
-	runAITabLoad(t, tab)
-
-	msg := driveAITabSwitch(t, tab, 0) // claude-code 是第一个 agent
-	result, ok := msg.(aiSwitchResultMsg)
-	if !ok || result.err != nil {
-		t.Fatalf("switch msg = %#v", msg)
-	}
-	next, cmd := tab.Update(result)
-	tab = next.(*aiTab)
-	if !strings.Contains(tab.notice, "Claude Code → main") {
-		t.Fatalf("notice = %q", tab.notice)
-	}
-	if cmd == nil {
-		t.Fatal("success did not trigger reload")
-	}
-	next, _ = tab.Update(cmd())
-	tab = next.(*aiTab)
-	if !strings.Contains(tab.View(), "claude-code") || !strings.Contains(tab.View(), "main / m1") {
-		t.Fatalf("pointer not refreshed:\n%s", tab.View())
-	}
-
-	// 配置文件真实写回（复用 SwitchManager）。
-	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
-	if err != nil || !strings.Contains(string(raw), "sk-tui-secret") {
-		t.Fatalf("settings.json = %s, %v", raw, err)
-	}
-}
-
-func TestAITabSwitchFailureBanner(t *testing.T) {
-	tab, _ := newAITestTab(t)
-	runAITabLoad(t, tab)
-	// 指针路径挂在普通文件下使保存必败。
-	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tab.mgr.LLMPointer = filepath.Join(blocker, "pointers.json")
-
-	msg := driveAITabSwitch(t, tab, 0)
-	result := msg.(aiSwitchResultMsg)
-	if result.err == nil {
-		t.Fatal("switch unexpectedly succeeded")
-	}
-	_, cmd := tab.Update(result)
-	if cmd == nil {
-		t.Fatal("failure did not produce error banner command")
-	}
-	banner := cmd()
-	if _, ok := banner.(errMsg); !ok {
-		t.Fatalf("banner msg = %#v", banner)
-	}
-}
-
-func TestAITabSwitchCodexGuidance(t *testing.T) {
-	tab, home := newAITestTab(t)
-	runAITabLoad(t, tab)
-
-	msg := driveAITabSwitch(t, tab, 1) // 第二个 agent 是 codex
-	result := msg.(aiSwitchResultMsg)
-	if result.err != nil {
-		t.Fatalf("switch error: %v", result.err)
-	}
-	next, _ := tab.Update(result)
-	tab = next.(*aiTab)
-	if !strings.Contains(tab.notice, "SENV_MAIN_API_KEY") {
-		t.Fatalf("codex guidance missing: %q", tab.notice)
-	}
-	// codex 配置不落密钥。
-	raw, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "sk-tui-secret") {
-		t.Fatal("codex config leaked credential")
-	}
-}
-
-func TestAITabFlowEscape(t *testing.T) {
-	tab, _ := newAITestTab(t)
-	runAITabLoad(t, tab)
-	tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	if !tab.InputMode() {
-		t.Fatal("flow should enable InputMode")
-	}
-	tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if tab.flow != aiFlowNone || tab.InputMode() {
-		t.Fatalf("esc did not cancel flow: %v", tab.flow)
-	}
-}
-
 func TestAITabLoadError(t *testing.T) {
-	tab, _ := newAITestTab(t)
+	tab, _, _ := newAITestTab(t)
 	next, cmd := tab.Update(aiLoadedMsg{err: errors.New("boom")})
 	tab = next.(*aiTab)
 	if cmd != nil || tab.loadErr == "" {
@@ -232,5 +574,28 @@ func TestAITabLoadError(t *testing.T) {
 	}
 	if !strings.Contains(tab.View(), "boom") {
 		t.Fatalf("view missing error:\n%s", tab.View())
+	}
+}
+
+// TestAITabLongValuesDoNotWrap 覆盖长模型集/长 base_url 不折行、不撑高。
+func TestAITabLongValuesDoNotWrap(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	models := make([]string, 0, 30)
+	for i := 0; i < 30; i++ {
+		models = append(models, fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 40)))
+	}
+	if _, err := tab.mgr.LLM.AddProvider(llm.AddProviderOptions{
+		Alias: "wide", BaseURL: "https://api.example.com/a/really/long/base/path",
+		APIKey: "k", Models: models,
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	runAITabLoad(t, tab)
+	tab.SetSize(80, 20)
+	view := tab.View()
+	for i, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Fatalf("line %d width %d > 80: %q", i, w, line)
+		}
 	}
 }

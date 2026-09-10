@@ -5,7 +5,7 @@
 ## Requirements
 
 ### Requirement: 切换 agent 指向
-`senv ai switch <agent> <provider>` SHALL 校验 agent 属于支持的注册表（claude-code、codex、zcode、kimi、pi、opencode）且 provider 档案存在；`--model` 省略时取档案 `default_model`（为空且模型集恰有一个时取该模型，否则报错要求显式指定）；`--model` 显式给出时必须属于档案模型集。校验通过后 SHALL 解密凭据引用并调用该 agent 的适配器写回配置，再更新本机指针。
+`senv ai switch <agent> <provider>` SHALL 校验 agent 属于支持的注册表（claude-code、codex、zcode、kimi、pi、opencode）且 provider 档案存在；`--model` 省略时取档案 `default_model`（为空且模型集恰有一个时取该模型，否则报错要求显式指定）；`--model` 显式给出时必须属于档案模型集。切换前 SHALL 校验档案 `api_shape`（若声明）与目标 agent 协议族的兼容性，不兼容时 MUST 拒绝且不写任何文件。校验通过后 SHALL 解密凭据引用并调用该 agent 的适配器写回配置，再更新本机指针。对已指向同一 provider 的 agent，以新 `--model` 重跑切换 SHALL 仅更换模型，provider 指向与配置中的其它字段保持不变。TUI SHALL 提供等价的「仅换模型」入口。
 
 #### Scenario: 切换成功
 - **WHEN** 用户执行 `senv ai switch claude-code myprovider --model m1` 且档案存在、m1 属于模型集
@@ -26,6 +26,18 @@
 #### Scenario: 模型缺省且无法推断
 - **WHEN** 省略 `--model` 且档案无 default_model、模型集多于一个
 - **THEN** 命令以非 0 退出并要求显式指定 `--model`，不写任何文件
+
+#### Scenario: 接入形态不兼容
+- **WHEN** 档案 `api_shape` 为 `openai-chat` 且用户执行 `senv ai switch claude-code <provider>`
+- **THEN** 命令以非 0 退出，说明形态与 agent 协议族不兼容并给出「改档案形态或换 provider」两个动作，不写任何文件
+
+#### Scenario: 仅更换模型
+- **WHEN** claude-code 当前指向 `myprovider / m1`，用户执行 `senv ai switch claude-code myprovider --model m2`
+- **THEN** 配置与指针的模型变为 m2，provider、接入地址与凭据引用保持不变
+
+#### Scenario: TUI 仅换模型
+- **WHEN** 用户在 AI Tab 对右栏已指向某 provider 的 agent 按 `m` 并选择同档案的另一个模型
+- **THEN** 指针与配置文件中的模型更新，provider 指向不变，成功后刷新指针展示
 
 ### Requirement: 原子写回与失败回滚
 适配器写回 SHALL 保留目标配置中与本功能无关的既有内容，并保持 JSON/TOML 语法有效：本功能 MUST NOT 把值插入多行 scalar、多行数组或错误表块。涉及一个 agent 的多份配置时 SHALL 作为一次事务处理：任一文件失败时，已成功的文件 SHALL 恢复到切换前内容。每次写回 SHALL 使用临时文件加同目录 rename 原子替换，替换前在安全备份中保存原内容；恢复 MUST NOT 覆盖唯一好备份。同一 agent 配置路径的切换 SHALL 串行执行。切换完全成功后 SHALL 清理本功能创建的备份；切换失败且无法恢复时 SHALL 保留可用备份并在错误中说明。
@@ -105,3 +117,34 @@
 #### Scenario: status 无需解锁
 - **WHEN** vault 锁定且用户执行 status
 - **THEN** 正常显示指针状态，不提示口令
+
+### Requirement: 接入地址按协议族写回
+`senv ai switch` SHALL 按目标 agent 的协议族转换档案接入地址后再写配置：Anthropic Messages 族（claude-code）写不带版本段的形态，OpenAI 兼容族（codex/kimi/pi/opencode）写带末段 `/v1` 的形态。转换 SHALL 在写回前完成且幂等：档案接入地址已归一或未归一的结果一致，重复切换不产生配置漂移。转换 MUST 只处理路径末段并保留 query 与 fragment；解析失败或缺少 scheme/host 时 SHALL 原样写回，由既有校验路径报错。命令成功输出 SHALL 包含实际写入的接入地址。本要求 MUST NOT 改变档案在 vault 中的存储值，也 MUST NOT 要求迁移存量档案。
+
+#### Scenario: claude-code 剥离版本段
+- **WHEN** 档案接入地址为 `https://api.example.com/v1` 且执行 `senv ai switch claude-code <provider>`
+- **THEN** `ANTHROPIC_BASE_URL` 写为 `https://api.example.com`，输出显示该实际写入值
+
+#### Scenario: Anthropic 族剥离是无损变换
+- **WHEN** 档案接入地址为 `https://api.example.com/v1` 或 `https://api.example.com`
+- **THEN** claude-code 最终请求的 URL 均为 `https://api.example.com/v1/messages`
+
+#### Scenario: OpenAI 兼容族补版本段
+- **WHEN** 存量档案接入地址为 `https://api.example.com`（无版本段）且执行 `senv ai switch codex <provider>`
+- **THEN** TOML `base_url` 写为 `https://api.example.com/v1`，输出显示该实际写入值
+
+#### Scenario: 带路径前缀的接入地址
+- **WHEN** 档案接入地址为 `https://api.example.com/api/llm/v1` 且执行 `senv ai switch claude-code <provider>`
+- **THEN** 写为 `https://api.example.com/api/llm`，中间路径段不被改动
+
+#### Scenario: query 与 fragment 保留
+- **WHEN** 档案接入地址为 `https://api.example.com/v1?key=abc`
+- **THEN** OpenAI 兼容族写回后 query 仍在，Anthropic 族剥离版本段后 query 仍随 base 保留
+
+#### Scenario: 非 v1 版本段不被猜测
+- **WHEN** 档案接入地址为 `https://api.example.com/v1beta`
+- **THEN** Anthropic 族原样写回，OpenAI 兼容族补为 `https://api.example.com/v1beta/v1`，不做协议探测
+
+#### Scenario: 重复切换幂等
+- **WHEN** 对同一 agent 连续执行两次相同 `switch`
+- **THEN** 第二次写回的接入地址与第一次相同，配置无漂移

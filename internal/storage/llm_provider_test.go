@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -125,5 +126,54 @@ func TestDeleteAndListLLMProviders(t *testing.T) {
 	// Idempotent delete.
 	if err := mgr.DeleteLLMProvider("a"); err != nil {
 		t.Fatalf("idempotent delete: %v", err)
+	}
+}
+
+// TestLLMProviderAPIShape 覆盖 api_shape 的缺省、合法取值、非法取值与向后兼容。
+func TestLLMProviderAPIShape(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+
+	for _, shape := range LLMAPIShapes {
+		alias := "shape-" + shape
+		entry := validProviderEntry(alias)
+		entry.APIShape = shape
+		if err := mgr.SaveLLMProvider(alias, entry, "test-password"); err != nil {
+			t.Fatalf("SaveLLMProvider(%s): %v", shape, err)
+		}
+		got, err := mgr.LoadLLMProvider(alias, "test-password")
+		if err != nil {
+			t.Fatalf("LoadLLMProvider(%s): %v", shape, err)
+		}
+		if got.APIShape != shape {
+			t.Fatalf("APIShape = %q, want %q", got.APIShape, shape)
+		}
+	}
+
+	bad := validProviderEntry("bad")
+	bad.APIShape = "openai"
+	if err := mgr.SaveLLMProvider("bad", bad, "test-password"); err == nil ||
+		!strings.Contains(err.Error(), "api_shape") {
+		t.Fatalf("invalid api_shape error = %v", err)
+	}
+
+	// 向后兼容：存量档案的 JSON 没有该字段，反序列化为空且仍然合法。
+	var legacy LLMProviderEntry
+	raw := `{"alias":"legacy","base_url":"https://api.example.com","credential_ref":"text:llm-keys/legacy","models":["m1"]}`
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy entry: %v", err)
+	}
+	if legacy.APIShape != "" {
+		t.Fatalf("legacy APIShape = %q, want empty", legacy.APIShape)
+	}
+	if err := legacy.ValidateLLMProvider(); err != nil {
+		t.Fatalf("legacy entry rejected: %v", err)
+	}
+	// 空形态也不会被写入 JSON。
+	encoded, err := json.Marshal(validProviderEntry("main"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "api_shape") {
+		t.Fatalf("empty api_shape should be omitted: %s", encoded)
 	}
 }

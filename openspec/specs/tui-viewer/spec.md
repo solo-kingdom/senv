@@ -3,6 +3,7 @@
 ## Purpose
 TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: TUI 启动命令
 
 系统 SHALL 提供 `senv tui` 命令，启动全屏 TUI 界面浏览 env/text/config 数据。启动时 MUST 优先复用有效 session cache（derived key）；仅当无有效 session 时 MUST 提示密码。功能内密码认证 MUST NOT 写入或刷新 session cache。
@@ -29,11 +30,19 @@ TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 
 ### Requirement: Tab 切换
 
-TUI SHALL 提供三个标签页：Env、Text、Config。用户 MUST 能通过 `Tab` 键或数字键 `1`/`2`/`3` 在标签间切换。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
+TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、AI、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
 
 #### Scenario: 切换标签
 - **WHEN** 用户在 Env Tab 按下 `Tab` 键或 `2` 键
 - **THEN** 界面切换到 Text Tab，显示 text 分组与文本块列表
+
+#### Scenario: 数字键直达全部 Tab
+- **WHEN** 7 个 Tab 均已注册，用户按 `6`
+- **THEN** 界面切换到 History Tab
+
+#### Scenario: 越界数字不生效
+- **WHEN** 仅注册 3 个 Tab（git 模式），用户按 `7`
+- **THEN** 当前 Tab 不变，界面不报错
 
 #### Scenario: 保留导航状态
 - **WHEN** 用户从 Env Tab 切换到 Text Tab 再切回 Env Tab
@@ -41,7 +50,7 @@ TUI SHALL 提供三个标签页：Env、Text、Config。用户 MUST 能通过 `T
 
 ### Requirement: Env Tab 浏览与操作
 
-Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分组的环境变量列表。Env Tab MUST 支持完整的环境变量管理操作：浏览、新建、内联编辑、删除、复制、激活/停用分组、新建分组、解引用视图切换、Tab 内过滤。
+Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分组的环境变量列表。Env Tab MUST 支持完整的环境变量管理操作：浏览、新建、内联编辑、重命名 key、删除、复制、激活/停用分组、新建/重命名/删除分组、解引用视图切换、Tab 内过滤。重命名与删除 SHALL 走存储层的原子操作，MUST NOT 以「新建 + 删除」组合实现。`default` 分组 MUST NOT 被重命名或删除。
 
 #### Scenario: 浏览分组的环境变量
 - **WHEN** 用户在 Env Tab 选中左侧某分组
@@ -59,6 +68,22 @@ Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分
 - **WHEN** 用户选中某变量按 `d` 键
 - **THEN** 弹出确认提示，确认后调用 `env.Manager.Delete` 删除，列表刷新
 
+#### Scenario: 重命名环境变量
+- **WHEN** 用户选中某变量按重命名键并输入新 key（不与组内既有 key 冲突）
+- **THEN** 调用存储层 rename 原子改名，值不变，列表刷新且光标停在新 key 上
+
+#### Scenario: 重命名冲突
+- **WHEN** 用户输入的新 key 已存在于当前分组
+- **THEN** 表单内联提示冲突，保持打开且不写入
+
+#### Scenario: 重命名分组
+- **WHEN** 用户在分组栏对非 default 分组触发重命名并输入新名称
+- **THEN** 分组改名且其条目与激活态保持不变
+
+#### Scenario: 删除分组
+- **WHEN** 用户在分组栏对非 default 分组触发删除并确认
+- **THEN** 该分组及其条目被删除，列表刷新；删除激活分组时确认提示 SHALL 额外说明其激活态将被移除
+
 #### Scenario: 激活分组
 - **WHEN** 用户选中左侧未激活的分组按 `a` 键
 - **THEN** 调用 `env.Manager.ActivateGroup`，该分组显示 `●` 标记
@@ -69,7 +94,7 @@ Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分
 
 ### Requirement: Text Tab 浏览与操作
 
-Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/更新时间，不显示内容）。Text Tab MUST 支持浏览、新建（vim）、vim 编辑、删除、复制、导出文件、新建分组、解引用切换、Tab 内过滤。
+Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/更新时间，不显示内容）。Text Tab MUST 支持浏览、新建（vim）、vim 编辑、重命名 key、删除、复制、导出文件、从文件导入、新建/重命名/删除分组、解引用切换、Tab 内过滤。重命名 SHALL 走存储层原子操作。
 
 #### Scenario: 浏览文本块元信息
 - **WHEN** 用户在 Text Tab 选中某分组
@@ -83,9 +108,21 @@ Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/�
 - **WHEN** 用户选中某文本块按 `o` 键并指定路径
 - **THEN** 调用 `text.Manager.GetToFile` 写入指定路径
 
+#### Scenario: 从文件导入文本块
+- **WHEN** 用户触发导入并给出源文件路径与目标 key
+- **THEN** 调用 `text.Manager.SetFromFile` 加密存储，列表刷新
+
+#### Scenario: 重命名文本块
+- **WHEN** 用户对选中文本块触发重命名并输入不冲突的新 key
+- **THEN** 调用存储层 rename 原子改名，内容不变，列表刷新
+
+#### Scenario: 分组重命名与删除
+- **WHEN** 用户在分组栏对某分组触发重命名或删除并确认
+- **THEN** 分别调用 `RenameGroup`/`DeleteGroup`，列表刷新，光标落在有效条目上
+
 ### Requirement: Config Tab 浏览与操作
 
-Config Tab SHALL 采用单栏列表布局（无左侧分组栏），显示所有配置文件的 name、target 路径、更新时间。Config Tab MUST 支持浏览、创建（从文件导入）、vim 编辑、导出到 target、删除、查看详情、Tab 内过滤。
+Config Tab SHALL 采用单栏列表布局（无左侧分组栏），显示所有配置文件的 name、target 路径、更新时间。Config Tab MUST 支持浏览、创建（从文件导入）、vim 编辑、重命名条目、编辑元信息（分组、描述）、导出到 target、删除、查看详情、Tab 内过滤。重命名 SHALL 走存储层原子操作，MUST NOT 改变条目的 target 路径与内容。
 
 #### Scenario: 浏览配置文件列表
 - **WHEN** 用户切换到 Config Tab
@@ -102,6 +139,14 @@ Config Tab SHALL 采用单栏列表布局（无左侧分组栏），显示所有
 #### Scenario: 创建配置（从文件导入）
 - **WHEN** 用户按 `n` 键并依次输入 name、源文件路径、target 路径
 - **THEN** 调用 `config.Manager.Create` 加密导入
+
+#### Scenario: 重命名配置条目
+- **WHEN** 用户对选中配置触发重命名并输入不冲突的新 name
+- **THEN** 调用存储层 rename，target 路径与内容不变，列表刷新
+
+#### Scenario: 编辑配置元信息
+- **WHEN** 用户触发元信息编辑并修改分组或描述
+- **THEN** 调用 `config.Manager.SetMeta` 保存，详情与列表展示更新后的分组与描述
 
 ### Requirement: 敏感值遮蔽
 
@@ -153,7 +198,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: 全局跨类型搜索
 
-TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config 三类数据搜索。搜索 MUST 只匹配 key/name，绝不匹配值。搜索结果 MUST 标识条目类型，并支持跳转定位。
+TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias），绝不匹配值、私钥内容或凭据。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI 结果跳转到对应 Tab 并定位光标）。
 
 #### Scenario: 触发全局搜索
 - **WHEN** 用户按 `S` 键
@@ -163,9 +208,17 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config �
 - **WHEN** 用户输入 `database` 且数据中存在匹配的 env key、text key、config name
 - **THEN** 结果列表显示所有匹配项，每项标注类型（Env/Text/Cfg）、分组（若适用）、key/name，值部分遮蔽（env 显示 `***`，text 显示 size，config 显示 target）
 
+#### Scenario: SSH 与 AI 结果
+- **WHEN** 用户输入某 host alias 或 provider alias 的前缀
+- **THEN** 结果显示对应 SSH host 或 LLM provider 条目，`enter` 后跳转到对应 Tab 并选中该条目
+
 #### Scenario: 搜索不匹配值
 - **WHEN** 用户输入某个仅出现在值中而不在任何 key/name 中的字符串
 - **THEN** 结果列表为空（显示"无匹配"），不返回任何值匹配
+
+#### Scenario: 搜索不返回秘密
+- **WHEN** 用户输入某个仅出现在 SSH 私钥内容或 LLM 凭据中的字符串
+- **THEN** 结果列表为空（显示"无匹配"）
 
 #### Scenario: 跳转定位
 - **WHEN** 用户在搜索结果选中某条按 `enter`
@@ -193,15 +246,23 @@ text/config 的 vim 编辑 MUST 复用现有 `text.Manager.SetViaEditor` 和 `co
 
 ### Requirement: 错误处理与空状态
 
-TUI SHALL 在操作出错时不崩溃，通过底部错误条展示错误信息。空分组/空列表 MUST 显示友好的空状态提示。
+TUI SHALL 在操作出错时不崩溃，并通过统一提示条反馈结果：错误优先于警告，警告优先于成功；成功提示 SHALL 超时自动消失，错误与警告 SHALL 由下一次操作或按键清除。所有 Tab 的空列表/空分组 MUST 显示简体中文空状态提示。面向用户的界面文案 SHALL 统一为简体中文，键位名、命令名与技术标识保留原文。
 
 #### Scenario: 操作出错不崩溃
 - **WHEN** 某 Manager 方法返回错误（如解密失败、key 不存在）
-- **THEN** TUI 底部错误条显示错误信息，当前视图保留，不退出 TUI
+- **THEN** 提示条显示错误信息，当前视图保留，不退出 TUI
+
+#### Scenario: 成功提示自动消失
+- **WHEN** 用户成功执行一次写操作
+- **THEN** 提示条显示成功信息，超时后自动消失，无需按键
 
 #### Scenario: 空分组空状态
 - **WHEN** 用户选中一个没有任何条目的分组
-- **THEN** 列表区域显示空状态提示（如"该分组暂无环境变量"），不显示空白
+- **THEN** 列表区域显示简体中文空状态提示（如"该分组暂无环境变量"），不显示空白
+
+#### Scenario: 空状态覆盖全部 Tab
+- **WHEN** 用户切换到 SSH Tab 且没有任何 host 或 keypair
+- **THEN** 显示空状态提示说明如何创建（如"执行 senv host add 添加后按 r 刷新"），不显示空白面板
 
 #### Scenario: 错误条清除
 - **WHEN** 错误条显示后用户执行下一次操作
@@ -246,3 +307,46 @@ TUI SHALL 以一圈连续的边框字符包裹整个界面（顶、底、左、�
 - **WHEN** 终端尺寸为正常可用尺寸，任意 tab（Env/Text/Config）渲染其内容
 - **THEN** 内容区 SHALL 完全位于外框内部（不跨越左右竖边框、不超出底部边框），切换 tab 时不出现字符错位或滚动条溢出
 
+### Requirement: 键位总览
+
+TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与当前 Tab 的键位，`?` 或 `esc` SHALL 关闭它。文本输入模式（`InputMode`）下 `?` MUST 作为普通字符输入而不触发 overlay。
+
+#### Scenario: 打开键位总览
+- **WHEN** 用户按 `?`
+- **THEN** 弹出 overlay，分「全局」与当前 Tab 两组列出键位与说明
+
+#### Scenario: 输入模式不劫持
+- **WHEN** 用户正在表单/过滤输入框中输入 `?`
+- **THEN** `?` 作为字符进入输入框，不打开 overlay
+
+### Requirement: 面板内容截断与详情
+
+TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与详情行 SHALL 在面板宽度内截断（超长以 `…` 结尾），完整内容 SHALL 通过 `enter` 打开的详情弹层查看。任何面板 MUST NOT 因长值（base_url、模型列表、hostname、路径）而撑高或折行。
+
+#### Scenario: 长值截断
+- **WHEN** provider 的模型列表或 base_url 超过所在面板宽度
+- **THEN** 该行在面板内截断显示，面板高度与行数不变
+
+#### Scenario: 详情弹层看全文
+- **WHEN** 用户在列表上按 `enter`
+- **THEN** 弹出详情层展示未截断的完整字段，`esc` 关闭并回到列表
+
+### Requirement: 同步状态可见性
+
+当自动同步可用（server provider 且未关闭 auto_sync）时，TUI SHALL 在底部常驻显示待推送条数与最近一次同步结果；写操作完成后 SHALL 异步触发 push（沿用 2 秒预算）。退出 TUI 前若仍有待推送条目，TUI SHALL 在界面内给出一次提示。自动同步不可用时 MUST NOT 显示该状态，也不得阻止任何操作。
+
+#### Scenario: 显示待推送状态
+- **WHEN** 用户在 server 模式修改一条 env 且 push 成功
+- **THEN** 底部状态从「N 条待推送」变为已同步状态
+
+#### Scenario: push 失败不丢数据
+- **WHEN** 写操作已本地落盘但 push 失败
+- **THEN** TUI 内显示待推送条数与失败原因，本地数据保持已写入状态
+
+#### Scenario: 退出前提示
+- **WHEN** 用户按 `q` 退出且仍有待推送条目
+- **THEN** 界面先显示一次待推送提示，再退出
+
+#### Scenario: 非 server 模式静默
+- **WHEN** 项目使用 git provider
+- **THEN** 底部不显示同步状态，界面与操作不受影响

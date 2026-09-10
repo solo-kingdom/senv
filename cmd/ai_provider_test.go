@@ -56,7 +56,7 @@ type providerAddFlags struct {
 func setProviderCredentialReader(t *testing.T, value string) {
 	t.Helper()
 	old := providerCredentialReader
-	providerCredentialReader = func(io.Reader, io.Writer) ([]byte, error) {
+	providerCredentialReader = func(_ io.Reader, _ io.Writer, _ bool) ([]byte, error) {
 		return []byte(value), nil
 	}
 	t.Cleanup(func() { providerCredentialReader = old })
@@ -233,5 +233,133 @@ func TestAIProviderAddHTTPRequiresExplicitAllow(t *testing.T) {
 	})
 	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"local"}); err != nil {
 		t.Fatalf("allowed HTTP add: %v", err)
+	}
+}
+
+// setProviderEditFlag 通过 pflag 设置 edit 子命令的 flag，使 Flags().Changed
+// 为 true（直接赋包变量无法触发「显式提供」语义）。
+func setProviderEditFlag(t *testing.T, name, value string) {
+	t.Helper()
+	flag := aiProviderEditCmd.Flags().Lookup(name)
+	if flag == nil {
+		t.Fatalf("edit flag %q not registered", name)
+	}
+	if err := aiProviderEditCmd.Flags().Set(name, value); err != nil {
+		t.Fatalf("set --%s: %v", name, err)
+	}
+	t.Cleanup(func() { flag.Changed = false })
+}
+
+func TestAIProviderEditCLI(t *testing.T) {
+	newAuditTestProject(t)
+	writeAIProviderTestCatalog(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1", "m2"}
+		providerAddDefault = "m1"
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	setProviderEditFlag(t, "api-shape", "anthropic")
+	setProviderEditFlag(t, "base-url", "https://new.example.com")
+	setProviderEditFlag(t, "default-model", "m2")
+	out, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"})
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if !strings.Contains(out, "接入形态：anthropic") {
+		t.Fatalf("output missing effective shape:\n%s", out)
+	}
+	if !strings.Contains(out, "接入地址：https://new.example.com/v1") {
+		t.Fatalf("output missing normalized base URL:\n%s", out)
+	}
+
+	// 别名不可改：edit 不接受第二个位置参数。
+	if err := aiProviderEditCmd.Args(aiProviderEditCmd, []string{"main", "other"}); err == nil {
+		t.Error("edit must reject an alias-change positional arg")
+	}
+
+	// 非法形态被拒且不写入。
+	setProviderEditFlag(t, "api-shape", "openai")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err == nil ||
+		!strings.Contains(err.Error(), "api_shape") {
+		t.Fatalf("invalid api_shape error = %v", err)
+	}
+
+	// 显式传空字符串清除字段。
+	setProviderEditFlag(t, "api-shape", "")
+	out, err = runAIProviderCmd(t, aiProviderEditCmd, []string{"main"})
+	if err != nil {
+		t.Fatalf("edit clear shape: %v", err)
+	}
+	if !strings.Contains(out, "接入形态：（未声明") {
+		t.Fatalf("clear output = %q", out)
+	}
+
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.APIShape != "" {
+		t.Fatalf("APIShape = %q, want cleared", entry.APIShape)
+	}
+	if entry.DefaultModel != "m2" {
+		t.Fatalf("DefaultModel = %q, want m2", entry.DefaultModel)
+	}
+	// show 输出包含接入形态。
+	showOut, err := runAIProviderCmd(t, aiProviderShowCmd, []string{"main"})
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(showOut, "接入形态：-") {
+		t.Fatalf("show output = %q", showOut)
+	}
+}
+
+// TestAIProviderEditStdinFlagRoutesToStdin 覆盖 add/edit 各自 --api-key-stdin
+// 的取凭据路径互不串线（edit 曾误用 add 的 flag）。
+func TestAIProviderEditStdinFlagRoutesToStdin(t *testing.T) {
+	newAuditTestProject(t)
+	writeAIProviderTestCatalog(t)
+	setProviderCredentialReader(t, "sk-initial")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	old := providerCredentialReader
+	providerCredentialReader = func(_ io.Reader, _ io.Writer, fromStdin bool) ([]byte, error) {
+		if !fromStdin {
+			t.Error("edit --api-key-stdin must take the stdin path, not the TTY prompt")
+		}
+		return []byte("sk-rotated"), nil
+	}
+	t.Cleanup(func() { providerCredentialReader = old })
+
+	setProviderEditFlag(t, "api-key-stdin", "true")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err != nil {
+		t.Fatalf("edit rotate: %v", err)
+	}
+	// 轮换后档案仍引用同一自有凭据条目。
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.CredentialRef != llm.OwnedCredentialRef("main") {
+		t.Fatalf("CredentialRef = %q", entry.CredentialRef)
 	}
 }

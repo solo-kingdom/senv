@@ -32,9 +32,12 @@ type auditTab struct {
 	rows      []session.AuditEntry
 	skipped   int
 	filterIdx int
+	// filter 是 'f' 预设之外的自由文本过滤（匹配 event type / target / message），
+	// filtering 为 true 时键盘输入进入过滤器而不是移动光标。
+	filter    string
+	filtering bool
 	cursor    int
 	top       int
-	flash     string
 	loadErr   string
 }
 
@@ -51,10 +54,10 @@ func newAuditTab(source AuditSource) *auditTab {
 func (t *auditTab) Title() string { return "Audit" }
 
 func (t *auditTab) Help() string {
-	return "↑↓/jk move · PgUp/PgDn page · f 切换过滤(" + auditFilterPresets[t.filterIdx].label + ") · r 刷新"
+	return "↑↓/jk 移动 · PgUp/PgDn 翻页 · f 预设过滤(" + auditFilterPresets[t.filterIdx].label + ") · / 文本过滤 · r 刷新"
 }
 
-func (t *auditTab) InputMode() bool { return false }
+func (t *auditTab) InputMode() bool { return t.filtering }
 
 func (t *auditTab) Init() tea.Cmd {
 	return t.load()
@@ -83,7 +86,37 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case tea.KeyMsg:
+		// Free-text filter input owns every key while active (mirrors the env
+		// tab filter: live match, esc clears, enter keeps).
+		if t.filtering {
+			switch msg.String() {
+			case "esc":
+				t.filter = ""
+				t.filtering = false
+				t.clampCursor()
+				return t, nil
+			case "enter":
+				t.filtering = false
+				return t, nil
+			case "backspace":
+				if r := []rune(t.filter); len(r) > 0 {
+					t.filter = string(r[:len(r)-1])
+				}
+				t.clampCursor()
+				return t, nil
+			}
+			if isPrintable(msg) {
+				t.filter += msg.String()
+				t.clampCursor()
+			}
+			return t, nil
+		}
+
 		switch msg.String() {
+		case "/":
+			t.filtering = true
+			t.clampCursor()
+			return t, nil
 		case "up", "k":
 			if t.cursor > 0 {
 				t.cursor--
@@ -112,13 +145,24 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 func (t *auditTab) filtered() []session.AuditEntry {
 	match := auditFilterPresets[t.filterIdx].match
+	needle := strings.ToLower(strings.TrimSpace(t.filter))
 	out := make([]session.AuditEntry, 0, len(t.rows))
 	for _, e := range t.rows {
-		if match(e) {
-			out = append(out, e)
+		if !match(e) {
+			continue
 		}
+		if needle != "" && !auditEntryMatches(e, needle) {
+			continue
+		}
+		out = append(out, e)
 	}
 	return out
+}
+
+// auditEntryMatches 只在非敏感字段（类型、目标、详情）上做大小写不敏感匹配。
+func auditEntryMatches(e session.AuditEntry, needle string) bool {
+	haystack := strings.ToLower(string(e.EventType) + "\n" + e.Target + "\n" + e.Message)
+	return strings.Contains(haystack, needle)
 }
 
 func (t *auditTab) pageSize() int {
@@ -164,12 +208,19 @@ func (t *auditTab) View() string {
 	}
 	rows := t.filtered()
 	if len(rows) == 0 {
+		if t.filter != "" {
+			return paneStyle.Render(emptyStateStyle.Render("（没有匹配 /" + t.filter + " 的审计事件）"))
+		}
 		return paneStyle.Render(emptyStateStyle.Render("（暂无审计事件）"))
 	}
 
 	var b strings.Builder
+	filterLabel := auditFilterPresets[t.filterIdx].label
+	if t.filter != "" {
+		filterLabel += " + /" + t.filter
+	}
 	b.WriteString(fmt.Sprintf("本机审计事件（过滤: %s，共 %d 条，时间新到旧）\n\n",
-		auditFilterPresets[t.filterIdx].label, len(rows)))
+		filterLabel, len(rows)))
 	page := t.pageSize()
 	end := t.top + page
 	if end > len(rows) {
@@ -193,6 +244,9 @@ func (t *auditTab) View() string {
 	}
 	if t.skipped > 0 {
 		b.WriteString(fmt.Sprintf("\n⚠ 跳过 %d 行无法解析的记录\n", t.skipped))
+	}
+	if t.filtering {
+		b.WriteString("\n/" + t.filter + "_（enter 确认 · esc 清除）\n")
 	}
 	return paneStyle.Render(b.String())
 }

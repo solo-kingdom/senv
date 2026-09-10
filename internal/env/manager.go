@@ -450,3 +450,182 @@ type GroupInfo struct {
 	VarCount  int
 	IsDefault bool
 }
+
+// RenameKey atomically renames an environment variable inside its group. The
+// value, creation time and file mode are preserved; the group must already
+// exist and the destination key must be free.
+func (m *Manager) RenameKey(group, oldKey, newKey string) error {
+	if err := validateIdentity(group, oldKey); err != nil {
+		return err
+	}
+	if err := validateIdentity(group, newKey); err != nil {
+		return err
+	}
+	if oldKey == newKey {
+		return nil
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameKey(group, oldKey, newKey) })
+	}
+	envGroup, err := m.loadEnvGroup(group)
+	if err != nil {
+		return fmt.Errorf("failed to load group %s: %w", group, err)
+	}
+	if _, ok := envGroup.Variables[oldKey]; !ok {
+		return fmt.Errorf("variable %s not found in group %s", oldKey, group)
+	}
+	if _, ok := envGroup.Variables[newKey]; ok {
+		return fmt.Errorf("variable %s already exists in group %s", newKey, group)
+	}
+	return m.storage.RenameEnvVar(group, oldKey, newKey)
+}
+
+// RenameGroup renames a non-default group. Its variables and activation state
+// are preserved; the group metadata inside the moved directory is rewritten so
+// the group stays loadable under its new name.
+func (m *Manager) RenameGroup(oldName, newName string) error {
+	if err := validateGroup(oldName); err != nil {
+		return err
+	}
+	if err := validateGroup(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return nil
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameGroup(oldName, newName) })
+	}
+	settings, err := m.storage.LoadSettings()
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+	if oldName == settings.DefaultGroup {
+		return fmt.Errorf("cannot rename default group")
+	}
+	groups, err := m.storage.ListEnvGroups()
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+	found := false
+	for _, g := range groups {
+		if g == newName {
+			return fmt.Errorf("group %s already exists", newName)
+		}
+		if g == oldName {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("group %s does not exist", oldName)
+	}
+
+	// Loading first migrates a legacy single-blob group into the per-variable
+	// format, so the directory rename below moves every variable.
+	envGroup, err := m.loadEnvGroup(oldName)
+	if err != nil {
+		return fmt.Errorf("failed to load group %s: %w", oldName, err)
+	}
+	if err := m.storage.RenameEnvGroupDir(oldName, newName); err != nil {
+		return err
+	}
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		_ = m.storage.RenameEnvGroupDir(newName, oldName)
+		return err
+	}
+	meta := &storage.EnvGroupMeta{Name: newName, CreatedAt: envGroup.CreatedAt}
+	if err := m.storage.SaveEnvGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
+		_ = m.storage.RenameEnvGroupDir(newName, oldName)
+		return fmt.Errorf("failed to rewrite group metadata: %w", err)
+	}
+
+	// Preserve the activation state across the rename.
+	updated := make([]string, 0, len(settings.ActiveGroups))
+	changed := false
+	for _, g := range settings.ActiveGroups {
+		if g == oldName {
+			updated = append(updated, newName)
+			changed = true
+			continue
+		}
+		updated = append(updated, g)
+	}
+	if changed {
+		settings.ActiveGroups = updated
+		settings.UpdatedAt = time.Now().Format(time.RFC3339)
+		if err := m.storage.SaveSettings(settings); err != nil {
+			// Roll the metadata and directory back so activation names stay valid.
+			_ = m.storage.SaveEnvGroupMetaWithKey(newName, &storage.EnvGroupMeta{Name: oldName, CreatedAt: envGroup.CreatedAt}, cryptoKey)
+			_ = m.storage.RenameEnvGroupDir(newName, oldName)
+			return fmt.Errorf("failed to update active groups: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteGroup deletes a group together with all of its variables. The default
+// group can never be deleted. Deleting a group that is currently active
+// changes the exported environment, so callers must pass allowActive=true after
+// an explicit confirmation; the active set is updated in the same locked
+// mutation.
+func (m *Manager) DeleteGroup(name string, allowActive bool) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.DeleteGroup(name, allowActive) })
+	}
+	settings, err := m.storage.LoadSettings()
+	if err != nil {
+		return fmt.Errorf("failed to load settings: %w", err)
+	}
+	if name == settings.DefaultGroup {
+		return fmt.Errorf("cannot delete default group")
+	}
+	groups, err := m.storage.ListEnvGroups()
+	if err != nil {
+		return fmt.Errorf("failed to list groups: %w", err)
+	}
+	found := false
+	for _, g := range groups {
+		if g == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("group %s does not exist", name)
+	}
+
+	isActive := false
+	remaining := make([]string, 0, len(settings.ActiveGroups))
+	for _, g := range settings.ActiveGroups {
+		if g == name {
+			isActive = true
+			continue
+		}
+		remaining = append(remaining, g)
+	}
+	if isActive && !allowActive {
+		return fmt.Errorf("group %s is active; deleting it removes its variables from the exported environment", name)
+	}
+
+	// Deactivate first: a stale active group name would make later exports fail,
+	// while a group that survived a failed delete is merely inactive.
+	if isActive {
+		settings.ActiveGroups = remaining
+		settings.UpdatedAt = time.Now().Format(time.RFC3339)
+		if err := m.storage.SaveSettings(settings); err != nil {
+			return fmt.Errorf("failed to update active groups: %w", err)
+		}
+	}
+	if err := m.storage.DeleteEnvGroup(name); err != nil {
+		if isActive {
+			settings.ActiveGroups = append(remaining, name)
+			_ = m.storage.SaveSettings(settings)
+		}
+		return err
+	}
+	return nil
+}

@@ -13,9 +13,9 @@
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config，敏感值默认遮蔽防肩窥
-- ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 浏览与 MCP 只读查询
+- ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
-- ✅ **LLM Provider 管理** - `senv ai provider add/list/show/remove` 加密保存 AI 服务档案，凭据存 vault、模型集自动从 models.dev 目录装配
+- ✅ **LLM Provider 管理** - `senv ai provider add/edit/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配
 
 ## 安装
 
@@ -263,6 +263,9 @@ senv host edit web        # 使用 $VISUAL/$EDITOR 编辑结构化字段与 extr
 senv keypair delete web-key
 senv host delete web
 
+# 重命名 keypair：同一次 mutation 内原子改写所有引用它的 host identityKey
+senv keypair rename web-key prod-key
+
 # 生成 OpenSSH config 片段；--host web 可过滤
 senv host export >> ~/.ssh/config.d/senv
 
@@ -276,10 +279,11 @@ senv keypair materialize web-key
 - `--attr` / host `extra` 是有意的 OpenSSH 直传能力，会原样写入导出片段。不要把不可信文本放进值；注意 `LocalCommand` 等关键字的副作用。
 - 导出的片段可通过 `Include ~/.ssh/config.d/senv` 接入 `~/.ssh/config`。
 - 被引用 keypair 默认拒绝删除；`--force` 会清空 host 的 `identityKey` 后删除 vault 记录。
+- `senv keypair rename <old> <new>` 会在同一个 vault mutation 内改写引用它的 host `identityKey`；目标名已存在时拒绝且不做任何写入。
 
 ### 9. TUI 模式（全屏界面）
 
-通过 `senv tui` 启动全屏终端界面，在一个界面内浏览、搜索和编辑 env/text/config，浏览 SSH host/keypair 元数据，以及浏览 LLM provider 档案并切换各 coding agent 的指向。
+通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host/keypair（导入、重命名、删除、materialize、导出 OpenSSH 片段），以及浏览 LLM provider 档案并切换各 coding agent 的指向。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -291,29 +295,50 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 | 按键 | 作用 |
 | --- | --- |
-| `Tab` / 数字键 | 切换 Env / Text / Config / SSH / AI 标签（SSH 仅有注入时显示，AI 仅有 vault 解锁时显示；导航状态保留） |
+| `Tab` / `Shift+Tab` | 循环切换标签 |
+| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略；7 Tab 时 `6`=History、`7`=Audit） |
 | `↑` `↓` / `j` `k` | 列表导航 |
-| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text Tab） |
-| `enter` | 查看详情（Config）/ 解开当前 env 明文 |
+| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / AI Tab） |
+| `enter` | 打开详情弹层（Config / SSH / AI）／解开当前 env 明文 |
 | `v` | 单条切换当前 env 值明文/遮蔽（光标移开自动重新遮蔽） |
-| `e` | 编辑（env=内联输入框，text/config=vim） |
-| `n` | 新建条目 |
-| `d` | 删除（需确认） |
+| `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，AI=provider 表单） |
+| `n` | 新建条目（SSH 主机栏=新建 host，keypair 栏=导入 keypair；AI=新建 provider） |
+| `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；SSH 被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
+| `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config，default 分组不可改名） |
+| `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；SSH keypair 栏：materialize 落盘（确认后写到 `~/.ssh/senv/<name>`，0600） |
+| `R` | SSH keypair 栏：重命名 keypair（同一次 mutation 内联动 host `identityKey`） |
+| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，keypair 栏=全部），先预览，`w` 后再填目标文件写入 |
 | `a` / `x` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
 | `+` | 新建分组（Env / Text Tab） |
+| `i` | 从文件导入（Text=文本块，写 `group`/`key`/源文件路径；SSH keypair 栏=导入 keypair 名称 + 私钥路径） |
+| `i` / `u` | 安装/卸载 config（`I`/`U` 为批量，需在计划页确认） |
 | `D` | 切换解引用视图（Env Tab；Text 列表仅元数据） |
 | `y` | 复制值到剪贴板 |
 | `o` | 导出 text 到文件 |
-| `/` | 当前 Tab 内过滤（仅匹配 key/name，忽略大小写） |
-| `s` | AI Tab：对选中 provider 发起切换（选 agent → 选模型 → 确认；codex 凭据走环境变量，不写入配置） |
-| `S` | 全局跨类型搜索 overlay（只搜 key/name，绝不搜值） |
+| `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
+| `f` | Audit Tab：循环预设过滤（全部 / 操作 / 会话） |
+| `s` | AI Tab：以左栏选中的 provider 对右栏选中的 agent 切换（选模型 → 确认；codex 凭据走环境变量，不写入配置） |
+| `m` | AI Tab：对右栏已指向某 provider 的 agent 仅更换模型（provider 不变）；未指向时提示先按 `s` |
+| `r` | 刷新当前 Tab（SSH / AI / Audit / History；Env/Text/Config 中是重命名） |
+| `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/AI，只匹配标识（key/name、host alias/hostname、provider alias），绝不匹配值 |
+| `?` | 键位总览 overlay（全局键 + 当前 Tab 键位） |
 | `esc` | 关闭 overlay / 取消操作 |
-| `q` | 退出 TUI |
+| `q` | 退出 TUI（仍有待推送时会先提示一次，再按一次才退出） |
+
+SSH Tab 把 host 与 keypair 作为两栏：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、tags，`extra` 走 `$EDITOR`），`i/R/d/m` 管理 keypair。host 列表内联显示所用 keypair 名称与指纹摘要；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
+
+AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换模型）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
+
+重命名与分组管理走存储层的原子重命名（一次 `renameat`，不是「新建 + 删除」）：值/内容、权限与时间戳原样保留，重命名冲突在表单内联报错且不写入。多字段编辑（重命名、元信息、分组名）统一走可复用表单：`tab`/`↑↓` 切换字段、`enter` 提交、`esc` 取消（无副作用），校验失败保持表单打开且不丢已填内容；`$EDITOR` 闭环仍用于多行/自由属性字段。
+
+面板内容一律在宽度内截断（超长以 `…` 结尾，长 `base_url`/模型列表/路径不会折行），完整内容按 `enter` 在详情弹层查看。所有 Tab 的操作结果统一走底部提示条：错误 > 警告 > 成功，成功提示超时自动消失。
+
+TUI 内的写操作（env/text/config/SSH/AI）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态。
 
 #### 安全设计
 
 - **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH Tab 只显示指纹和元数据，不加载或渲染 private key。
-- **搜索不泄漏**：全局搜索（`S`）与 Tab 内过滤（`/`）**只匹配 key/name，绝不匹配值**，避免结果列表批量暴露秘密。
+- **搜索不泄漏**：全局搜索（`S`，含 SSH host alias/hostname 与 provider alias）与 Tab 内过滤（`/`）**只匹配标识字段，绝不匹配值、私钥内容或凭据引用**，避免结果列表批量暴露秘密。
 - **vim 闭环复用**：text/config 的编辑复用现有「解密 → 临时文件(600) → 编辑 → 重新加密 → 删除临时文件」流程，无新攻击面。
 
 > 注：TUI 内不提供 `env export`（其服务于 shell 启动注入 `eval $(...)`，TUI 作为子进程无法反向 eval 父 shell）。export 请继续使用命令行。
@@ -538,9 +563,24 @@ senv ai provider add local \
 
 > `senv ai provider add` 不支持 `--api-key`；请使用 TTY prompt、`--api-key-stdin` 或 `--key-ref`。
 
+```bash
+# 就地编辑（别名不可改；只改传入的字段，省略的保持原值）
+senv ai provider edit acme --base-url https://new.acme.com/v1 --default-model m2
+
+# 声明接口形态：留空表示不声明，切换时按目标 agent 协议族推断
+senv ai provider edit acme --api-shape anthropic
+senv ai provider edit acme --api-shape ""     # 清除该字段，回到推断
+
+# 轮换自有凭据（TTY 提示；脚本里用 --api-key-stdin），或改走外部引用
+senv ai provider edit acme --rotate-key
+senv ai provider edit acme --key-ref env:llm/ACME_KEY
+```
+
+> `--api-shape` 声明后成为 `senv ai switch` 的兼容判据：形态与目标 agent 协议族不匹配时拒绝写入，并提示「改档案形态或换 provider」。合法取值：`openai-chat`、`openai-responses`、`anthropic`。
+
 ```
 senv init                          初始化项目
-senv tui                           启动全屏 TUI（浏览/搜索/编辑 env·text·config）
+senv tui                           启动全屏 TUI（浏览/搜索/编辑 env·text·config·ssh）
 senv env get <key|group:key> [-d]    获取环境变量（-d 解引用）
 senv env set <key|group:key> <value> 设置环境变量
 senv env delete <key|group:key>      删除环境变量
@@ -566,6 +606,7 @@ senv config get <name>             查看配置文件信息
 senv config delete <name>          删除配置文件
 senv keypair import <name> --file <path> [--force]  导入既有 SSH private key
 senv keypair list                  列出 SSH keypair 指纹/元数据
+senv keypair rename <old> <new>    重命名 keypair 并联动 host identityKey
 senv keypair materialize <name> [--force]  解密落盘到 ~/.ssh/senv/<name>
 senv keypair delete <name> [--force]       删除 keypair（被引用默认拒绝）
 senv host add <alias> [flags]      新建 SSH host 档案并可选关联 keypair
@@ -574,6 +615,8 @@ senv host edit <alias>             用编辑器修改 SSH host 档案
 senv host list                     列出 SSH host 档案
 senv host delete <alias>           删除 SSH host 档案
 senv host export [--host alias]    渲染 OpenSSH config 片段
+senv ai provider add <alias> [flags]      保存 LLM Provider 档案（凭据走 TTY/--api-key-stdin/--key-ref）
+senv ai provider edit <alias> [flags]     就地编辑档案（别名不可改；--api-shape 声明/清除接口形态）
 senv sync                          同步 git/server provider（server 冲突时进入 TTY 解决器）
 senv sync --no-interactive         输出冲突脱敏摘要，不进入交互 UI
 senv sync --accept-remote          server 冲突时采用远端

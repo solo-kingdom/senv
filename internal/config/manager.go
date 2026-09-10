@@ -557,3 +557,21 @@ func ResolveTargetPath(raw string) (string, error) {
 	}
 	return path, nil
 }
+
+// Rename renames a config entry (its name and index key). The target path,
+// group, description and stored contents are preserved.
+func (m *Manager) Rename(oldName, newName string) error {
+	if err := validateConfigName(oldName); err != nil {
+		return err
+	}
+	if err := validateConfigName(newName); err != nil {
+		return err
+	}
+	if oldName == newName {
+		return nil
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.Rename(oldName, newName) })
+	}
+	return m.storage.RenameConfigFile(oldName, newName)
+}

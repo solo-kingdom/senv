@@ -85,3 +85,52 @@ func TestAuditTabRegisteredOnlyWithSource(t *testing.T) {
 		t.Fatalf("tabs with audit source = %d, want 4", got)
 	}
 }
+
+func TestAuditTabFreeTextFilter(t *testing.T) {
+	src := &fakeAuditSource{rows: sampleAuditRows()}
+	var tab Tab = newAuditTab(src)
+	tab.SetSize(80, 20)
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+
+	key := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+	tab, _ = tab.Update(key("/"))
+	if !tab.InputMode() {
+		t.Fatal("expected the audit tab to be in filter input mode after /")
+	}
+	for _, ch := range []string{"d", "e", "p", "l", "o", "y"} {
+		tab, _ = tab.Update(key(ch))
+	}
+	view := tab.View()
+	if !strings.Contains(view, "op_env") || strings.Contains(view, "auth_failure") {
+		t.Errorf("text filter should keep only matching targets, got %q", view)
+	}
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.InputMode() {
+		t.Error("enter should leave filter input mode")
+	}
+	// Filter stays applied after enter.
+	if view := tab.View(); strings.Contains(view, "auth_failure") {
+		t.Errorf("filter should persist after enter, got %q", view)
+	}
+
+	// esc clears the text filter and restores every row.
+	tab, _ = tab.Update(key("/"))
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if view := tab.View(); !strings.Contains(view, "auth_failure") {
+		t.Errorf("esc should clear the text filter, got %q", view)
+	}
+}
+
+func TestAuditTabFreeTextFilterNoMatch(t *testing.T) {
+	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows()})
+	tab.SetSize(80, 20)
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	for _, ch := range []string{"z", "z", "z"} {
+		tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
+	}
+	if view := tab.View(); !strings.Contains(view, "没有匹配") {
+		t.Errorf("view should show a no-match state, got %q", view)
+	}
+}

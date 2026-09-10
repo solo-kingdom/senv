@@ -57,6 +57,11 @@ var (
 			Padding(0, 1).
 			Foreground(lipgloss.Color(colorMuted))
 
+	// syncBadgeStyle renders the persistent sync status on the right of the
+	// bottom bar (待推送条数 / 最近同步时间).
+	syncBadgeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colorAccent))
+
 	// errorBarStyle renders error messages at the bottom.
 	errorBarStyle = lipgloss.NewStyle().
 			Padding(0, 1).
@@ -102,6 +107,8 @@ var (
 		typeEnv:    lipgloss.NewStyle().Foreground(lipgloss.Color("39")),  // blue
 		typeText:   lipgloss.NewStyle().Foreground(lipgloss.Color("48")),  // green
 		typeConfig: lipgloss.NewStyle().Foreground(lipgloss.Color("215")), // orange
+		typeSSH:    lipgloss.NewStyle().Foreground(lipgloss.Color("141")), // violet
+		typeAI:     lipgloss.NewStyle().Foreground(lipgloss.Color("213")), // pink
 	}
 
 	// emptyStateStyle renders empty-state hints.

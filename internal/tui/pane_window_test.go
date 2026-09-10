@@ -133,7 +133,7 @@ func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
 	if !contains(view, "Groups") {
 		t.Fatalf("group sidebar missing when a prompt is open:\n%s", view)
 	}
-	if !contains(view, "Filter") {
+	if !contains(view, "过滤") {
 		t.Fatalf("filter prompt missing:\n%s", view)
 	}
 }
@@ -161,7 +161,7 @@ func TestFramedModalDoesNotOverflowOuterFrame(t *testing.T) {
 	if !strings.Contains(out, "Groups") {
 		t.Error("group sidebar missing from framed view with a prompt open")
 	}
-	if !strings.Contains(out, "Delete") {
+	if !strings.Contains(out, "删除") {
 		t.Error("delete prompt missing from framed view")
 	}
 }

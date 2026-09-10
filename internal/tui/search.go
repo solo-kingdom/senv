@@ -14,6 +14,8 @@ const (
 	typeEnv    = "Env"
 	typeText   = "Text"
 	typeConfig = "Cfg"
+	typeSSH    = "SSH"
+	typeAI     = "AI"
 )
 
 // searchTab is the global cross-type search overlay. It gathers all keys/names
@@ -37,6 +39,17 @@ type searchResult struct {
 	group      string // empty for config
 	key        string // key or config name
 	preview    string
+	// extra holds additional *identifier* text that may be matched (e.g. an SSH
+	// hostname). It must never carry values, key material or credentials.
+	extra string
+}
+
+// matchable returns the identifier text this result may be matched against.
+func (r searchResult) matchable() string {
+	if r.extra == "" {
+		return r.key
+	}
+	return r.key + " " + r.extra
 }
 
 func newSearchTab(mgr Managers) *searchTab {
@@ -46,7 +59,7 @@ func newSearchTab(mgr Managers) *searchTab {
 func (s *searchTab) Title() string { return "Search" }
 
 func (s *searchTab) Help() string {
-	return "type to search keys/names · ↑↓ select · enter jump · esc close"
+	return "输入以搜索 key/名称 · ↑↓ 选择 · enter 跳转 · esc 关闭"
 }
 
 // InputMode is always true for the search overlay: it captures all keys.
@@ -122,6 +135,30 @@ func (s *searchTab) gather() tea.Cmd {
 				}
 			}
 		}
+		// SSH: host aliases and hostnames are identifiers; keypair material is
+		// never loaded by this path (ListHosts returns metadata only).
+		if mgr.SSH != nil {
+			if hosts, err := mgr.SSH.ListHosts(); err == nil {
+				for _, h := range hosts {
+					all = append(all, searchResult{
+						resultType: typeSSH, key: h.Alias, extra: h.Hostname,
+						preview: sshPreview(h.User, h.Hostname, h.Port),
+					})
+				}
+			}
+		}
+		// AI: provider aliases only. Credentials live in the vault and are
+		// referenced by name, so they are structurally out of reach here.
+		if mgr.LLM != nil {
+			if providers, err := mgr.LLM.ListProviders(); err == nil {
+				for _, p := range providers {
+					all = append(all, searchResult{
+						resultType: typeAI, key: p.Alias,
+						preview: fmt.Sprintf("%d models", len(p.Models)),
+					})
+				}
+			}
+		}
 		sort.Slice(all, func(i, j int) bool {
 			if all[i].resultType != all[j].resultType {
 				return all[i].resultType < all[j].resultType
@@ -181,7 +218,7 @@ func (s *searchTab) refilter() {
 	} else {
 		out := make([]searchResult, 0, len(s.gathered))
 		for _, r := range s.gathered {
-			if matchKey(r.key, s.input) {
+			if matchKey(r.matchable(), s.input) {
 				out = append(out, r)
 			}
 		}
@@ -199,7 +236,7 @@ func (s *searchTab) View() string {
 	parts := []string{header}
 	if len(s.results) == 0 {
 		parts = append(parts, emptyStateStyle.Render(
-			"no matches"+emptyHint(s.input)))
+			"无匹配"+emptyHint(s.input)))
 	} else {
 		for i, r := range s.results {
 			badge := typeBadge(r.resultType)
@@ -220,7 +257,18 @@ func emptyHint(input string) string {
 	if input == "" {
 		return ""
 	}
-	return " (input only appears in values?)"
+	return "（输入只出现在值里？）"
+}
+
+// sshPreview renders the non-sensitive connection summary shown for a host hit.
+func sshPreview(user, hostname string, port int) string {
+	if user != "" {
+		hostname = user + "@" + hostname
+	}
+	if port != 0 {
+		hostname += fmt.Sprintf(":%d", port)
+	}
+	return hostname
 }
 
 // typeBadge renders a colored type label.

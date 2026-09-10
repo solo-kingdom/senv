@@ -1,0 +1,94 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// detailOverlay shows the full text of a selected entry. Panes truncate their
+// rows so a long value can never widen or wrap them; `enter` opens this overlay
+// to read the whole thing (and to scroll it).
+type detailOverlay struct {
+	title         string
+	lines         []string
+	top           int
+	width, height int
+}
+
+// detailCloseMsg asks the owning tab to close the overlay.
+type detailCloseMsg struct{}
+
+func newDetailOverlay(title string, lines []string) *detailOverlay {
+	return &detailOverlay{title: title, lines: lines}
+}
+
+func (d *detailOverlay) SetSize(w, h int) { d.width, d.height = w, h }
+
+// Update scrolls the overlay; `esc`/`enter`/`q` close it.
+func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return d, nil
+	}
+	switch key.String() {
+	case "esc", "enter", "q":
+		return d, func() tea.Msg { return detailCloseMsg{} }
+	case "up", "k":
+		if d.top > 0 {
+			d.top--
+		}
+	case "down", "j":
+		if d.top < len(d.lines)-1 {
+			d.top++
+		}
+	case "pgup":
+		d.top -= d.pageSize()
+		if d.top < 0 {
+			d.top = 0
+		}
+	case "pgdown":
+		d.top += d.pageSize()
+		if d.top > len(d.lines)-1 {
+			d.top = max(len(d.lines)-1, 0)
+		}
+	}
+	return d, nil
+}
+
+// pageSize is the number of content rows that fit in the overlay body.
+func (d *detailOverlay) pageSize() int {
+	if d.height <= 4 {
+		return len(d.lines)
+	}
+	return d.height - 4
+}
+
+func (d *detailOverlay) View() string {
+	page := d.pageSize()
+	start := clamp(d.top, 0, max(len(d.lines)-1, 0))
+	end := start + page
+	if end > len(d.lines) {
+		end = len(d.lines)
+	}
+	title := d.title
+	if len(d.lines) > page && page > 0 {
+		title = fmt.Sprintf("%s  %d–%d/%d", d.title, start+1, end, len(d.lines))
+	}
+	body := ""
+	if end > start {
+		body = strings.Join(d.lines[start:end], "\n")
+	}
+	box := searchOverlayStyle
+	if d.width > 8 {
+		// Bound the box so long values wrap inside it instead of pushing the
+		// frame wider; clipLines keeps the total height inside the content area.
+		box = box.Width(d.width - 4)
+	}
+	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Bold(true).Render(title), "", body, "",
+		statusBarStyle.Render("↑↓/PgUp/PgDn 滚动 · esc 关闭")))
+	return clipLines(out, d.height)
+}

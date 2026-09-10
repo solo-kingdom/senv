@@ -81,6 +81,10 @@ _Avoid_: provider（单独使用，易与同步后端混淆）、服务商
 LLM Provider 记录的统一接入点，按 OpenAI 兼容形态保存：路径以 `/v1` 结尾。它不是任何单个 Coding Agent 最终请求的地址。
 _Avoid_: 端点（指具体 API 路径时）、服务地址
 
+**接入形态（API Shape）**:
+LLM Provider 可选声明的接口方言（`openai-chat` / `openai-responses` / `anthropic`）；缺省时不推断，写配置时按 Coding Agent 的协议族归一接入地址。
+_Avoid_: 接口类型（泛）、协议（指 agent 侧协议族时）
+
 **协议族**:
 Coding Agent 使用的 API 方言，分 Anthropic Messages 与 OpenAI 兼容两族；同一份接入地址写进不同族 agent 的配置时形态不同。
 _Avoid_: 兼容性处理（实现意味）、适配（泛指时）

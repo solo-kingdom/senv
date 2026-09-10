@@ -40,6 +40,23 @@ type AutoPushOutcome struct {
 	Pushed int
 }
 
+// LocalSyncSnapshot 汇总本地同步状态（零网络）：待推送条目数与最近一次
+// pull 时间。供 TUI 底部常驻状态条展示，不触发任何网络请求。
+func (p *ServerProvider) LocalSyncSnapshot() (dirty int, lastPull time.Time, err error) {
+	st, err := p.cache.loadState()
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	current, err := p.cache.collect()
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	if st.LastPullAt > 0 {
+		lastPull = time.Unix(st.LastPullAt, 0)
+	}
+	return len(p.collectDirty(st, current)), lastPull, nil
+}
+
 // AutoPull 读命令前的 best-effort 增量拉取：锁忙或节流窗口内跳过（零网络），
 // 拉取有 2s 超时预算，任何错误由调用方决定是否静默。
 // refresh=true 绕过节流窗口强制拉取。

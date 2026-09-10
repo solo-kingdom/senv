@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -48,16 +50,22 @@ keybinding reference.`,
 			}
 		}
 
+		auditMgr := session.NewManager(getConfigPath(), getDataPath())
+		defer auditMgr.Close()
+
 		m := tui.New(tui.Managers{
-			Env:        envMgr,
-			Text:       textMgr,
-			Config:     configMgr,
-			SSH:        sshMgr,
-			LLM:        llmMgr,
-			LLMPointer: llmPointer,
-			LLMHome:    llmHome,
-			History:    buildTUIHistorySource(),
-			Audit:      tuiAuditSource{},
+			Env:         envMgr,
+			Text:        textMgr,
+			Config:      configMgr,
+			SSH:         sshMgr,
+			LLM:         llmMgr,
+			LLMPointer:  llmPointer,
+			LLMHome:     llmHome,
+			LLMCatalog:  catalogCachePath(),
+			History:     buildTUIHistorySource(),
+			Audit:       tuiAuditSource{},
+			AuditWriter: newTUIAuditWriter(auditMgr),
+			Sync:        newTUISyncSource(),
 		})
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
@@ -88,6 +96,77 @@ func (s *tuiHistorySource) DecryptHistory(v provider.HistoryVersion) (string, er
 
 func (s *tuiHistorySource) Restore(ctx context.Context, v provider.HistoryVersion) error {
 	return s.sp.RestoreEntry(ctx, v.Kind, v.Grp, v.Key, v.Ciphertext)
+}
+
+// tuiSyncSource 把 server provider 的自动同步适配为 TUI 底部常驻状态与写后
+// 推送。只在 server 模式且未关闭 auto_sync 时构造；其余情况返回 nil，TUI
+// 不显示同步状态也不触发 push。
+type tuiSyncSource struct {
+	sp *provider.ServerProvider
+
+	mu       sync.Mutex
+	lastPush time.Time // 最近一次真正执行了网络 push 的时间
+}
+
+func newTUISyncSource() tui.SyncSource {
+	sp, err := getAutoSyncServerProvider()
+	if err != nil || sp == nil {
+		return nil
+	}
+	return &tuiSyncSource{sp: sp}
+}
+
+// Status 只读本地状态：待推送条目数与最近一次 pull 时间（零网络）。
+func (s *tuiSyncSource) Status() tui.SyncState {
+	dirty, lastPull, err := s.sp.LocalSyncSnapshot()
+	st := tui.SyncState{Dirty: dirty, Err: err}
+	if !lastPull.IsZero() {
+		st.Last = lastPull
+	}
+	s.mu.Lock()
+	lastPush := s.lastPush
+	s.mu.Unlock()
+	if lastPush.After(st.Last) {
+		st.Last = lastPush
+	}
+	return st
+}
+
+// Push 在 autoSyncPushBudget 内做一次 best-effort 推送；失败只反映在状态里，
+// 不阻塞界面也不影响已落盘的本地数据。
+func (s *tuiSyncSource) Push() tui.SyncState {
+	ctx, cancel := context.WithTimeout(context.Background(), autoSyncPushBudget)
+	defer cancel()
+	out, err := s.sp.AutoPush(ctx, autoSyncPushBudget)
+	if err == nil && out != nil && out.Skip == provider.AutoSyncRan {
+		s.mu.Lock()
+		s.lastPush = time.Now()
+		s.mu.Unlock()
+	}
+	st := s.Status()
+	if err != nil {
+		st.Err = err
+	}
+	return st
+}
+
+// tuiAuditWriter 把 session.AuditLogger 适配为 TUI 写路径审计。日志写入是
+// best-effort 的：失败不影响 TUI 内操作。nil logger 时返回 nil，让 TUI 完全
+// 不记录（接口为 nil 而非包着 nil 指针的接口）。
+type tuiAuditWriter struct {
+	al *session.AuditLogger
+}
+
+func newTUIAuditWriter(mgr *session.Manager) tui.AuditWriter {
+	al := mgr.GetAuditLogger()
+	if al == nil {
+		return nil
+	}
+	return tuiAuditWriter{al: al}
+}
+
+func (w tuiAuditWriter) Record(eventType session.AuditEventType, target string, success bool, detail string) {
+	_ = w.al.LogOp(eventType, target, success, detail)
 }
 
 // tuiAuditSource 把本机审计文件读取器适配为 TUI 的 Audit 数据源

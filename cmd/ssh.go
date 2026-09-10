@@ -155,6 +155,33 @@ var keypairDeleteCmd = &cobra.Command{
 	},
 }
 
+var keypairRenameCmd = &cobra.Command{
+	Use:   "rename <old> <new>",
+	Short: "Rename an SSH keypair and update host references",
+	Long: `Rename an SSH keypair. Hosts that reference it keep working: their
+identityKey is rewritten in the same vault mutation. Key material is unchanged.
+
+  senv keypair rename web-key prod-key`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := getSSHManager()
+		if err != nil {
+			return err
+		}
+		updated, err := mgr.RenameKeyPair(args[0], args[1])
+		if err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:"+args[0], false, "rename 失败")
+			return err
+		}
+		auditOp(session.AuditOpSSHKey, "keypair:"+args[1], true, "rename "+args[0])
+		fmt.Printf("✓ Renamed keypair %s -> %s\n", args[0], args[1])
+		if len(updated) > 0 {
+			fmt.Printf("✓ Updated %d host reference(s): %s\n", len(updated), strings.Join(updated, ", "))
+		}
+		return nil
+	},
+}
+
 var hostCmd = &cobra.Command{
 	Use:   "host",
 	Short: "Manage encrypted SSH host profiles",
@@ -423,7 +450,7 @@ func parseAttrs(values []string) (map[string]string, error) {
 
 func init() {
 	rootCmd.AddCommand(keypairCmd, hostCmd)
-	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairDeleteCmd)
+	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairDeleteCmd)
 	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd)
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")

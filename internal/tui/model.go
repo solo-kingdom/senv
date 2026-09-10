@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -26,8 +28,16 @@ type Managers struct {
 	// 为空时按用户默认位置解析（测试可注入临时目录）。
 	LLMPointer string
 	LLMHome    string
+	// LLMCatalog 是 models.dev 模型目录缓存路径；为空时按目录 provider 装配
+	// 模型集会报「缓存缺失」。
+	LLMCatalog string
 	History    HistorySource
 	Audit      AuditSource
+	// AuditWriter 记录 TUI 内写操作的业务审计事件；nil 时不记录（只读嵌入或测试）。
+	AuditWriter AuditWriter
+	// Sync 提供自动同步状态与写后推送；nil（git 模式 / 未开 auto_sync）时
+	// 底部不显示同步状态，写操作也不触发 push。
+	Sync SyncSource
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -44,13 +54,54 @@ type Model struct {
 	height int
 	err    string
 	warn   string
+	toast  string
+	level  toastLevel
 	search *searchTab // non-nil while the global search overlay is open
+	help   *helpTab   // non-nil while the keybinding overview overlay is open
+	// sync 是自动同步数据源（可为 nil）；syncState 是该源的最近一次快照。
+	sync      SyncSource
+	syncState SyncState
+	// quitArmed 记录「仍有待推送」提示已经显示过一次，第二次 q 才退出。
+	quitArmed bool
+	// toastSeq identifies the newest toast so an older expiry timer cannot
+	// clear a message that arrived after it.
+	toastSeq int
+}
+
+// toastLevel distinguishes a transient success hint from a transient warning.
+type toastLevel int
+
+const (
+	toastSuccess toastLevel = iota
+	toastWarn
+)
+
+// toastTTL is how long a transient success/warning hint stays on screen.
+const toastTTL = 3 * time.Second
+
+// toastMsg shows a transient message in the bottom bar.
+type toastMsg struct {
+	text  string
+	level toastLevel
+}
+
+// clearToastMsg expires one specific toast (matched by sequence).
+type clearToastMsg struct{ seq int }
+
+// okToast returns a command showing a transient success hint.
+func okToast(text string) tea.Cmd {
+	return func() tea.Msg { return toastMsg{text: text, level: toastSuccess} }
+}
+
+// warnToast returns a command showing a transient warning hint.
+func warnToast(text string) tea.Cmd {
+	return func() tea.Msg { return toastMsg{text: text, level: toastWarn} }
 }
 
 // New creates the TUI model backed by the given managers. SSH is registered
 // only when supplied; this keeps existing tests and limited integrations stable.
 func New(mgr Managers) Model {
-	m := Model{mgr: mgr}
+	m := Model{mgr: mgr, sync: mgr.Sync}
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
@@ -79,6 +130,9 @@ func (m Model) Init() tea.Cmd {
 			cmds = append(cmds, c)
 		}
 	}
+	if c := m.refreshSync(); c != nil {
+		cmds = append(cmds, c)
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -99,6 +153,14 @@ type warnMsg struct{ text string }
 // clearWarnMsg clears the warning bar.
 type clearWarnMsg struct{}
 
+// renameDoneMsg reports a successful rename and asks the owning tab to reload
+// with the cursor parked on the new name.
+type renameDoneMsg struct {
+	group string
+	key   string
+	text  string
+}
+
 // clearError returns a command that clears the error bar.
 func clearError() tea.Cmd { return func() tea.Msg { return clearErrMsg{} } }
 
@@ -112,12 +174,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchCloseMsg:
 		m.search = nil
 		return m, nil
+	case helpCloseMsg:
+		m.help = nil
+		return m, nil
 	}
 
 	// While the search overlay is open, route all other messages to it.
 	if m.search != nil {
 		next, cmd := m.search.Update(msg)
 		m.search = next.(*searchTab)
+		return m, cmd
+	}
+	// Same for the help overlay: it owns every key while it is open.
+	if m.help != nil {
+		next, cmd := m.help.Update(msg)
+		m.help = next.(*helpTab)
 		return m, cmd
 	}
 
@@ -157,8 +228,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.warn = msg.text
 		return m, nil
 
+	case toastMsg:
+		m.toast = msg.text
+		m.level = msg.level
+		m.toastSeq++
+		seq := m.toastSeq
+		return m, tea.Tick(toastTTL, func(time.Time) tea.Msg { return clearToastMsg{seq} })
+
+	case clearToastMsg:
+		if msg.seq == m.toastSeq {
+			m.toast = ""
+		}
+		return m, nil
+
 	case clearWarnMsg:
 		m.warn = ""
+		return m, nil
+
+	case syncStatusMsg:
+		m.syncState = msg.state
 		return m, nil
 
 	case tea.KeyMsg:
@@ -173,22 +261,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Any keypress clears a stale error/warning banner (task 11.1), except quit.
 		hadErr := m.err != ""
 		hadWarn := m.warn != ""
+		hadToast := m.toast != ""
+
+		// Number keys jump straight to the Nth registered tab (1–9). Out-of-range
+		// digits are ignored so limited integrations (e.g. git mode with 3 tabs)
+		// stay usable.
+		if idx, ok := tabIndexFor(msg.String(), len(m.tabs)); ok {
+			m.err = ""
+			m.warn = ""
+			m.active = idx
+			return m, m.tabs[idx].Init()
+		}
+
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
+			return m, tea.Quit
+		case "q":
+			// Warn once when local changes are still unpushed, so quitting a
+			// long-running TUI does not silently drop the sync attempt.
+			if m.sync != nil && m.syncState.Dirty > 0 && !m.quitArmed {
+				m.quitArmed = true
+				m.warn = fmt.Sprintf("仍有 %d 条待推送，再按一次 q 退出（或等待自动同步完成）", m.syncState.Dirty)
+				return m, nil
+			}
 			return m, tea.Quit
 		case "S":
 			// Open the global cross-type search overlay (task 10.1).
 			m.search = newSearchTab(m.mgr)
 			m.search.SetSize(m.width, m.height)
 			return m, m.search.Init()
-		case "1", "2", "3", "4", "5":
-			// 数字键直达对应 Tab；不存在时忽略（如未注册的 History/Audit Tab）
-			if idx := int(msg.String()[0] - '1'); idx < len(m.tabs) {
-				m.err = ""
-				m.warn = ""
-				m.active = idx
-				return m, m.tabs[idx].Init()
-			}
+		case "?":
+			// Open the keybinding overview for the active tab.
+			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active].Help())
+			m.help.SetSize(m.width, m.height)
+			return m, nil
 		case "tab":
 			m.err = ""
 			m.warn = ""
@@ -211,12 +317,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.warn = ""
 			return m, nil
 		}
+		// A toast is informational: clear it but still perform the action.
+		if hadToast {
+			m.toast = ""
+		}
 	}
 
-	// Default: forward to the active tab.
+	// Default: forward to the active tab. A completed write additionally
+	// refreshes the sync badge and kicks off a best-effort background push.
 	var cmd tea.Cmd
 	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
+	if writeDoneMsg(msg) {
+		if c := m.refreshSync(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
+		if c := m.pushSync(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
+	}
 	return m, cmd
+}
+
+// tabIndexFor maps a single digit key ("1"–"9") to a zero-based tab index.
+// It reports false for non-digit keys and for digits past the last tab.
+func tabIndexFor(key string, tabs int) (int, bool) {
+	if len(key) != 1 || key[0] < '1' || key[0] > '9' {
+		return 0, false
+	}
+	idx := int(key[0] - '1')
+	if idx >= tabs {
+		return 0, false
+	}
+	return idx, true
 }
 
 // applyJump closes the overlay and moves the cursor to the chosen entry across
@@ -224,30 +356,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 	m.search = nil
 	m.err = ""
-	switch j.resultType {
-	case typeEnv:
-		m.active = 0
-		if et, ok := m.tabs[0].(*envTab); ok {
-			et.focusJump(j.group, j.key)
+	// Resolve the target tab by title so optional tabs (SSH / AI) work without
+	// hard-coded indices.
+	want := tabTitleForResult(j.resultType)
+	for i, t := range m.tabs {
+		if t.Title() != want {
+			continue
 		}
-	case typeText:
-		m.active = 1
-		if tt, ok := m.tabs[1].(*textTab); ok {
-			tt.focusJump(j.group, j.key)
+		m.active = i
+		if f, ok := t.(jumpFocuser); ok {
+			f.focusJump(j.group, j.key)
 		}
-	case typeConfig:
-		m.active = 2
-		if ct, ok := m.tabs[2].(*configTab); ok {
-			ct.focusJump(j.group, j.key)
-		}
+		return m, t.Init()
 	}
 	return m, nil
+}
+
+// jumpFocuser is implemented by tabs that can position their cursor on an entry
+// (used by the global search overlay).
+type jumpFocuser interface{ focusJump(group, key string) }
+
+// tabTitleForResult maps a search result type to its tab title.
+func tabTitleForResult(resultType string) string {
+	if resultType == typeConfig {
+		return "Config"
+	}
+	return resultType
 }
 
 // View renders the tab strip + active tab content + status/error bar.
 func (m Model) View() string {
 	if m.height == 0 {
-		return "starting..."
+		return "启动中…"
 	}
 
 	// Minimum size guard: the outer frame (2 rows) + tab strip with its
@@ -255,7 +395,7 @@ func (m Model) View() string {
 	// need height >= 7, and the shortest tab strip needs width >= 30. Below
 	// this the layout collapses, so show a plain centered hint with no chrome.
 	if m.height < 7 || m.width < 30 {
-		hint := "terminal too small (need ≥30×7)"
+		hint := "终端太小（需要 ≥30×7 字符）"
 		// Center the hint within the available area without any box drawing.
 		padLines := (m.height - 1) / 2
 		if padLines < 0 {
@@ -296,19 +436,36 @@ func (m Model) View() string {
 		lipgloss.JoinHorizontal(lipgloss.Top, tabParts...),
 	)
 
-	// Active tab content.
-	content := m.tabs[m.active].View()
+	// Active tab content. Overlays take over the content area while open.
+	var content string
+	switch {
+	case m.search != nil:
+		content = m.search.View()
+	case m.help != nil:
+		content = m.help.View()
+	default:
+		content = m.tabs[m.active].View()
+	}
 
 	// Bottom bar: error takes precedence over warning, then status hint. The
 	// text is hard-truncated (not Width-wrapped, which would add a line) to
 	// fit inside contentW minus the bar's Padding(0,1).
 	var bottom string
-	if m.err != "" {
-		bottom = errorBarStyle.Render("⚠ " + truncateRunes(m.err, contentW-4))
-	} else if m.warn != "" {
-		bottom = warnBarStyle.Render("⚠ " + truncateRunes(m.warn, contentW-4))
-	} else {
-		bottom = statusBarStyle.Render(truncateRunes(m.tabs[m.active].Help(), contentW-2))
+	switch {
+	case m.err != "":
+		bottom = m.bottomBar("⚠ "+m.err, errorBarStyle)
+	case m.warn != "":
+		bottom = m.bottomBar("⚠ "+m.warn, warnBarStyle)
+	case m.toast != "":
+		style := statusBarStyle.Foreground(lipgloss.Color(colorSuccess))
+		prefix := "✓ "
+		if m.level == toastWarn {
+			style = warnBarStyle
+			prefix = "⚠ "
+		}
+		bottom = m.bottomBar(prefix+m.toast, style)
+	default:
+		bottom = m.bottomBar(m.tabs[m.active].Help(), statusBarStyle)
 	}
 
 	// Stack the chrome inside the frame. lipgloss v1.x draws borders
