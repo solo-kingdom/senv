@@ -357,3 +357,78 @@ func TestSelectedCacheStillValidated(t *testing.T) {
 		t.Fatal("forged newer cache must not yield a usable key")
 	}
 }
+
+func resetHatchSelectionForTest(t *testing.T) {
+	t.Helper()
+	prev := HatchCacheSelected()
+	hatchCacheSelectedFlag.Store(false)
+	t.Cleanup(func() { hatchCacheSelectedFlag.Store(prev) })
+}
+
+func TestLoadCacheHatchSelectionWarnsAndFlags(t *testing.T) {
+	isolateSessionCache(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	slot := testSlot
+	past := time.Now().Add(-2 * time.Hour)
+
+	t.Run("hatch win warns once and sets flag", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		plantBothStores(t, slot, baseCache(slot, past), baseCache(slot, past.Add(time.Hour)))
+		stderr := captureStderr(t)
+		got, err := loadCache(slot)
+		if err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if got.SessionID != "sess-"+past.Add(time.Hour).Format("150405.000") && got.CreatedAt.Before(past.Add(30*time.Minute)) {
+			t.Fatalf("expected newer hatch cache, got created %v", got.CreatedAt)
+		}
+		if !HatchCacheSelected() {
+			t.Fatal("hatch selection flag not set")
+		}
+		if !strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("hatch win did not warn on stderr")
+		}
+		// 同进程内第二次选中不重复警告。
+		stderr = captureStderr(t)
+		if _, err := loadCache(slot); err != nil {
+			t.Fatalf("second loadCache: %v", err)
+		}
+		if strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("hatch warning must print at most once per process")
+		}
+	})
+
+	t.Run("secure store failure fallback warns", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		setActiveSessionStore(t, &fakeSessionStore{err: errors.New("keychain locked")})
+		if err := (diskCacheStore{}).Save(slot, baseCache(slot, past)); err != nil {
+			t.Fatalf("save hatch: %v", err)
+		}
+		stderr := captureStderr(t)
+		got, err := loadCache(slot)
+		if err != nil || got == nil {
+			t.Fatalf("loadCache = (%v, %v), want hatch cache", got, err)
+		}
+		if !HatchCacheSelected() {
+			t.Fatal("fallback flag not set")
+		}
+		if !strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("fallback to hatch did not warn")
+		}
+	})
+
+	t.Run("primary win stays silent", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		plantBothStores(t, slot, baseCache(slot, past.Add(time.Hour)), baseCache(slot, past))
+		stderr := captureStderr(t)
+		if _, err := loadCache(slot); err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if HatchCacheSelected() {
+			t.Fatal("flag must stay unset when primary wins")
+		}
+		if strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("primary win must not warn")
+		}
+	})
+}

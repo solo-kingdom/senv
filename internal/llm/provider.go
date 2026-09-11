@@ -281,14 +281,18 @@ type EditProviderOptions struct {
 	// Models 非 nil 时替换模型集（与 CatalogProvider 一起装配）；nil 表示保留。
 	Models []string
 	// ModelContexts 非 nil 时补充或覆盖模型上下文窗口；只改元数据时 Models
-	// 保持 nil，最终模型集沿用档案原值。
+	// 保持 nil，最终模型集沿用档案原值。空非 nil map 表示清空该维度的全部
+	// 既有元数据（nil 才是「未提供」）。
 	ModelContexts map[string]int
-	// ModelOutputs / ModelReasoning 与 ModelContexts 同义：显式提供时覆盖对应
-	// 模型的输出上限 / 推理档位；nil 表示保留原值。
+	// ModelOutputs / ModelReasoning / ModelDefaultReasoning / ModelModalities
+	// 与 ModelContexts 同义：显式提供时覆盖对应模型的输出上限 / 推理档位 /
+	// 默认推理档 / 输入模态；空非 nil map 清空该维度；nil 表示保留原值。
 	ModelOutputs          map[string]int
 	ModelReasoning        map[string][]string
 	ModelDefaultReasoning map[string]string
 	// DefaultReasoning 非 nil 时应用集合级默认推理档（空字符串表示不填充）。
+	// 与 ModelDefaultReasoning 空非 nil 组合时，先清空档案既有默认档再按
+	// 「集合级 > 目录」重新填充。
 	DefaultReasoning *string
 	ModelModalities  map[string][]string
 	// RequireModelMetadata 与 AddProviderOptions 同义；仅在本次会改动模型集
@@ -562,6 +566,24 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 			metadata[id] = mergeModelMetadata(catalogMeta, metadata[id])
 		}
 	}
+	// 显式清空：空非 nil map 表示调用方要求移除该维度的全部既有元数据
+	// （nil 是「未提供」，非空 map 是增量覆盖）。重置在目录合并之后、
+	// override 之前执行，防止档案与目录旧值回填吞掉编辑入口的清空意图。
+	if len(opts.ModelOutputs) == 0 && opts.ModelOutputs != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.OutputLimit = 0 })
+	}
+	if len(opts.ModelReasoning) == 0 && opts.ModelReasoning != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.ReasoningEfforts = nil })
+	}
+	if len(opts.ModelContexts) == 0 && opts.ModelContexts != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.ContextLimit = 0 })
+	}
+	if len(opts.ModelDefaultReasoning) == 0 && opts.ModelDefaultReasoning != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.DefaultReasoning = "" })
+	}
+	if len(opts.ModelModalities) == 0 && opts.ModelModalities != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.InputModalities = nil })
+	}
 	for model, output := range opts.ModelOutputs {
 		model = strings.TrimSpace(model)
 		if output <= 0 {
@@ -652,7 +674,11 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 			strings.Join(quoted, ", "))
 	}
 
-	requireDefault := opts.RequireModelMetadata ||
+	// 显式清空默认推理档（空非 nil per-model map）本身即是声明：本次编辑
+	// 造成的「有档位但缺默认档」缺口 MUST NOT 再被必填报错拦下，否则
+	// 编辑入口永远无法清空默认推理档。
+	defaultReasoningExplicit := opts.ModelDefaultReasoning != nil
+	requireDefault := (opts.RequireModelMetadata && !defaultReasoningExplicit) ||
 		len(opts.ModelReasoning) > 0 || len(opts.ModelDefaultReasoning) > 0 || collectionDefault != ""
 	var missingDefault []string
 	for _, id := range ids {
@@ -686,6 +712,16 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 		}
 	}
 	return ids, modelInfo, warnings, nil
+}
+
+// ClearingMap 把 nil map 转为空非 nil map（清空哨兵）。调用方 MUST 只在输入
+// 已被显式提供（CLI flag Changed / 表单字段变更）时使用：此时 nil 表示
+// 「清空该维度」而非「未提供」。
+func ClearingMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return m
 }
 
 // ParseModelContexts 解析重复的 --model-context <model>=<tokens> 参数。

@@ -142,6 +142,15 @@ func storageModelInfo(meta ModelMetadata) storage.LLMModelInfo {
 	}
 }
 
+// clearMetadataDimension 对所有模型执行同一维度的重置，用于「空非 nil map =
+// 显式清空该维度」的编辑语义。
+func clearMetadataDimension(metadata map[string]ModelMetadata, reset func(*ModelMetadata)) {
+	for id, meta := range metadata {
+		reset(&meta)
+		metadata[id] = meta
+	}
+}
+
 func mergeModelMetadata(base, override ModelMetadata) ModelMetadata {
 	if override.Name != "" {
 		base.Name = override.Name

@@ -551,6 +551,7 @@ func loadCache(slot string) (*SessionCache, error) {
 		// A locked/unavailable platform store must not strand a usable
 		// escape-hatch session, but without one the actionable error stays.
 		if hatch != nil {
+			markHatchCacheSelected()
 			return hatch, nil
 		}
 		return nil, errors.Join(primaryErr, hatchErr)
@@ -564,12 +565,15 @@ func loadCache(slot string) (*SessionCache, error) {
 // selectNewerCache resolves two readable caches for one slot. The newer
 // created_at wins; an exact tie is ambiguous and reported as an actionable
 // error. Neither cache is deleted here: the ignored one may be the only
-// recovery key for another vault slot.
+// recovery key for another vault slot. Preferring the less secure disk hatch
+// over a readable primary is a downgrade, so it is not silent: the first
+// occurrence warns on stderr and leaves an audit-visible flag.
 func selectNewerCache(slot string, primary, hatch *SessionCache) (*SessionCache, error) {
 	switch {
 	case primary.CreatedAt.After(hatch.CreatedAt):
 		return primary, nil
 	case hatch.CreatedAt.After(primary.CreatedAt):
+		markHatchCacheSelected()
 		return hatch, nil
 	default:
 		return nil, errMultipleSessionCaches

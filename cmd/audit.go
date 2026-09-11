@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,23 @@ func auditOp(eventType session.AuditEventType, target string, success bool, deta
 	if al := mgr.GetAuditLogger(); al != nil {
 		_ = al.LogOp(eventType, target, success, detail)
 	}
+}
+
+// hatchCacheSelectedProbe 是测试接缝；生产实现读 session 包的进程级标志。
+var hatchCacheSelectedProbe = session.HatchCacheSelected
+
+var auditHatchLogged atomic.Bool
+
+// auditHatchCacheSelectedOnce 在本进程曾用磁盘逃生舱缓存完成解密时记一条
+// 审计事件（进程内至多一次；best-effort，不含任何密钥材料）。
+func auditHatchCacheSelectedOnce() {
+	if auditHatchLogged.Load() || !hatchCacheSelectedProbe() {
+		return
+	}
+	if auditHatchLogged.Swap(true) {
+		return
+	}
+	auditOp(session.AuditSessionValidate, "session:cache", true, "cache-source=disk-hatch")
 }
 
 var (

@@ -353,10 +353,17 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.cancelMode()
 		return t, warnToast("已取消")
 	case mcpModeChangedConfirm:
-		item := t.changedItems()[t.changedIdx]
+		// 帮助文案承诺 esc 取消整个撤回：这里必须整体退出，已答 y 的
+		// 条目同样不生效，不得把 esc 当作「跳过本条」继续执行。
+		if key == "esc" {
+			t.cancelMode()
+			return t, warnToast("已取消撤回")
+		}
+		items := t.changedItems()
+		item := items[t.changedIdx]
 		t.changedAllowed[item.Agent+"/"+item.Alias] = key == "y"
 		t.changedIdx++
-		if t.changedIdx < len(t.changedItems()) {
+		if t.changedIdx < len(items) {
 			return t, nil
 		}
 		plan := t.unexportPlan
@@ -774,6 +781,10 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias string, allowed map[string]bool) tea.Cmd {
 	if plan == nil {
 		return warnToast("没有可执行的计划")
+	}
+	// 与 executeExport 对齐：没有可移除条目时不执行、不记成功审计。
+	if !plan.NeedsWrite() {
+		return warnToast("无需写入")
 	}
 	if allowed == nil {
 		allowed = map[string]bool{}

@@ -518,3 +518,90 @@ func assertAuditHas(t *testing.T, w *fakeAuditWriter, event session.AuditEventTy
 	}
 	t.Fatalf("missing audit %s %q success=%v in %+v", event, targetPart, success, w.calls)
 }
+
+func TestMCPUnexportChangedConfirmEscCancelsAll(t *testing.T) {
+	tab, w, home := newMCPTestTab(t)
+	addMCPProfile(t, tab, "github", "npx", nil)
+
+	// 导出到两个 JSON agent，随后各自本地改动制造逐条确认。
+	for _, agent := range []string{"claude-code", "cursor"} {
+		tab = loadMCPTab(t, tab)
+		selectMCPAgent(t, tab, agent)
+		out, cmd := tab.Update(runeKey("x"))
+		tab = flushTab(out, cmd).(*mcpTab)
+		out, cmd = tab.Update(runeKey("y"))
+		tab = flushTab(out, cmd).(*mcpTab)
+	}
+	for _, agent := range []string{"claude-code", "cursor"} {
+		cfgPath := agentConfigPath(t, home, agent)
+		root, err := agentcfg.ReadJSONRoot(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, _ := agentcfg.Find(agent)
+		agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"})
+		data, _ := agentcfg.EncodeJSON(root)
+		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tab = loadMCPTab(t, tab)
+	selectMCPAgent(t, tab, "cursor")
+	out, cmd := tab.Update(runeKey("U"))
+	tab = flushTab(out, cmd).(*mcpTab)
+	out, _ = tab.Update(runeKey("y"))
+	tab = out.(*mcpTab)
+	if tab.mode != mcpModeChangedConfirm {
+		t.Fatalf("mode = %d, want changed confirm", tab.mode)
+	}
+
+	// 第一条答 y，第二条按 esc：整个撤回必须取消，已答 y 的条目不生效。
+	out, _ = tab.Update(runeKey("y"))
+	tab = out.(*mcpTab)
+	if tab.mode != mcpModeChangedConfirm {
+		t.Fatalf("mode = %d, want changed confirm after first answer", tab.mode)
+	}
+	out, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tab = flushTab(out, cmd).(*mcpTab)
+	if tab.mode != mcpModeNormal {
+		t.Fatalf("esc must leave changed confirm, mode = %d", tab.mode)
+	}
+	texts := toastTexts(cmd)
+	if len(texts) == 0 || !strings.Contains(texts[0], "已取消撤回") {
+		t.Fatalf("esc toast = %v", texts)
+	}
+	for _, agent := range []string{"claude-code", "cursor"} {
+		cfgPath := agentConfigPath(t, home, agent)
+		got, ok := readJSONServerCommand(t, cfgPath, "github")
+		if !ok || got != "local-edit" {
+			t.Fatalf("%s entry changed after esc-cancel: (%q, %v)", agent, got, ok)
+		}
+	}
+	for _, c := range w.calls {
+		if c.event == session.AuditOpMCPExport && c.success && strings.Contains(c.detail, "unexport") {
+			t.Fatalf("esc-cancel must not record unexport audit: %+v", c)
+		}
+	}
+}
+
+func TestMCPUnexportAbsentOnlyDoesNotFakeSuccess(t *testing.T) {
+	tab, w, _ := newMCPTestTab(t)
+	addMCPProfile(t, tab, "github", "npx", nil)
+	tab = loadMCPTab(t, tab)
+	selectMCPAgent(t, tab, "cursor")
+
+	// 从未导出：撤回计划只含 absent 条目。
+	out, cmd := tab.Update(runeKey("u"))
+	tab = flushTab(out, cmd).(*mcpTab)
+	out, cmd = tab.Update(runeKey("y"))
+	texts := toastTexts(cmd)
+	if len(texts) == 0 || !strings.Contains(texts[0], "无需写入") {
+		t.Fatalf("absent-only unexport toast = %v, want 无需写入", texts)
+	}
+	for _, c := range w.calls {
+		if c.event == session.AuditOpMCPExport && c.success {
+			t.Fatalf("absent-only unexport must not record success audit: %+v", c)
+		}
+	}
+}

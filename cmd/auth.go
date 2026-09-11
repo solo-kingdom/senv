@@ -222,6 +222,9 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (res *aut
 	// 1. Try session reuse.
 	key, err := sm.GetCachedKey()
 	if err == nil {
+		// 会话可能来自磁盘逃生舱（较新胜出或安全存储失败回退）；
+		// 该降级路径已在 stderr 警告过，这里补一条审计痕迹。
+		auditHatchCacheSelectedOnce()
 		auth := &authResult{storage: store, key: key}
 		storeAuthMemo(configPath, dataPath, auth)
 		return auth, nil

@@ -842,21 +842,26 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		reasoningChanged || defaultReasoningChanged {
 		opts.Models = models
 		opts.CatalogProvider = &catalog
-		opts.ModelContexts = modelContexts
 		opts.RequireModelMetadata = true
 	}
+	// 变更字段才进 opts；nil 解析结果按「显式清空」传递（ClearingMap），
+	// 否则编辑入口的清空意图会被档案旧值回填吞掉。未变更字段 MUST NOT
+	// 进 opts，避免空哨兵误清未展示的目录元数据。
+	if contextsChanged {
+		opts.ModelContexts = llm.ClearingMap(modelContexts)
+	}
 	if outputsChanged {
-		opts.ModelOutputs = modelOutputs
+		opts.ModelOutputs = llm.ClearingMap(modelOutputs)
 	}
 	if reasoningChanged {
-		opts.ModelReasoning = modelReasoning
+		opts.ModelReasoning = llm.ClearingMap(modelReasoning)
 	}
 	if defaultReasoningChanged {
-		opts.ModelDefaultReasoning = modelDefaultReasoning
+		opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
 		opts.DefaultReasoning = &collectionDefault
 	}
 	if modalitiesChanged {
-		opts.ModelModalities = modelModalities
+		opts.ModelModalities = llm.ClearingMap(modelModalities)
 	}
 	if credential == aiNewCredential {
 		opts.APIKey = apiKey

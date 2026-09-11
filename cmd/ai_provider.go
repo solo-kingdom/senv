@@ -194,6 +194,10 @@ When the model set, catalog provider or model context metadata changes, every
 final model must resolve a context window; legacy profiles can still edit other
 fields without being forced to backfill model metadata.
 
+Passing a model metadata flag with no usable values (for example
+--model-output "") clears that metadata dimension from the profile; the TUI
+edit form clears a dimension the same way when its field is emptied.
+
 The base URL and api_shape are validated exactly like add. Any failure leaves
 the profile, credential and references untouched.`,
 	Args: cobra.ExactArgs(1),
@@ -259,22 +263,23 @@ the profile, credential and references untouched.`,
 			opts.Models = providerEditModels
 		}
 		if cmd.Flags().Changed("model-context") {
-			opts.ModelContexts = modelContexts
+			// flag 已给但解析为空（如 --model-context ""）表示清空该维度。
+			opts.ModelContexts = llm.ClearingMap(modelContexts)
 		}
 		if cmd.Flags().Changed("model-output") {
-			opts.ModelOutputs = modelOutputs
+			opts.ModelOutputs = llm.ClearingMap(modelOutputs)
 		}
 		if cmd.Flags().Changed("model-reasoning") {
-			opts.ModelReasoning = modelReasoning
+			opts.ModelReasoning = llm.ClearingMap(modelReasoning)
 		}
 		if cmd.Flags().Changed("model-default-reasoning") {
-			opts.ModelDefaultReasoning = modelDefaultReasoning
+			opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
 		}
 		if cmd.Flags().Changed("default-reasoning") {
 			opts.DefaultReasoning = &providerEditDefaultReasoning
 		}
 		if cmd.Flags().Changed("model-modalities") {
-			opts.ModelModalities = modelModalities
+			opts.ModelModalities = llm.ClearingMap(modelModalities)
 		}
 		if cmd.Flags().Changed("default-model") {
 			opts.DefaultModel = &providerEditDefault

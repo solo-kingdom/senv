@@ -250,3 +250,113 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		}
 	})
 }
+
+func TestEditProviderClearingSentinelRemovesDimensions(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	addTestProvider(t, mgr, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models:                []string{"custom-1"},
+		ModelContexts:         map[string]int{"custom-1": 200_000},
+		ModelOutputs:          map[string]int{"custom-1": 32_000},
+		ModelReasoning:        map[string][]string{"custom-1": {"low", "high"}},
+		ModelDefaultReasoning: map[string]string{"custom-1": "high"},
+		ModelModalities:       map[string][]string{"custom-1": {"text", "image"}},
+		RequireModelMetadata:  true,
+	})
+
+	// 空非 nil map = 显式清空该维度；其余维度与模型集保持不变。
+	res, err := mgr.EditProvider(EditProviderOptions{
+		Alias:                 "main",
+		ModelOutputs:          map[string]int{},
+		ModelDefaultReasoning: map[string]string{},
+		DefaultReasoning:      ptr(""),
+		ModelModalities:       map[string][]string{},
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	info := res.Entry.ModelInfo["custom-1"]
+	if info.OutputLimit != 0 {
+		t.Fatalf("output limit = %d, want cleared", info.OutputLimit)
+	}
+	if info.DefaultReasoning != "" {
+		t.Fatalf("default reasoning = %q, want cleared", info.DefaultReasoning)
+	}
+	if len(info.InputModalities) != 0 {
+		t.Fatalf("input modalities = %v, want cleared", info.InputModalities)
+	}
+	if got := info.ContextWindow; got != 200_000 {
+		t.Fatalf("context window = %d, want preserved", got)
+	}
+	if strings.Join(info.ReasoningEfforts, ",") != "low,high" {
+		t.Fatalf("reasoning efforts = %v, want preserved", info.ReasoningEfforts)
+	}
+	if strings.Join(res.Entry.Models, ",") != "custom-1" {
+		t.Fatalf("models = %v, want unchanged", res.Entry.Models)
+	}
+
+	// nil map = 未提供：再次编辑其他字段不得回填已清空的值，也不得误清保留值。
+	res, err = mgr.EditProvider(EditProviderOptions{
+		Alias: "main", BaseURL: ptr("https://v2.example.com"),
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	info = res.Entry.ModelInfo["custom-1"]
+	if info.OutputLimit != 0 || info.DefaultReasoning != "" || len(info.InputModalities) != 0 {
+		t.Fatalf("cleared dimensions came back: %+v", info)
+	}
+	if got := info.ContextWindow; got != 200_000 {
+		t.Fatalf("context window = %d, want preserved", got)
+	}
+}
+
+func TestEditProviderClearDefaultReasoningFallsBackToCatalog(t *testing.T) {
+	mgr, _, catalogPath := newTestProviderManager(t)
+	writeTestCatalog(t, catalogPath, `{
+		"p1": {"id":"p1","models":{"m1":{"id":"m1","limit":{"context":128000},
+			"reasoning_options":[{"type":"effort","values":["low","medium","high"],"default":"medium"}]}}}
+	}`, time.Now())
+	addTestProvider(t, mgr, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		CatalogPath: catalogPath, CatalogProvider: "p1",
+		ModelDefaultReasoning: map[string]string{"m1": "high"},
+		RequireModelMetadata:  true,
+	})
+
+	// 清空档案级默认推理档后，目录默认档按既有优先级重新接管。
+	res, err := mgr.EditProvider(EditProviderOptions{
+		Alias: "main", CatalogPath: catalogPath,
+		ModelDefaultReasoning: map[string]string{},
+		DefaultReasoning:      ptr(""),
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	if got := res.Entry.ModelInfo["m1"].DefaultReasoning; got != "medium" {
+		t.Fatalf("default reasoning = %q, want catalog default medium", got)
+	}
+}
+
+func TestEditProviderClearContextsWithRequireFailsWithoutPartialUpdate(t *testing.T) {
+	mgr, store, _ := newTestProviderManager(t)
+	addTestProvider(t, mgr, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 200_000},
+		RequireModelMetadata: true,
+	})
+
+	_, err := mgr.EditProvider(EditProviderOptions{
+		Alias: "main", ModelContexts: map[string]int{}, RequireModelMetadata: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing context window metadata") {
+		t.Fatalf("EditProvider() error = %v, want missing context metadata error", err)
+	}
+	entry, err := store.LoadLLMProvider("main", "test-password")
+	if err != nil {
+		t.Fatalf("LoadLLMProvider() error = %v", err)
+	}
+	if got := entry.ModelInfo["custom-1"].ContextWindow; got != 200_000 {
+		t.Fatalf("context window = %d after failed edit, want unchanged 200000", got)
+	}
+}

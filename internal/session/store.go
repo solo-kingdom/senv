@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync/atomic"
 )
 
 // SessionStore persists one vault's session cache in a platform-verified
@@ -63,6 +64,27 @@ const InsecureCacheWarning = "WARNING: storing the derived session key unencrypt
 // disk escape hatch. Reads always consider both stores.
 func EnableInsecureCache() {
 	insecureCacheEnabled = true
+}
+
+// hatchCacheSelectedFlag records that a read path resolved to the disk escape
+// hatch cache; the first occurrence also warns on stderr (once per process).
+var hatchCacheSelectedFlag atomic.Bool
+
+// markHatchCacheSelected is called when a read picks the disk escape hatch —
+// either because it is newer than a readable secure-store cache or because the
+// secure store failed. The warning prints at most once per process.
+func markHatchCacheSelected() {
+	if hatchCacheSelectedFlag.Swap(true) {
+		return
+	}
+	fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+}
+
+// HatchCacheSelected reports whether any read in this process used the disk
+// escape hatch cache. Callers that record operation audit use it to leave a
+// "cache-source=disk-hatch" trace; it never carries key material.
+func HatchCacheSelected() bool {
+	return hatchCacheSelectedFlag.Load()
 }
 
 // activeSessionStoreFor is the package-level store seam; tests may inject fakes.

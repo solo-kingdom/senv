@@ -895,3 +895,64 @@ func TestAITabReloadKeepsDataVisibleAndReloads(t *testing.T) {
 		t.Fatalf("providers = %d after reload, want 1", len(tab.providers))
 	}
 }
+
+func TestAITabEditProviderClearsMetadataFields(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	// 先给档案补上 context window 与全套元数据，编辑入口才有可清空的值。
+	if _, err := tab.mgr.LLM.EditProvider(llm.EditProviderOptions{
+		Alias:                 "main",
+		ModelContexts:         map[string]int{"m1": 200_000, "m2": 100_000},
+		ModelOutputs:          map[string]int{"m1": 32_000},
+		ModelReasoning:        map[string][]string{"m1": {"low", "high"}},
+		ModelDefaultReasoning: map[string]string{"m1": "high"},
+		ModelModalities:       map[string][]string{"m1": {"text", "image"}},
+		RequireModelMetadata:  true,
+	}); err != nil {
+		t.Fatalf("seed metadata: %v", err)
+	}
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+
+	out, _ := tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	values := tab.form.Values()
+	if values["model_outputs"] == "" || values["model_default_reasoning"] == "" || values["model_modalities"] == "" {
+		t.Fatalf("metadata prefill missing: %#v", values)
+	}
+
+	// 清空输出上限、默认推理档与输入模态后提交。
+	tab = submitAIForm(t, tab, map[string]string{
+		"model_outputs":           "",
+		"model_default_reasoning": "",
+		"model_modalities":        "",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close after clearing metadata: %#v", tab.form.errs)
+	}
+	p := tab.providerByAlias("main")
+	if p == nil {
+		t.Fatal("provider lost")
+	}
+	info := p.ModelInfo["m1"]
+	if info.OutputLimit != 0 || info.DefaultReasoning != "" || len(info.InputModalities) != 0 {
+		t.Fatalf("metadata not cleared: %+v", info)
+	}
+	if strings.Join(info.ReasoningEfforts, ",") != "low,high" {
+		t.Fatalf("reasoning efforts = %v, want preserved", info.ReasoningEfforts)
+	}
+	if got := info.ContextWindow; got != 200_000 {
+		t.Fatalf("context window = %d, want preserved", got)
+	}
+
+	// 重开编辑表单：清空过的字段不再回填旧值，保留字段照常预填。
+	out, _ = tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	values = tab.form.Values()
+	if values["model_outputs"] != "" || values["model_default_reasoning"] != "" || values["model_modalities"] != "" {
+		t.Fatalf("reopen shows stale metadata: %#v", values)
+	}
+	if !strings.Contains(values["model_reasoning"], "low") {
+		t.Fatalf("reasoning prefill lost: %#v", values)
+	}
+}
