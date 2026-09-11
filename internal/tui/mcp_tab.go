@@ -468,6 +468,30 @@ func (t *mcpTab) openDetail() tea.Cmd {
 }
 
 func mcpDetailLines(entry *storage.MCPServerEntry) []string {
+	if entry.URL != "" {
+		// Remote profiles: only the url origin and header key names are
+		// rendered — query strings and header values carry credentials.
+		lines := []string{
+			"alias:       " + entry.Alias,
+			"transport:   " + entry.Transport,
+			"url:         " + mcp.URLOrigin(entry.URL),
+			"description: " + orDash(entry.Description),
+			"headers:",
+		}
+		keys := make([]string, 0, len(entry.Headers))
+		for key := range entry.Headers {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) == 0 {
+			lines = append(lines, "  (无)")
+		} else {
+			for _, key := range keys {
+				lines = append(lines, "  "+key)
+			}
+		}
+		return lines
+	}
 	lines := []string{
 		"alias:       " + entry.Alias,
 		"transport:   " + entry.Transport,
@@ -512,20 +536,32 @@ func isRefTemplate(value string) bool {
 	return strings.Contains(value, "{{env:") || strings.Contains(value, "{{text:")
 }
 
+// isRemoteTransport reports whether a form transport value addresses a remote
+// server (http/sse) rather than a local stdio command.
+func isRemoteTransport(transport string) bool {
+	return transport == storage.MCPTransportHTTP || transport == storage.MCPTransportSSE
+}
+
 func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 	create := existing == nil
 	title := "新建 MCP Server 档案"
 	alias := ""
+	transport := storage.MCPTransportStdio
 	command := ""
 	args := ""
 	envText := ""
+	url := ""
+	headersText := ""
 	desc := ""
 	if !create {
 		title = "编辑 " + existing.Alias
 		alias = existing.Alias
+		transport = existing.Transport
 		command = existing.Command
 		args = strings.Join(existing.Args, "\n")
 		envText = formatEnvLines(existing.Env)
+		url = existing.URL
+		headersText = formatEnvLines(existing.Headers)
 		desc = existing.Description
 	}
 	aliasField := formField{key: "alias", label: "别名", kind: formText, value: alias, validate: requiredAlias}
@@ -533,11 +569,19 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 		aliasField.kind = formEnum
 		aliasField.options = []string{alias}
 	}
+	// stdio 字段只在 stdio 传输下出现；remote 字段只在 http/sse 下出现。
+	stdioOnly := func(values map[string]string) bool { return !isRemoteTransport(values["transport"]) }
+	remoteOnly := func(values map[string]string) bool { return isRemoteTransport(values["transport"]) }
 	fields := []formField{
 		aliasField,
-		{key: "command", label: "command", kind: formText, value: command, validate: requiredCommand},
-		{key: "args", label: "args", kind: formEditor, value: args},
-		{key: "env", label: "env", kind: formEditor, value: envText, preview: mcpEnvPreview, validate: validateEnvLines},
+		{key: "transport", label: "transport", kind: formEnum, value: transport, options: []string{
+			storage.MCPTransportStdio, storage.MCPTransportHTTP, storage.MCPTransportSSE,
+		}},
+		{key: "command", label: "command", kind: formText, value: command, validate: requiredCommand, visible: stdioOnly},
+		{key: "args", label: "args", kind: formEditor, value: args, visible: stdioOnly},
+		{key: "env", label: "env", kind: formEditor, value: envText, preview: mcpEnvPreview, validate: validateEnvLines, visible: stdioOnly},
+		{key: "url", label: "url", kind: formText, value: url, validate: requiredURL, visible: remoteOnly},
+		{key: "headers", label: "headers", kind: formEditor, value: headersText, preview: mcpHeadersPreview, validate: validateHeaderLines, visible: remoteOnly},
 		{key: "description", label: "描述", kind: formText, value: desc},
 	}
 	f := newForm(title, fields...)
@@ -564,25 +608,34 @@ func (t *mcpTab) doSubmit(create bool, f *form, values map[string]string) tea.Cm
 	}
 	return func() tea.Msg {
 		alias := strings.TrimSpace(values["alias"])
-		command := strings.TrimSpace(values["command"])
-		args := parseArgLines(values["args"])
-		envMap, err := parseEnvLines(values["env"])
-		if err != nil {
-			return reopen("env", err)
+		transport := values["transport"]
+		description := strings.TrimSpace(values["description"])
+		entry := &storage.MCPServerEntry{Alias: alias, Transport: transport, Description: description}
+		if isRemoteTransport(transport) {
+			// remote：只落 url/headers；值按模板原样存储。
+			entry.URL = strings.TrimSpace(values["url"])
+			headers, err := parseHeaderLines(values["headers"])
+			if err != nil {
+				return reopen("headers", err)
+			}
+			entry.Headers = headers
+		} else {
+			entry.Command = strings.TrimSpace(values["command"])
+			entry.Args = parseArgLines(values["args"])
+			envMap, err := parseEnvLines(values["env"])
+			if err != nil {
+				return reopen("env", err)
+			}
+			entry.Env = envMap
 		}
 		if create {
-			entry := &storage.MCPServerEntry{
-				Alias:       alias,
-				Transport:   storage.MCPTransportStdio,
-				Command:     command,
-				Args:        args,
-				Env:         envMap,
-				Description: strings.TrimSpace(values["description"]),
-			}
 			if err := mgrs.MCP.Add(entry); err != nil {
 				field := "alias"
 				if !errors.Is(err, mcp.ErrExists) {
 					field = "command"
+					if isRemoteTransport(transport) {
+						field = "url"
+					}
 				}
 				recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "add 失败")
 				return reopen(field, err)
@@ -590,16 +643,22 @@ func (t *mcpTab) doSubmit(create bool, f *form, values map[string]string) tea.Cm
 			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, true, "add")
 			return mcpReloadMsg{toast: "已保存 " + alias, alias: alias}
 		}
-		err = mgrs.MCP.Update(alias, func(entry *storage.MCPServerEntry) error {
-			entry.Command = command
-			entry.Args = args
-			entry.Env = envMap
-			entry.Description = strings.TrimSpace(values["description"])
+		err := mgrs.MCP.Update(alias, func(existing *storage.MCPServerEntry) error {
+			// 传输切换整体替换字段集：切到 remote 清空 stdio 字段，反之亦然，
+			// 这样目标传输的字段校验不会读到另一侧的残留值。CreatedAt 是
+			// 档案身份的一部分，整体替换时必须保留。
+			createdAt := existing.CreatedAt
+			*existing = *entry
+			existing.CreatedAt = createdAt
 			return nil
 		})
 		if err != nil {
 			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "edit 失败")
-			return reopen("command", err)
+			field := "command"
+			if isRemoteTransport(transport) {
+				field = "url"
+			}
+			return reopen(field, err)
 		}
 		recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, true, "edit")
 		return mcpReloadMsg{toast: "已更新 " + alias, alias: alias}
@@ -935,7 +994,7 @@ func (t *mcpTab) viewBaseAt(height int) string {
 func (t *mcpTab) serverLines(width int) []string {
 	lines := make([]string, 0, len(t.servers))
 	for i, srv := range t.servers {
-		line := fmt.Sprintf("%s · %s · %d env", srv.Alias, srv.Command, len(srv.EnvKeys))
+		line := fmt.Sprintf("%s · %s · %d env", srv.Alias, srv.Target(), len(srv.EnvKeys))
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.serverIndex))
 	}
 	return lines
@@ -991,7 +1050,7 @@ func (t *mcpTab) renderPlan() string {
 		for _, item := range t.exportPlan.Items {
 			fmt.Fprintf(&b, "%-16s %-8s %s", item.Agent, item.Action, item.Path)
 			if item.Plaintext && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
-				b.WriteString("  [明文 env]")
+				b.WriteString("  [明文]")
 			}
 			if item.Reason != "" {
 				fmt.Fprintf(&b, "  — %s", item.Reason)
@@ -1016,9 +1075,46 @@ func requiredCommand(v string) error {
 	return nil
 }
 
+func requiredURL(v string) error {
+	if strings.TrimSpace(v) == "" {
+		return fmt.Errorf("url 必填")
+	}
+	return nil
+}
+
 func validateEnvLines(v string) error {
 	_, err := parseEnvLines(v)
 	return err
+}
+
+func validateHeaderLines(v string) error {
+	_, err := parseHeaderLines(v)
+	return err
+}
+
+// parseHeaderLines parses one "Name: Value" header per line. Values may
+// contain ':'; only the first separator is significant.
+func parseHeaderLines(raw string) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, found := strings.Cut(line, ":")
+		key = strings.TrimSpace(key)
+		if !found || key == "" {
+			return nil, fmt.Errorf("header 需要 \"Name: Value\"，收到 %q", line)
+		}
+		if _, dup := headers[key]; dup {
+			return nil, fmt.Errorf("重复的 header %q", key)
+		}
+		headers[key] = strings.TrimSpace(value)
+	}
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	return headers, nil
 }
 
 func parseArgLines(raw string) []string {
@@ -1080,6 +1176,26 @@ func mcpEnvPreview(raw string) string {
 		key, _, found := strings.Cut(line, "=")
 		if found && key != "" {
 			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "(空，按 e 用 $EDITOR 编辑)"
+	}
+	return strings.Join(keys, ", ") + "（按 e 编辑）"
+}
+
+// mcpHeadersPreview mirrors mcpEnvPreview for the headers editor field: only
+// header names are shown, never values.
+func mcpHeadersPreview(raw string) string {
+	keys := make([]string, 0)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, _, found := strings.Cut(line, ":")
+		if found && strings.TrimSpace(key) != "" {
+			keys = append(keys, strings.TrimSpace(key))
 		}
 	}
 	if len(keys) == 0 {

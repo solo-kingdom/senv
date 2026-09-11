@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -433,5 +434,313 @@ func TestUnexportRemovesExportedAndConfirmsChanged(t *testing.T) {
 	root, _ = agentcfg.ReadJSONRoot(cfgPath)
 	if _, ok := agentcfg.JSONServer(root, target.JSONServersKey, "other"); ok {
 		t.Fatal("confirmed unexport did not remove the entry")
+	}
+}
+
+func addRemoteProfile(t *testing.T, mgr *Manager, alias, transport, url string, headers map[string]string) {
+	t.Helper()
+	err := mgr.Add(&storage.MCPServerEntry{
+		Alias:     alias,
+		Transport: transport,
+		URL:       url,
+		Headers:   headers,
+	})
+	if err != nil {
+		t.Fatalf("add remote profile %s: %v", alias, err)
+	}
+}
+
+func TestExportRemoteJSON(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP,
+		"https://api.example.com/mcp?key={{env:secrets:KEY}}",
+		map[string]string{"Authorization": "Bearer token-1"})
+	target := targetFor(t, "claude-code")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := map[string]any{
+		"mcpServers": map[string]any{
+			"other": map[string]any{"command": "uvx"},
+		},
+	}
+	data, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(cfgPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := func(value string) (string, error) {
+		return strings.ReplaceAll(value, "{{env:secrets:KEY}}", "resolved-key"), nil
+	}
+	exporter := testExporter(t, mgr, dir, ExporterOptions{Resolve: resolve})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionCreate {
+		t.Fatalf("plan items = %+v", plan.Items)
+	}
+	if !plan.Items[0].Plaintext {
+		t.Fatal("remote url/headers were not flagged as plaintext")
+	}
+
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures != 0 {
+		t.Fatalf("Execute = %+v, %v", report, err)
+	}
+
+	root, err := agentcfg.ReadJSONRoot(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := agentcfg.JSONServer(root, target.JSONServersKey, "web")
+	if !ok {
+		t.Fatal("remote entry missing after export")
+	}
+	if entry.Transport != "http" || entry.URL != "https://api.example.com/mcp?key=resolved-key" {
+		t.Fatalf("remote entry = %+v", entry)
+	}
+	if entry.Headers["Authorization"] != "Bearer token-1" {
+		t.Fatalf("headers = %v", entry.Headers)
+	}
+	if entry.Command != "" || len(entry.Env) > 0 {
+		t.Fatalf("remote entry must not carry stdio fields: %+v", entry)
+	}
+	if _, ok := agentcfg.JSONServer(root, target.JSONServersKey, "other"); !ok {
+		t.Fatal("sibling server entry was dropped")
+	}
+
+	// A second export is a no-op, proving the read-back fingerprint matches.
+	plan, err = exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("second Plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionSkip {
+		t.Fatalf("second plan items = %+v", plan.Items)
+	}
+}
+
+func TestExportRemoteCodexTOML(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp", nil)
+	target := targetFor(t, "codex")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "[mcp_servers.other]\ncommand = \"uvx\"\n"
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures != 0 {
+		t.Fatalf("Execute = %+v, %v", report, err)
+	}
+
+	content, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "url = \"https://api.example.com/mcp\"") {
+		t.Fatalf("codex block missing url:\n%s", text)
+	}
+	webBlock := text[strings.Index(text, "[mcp_servers.web]"):]
+	if strings.Contains(webBlock, "command") || strings.Contains(webBlock, "headers") {
+		t.Fatalf("codex remote block must not carry command/headers:\n%s", webBlock)
+	}
+	if !strings.Contains(text, "[mcp_servers.other]") {
+		t.Fatalf("existing table was dropped:\n%s", text)
+	}
+}
+
+func TestExportRemoteHeadersToCodexIsAnError(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp",
+		map[string]string{"Authorization": "Bearer token-1"})
+	codex := targetFor(t, "codex")
+	claude := targetFor(t, "claude-code")
+	cfgPath := codex.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[mcp_servers.other]\ncommand = \"uvx\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{codex, claude}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var codexItem, claudeItem *ExportItem
+	for i := range plan.Items {
+		switch plan.Items[i].Agent {
+		case "codex":
+			codexItem = &plan.Items[i]
+		case "claude-code":
+			claudeItem = &plan.Items[i]
+		}
+	}
+	if codexItem == nil || codexItem.Action != ActionError || !strings.Contains(codexItem.Reason, "headers") {
+		t.Fatalf("codex plan item = %+v", codexItem)
+	}
+	if claudeItem == nil || claudeItem.Action != ActionCreate {
+		t.Fatalf("claude-code plan item = %+v", claudeItem)
+	}
+
+	report, err := exporter.Execute(plan)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if report.Failures == 0 {
+		t.Fatal("expected failures for the codex target")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("codex config changed despite the error:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfgPath), ".claude.json")); !os.IsNotExist(err) {
+		// claude-code lives under a different path; just ensure no crash above.
+		_ = err
+	}
+}
+
+func TestExportRemoteUnsupportedTargetIsPlanError(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportSSE, "https://api.example.com/sse", nil)
+	target := targetFor(t, "claude-desktop")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := map[string]any{"mcpServers": map[string]any{"other": map[string]any{"command": "uvx"}}}
+	data, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(cfgPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionError {
+		t.Fatalf("plan items = %+v", plan.Items)
+	}
+	if plan.Items[0].Reason == "" {
+		t.Fatal("error item carries no reason")
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures == 0 {
+		t.Fatalf("Execute = %+v, %v; want failures", report, err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("claude-desktop config changed despite the error:\n%s", after)
+	}
+}
+
+func TestExportRemoteResolveFailureLeavesFileUntouched(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp?key={{env:secrets:MISSING}}", nil)
+	target := targetFor(t, "cursor")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("{\"mcpServers\":{}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := func(value string) (string, error) {
+		return "", fmt.Errorf("reference not found: %s", value)
+	}
+	exporter := testExporter(t, mgr, dir, ExporterOptions{Resolve: resolve})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionError {
+		t.Fatalf("plan items = %+v", plan.Items)
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures == 0 {
+		t.Fatalf("Execute = %+v, %v; want failures", report, err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("cursor config changed despite the resolve failure")
+	}
+}
+
+func TestUnexportRemoteEntry(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp", nil)
+	target := targetFor(t, "cursor")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := map[string]any{"mcpServers": map[string]any{"other": map[string]any{"command": "uvx"}}}
+	data, _ := json.MarshalIndent(seed, "", "  ")
+	if err := os.WriteFile(cfgPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	unexportPlan, err := exporter.PlanUnexport([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("PlanUnexport: %v", err)
+	}
+	if len(unexportPlan.Items) != 1 || unexportPlan.Items[0].Action != UnexportRemove {
+		t.Fatalf("unexport plan = %+v", unexportPlan.Items)
+	}
+	report, err := exporter.ExecuteUnexport(unexportPlan, nil)
+	if err != nil || report.Failures != 0 {
+		t.Fatalf("ExecuteUnexport = %+v, %v", report, err)
+	}
+	root, _ := agentcfg.ReadJSONRoot(cfgPath)
+	if _, ok := agentcfg.JSONServer(root, target.JSONServersKey, "web"); ok {
+		t.Fatal("remote entry survived unexport")
+	}
+	if _, ok := agentcfg.JSONServer(root, target.JSONServersKey, "other"); !ok {
+		t.Fatal("sibling entry was dropped by unexport")
 	}
 }

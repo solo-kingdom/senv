@@ -151,7 +151,15 @@ func (e *Exporter) Plan(targets []agentcfg.Target, aliases []string) (*ExportPla
 				item.Reason = resolveErr[alias].Error()
 			default:
 				item.server = desired[alias]
-				e.planItem(&item, file, alias, desired[alias])
+				// A target that cannot express this transport poisons its whole
+				// target too (plan-level error, file untouched): writing the
+				// remaining entries would pretend the vault exported cleanly.
+				if err := target.RemoteError(desired[alias]); err != nil {
+					item.Action = ActionError
+					item.Reason = err.Error()
+				} else {
+					e.planItem(&item, file, alias, desired[alias])
+				}
 			}
 			plan.Items = append(plan.Items, item)
 		}
@@ -163,7 +171,9 @@ func (e *Exporter) Plan(targets []agentcfg.Target, aliases []string) (*ExportPla
 func (e *Exporter) planItem(item *ExportItem, file *agentFile, alias string, wanted agentcfg.Server) {
 	current, present := file.entry(alias)
 	wantedFingerprint := wanted.Fingerprint()
-	item.Plaintext = len(wanted.Env) > 0
+	// Remote entries always carry their endpoint in the clear; env values and
+	// headers may hold resolved secrets. All three are plaintext on write.
+	item.Plaintext = len(wanted.Env) > 0 || wanted.URL != "" || len(wanted.Headers) > 0
 
 	switch {
 	case present && current.Fingerprint() == wantedFingerprint:
@@ -325,9 +335,30 @@ func failItems(items []ExportItem, reason string) []ExportItem {
 }
 
 // resolveEntry converts a stored profile into the cross-agent write shape,
-// resolving env templates in the process.
+// resolving env templates for stdio entries and url/header templates for
+// remote entries in the process.
 func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server, error) {
-	server := agentcfg.Server{Command: entry.Command, Args: entry.Args}
+	server := agentcfg.Server{Transport: entry.Transport}
+	if entry.Transport == storage.MCPTransportHTTP || entry.Transport == storage.MCPTransportSSE {
+		resolved, err := e.opts.Resolve(entry.URL)
+		if err != nil {
+			return agentcfg.Server{}, fmt.Errorf("MCP server %q url: %w", entry.Alias, err)
+		}
+		server.URL = resolved
+		if len(entry.Headers) > 0 {
+			server.Headers = make(map[string]string, len(entry.Headers))
+			for key, raw := range entry.Headers {
+				resolved, err := e.opts.Resolve(raw)
+				if err != nil {
+					return agentcfg.Server{}, fmt.Errorf("MCP server %q header %s: %w", entry.Alias, key, err)
+				}
+				server.Headers[key] = resolved
+			}
+		}
+		return server, nil
+	}
+	server.Command = entry.Command
+	server.Args = entry.Args
 	if len(entry.Env) > 0 {
 		server.Env = make(map[string]string, len(entry.Env))
 		for key, raw := range entry.Env {

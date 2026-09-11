@@ -223,7 +223,7 @@ func printExportPlan(plan *mcp.ExportPlan) {
 	for _, item := range plan.Items {
 		line := fmt.Sprintf("  %-16s %-20s %-8s %s", item.Agent, item.Alias, item.Action, item.Path)
 		if item.Plaintext && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
-			line += "  [明文 env]"
+			line += "  [明文]"
 		}
 		if item.Reason != "" {
 			line += "  — " + item.Reason
@@ -260,14 +260,7 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 }
 
 func jsonEntry(server agentcfg.Server) map[string]any {
-	entry := map[string]any{"command": server.Command}
-	if len(server.Args) > 0 {
-		entry["args"] = server.Args
-	}
-	if len(server.Env) > 0 {
-		entry["env"] = server.Env
-	}
-	return entry
+	return agentcfg.JSONEntry(server)
 }
 
 func printUnexportPlan(plan *mcp.UnexportPlan) {

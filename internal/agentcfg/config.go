@@ -19,30 +19,54 @@ const BackupSuffix = ".bak"
 
 // Server is the transport-agnostic profile senv writes into agent configs.
 // Only the cross-agent common subset is represented: agent-specific keys are
-// deliberately not passed through.
+// deliberately not passed through. A server with a non-empty URL is a remote
+// entry (Transport "http"/"sse", Headers allowed, no Command/Args/Env);
+// otherwise it is a stdio entry.
 type Server struct {
-	Command string
-	Args    []string
-	Env     map[string]string
+	Transport string
+	Command   string
+	Args      []string
+	Env       map[string]string
+	URL       string
+	Headers   map[string]string
 }
 
 // Fingerprint returns a stable digest of the server definition. The ledger
 // stores it to tell "senv wrote this" from "someone else did, or it drifted".
-// Canonicalization is explicit (sorted env keys, no struct tags) so a
+// Canonicalization is explicit (sorted map keys, no struct tags) so a
 // fingerprint never depends on encoding details of a particular format.
+//
+// Backward compatibility is load-bearing: transport/url/header fields only
+// enter the digest when set, so fingerprints recorded before remote entries
+// existed still match, and a senv upgrade never turns every existing export
+// into drift.
 func (s Server) Fingerprint() string {
 	keys := make([]string, 0, len(s.Env))
 	for key := range s.Env {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	headerKeys := make([]string, 0, len(s.Headers))
+	for key := range s.Headers {
+		headerKeys = append(headerKeys, key)
+	}
+	sort.Strings(headerKeys)
 	var b strings.Builder
+	if s.Transport != "" && s.Transport != "stdio" {
+		fmt.Fprintf(&b, "transport=%q\n", s.Transport)
+	}
 	fmt.Fprintf(&b, "command=%q\n", s.Command)
 	for _, arg := range s.Args {
 		fmt.Fprintf(&b, "arg=%q\n", arg)
 	}
 	for _, key := range keys {
 		fmt.Fprintf(&b, "env=%q=%q\n", key, s.Env[key])
+	}
+	if s.URL != "" {
+		fmt.Fprintf(&b, "url=%q\n", s.URL)
+	}
+	for _, key := range headerKeys {
+		fmt.Fprintf(&b, "header=%q=%q\n", key, s.Headers[key])
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -77,37 +101,84 @@ func ReadJSONRoot(path string) (map[string]any, error) {
 	return root, nil
 }
 
-// JSONServers returns the servers sub-object, treating an absent or
-// wrong-typed entry as empty.
+// jsonTable resolves a dotted servers key ("mcpServers", "mcp.servers")
+// against root, returning the servers map. When create is set, missing
+// intermediate objects are added so the caller can write into the map;
+// otherwise an absent or wrong-typed path yields nil.
+func jsonTable(root map[string]any, serversKey string, create bool) map[string]any {
+	current := root
+	parts := strings.Split(serversKey, ".")
+	for i, part := range parts {
+		last := i == len(parts)-1
+		child, ok := current[part].(map[string]any)
+		if !ok || child == nil {
+			if !create {
+				return nil
+			}
+			child = map[string]any{}
+			current[part] = child
+		}
+		if last {
+			return child
+		}
+		current = child
+	}
+	return nil
+}
+
+// JSONServers returns the servers map at the dotted serversKey, treating an
+// absent or wrong-typed entry as empty.
 func JSONServers(root map[string]any, serversKey string) map[string]any {
-	if servers, ok := root[serversKey].(map[string]any); ok && servers != nil {
+	if servers := jsonTable(root, serversKey, false); servers != nil {
 		return servers
 	}
 	return map[string]any{}
 }
 
-// SetJSONServer upserts one server entry, preserving every other key.
-func SetJSONServer(root map[string]any, serversKey, name string, srv Server) {
-	servers := JSONServers(root, serversKey)
-	entry := map[string]any{"command": srv.Command}
+// JSONEntry renders one server into the object stored under the entry name.
+// Remote entries take the documented remote key set (transport type, url,
+// headers); stdio entries keep the historical command/args/env shape with no
+// type key, so pre-existing entries render byte-identically.
+func JSONEntry(srv Server) map[string]any {
+	entry := map[string]any{}
+	if srv.URL != "" {
+		transport := srv.Transport
+		if transport == "" {
+			transport = "http"
+		}
+		entry["type"] = transport
+		entry["url"] = srv.URL
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+		return entry
+	}
+	entry["command"] = srv.Command
 	if len(srv.Args) > 0 {
 		entry["args"] = srv.Args
 	}
 	if len(srv.Env) > 0 {
 		entry["env"] = srv.Env
 	}
-	servers[name] = entry
-	root[serversKey] = servers
+	return entry
+}
+
+// SetJSONServer upserts one server entry, preserving every other key.
+func SetJSONServer(root map[string]any, serversKey, name string, srv Server) {
+	servers := jsonTable(root, serversKey, true)
+	servers[name] = JSONEntry(srv)
 }
 
 // DeleteJSONServer removes one server entry, reporting whether it was present.
 func DeleteJSONServer(root map[string]any, serversKey, name string) bool {
-	servers := JSONServers(root, serversKey)
+	servers := jsonTable(root, serversKey, false)
+	if servers == nil {
+		return false
+	}
 	if _, ok := servers[name]; !ok {
 		return false
 	}
 	delete(servers, name)
-	root[serversKey] = servers
 	return true
 }
 
@@ -152,6 +223,36 @@ func serverFromMap(raw map[string]any) Server {
 	if len(srv.Env) == 0 {
 		srv.Env = nil
 	}
+	if transport, ok := raw["type"].(string); ok {
+		srv.Transport = transport
+	}
+	if url, ok := raw["url"].(string); ok {
+		srv.URL = url
+	}
+	switch headers := raw["headers"].(type) {
+	case map[string]any:
+		srv.Headers = map[string]string{}
+		for key, value := range headers {
+			if s, ok := value.(string); ok {
+				srv.Headers[key] = s
+			}
+		}
+	case map[string]string:
+		srv.Headers = map[string]string{}
+		for key, value := range headers {
+			srv.Headers[key] = value
+		}
+	}
+	if len(srv.Headers) == 0 {
+		srv.Headers = nil
+	}
+	// TOML configs spell the transport key "transport"; JSON configs spell it
+	// "type". Accept both so drift checks read back either family.
+	if srv.Transport == "" {
+		if transport, ok := raw["transport"].(string); ok {
+			srv.Transport = transport
+		}
+	}
 	return srv
 }
 
@@ -169,10 +270,20 @@ func EncodeJSON(root map[string]any) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 // RenderTOMLServerBlock renders the TOML block for one server, matching Codex's
-// [mcp_servers.<name>] convention with command/args/env keys.
+// [mcp_servers.<name>] convention. stdio entries keep the historical
+// command/args/env shape; remote entries render the documented url/transport
+// keys. Custom headers are not rendered: only targets whose RemoteRender
+// accepts headers get them, and those are JSON targets today.
 func RenderTOMLServerBlock(table, name string, srv Server) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s.%s]\n", table, name)
+	if srv.URL != "" {
+		if srv.Transport != "" && srv.Transport != "stdio" {
+			fmt.Fprintf(&b, "transport = %q\n", srv.Transport)
+		}
+		fmt.Fprintf(&b, "url = %q\n", srv.URL)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "command = %q\n", srv.Command)
 	if len(srv.Args) > 0 {
 		fmt.Fprintf(&b, "args = [\"%s\"]\n", strings.Join(srv.Args, "\", \""))
@@ -256,19 +367,30 @@ func replaceTOMLBlock(src, tableHeader, subtablePrefix string, replacement *stri
 // TOMLServer parses one [<table>.<name>] entry back into a Server, for drift
 // checks. A missing or malformed entry reports false.
 func TOMLServer(src, table, name string) (Server, bool) {
-	var root map[string]any
-	if err := toml.Unmarshal([]byte(src), &root); err != nil {
+	servers, err := TOMLServers(src, table)
+	if err != nil {
 		return Server{}, false
 	}
-	tables, ok := root[table].(map[string]any)
-	if !ok {
-		return Server{}, false
-	}
-	raw, ok := tables[name].(map[string]any)
+	raw, ok := servers[name].(map[string]any)
 	if !ok {
 		return Server{}, false
 	}
 	return serverFromMap(raw), true
+}
+
+// TOMLServers parses every [<table>.<name>] entry of a TOML config, keyed by
+// name, for the bulk import path. A malformed file reports an error; a file
+// without the table yields an empty map.
+func TOMLServers(src, table string) (map[string]any, error) {
+	var root map[string]any
+	if err := toml.Unmarshal([]byte(src), &root); err != nil {
+		return nil, fmt.Errorf("parse TOML: %w", err)
+	}
+	tables, ok := root[table].(map[string]any)
+	if !ok || tables == nil {
+		return map[string]any{}, nil
+	}
+	return tables, nil
 }
 
 // ---------------------------------------------------------------------------

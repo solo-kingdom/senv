@@ -42,6 +42,27 @@ type Target struct {
 	TOMLTableName string
 	// Note is extra guidance printed after a write (e.g. "restart Cursor").
 	Note string
+	// Remote describes which remote (http/sse) entries this target accepts.
+	// Only transports verified against the agent's current documentation are
+	// enabled; anything else must produce an explicit plan error rather than a
+	// config the agent may silently fail to load.
+	Remote RemoteRender
+}
+
+// RemoteRender is a target's verified capability for remote MCP entries.
+type RemoteRender struct {
+	// HTTP accepts streamable-HTTP entries.
+	HTTP bool
+	// SSE accepts legacy SSE entries.
+	SSE bool
+	// Headers accepts per-entry custom headers on remote entries.
+	Headers bool
+	// TypeKey renders the transport type key ("type" in JSON configs,
+	// "transport" in TOML configs) on remote entries. Targets that auto-detect
+	// the transport and have no documented type key set this false.
+	TypeKey bool
+	// Reason explains a missing capability, for export plan errors.
+	Reason string
 }
 
 // ResolveConfigPath resolves the target's config path for a scope.
@@ -59,6 +80,7 @@ func Supported() []Target {
 			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".claude.json") },
 			JSONServersKey: "mcpServers",
 			Note:           "Restart Claude Code (or run `claude`) for the server to load.",
+			Remote:         RemoteRender{HTTP: true, SSE: true, Headers: true, TypeKey: true},
 		},
 		{
 			ID:             "claude-desktop",
@@ -67,6 +89,9 @@ func Supported() []Target {
 			ConfigPath:     claudeDesktopConfigPath,
 			JSONServersKey: "mcpServers",
 			Note:           "Quit and reopen Claude Desktop to load the server.",
+			Remote: RemoteRender{
+				Reason: "claude-desktop config files only support stdio servers; add remote servers via the in-app Connectors UI",
+			},
 		},
 		{
 			ID:     "cursor",
@@ -80,6 +105,7 @@ func Supported() []Target {
 			},
 			JSONServersKey: "mcpServers",
 			Note:           "Restart Cursor (or reload the window) for the server to load.",
+			Remote:         RemoteRender{HTTP: true, SSE: true, Headers: true, TypeKey: true},
 		},
 		{
 			ID:            "codex",
@@ -88,14 +114,22 @@ func Supported() []Target {
 			ConfigPath:    func(home, _ string) string { return filepath.Join(home, ".codex", "config.toml") },
 			TOMLTableName: "mcp_servers",
 			Note:          "Restart Codex for the server to load.",
+			Remote: RemoteRender{
+				HTTP: true, SSE: true, TypeKey: true,
+				Reason: "codex mcp_servers entries have no headers key; put the token into the url or use codex mcp login",
+			},
 		},
 		{
+			// ZCode reads its config from ~/.zcode/cli/config.json with servers
+			// under "mcp.servers" (verified against a live install); the older
+			// ~/.zcode/config.json path does not exist in current versions.
 			ID:             "zcode",
 			Name:           "ZCode",
 			Format:         FormatJSON,
-			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".zcode", "config.json") },
-			JSONServersKey: "mcpServers",
+			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".zcode", "cli", "config.json") },
+			JSONServersKey: "mcp.servers",
 			Note:           "Restart ZCode for the server to load.",
+			Remote:         RemoteRender{HTTP: true, Headers: true, TypeKey: true, Reason: "sse entries are not verified for zcode"},
 		},
 		{
 			ID:             "kimi",
@@ -104,6 +138,7 @@ func Supported() []Target {
 			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".kimi", "mcp.json") },
 			JSONServersKey: "mcpServers",
 			Note:           "Restart Kimi CLI for the server to load.",
+			Remote:         RemoteRender{HTTP: true, Headers: true, Reason: "sse entry shape is not verified for Kimi CLI"},
 		},
 		{
 			ID:             "pi",
@@ -112,8 +147,39 @@ func Supported() []Target {
 			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".pi", "config.json") },
 			JSONServersKey: "mcpServers",
 			Note:           "Restart PI for the server to load.",
+			Remote: RemoteRender{
+				Reason: "pi has no built-in MCP support (extension adapters only); remote entries are not verified",
+			},
 		},
 	}
+}
+
+// RemoteError reports why srv cannot be exported to this target, or nil when
+// the target accepts it. stdio entries always pass.
+func (t Target) RemoteError(srv Server) error {
+	if srv.URL == "" {
+		return nil
+	}
+	transport := srv.Transport
+	if transport == "" {
+		transport = "http"
+	}
+	switch transport {
+	case "http":
+		if !t.Remote.HTTP {
+			return fmt.Errorf("%s does not support http MCP entries: %s", t.Name, t.Remote.Reason)
+		}
+	case "sse":
+		if !t.Remote.SSE {
+			return fmt.Errorf("%s does not support sse MCP entries: %s", t.Name, t.Remote.Reason)
+		}
+	default:
+		return fmt.Errorf("%s does not support %s MCP entries", t.Name, transport)
+	}
+	if len(srv.Headers) > 0 && !t.Remote.Headers {
+		return fmt.Errorf("%s remote entries do not support headers: %s", t.Name, t.Remote.Reason)
+	}
+	return nil
 }
 
 // Find looks up a target by id (case-insensitive).

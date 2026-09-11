@@ -13,29 +13,34 @@ import (
 // invocations (the CLI tests bypass cobra's own parsing).
 func resetMCPAddFlags(t *testing.T) {
 	t.Helper()
-	prev := []any{mcpAddTransport, mcpAddCommand, mcpAddArgs, mcpAddEnv, mcpAddDescription}
+	prev := []any{mcpAddTransport, mcpAddCommand, mcpAddArgs, mcpAddEnv, mcpAddDescription, mcpAddURL, mcpAddHeaders}
 	mcpAddTransport = "stdio"
 	mcpAddCommand, mcpAddArgs, mcpAddEnv, mcpAddDescription = "", nil, nil, ""
+	mcpAddURL, mcpAddHeaders = "", nil
 	t.Cleanup(func() {
 		mcpAddTransport = prev[0].(string)
 		mcpAddCommand = prev[1].(string)
 		mcpAddArgs = prev[2].([]string)
 		mcpAddEnv = prev[3].([]string)
 		mcpAddDescription = prev[4].(string)
+		mcpAddURL = prev[5].(string)
+		mcpAddHeaders = prev[6].([]string)
 	})
 }
 
 func resetMCPEditFlags(t *testing.T) {
 	t.Helper()
-	fields := []string{"command", "arg", "env", "unset-env", "description"}
+	fields := []string{"command", "arg", "env", "unset-env", "description", "transport", "url", "header", "unset-header"}
 	for _, name := range fields {
 		if flag := mcpEditCmd.Flags().Lookup(name); flag != nil {
 			flag.Changed = false
 		}
 	}
 	mcpEditCommand, mcpEditArgs, mcpEditEnv, mcpEditUnsetEnv, mcpEditDescription = "", nil, nil, nil, ""
+	mcpEditTransport, mcpEditURL, mcpEditHeaders, mcpEditUnsetHeader = "", "", nil, nil
 	t.Cleanup(func() {
 		mcpEditCommand, mcpEditArgs, mcpEditEnv, mcpEditUnsetEnv, mcpEditDescription = "", nil, nil, nil, ""
+		mcpEditTransport, mcpEditURL, mcpEditHeaders, mcpEditUnsetHeader = "", "", nil, nil
 		for _, name := range fields {
 			if flag := mcpEditCmd.Flags().Lookup(name); flag != nil {
 				flag.Changed = false
@@ -138,11 +143,11 @@ func TestMCPServerAddValidation(t *testing.T) {
 		})
 	}
 
-	// Non-stdio transports are rejected with an explicit message.
+	// A remote add without --url is rejected by profile validation.
 	mcpAddCommand, mcpAddArgs, mcpAddEnv = "npx", nil, nil
 	mcpAddTransport = "http"
 	err := mcpAddCmd.RunE(&cobra.Command{}, []string{"remote"})
-	if err == nil || !strings.Contains(err.Error(), "only \"stdio\" is supported") {
+	if err == nil || !strings.Contains(err.Error(), "url is required") {
 		t.Fatalf("transport error = %v", err)
 	}
 

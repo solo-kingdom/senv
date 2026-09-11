@@ -240,8 +240,17 @@ func TestMCPFormCreateEditAndRejects(t *testing.T) {
 	if tab.form == nil {
 		t.Fatal("n should open the create form")
 	}
-	if strings.Contains(tab.form.View(), "transport") {
-		t.Fatal("transport must not appear in the form")
+	tab = submitMCPForm(t, tab, map[string]string{"alias": "dup", "transport": "stdio", "command": ""})
+	tab.cancelMode()
+	out, _ = tab.Update(runeKey("n"))
+	tab = out.(*mcpTab)
+	if !strings.Contains(tab.form.View(), "transport") {
+		t.Fatal("transport must appear in the form")
+	}
+	// stdio 传输下不出现 remote 字段。
+	view := tab.form.View()
+	if strings.Contains(view, "url") || strings.Contains(view, "headers") {
+		t.Fatalf("stdio form must not offer remote fields:\n%s", view)
 	}
 
 	tab = submitMCPForm(t, tab, map[string]string{"alias": "github", "command": ""})
@@ -344,7 +353,7 @@ func TestMCPExportPlanCancelAndCurrentAliasOnly(t *testing.T) {
 	out, cmd := tab.Update(runeKey("x"))
 	tab = flushTab(out, cmd).(*mcpTab)
 	plan := tab.View()
-	if !strings.Contains(plan, "导出计划") || !strings.Contains(plan, "[明文 env]") {
+	if !strings.Contains(plan, "导出计划") || !strings.Contains(plan, "[明文]") {
 		t.Fatalf("plan missing labels:\n%s", plan)
 	}
 	if tab.exportPlan == nil || len(tab.exportPlan.Items) != 1 || tab.exportPlan.Items[0].Alias != "github" {
@@ -603,5 +612,143 @@ func TestMCPUnexportAbsentOnlyDoesNotFakeSuccess(t *testing.T) {
 		if c.event == session.AuditOpMCPExport && c.success {
 			t.Fatalf("absent-only unexport must not record success audit: %+v", c)
 		}
+	}
+}
+
+func TestMCPFormRemoteTransportSwitchesFields(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	tab = loadMCPTab(t, tab)
+
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*mcpTab)
+	if tab.form == nil {
+		t.Fatal("n should open the create form")
+	}
+	// 切到 http：tab 聚焦 transport 字段后按 l 循环选项。
+	tab.form.moveFocus(1)
+	if tab.form.fields[tab.form.index].key != "transport" {
+		t.Fatalf("focused field = %s, want transport", tab.form.fields[tab.form.index].key)
+	}
+	tab.form, _ = tab.form.Update(runeKey("l"))
+	view := tab.form.View()
+	for _, want := range []string{"url", "headers"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("remote form missing %q:\n%s", want, view)
+		}
+	}
+	for _, hidden := range []string{"command", "args", "env"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("remote form must not offer %q:\n%s", hidden, view)
+		}
+	}
+
+	// remote 缺 url：表单内联报错并保持打开。
+	tab = submitMCPForm(t, tab, map[string]string{"alias": "web", "transport": "http", "url": ""})
+	if tab.form == nil {
+		t.Fatal("missing url must keep the form open")
+	}
+	if _, err := tab.mgr.MCP.Get("web"); err == nil {
+		t.Fatal("missing url must not create a profile")
+	}
+
+	// 填齐 url/headers 后提交成功，stdio 字段为空。
+	tab = submitMCPForm(t, tab, map[string]string{
+		"alias":   "web",
+		"url":     "https://api.example.com/mcp?key=" + mcpSecret,
+		"headers": "Authorization: Bearer tok\nX-Api-Key: k1",
+	})
+	if tab.form != nil {
+		t.Fatalf("form still open: %s", tab.form.View())
+	}
+	entry, err := tab.mgr.MCP.Get("web")
+	if err != nil {
+		t.Fatalf("remote profile not created: %v", err)
+	}
+	if entry.Transport != "http" || entry.Command != "" || len(entry.Env) != 0 {
+		t.Fatalf("remote profile = %+v", entry)
+	}
+	if len(entry.Headers) != 2 {
+		t.Fatalf("headers = %v", entry.Headers)
+	}
+}
+
+func TestMCPDetailRemoteMasksHeadersAndQuery(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	if err := tab.mgr.MCP.Add(&storage.MCPServerEntry{
+		Alias:     "web",
+		Transport: storage.MCPTransportHTTP,
+		URL:       "https://api.example.com/mcp?key=" + mcpSecret,
+		Headers:   map[string]string{"Authorization": "Bearer " + mcpSecret, "X-Api-Key": "k1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tab = loadMCPTab(t, tab)
+	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab = out.(*mcpTab)
+	view := tab.View()
+	for _, want := range []string{"web", "https://api.example.com", "Authorization", "X-Api-Key"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("remote detail missing %q:\n%s", want, view)
+		}
+	}
+	for _, leaked := range []string{"key=" + mcpSecret, mcpSecret, "Bearer"} {
+		if strings.Contains(view, leaked) {
+			t.Fatalf("remote detail leaked %q:\n%s", leaked, view)
+		}
+	}
+}
+
+func TestMCPServerListShowsRemoteOrigin(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	if err := tab.mgr.MCP.Add(&storage.MCPServerEntry{
+		Alias:     "web",
+		Transport: storage.MCPTransportHTTP,
+		URL:       "https://api.example.com/mcp?key=" + mcpSecret,
+		Headers:   map[string]string{"Authorization": "Bearer " + mcpSecret},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tab = loadMCPTab(t, tab)
+	view := tab.View()
+	if !strings.Contains(view, "https://api.example.com") {
+		t.Fatalf("list should show the remote origin:\n%s", view)
+	}
+	if strings.Contains(view, mcpSecret) || strings.Contains(view, "Authorization") {
+		t.Fatalf("list leaked query/header values:\n%s", view)
+	}
+}
+
+func TestMCPFormEditSwitchesTransportCleanly(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	addMCPProfile(t, tab, "gh", "npx", map[string]string{"K": "v"})
+	tab = loadMCPTab(t, tab)
+
+	out, _ := tab.Update(runeKey("e"))
+	tab = out.(*mcpTab)
+	// 编辑表单：切到 http 并填 url/headers 后提交。
+	tab.form.moveFocus(1)
+	tab.form, _ = tab.form.Update(runeKey("l"))
+	tab = submitMCPForm(t, tab, map[string]string{
+		"alias":       "gh",
+		"transport":   "http",
+		"url":         "https://api.example.com/mcp",
+		"headers":     "Authorization: Bearer tok",
+		"description": "switched",
+	})
+	entry, err := tab.mgr.MCP.Get("gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Transport != "http" || entry.URL != "https://api.example.com/mcp" {
+		t.Fatalf("switched entry = %+v", entry)
+	}
+	if entry.Command != "" || len(entry.Args) != 0 || len(entry.Env) != 0 {
+		t.Fatalf("switched entry kept stdio fields: %+v", entry)
+	}
+	if entry.Description != "switched" {
+		t.Fatalf("description lost: %+v", entry)
+	}
+	if entry.CreatedAt.IsZero() {
+		t.Fatal("switched entry lost CreatedAt")
 	}
 }

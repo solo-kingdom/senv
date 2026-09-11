@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-11
+goal: 修复批：全局搜索结果窗口化、history q 绕过退出守卫、config All 伪组与 Config Tab 布局 spec 对齐

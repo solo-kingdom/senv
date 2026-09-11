@@ -84,3 +84,32 @@ func TestMCPToolCatalogueHasNoMCPWriteTools(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPServerListToolHidesRemoteValues(t *testing.T) {
+	newAuditTestProject(t)
+	resetMCPAddFlags(t)
+	mcpAddTransport = "http"
+	mcpAddURL = "https://api.example.com/mcp?key=remote-secret-token"
+	mcpAddHeaders = []string{"Authorization: Bearer remote-secret-token"}
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"web"}))
+	manager, err := getMCPManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestManagers := &managers{mcpServer: manager, autoPull: func() {}}
+	res, _, err := requestManagers.mcpServerList(context.Background(), nil, struct{}{})
+	if err != nil || res.IsError {
+		t.Fatalf("mcp_server_list = %v, %v", res, err)
+	}
+	text := textOf(t, res)
+	if strings.Contains(text, "remote-secret-token") || strings.Contains(text, "https://") || strings.Contains(text, "Authorization") {
+		t.Fatalf("mcp_server_list leaked remote values: %s", text)
+	}
+	var servers []map[string]any
+	if err := json.Unmarshal([]byte(text), &servers); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if servers[0]["alias"] != "web" || servers[0]["transport"] != "http" {
+		t.Fatalf("server row = %v", servers[0])
+	}
+}

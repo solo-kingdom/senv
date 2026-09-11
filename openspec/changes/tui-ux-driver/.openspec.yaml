@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-11
+goal: 提升 TUI 的用户体验：统一支持分组、多选、搜索等交互能力，并补充其他易用性改造
+skip_specs: true

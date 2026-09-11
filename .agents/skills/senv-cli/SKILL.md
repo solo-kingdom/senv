@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.7"
+  version: "1.8"
 ---
 
 # senv：agent 使用指南
@@ -60,7 +60,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。
 - SSH Tab：两栏（host / keypair）。host 栏 `n` 新建、`e` 表单编辑、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段；keypair 栏 `n`/`i` 导入、`R` 重命名（自动联动 host `identityKey`）、`d` 删除、`m` materialize、`x` 导出全部。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`。
 - AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`m` 对已指向的 agent 仅换默认模型，候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、模型上下文、模型输出、模型推理、默认推理档、输入模态、默认模型与凭据来源；模型上下文用 `<model>=<tokens>` 逗号分隔，默认推理档用 `<model>=<effort>` 或集合级单一档位，输入模态用 `<model>=<mod>[,<mod>...]`。凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。详情弹层展示各模型已保存的 context / output / reasoning / 默认推理档 / 输入模态。
-- MCP Tab：两栏（档案 / 导出目标 agent，agent 集合与 `senv mcp export` 相同，含 claude-desktop/cursor）。档案栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除（不自动撤回）、`enter` 详情；`x`/`u` 当前档案 × 当前 agent，`X`/`U` 当前档案 × 全部 agent。计划页 `y` 确认 / `esc` 取消 / `F` 覆盖漂移；撤回被改过的条目逐条 `y/n`。列表/详情/计划不渲染 env 字面量；`$EDITOR` 是 TUI 内唯一解密面。`mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
+- MCP Tab：两栏（档案 / 导出目标 agent，agent 集合与 `senv mcp export` 相同，含 claude-desktop/cursor）。档案栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除（不自动撤回）、`enter` 详情；`x`/`u` 当前档案 × 当前 agent，`X`/`U` 当前档案 × 全部 agent。表单含 transport 选择（stdio/http/sse）：stdio 下填 command/args/env，http/sse 下只出现 url/headers（headers 经 `$EDITOR` 按 `Name: Value` 行编辑）。计划页 `y` 确认 / `esc` 取消 / `F` 覆盖漂移；撤回被改过的条目逐条 `y/n`。列表/详情/计划不渲染 env 字面量、header 值与 url query（remote 只显示 `scheme://host` 与 header 键名）；`$EDITOR` 是 TUI 内唯一解密面。`mcp install` / `serve` / `list-tools`、`import`、`--print`、`--scope project` 仍走 CLI。
 - 只读详情：Config/SSH/AI/MCP 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
 - 同步状态：server 模式且未关闭 `auto_sync` 时底部常驻「N 条待推送 / 已同步 时间」；启动不等待网络——本地数据先行渲染，远端拉取在后台完成（2 秒预算，`--refresh` 绕过节流窗口），应用了变更会提示「已从 server 更新 N 条」并自动更新各标签；写操作后后台异步推送（2 秒预算）；git 模式不显示也不拉取。
 - TUI 写操作会进本机操作审计（`senv audit` 可见），target 只含 group/key/name 等标识，不含值。
@@ -100,14 +100,16 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## MCP Server 档案与导出
 
-- 档案存 vault，别名唯一标识；V1 只支持 `stdio`：`senv mcp add github --command npx --arg -y --arg @modelcontextprotocol/server-github --env GITHUB_TOKEN={{env:secrets:GH_TOKEN}}`。`--arg` 可重复且保序；`--env KEY=VALUE` 可重复，值里的 `{{env:...}}`/`{{text:...}}` 按模板原样存储、导出时才解析。
-- `senv mcp list` 只列别名/传输/命令/env 键名，**不输出值**；`senv mcp get <alias>` 才展示完整字段（含值），是 CLI 解密面。`senv mcp edit <alias>` 就地改字段（别名不可改；传 `--arg` 替换整个参数列表，传 `--env` 替换整个 env 集合，`--unset-env KEY` 删单个键）。`senv mcp delete <alias>` 只删档案，不动任何 agent 配置。
-- 导出：`senv mcp export --agent codex,cursor` 或 `--all`（必须显式给目标，没有默认全量）。按目标 agent 的格式合并写入其**全局配置**：JSON 族写 `mcpServers`，Codex 写 `[mcp_servers.<alias>]`。`--dry-run` 只出计划，`--print` 只输出片段，二者都不落盘。
-- **明文落盘**：导出会把解析后的 env 值明文写进 agent 配置文件（0600，覆盖前备份 `<file>.bak`）。计划里会标出哪些条目含明文，执行前需确认；agent 与用户确认是必要前提，不要把值复述进回复或日志。
-- 漂移与覆盖：senv 用本机台账 `~/.config/senv/mcp-exports.json`（不进 vault、不同步）判断条目是否由自己写入；目标条目被本地改过或是别人写的，默认拒绝覆盖，需 `--force`。台账损坏时按「全部外部条目」处理。
-- 撤回：`senv mcp unexport --agent <id>|--all [alias...]`，依据台账移除；与 senv 写入内容一致的直接删除，被本地改过的需逐条确认。删除档案不会自动撤回已导出的条目。
+- 档案存 vault，别名唯一标识。传输三选一，字段互斥：`stdio` 用 `--command`（必填）/`--arg`/`--env`；`http`/`sse` 用 `--url`（必填，http(s)）/`--header "Name: Value"`，不接受 command/args/env。`senv mcp add github --command npx --arg -y --arg @modelcontextprotocol/server-github --env GITHUB_TOKEN={{env:secrets:GH_TOKEN}}`；remote 示例：`senv mcp add web --transport http --url "https://api.example.com/mcp?key={{env:secrets:KEY}}" --header "Authorization: Bearer {{env:secrets:T}}"`。`--arg`/`--header` 可重复；url/header 值与 env 值一样按模板原样存储、导出时才解析。
+- `senv mcp import <file> [--dry-run]`：把既有 agent 配置文件批量建档。JSON 读 `mcpServers` 对象（Claude/Cursor/ZCode/Kimi 惯例），`.toml` 读 `[mcp_servers.<alias>]`（Codex）。传输识别：显式 `type`（http/sse/stdio）优先，无 type 有 `url` 按 `http`，有 `command` 按 `stdio`；codex 的 `transport: streamable-http` 归一为 `http`。值原样保存；别名已存在报 conflict 跳过（**从不覆盖**）；个别条目失败不中止其余，命令以非零退出汇总。
+- `senv mcp list` 只列别名/传输/命令（remote 显示 `scheme://host` 来源）/env 键名，**不输出值、url query 与 header**；`senv mcp get <alias>` 才展示完整字段（含值），是 CLI 解密面。`senv mcp edit <alias>` 就地改字段（别名不可改；`--transport` 可切换传输，切换后字段集整体替换并按目标传输校验，失败不落库；`--arg`/`--env`/`--header` 传了即整体替换，`--unset-env`/`--unset-header` 删单个键）。`senv mcp delete <alias>` 只删档案，不动任何 agent 配置。
+- 导出：`senv mcp export --agent codex,cursor` 或 `--all`（必须显式给目标，没有默认全量）。按目标 agent 的格式合并写入其**全局配置**：JSON 族 stdio 写 `command/args/env`、remote 写 `type/url/headers`；Codex TOML 写 `url`（+`transport`）。`--dry-run` 只出计划，`--print` 只输出片段，二者都不落盘。
+- **remote 能力矩阵**：目标 agent 配置格式表达不了的条目在计划里标 `error` 并说明原因，该 agent 文件不动、其余 agent 继续（已知：claude-desktop 与 pi 不支持任何 remote 条目；codex remote 不支持 headers；zcode/kimi 未核验 sse）。senv 只写各 agent 文档化键，不猜键名。
+- **明文落盘**：导出会把解析后的 env、url 与 header 值明文写进 agent 配置文件（0600，覆盖前备份 `<file>.bak`）。计划里会标出哪些条目含明文，执行前需确认；agent 与用户确认是必要前提，不要把值复述进回复或日志。
+- 漂移与覆盖：senv 用本机台账 `~/.config/senv/mcp-exports.json`（不进 vault、不同步）判断条目是否由自己写入（指纹覆盖 url/headers）；目标条目被本地改过或是别人写的，默认拒绝覆盖，需 `--force`。台账损坏时按「全部外部条目」处理。旧版本导出的 stdio 条目指纹在升级后依然有效。
+- 撤回：`senv mcp unexport --agent <id>|--all [alias...]`，依据台账移除（传输无关）；与 senv 写入内容一致的直接删除，被本地改过的需逐条确认。删除档案不会自动撤回已导出的条目。
 - `command` 原样写入，不做绝对路径归一（`npx`/`uvx` 依赖 agent 自身 PATH）；不透传 `disabled`/`autoApprove` 等 agent 特有键。
-- MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值与 env 键名）；导出与写入走 CLI 或 TUI MCP Tab，不能通过 MCP 工具做。
+- MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值、env 键名、url 与 headers）；导出、导入与写入走 CLI 或 TUI MCP Tab，不能通过 MCP 工具做。
 
 ## server 模式
 
@@ -143,8 +145,10 @@ senv host list                           # 只看 SSH host 连接元数据
 senv ai status                           # 查看 coding agent 的 provider/默认模型（N 个模型）；已解锁时附漂移提示
 senv ai provider edit <alias> [flags]    # 就地编辑档案（别名不可改；--api-shape 声明/清除形态）
 senv mcp add github --command npx --arg -y --arg @modelcontextprotocol/server-github
+senv mcp add web --transport http --url "https://api.example.com/mcp?key={{env:secrets:K}}" --header "Authorization: Bearer {{env:secrets:T}}"
+senv mcp import ~/.claude.json --dry-run  # 批量导入既有配置（JSON mcpServers / Codex TOML）
 senv mcp list && senv mcp get github     # list 不含值；get 展示完整字段
-senv mcp export --all --dry-run          # 先看计划与明文落盘点
+senv mcp export --all --dry-run          # 先看计划与明文落盘点（remote 不被支持的目标标 error）
 senv mcp export --agent codex,cursor     # 确认后写入 agent 全局配置
 senv mcp unexport --agent codex          # 撤回（被本地改过的需逐条确认）
 ```

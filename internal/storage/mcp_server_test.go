@@ -70,7 +70,7 @@ func TestMCPServerValidation(t *testing.T) {
 	}{
 		{
 			name:  "unsupported transport",
-			entry: &MCPServerEntry{Alias: "a", Transport: "http", Command: "npx"},
+			entry: &MCPServerEntry{Alias: "a", Transport: "webrtc", Command: "npx"},
 			want:  "unsupported transport",
 		},
 		{
@@ -96,6 +96,60 @@ func TestMCPServerValidation(t *testing.T) {
 			},
 			want: "shell variable name",
 		},
+		{
+			name:  "stdio with url rejected",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportStdio, Command: "npx", URL: "https://api.example.com/mcp"},
+			want:  "must not set url",
+		},
+		{
+			name:  "remote with command rejected",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportHTTP, URL: "https://api.example.com/mcp", Command: "npx"},
+			want:  "must not set command",
+		},
+		{
+			name:  "remote with args rejected",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportHTTP, URL: "https://api.example.com/mcp", Args: []string{"-y"}},
+			want:  "must not set args",
+		},
+		{
+			name: "remote with env rejected",
+			entry: &MCPServerEntry{
+				Alias: "a", Transport: MCPTransportSSE, URL: "https://api.example.com/sse",
+				Env: map[string]string{"K": "v"},
+			},
+			want: "must not set env",
+		},
+		{
+			name:  "remote missing url",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportHTTP},
+			want:  "url is required",
+		},
+		{
+			name:  "remote url bad scheme",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportHTTP, URL: "ftp://api.example.com/mcp"},
+			want:  "http(s)",
+		},
+		{
+			name:  "remote url with space",
+			entry: &MCPServerEntry{Alias: "a", Transport: MCPTransportHTTP, URL: "https://api.example.com/mcp key=x"},
+			want:  "spaces or control characters",
+		},
+		{
+			name: "invalid header name",
+			entry: &MCPServerEntry{
+				Alias: "a", Transport: MCPTransportHTTP, URL: "https://api.example.com/mcp",
+				Headers: map[string]string{"Not A Header": "v"},
+			},
+			want: "not a valid HTTP header name",
+		},
+		{
+			name: "header value control char",
+			entry: &MCPServerEntry{
+				Alias: "a", Transport: MCPTransportHTTP, URL: "https://api.example.com/mcp",
+				Headers: map[string]string{"X-Api-Key": "line1\nline2"},
+			},
+			want: "control characters",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,6 +161,34 @@ func TestMCPServerValidation(t *testing.T) {
 	}
 	if _, err := mgr.LoadMCPServerWithKey("../escape", key); err == nil {
 		t.Fatal("LoadMCPServerWithKey() accepted a path-traversal alias")
+	}
+}
+
+func TestSaveAndLoadRemoteMCPServer(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	entry := &MCPServerEntry{
+		Alias:     "web-reader",
+		Transport: MCPTransportHTTP,
+		URL:       "https://api.example.com/mcp?key={{env:secrets:KEY}}",
+		Headers:   map[string]string{"Authorization": "Bearer {{text:secrets:T}}"},
+	}
+	if err := mgr.SaveMCPServerWithKey("web-reader", entry, key); err != nil {
+		t.Fatalf("SaveMCPServerWithKey: %v", err)
+	}
+	got, err := mgr.LoadMCPServerWithKey("web-reader", key)
+	if err != nil {
+		t.Fatalf("LoadMCPServerWithKey: %v", err)
+	}
+	if got.Transport != MCPTransportHTTP {
+		t.Fatalf("transport = %q, want http", got.Transport)
+	}
+	// URL and header values stay raw at rest; only export resolves them.
+	if got.URL != "https://api.example.com/mcp?key={{env:secrets:KEY}}" {
+		t.Fatalf("url = %q, want the raw template", got.URL)
+	}
+	if got.Headers["Authorization"] != "Bearer {{text:secrets:T}}" {
+		t.Fatalf("header = %q, want the raw template", got.Headers["Authorization"])
 	}
 }
 

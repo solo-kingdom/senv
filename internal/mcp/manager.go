@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/wii/senv/internal/storage"
@@ -18,11 +19,14 @@ import (
 var ErrExists = errors.New("MCP server already exists")
 
 // Server is the safe summary view used by list, TUI and MCP surfaces. It
-// carries env key names but never env values.
+// carries env key names but never env values, and for remote profiles only
+// the raw url (never headers). The url may embed {{...}} templates; callers
+// that must not show query strings derive the origin from it.
 type Server struct {
 	Alias       string    `json:"alias"`
 	Transport   string    `json:"transport"`
 	Command     string    `json:"command"`
+	URL         string    `json:"url,omitempty"`
 	Description string    `json:"description,omitempty"`
 	EnvKeys     []string  `json:"env_keys,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -147,6 +151,7 @@ func (m *Manager) List() ([]Server, error) {
 			Alias:       entry.Alias,
 			Transport:   entry.Transport,
 			Command:     entry.Command,
+			URL:         entry.URL,
 			Description: entry.Description,
 			EnvKeys:     sortedEnvKeys(entry.Env),
 			UpdatedAt:   entry.UpdatedAt,
@@ -165,4 +170,36 @@ func sortedEnvKeys(env map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// URLOrigin reduces a URL to scheme://host, stripping path and query so
+// summaries can name a remote server without leaking credential parameters.
+// It cuts on the first path slash instead of url.Parse, because a stored url
+// may embed {{...}} templates and be unparseable.
+func URLOrigin(raw string) string {
+	rest, found := strings.CutPrefix(raw, "https://")
+	if found {
+		return "https://" + hostOf(rest)
+	}
+	rest, found = strings.CutPrefix(raw, "http://")
+	if found {
+		return "http://" + hostOf(rest)
+	}
+	return raw
+}
+
+func hostOf(rest string) string {
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+// Target is what a summary line shows in place of the launch command: the
+// command for stdio profiles, the url origin for remote ones.
+func (s Server) Target() string {
+	if s.URL == "" {
+		return s.Command
+	}
+	return URLOrigin(s.URL)
 }

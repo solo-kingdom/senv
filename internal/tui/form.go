@@ -59,6 +59,10 @@ type formField struct {
 	// preview, if set, replaces the default editor-field summary so a tab can
 	// show identifiers (env keys) without echoing the field value.
 	preview func(string) string
+	// visible, if set, hides the field unless it returns true for the current
+	// form values. Hidden fields are skipped by navigation, validation and
+	// rendering, but keep their value (the tab decides what to submit).
+	visible func(values map[string]string) bool
 }
 
 // enumOptions returns the selectable candidates, with an explicit empty choice
@@ -114,6 +118,14 @@ func (f *form) SetSize(width, height int) {
 	if f.input.Width < 8 {
 		f.input.Width = 8
 	}
+}
+
+// fieldVisible reports whether the field at index i participates in the form.
+func (f *form) fieldVisible(i int) bool {
+	if f.fields[i].visible == nil {
+		return true
+	}
+	return f.fields[i].visible(f.Values())
 }
 
 // Values returns the collected field values keyed by formField.key.
@@ -179,14 +191,19 @@ func (f *form) isTextLike() bool {
 	return false
 }
 
-// moveFocus changes the active field without wrapping.
+// moveFocus changes the active field without wrapping, skipping hidden fields.
 func (f *form) moveFocus(delta int) {
 	f.commitInput()
-	next := f.index + delta
-	if next < 0 || next >= len(f.fields) {
-		return
+	for {
+		next := f.index + delta
+		if next < 0 || next >= len(f.fields) {
+			return
+		}
+		f.index = next
+		if f.fieldVisible(f.index) {
+			break
+		}
 	}
-	f.index = next
 	f.syncInput()
 }
 
@@ -209,12 +226,13 @@ func (f *form) cycleOption(delta int) {
 	f.syncInput()
 }
 
-// validateAll runs each field validator and records inline errors.
+// validateAll runs each field validator and records inline errors. Hidden
+// fields are not validated: their stale values must not block a submit.
 func (f *form) validateAll() bool {
 	ok := true
 	for i := range f.fields {
 		f.errs[i] = ""
-		if f.fields[i].validate == nil {
+		if f.fields[i].validate == nil || !f.fieldVisible(i) {
 			continue
 		}
 		if err := f.fields[i].validate(f.fields[i].value); err != nil {
@@ -305,6 +323,9 @@ func (f *form) openEditor() tea.Cmd {
 func (f *form) View() string {
 	lines := make([]string, 0, len(f.fields)*2+1)
 	for i, field := range f.fields {
+		if !f.fieldVisible(i) {
+			continue
+		}
 		cursor := "  "
 		label := field.label
 		if i == f.index {

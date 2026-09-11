@@ -45,23 +45,68 @@ func parseMCPEnv(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
+// parseMCPHeaders parses repeated "Name: Value" flags. Values may be empty and
+// may contain ':', so only the first separator is significant.
+func parseMCPHeaders(pairs []string) (map[string]string, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	headers := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		key, value, found := strings.Cut(pair, ":")
+		if !found || strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("invalid --header %q: expected \"Name: Value\"", pair)
+		}
+		key = strings.TrimSpace(key)
+		if _, dup := headers[key]; dup {
+			return nil, fmt.Errorf("duplicate --header key %q", key)
+		}
+		headers[key] = strings.TrimSpace(value)
+	}
+	return headers, nil
+}
+
+// validateMCPTransport checks the --transport value early so a typo fails
+// before authentication and vault access.
+func validateMCPTransport(transport string) error {
+	switch transport {
+	case storage.MCPTransportStdio, storage.MCPTransportHTTP, storage.MCPTransportSSE:
+		return nil
+	default:
+		return fmt.Errorf("unsupported transport %q: only %q, %q, %q are supported",
+			transport, storage.MCPTransportStdio, storage.MCPTransportHTTP, storage.MCPTransportSSE)
+	}
+}
+
 var mcpAddCmd = &cobra.Command{
 	Use:   "add <alias>",
 	Short: "Add an MCP server profile",
 	Long: `Store an MCP server definition in the vault so it can be exported into
 coding-agent global configs with ` + "`senv mcp export`" + `.
 
-Only the stdio transport is supported; env values may embed {{env:...}} or
-{{text:...}} references, which are stored raw and resolved at export time.
+Transports: stdio (a local command), http and sse (a remote URL). stdio
+profiles take --command/--arg/--env; remote profiles take --url/--header and
+reject stdio fields. Values may embed {{env:...}} or {{text:...}} references,
+which are stored raw and resolved at export time.
 
 Examples:
   senv mcp add github --command npx \
     --arg -y --arg @modelcontextprotocol/server-github \
-    --env GITHUB_TOKEN={{env:secrets:GH_TOKEN}}`,
+    --env GITHUB_TOKEN={{env:secrets:GH_TOKEN}}
+  senv mcp add web --transport http \
+    --url "https://api.example.com/mcp?key={{env:secrets:KEY}}" \
+    --header "Authorization: Bearer {{env:secrets:T}}"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		env, err := parseMCPEnv(mcpAddEnv)
 		if err != nil {
+			return err
+		}
+		headers, err := parseMCPHeaders(mcpAddHeaders)
+		if err != nil {
+			return err
+		}
+		if err := validateMCPTransport(mcpAddTransport); err != nil {
 			return err
 		}
 		mgr, err := getMCPManager()
@@ -74,6 +119,8 @@ Examples:
 			Command:     mcpAddCommand,
 			Args:        mcpAddArgs,
 			Env:         env,
+			URL:         mcpAddURL,
+			Headers:     headers,
 			Description: mcpAddDescription,
 		}
 		if err := mgr.Add(entry); err != nil {
@@ -102,15 +149,22 @@ var mcpGetCmd = &cobra.Command{
 		}
 		fmt.Printf("MCP server %s\n", entry.Alias)
 		fmt.Printf("  transport: %s\n", entry.Transport)
-		fmt.Printf("  command: %s\n", entry.Command)
-		if len(entry.Args) > 0 {
-			fmt.Printf("  args: %s\n", strings.Join(entry.Args, " "))
+		if entry.URL != "" {
+			fmt.Printf("  url: %s\n", entry.URL)
+		} else {
+			fmt.Printf("  command: %s\n", entry.Command)
+			if len(entry.Args) > 0 {
+				fmt.Printf("  args: %s\n", strings.Join(entry.Args, " "))
+			}
 		}
 		if entry.Description != "" {
 			fmt.Printf("  description: %s\n", entry.Description)
 		}
 		for _, key := range sortedMCPEnvKeys(entry.Env) {
 			fmt.Printf("  env %s=%s\n", key, entry.Env[key])
+		}
+		for _, key := range sortedMCPEnvKeys(entry.Headers) {
+			fmt.Printf("  header %s: %s\n", key, entry.Headers[key])
 		}
 		return nil
 	},
@@ -121,6 +175,10 @@ var (
 	mcpEditArgs        []string
 	mcpEditEnv         []string
 	mcpEditUnsetEnv    []string
+	mcpEditURL         string
+	mcpEditHeaders     []string
+	mcpEditUnsetHeader []string
+	mcpEditTransport   string
 	mcpEditDescription string
 )
 
@@ -131,18 +189,33 @@ var mcpEditCmd = &cobra.Command{
 and cannot be changed here.
 
 Supplying any --arg replaces the whole argument list; supplying any --env
-replaces the whole env set (combine with --unset-env to drop single keys).`,
+replaces the whole env set (combine with --unset-env to drop single keys); the
+same applies to --url/--header/--unset-header. --transport switches the
+transport type; the resulting field combination must satisfy that transport's
+validation rules or nothing changes.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		env, err := parseMCPEnv(mcpEditEnv)
 		if err != nil {
 			return err
 		}
+		headers, err := parseMCPHeaders(mcpEditHeaders)
+		if err != nil {
+			return err
+		}
+		if cmd.Flags().Changed("transport") {
+			if err := validateMCPTransport(mcpEditTransport); err != nil {
+				return err
+			}
+		}
 		mgr, err := getMCPManager()
 		if err != nil {
 			return err
 		}
 		err = mgr.Update(args[0], func(entry *storage.MCPServerEntry) error {
+			if cmd.Flags().Changed("transport") {
+				entry.Transport = mcpEditTransport
+			}
 			if cmd.Flags().Changed("command") {
 				entry.Command = mcpEditCommand
 			}
@@ -160,6 +233,21 @@ replaces the whole env set (combine with --unset-env to drop single keys).`,
 					return fmt.Errorf("env key %q is not set on %q", key, entry.Alias)
 				}
 				delete(entry.Env, key)
+			}
+			if cmd.Flags().Changed("url") {
+				entry.URL = mcpEditURL
+			}
+			if cmd.Flags().Changed("header") {
+				entry.Headers = headers
+			}
+			for _, key := range mcpEditUnsetHeader {
+				if entry.Headers == nil {
+					break
+				}
+				if _, ok := entry.Headers[key]; !ok && !cmd.Flags().Changed("header") {
+					return fmt.Errorf("header %q is not set on %q", key, entry.Alias)
+				}
+				delete(entry.Headers, key)
 			}
 			if cmd.Flags().Changed("description") {
 				entry.Description = mcpEditDescription
@@ -196,7 +284,7 @@ var mcpListCmd = &cobra.Command{
 		}
 		fmt.Printf("%-20s %-8s %-28s %s\n", "ALIAS", "TRANSPORT", "COMMAND", "ENV KEYS")
 		for _, s := range servers {
-			fmt.Printf("%-20s %-8s %-28s %s\n", s.Alias, s.Transport, truncateCell(s.Command, 28), strings.Join(s.EnvKeys, ","))
+			fmt.Printf("%-20s %-8s %-28s %s\n", s.Alias, s.Transport, truncateCell(mcpListTarget(s), 28), strings.Join(s.EnvKeys, ","))
 		}
 		return nil
 	},
@@ -245,6 +333,8 @@ var (
 	mcpAddCommand     string
 	mcpAddArgs        []string
 	mcpAddEnv         []string
+	mcpAddURL         string
+	mcpAddHeaders     []string
 	mcpAddDescription string
 )
 
@@ -255,18 +345,31 @@ func init() {
 	mcpCmd.AddCommand(mcpListCmd)
 	mcpCmd.AddCommand(mcpDeleteCmd)
 
-	mcpAddCmd.Flags().StringVar(&mcpAddTransport, "transport", storage.MCPTransportStdio, "transport: only stdio is supported")
-	mcpAddCmd.Flags().StringVar(&mcpAddCommand, "command", "", "executable to launch (required)")
+	mcpAddCmd.Flags().StringVar(&mcpAddTransport, "transport", storage.MCPTransportStdio, "transport: stdio, http or sse")
+	mcpAddCmd.Flags().StringVar(&mcpAddCommand, "command", "", "executable to launch (stdio, required)")
 	mcpAddCmd.Flags().StringArrayVar(&mcpAddArgs, "arg", nil, "command argument (repeatable, order preserved)")
 	mcpAddCmd.Flags().StringArrayVar(&mcpAddEnv, "env", nil, "environment entry KEY=VALUE (repeatable; value may embed {{env:...}} references)")
+	mcpAddCmd.Flags().StringVar(&mcpAddURL, "url", "", "server URL (http/sse, required; may embed {{env:...}} references)")
+	mcpAddCmd.Flags().StringArrayVar(&mcpAddHeaders, "header", nil, "HTTP header \"Name: Value\" (repeatable; value may embed {{env:...}} references)")
 	mcpAddCmd.Flags().StringVar(&mcpAddDescription, "description", "", "free-form description")
 
+	mcpEditCmd.Flags().StringVar(&mcpEditTransport, "transport", "", "replace the transport (stdio, http or sse)")
 	mcpEditCmd.Flags().StringVar(&mcpEditCommand, "command", "", "replace the command")
 	mcpEditCmd.Flags().StringArrayVar(&mcpEditArgs, "arg", nil, "replace the whole argument list (repeatable)")
 	mcpEditCmd.Flags().StringArrayVar(&mcpEditEnv, "env", nil, "replace the whole env set (repeatable, KEY=VALUE)")
 	mcpEditCmd.Flags().StringArrayVar(&mcpEditUnsetEnv, "unset-env", nil, "remove a single env key (repeatable)")
+	mcpEditCmd.Flags().StringVar(&mcpEditURL, "url", "", "replace the server URL")
+	mcpEditCmd.Flags().StringArrayVar(&mcpEditHeaders, "header", nil, "replace the whole header set (repeatable, \"Name: Value\")")
+	mcpEditCmd.Flags().StringArrayVar(&mcpEditUnsetHeader, "unset-header", nil, "remove a single header (repeatable)")
 	mcpEditCmd.Flags().StringVar(&mcpEditDescription, "description", "", "replace the description")
 
 	addRefreshFlag(mcpGetCmd)
 	addRefreshFlag(mcpListCmd)
+}
+
+// mcpListTarget is what the COMMAND column shows: the launch command for
+// stdio profiles, and the url origin (scheme://host, query stripped) for
+// remote profiles — enough to identify the server without leaking values.
+func mcpListTarget(s mcp.Server) string {
+	return s.Target()
 }

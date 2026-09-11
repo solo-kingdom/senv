@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-11
+goal: 中央 keymap 注册表与按键语义统一（r=rename 唯一、Ctrl+R 刷新、env 组 t、text 导出 x、AI M、确认框收紧）

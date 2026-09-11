@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-11
+goal: 自研共享列表组件（游标/窗口化/双栏几何），迁移 audit/history 试点，纯重构零行为变化
+skip_specs: true
