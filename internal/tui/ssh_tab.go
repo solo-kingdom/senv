@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
@@ -123,28 +124,33 @@ func (t *sshTab) Init() tea.Cmd {
 // Reload drops cached data and reloads; the top level calls it after a
 // background sync applies remote changes.
 func (t *sshTab) Reload() tea.Cmd {
-	t.loaded = false
+	// stale-while-revalidate：后台重载期间旧数据保持可见，完成后静默替换。
 	return t.load()
 }
 
 func (t *sshTab) load() tea.Cmd {
 	mgr := t.mgr.SSH
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-ssh")
 		if mgr == nil {
+			st.End(true)
 			return sshLoadedMsg{}
 		}
 		hosts, err := mgr.ListHosts()
 		if err != nil {
+			st.End(false)
 			return sshLoadedMsg{err: err}
 		}
 		keyPairs, err := mgr.ListKeyPairs()
 		if err != nil {
+			st.End(false)
 			return sshLoadedMsg{err: err}
 		}
 		values := make([]storage.HostEntry, 0, len(hosts))
 		for _, host := range hosts {
 			values = append(values, *host)
 		}
+		st.With("hosts", len(hosts), "keypairs", len(keyPairs)).End(true)
 		return sshLoadedMsg{hosts: values, keyPairs: keyPairs}
 	}
 }

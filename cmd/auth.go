@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"golang.org/x/term"
@@ -134,7 +135,10 @@ func clearAuthMemo() {
 //
 // Successful results are memoized for the process lifetime so getEnvManager /
 // getTextManager / resolveValue do not re-prompt within the same invocation.
-func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authResult, error) {
+func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (res *authResult, err error) {
+	st := perflog.Start("auth.resolve")
+	defer func() { st.EndErr(err) }()
+
 	if cached := lookupAuthMemo(configPath, dataPath); cached != nil {
 		return cached, nil
 	}

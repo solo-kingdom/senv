@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/securefs"
 )
 
 // ErrDataDesync indicates that metadata.json and the encrypted data files do
@@ -345,30 +346,34 @@ func (m *Manager) LoadEnvGroupWithKey(group string, key []byte) (*EnvGroup, erro
 	if !m.mutationLocked {
 		return withVaultRead(m, func(locked *Manager) (*EnvGroup, error) { return locked.LoadEnvGroupWithKey(group, key) })
 	}
-	if err := ValidateName(group); err != nil {
-		return nil, fmt.Errorf("invalid env group %q: %w", group, err)
-	}
 	root, err := m.openDataRoot()
 	if err != nil {
 		return nil, err
 	}
+	defer root.Close()
+	return m.loadEnvGroupWithRoot(root, group, key)
+}
+
+// loadEnvGroupWithRoot 在共享的 data root 上加载单个分组（tui-perf-load：
+// meta/变量列表/每个变量不再各自开 root）。遗留平铺格式在此路径内迁移。
+func (m *Manager) loadEnvGroupWithRoot(root securefs.TrustedRoot, group string, key []byte) (*EnvGroup, error) {
+	if err := ValidateName(group); err != nil {
+		return nil, fmt.Errorf("invalid env group %q: %w", group, err)
+	}
 	_, newErr := root.ReadDir(EnvDirName, group)
 	if newErr == nil {
-		root.Close()
-		return m.loadEnvGroupNewFormat(group, key)
+		return m.loadEnvGroupNewFormatFromRoot(root, group, key)
 	}
 	if !errors.Is(newErr, os.ErrNotExist) {
-		root.Close()
 		return nil, newErr
 	}
 	legacyName := fmt.Sprintf("%s%s%s", EnvFilePrefix, group, EnvFileSuffix)
 	_, legacyErr := root.Read(legacyName)
-	root.Close()
 	if legacyErr == nil {
 		if _, err := m.MigrateEnvGroupIfNeeded(group, key); err != nil {
 			return nil, fmt.Errorf("migration failed for group %s: %w", group, err)
 		}
-		return m.loadEnvGroupNewFormat(group, key)
+		return m.loadEnvGroupNewFormatFromRoot(root, group, key)
 	}
 	if !errors.Is(legacyErr, os.ErrNotExist) {
 		return nil, legacyErr
@@ -376,28 +381,28 @@ func (m *Manager) LoadEnvGroupWithKey(group string, key []byte) (*EnvGroup, erro
 	return nil, fmt.Errorf("group %s not found", group)
 }
 
-func (m *Manager) loadEnvGroupNewFormat(group string, key []byte) (*EnvGroup, error) {
+func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group string, key []byte) (*EnvGroup, error) {
 	envGroup := &EnvGroup{
 		Name:      group,
 		Variables: make(map[string]string),
 	}
 
-	if meta, err := m.LoadEnvGroupMetaWithKey(group, key); err == nil {
-		if meta.Name != group {
-			return nil, fmt.Errorf("env group metadata identity mismatch: directory %q, Name %q", group, meta.Name)
-		}
-		envGroup.Name = meta.Name
-		envGroup.CreatedAt = meta.CreatedAt
-	} else {
+	meta, err := loadEnvGroupMetaFromRoot(root, group, key)
+	if err != nil {
 		return nil, err
 	}
+	if meta.Name != group {
+		return nil, fmt.Errorf("env group metadata identity mismatch: directory %q, Name %q", group, meta.Name)
+	}
+	envGroup.Name = meta.Name
+	envGroup.CreatedAt = meta.CreatedAt
 
-	vars, err := m.ListEnvVars(group)
+	vars, err := listEnvVarsFromRoot(root, group)
 	if err != nil {
 		return nil, err
 	}
 	for _, k := range vars {
-		entry, err := m.LoadEnvVarWithKey(group, k, key)
+		entry, err := loadEnvVarEntryFromRoot(root, group, k, key)
 		if err != nil {
 			return nil, fmt.Errorf("load var %s/%s: %w", group, k, err)
 		}
@@ -406,6 +411,89 @@ func (m *Manager) loadEnvGroupNewFormat(group string, key []byte) (*EnvGroup, er
 	}
 
 	return envGroup, nil
+}
+
+// LoadEnvVault loads all env groups (meta + variables) using password.
+func (m *Manager) LoadEnvVault(password string) (map[string]*EnvGroup, error) {
+	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	return m.LoadEnvVaultWithKey(cryptoKey)
+}
+
+// LoadEnvVaultWithKey 在单次锁内、共享单个 data root 加载全部 env 分组
+// （meta + 全部变量）——一次 flock、一次 rekey 清算、一次 root 开闭，
+// 替代「每分组/每变量一次」的逐文件路径。遗留平铺格式的分组透明回退到
+// 逐分组加载（顺带迁移），下次进入目录列表。
+func (m *Manager) LoadEnvVaultWithKey(cryptoKey []byte) (map[string]*EnvGroup, error) {
+	return withVaultRead(m, func(locked *Manager) (map[string]*EnvGroup, error) {
+		return locked.loadEnvVaultWithKey(cryptoKey)
+	})
+}
+
+func (m *Manager) loadEnvVaultWithKey(cryptoKey []byte) (map[string]*EnvGroup, error) {
+	root, err := m.openDataRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	entries, err := root.ReadDir(EnvDirName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("list env groups: %w", err)
+	}
+	var groups []string
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir {
+			return nil, fmt.Errorf("invalid env group entry %q: expected directory", entry.Name)
+		}
+		if err := ValidateName(entry.Name); err != nil {
+			return nil, fmt.Errorf("invalid historical env group %q: %w", entry.Name, err)
+		}
+		seen[entry.Name] = true
+		groups = append(groups, entry.Name)
+	}
+	rootEntries, err := root.ReadDir()
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range rootEntries {
+		if entry.IsDir || !strings.HasPrefix(entry.Name, EnvFilePrefix) || !strings.HasSuffix(entry.Name, EnvFileSuffix) {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(entry.Name, EnvFilePrefix), EnvFileSuffix)
+		if err := ValidateName(name); err != nil {
+			return nil, fmt.Errorf("invalid historical env group %q: %w", name, err)
+		}
+		if !seen[name] {
+			// 遗留平铺分组：走逐分组路径（首次加载即迁移到目录格式）
+			seen[name] = true
+			groups = append(groups, name)
+		}
+	}
+
+	out := make(map[string]*EnvGroup, len(groups))
+	for _, name := range groups {
+		if seenDir := func() bool {
+			_, err := root.ReadDir(EnvDirName, name)
+			return err == nil
+		}(); seenDir {
+			eg, err := m.loadEnvGroupNewFormatFromRoot(root, name, cryptoKey)
+			if err != nil {
+				return nil, err
+			}
+			out[name] = eg
+			continue
+		}
+		eg, err := m.loadEnvGroupWithRoot(root, name, cryptoKey)
+		if err != nil {
+			return nil, err
+		}
+		out[name] = eg
+	}
+	return out, nil
 }
 
 // SaveEnvGroup saves an environment variable group
@@ -530,6 +618,11 @@ func (m *Manager) LoadEnvVarWithKey(group, key string, cryptoKey []byte) (*EnvVa
 		return nil, err
 	}
 	defer root.Close()
+	return loadEnvVarEntryFromRoot(root, group, key, cryptoKey)
+}
+
+// loadEnvVarEntryFromRoot 在共享 root 上读取单个变量（调用方已持锁/开 root）。
+func loadEnvVarEntryFromRoot(root securefs.TrustedRoot, group, key string, cryptoKey []byte) (*EnvVarEntry, error) {
 	data, err := root.Read(EnvDirName, group, key+EnvVarSuffix)
 	if err != nil {
 		return nil, err
@@ -588,6 +681,12 @@ func (m *Manager) ListEnvVars(group string) ([]string, error) {
 		return nil, err
 	}
 	defer root.Close()
+	return listEnvVarsFromRoot(root, group)
+}
+
+// listEnvVarsFromRoot 在共享 root 上列出分组内的变量 key（跳过 .meta.enc 等
+// 点文件）；含路径分隔符的 key 以相对路径形式返回。
+func listEnvVarsFromRoot(root securefs.TrustedRoot, group string) ([]string, error) {
 	entries, err := root.ReadDir(EnvDirName, group)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -663,6 +762,14 @@ func (m *Manager) LoadEnvGroupMetaWithKey(group string, cryptoKey []byte) (*EnvG
 		return nil, err
 	}
 	defer root.Close()
+	return loadEnvGroupMetaFromRoot(root, group, cryptoKey)
+}
+
+// loadEnvGroupMetaFromRoot 在共享 root 上读取分组 meta（调用方已持锁/开 root）。
+func loadEnvGroupMetaFromRoot(root securefs.TrustedRoot, group string, cryptoKey []byte) (*EnvGroupMeta, error) {
+	if err := ValidateName(group); err != nil {
+		return nil, fmt.Errorf("invalid env group %q: %w", group, err)
+	}
 	data, err := root.Read(EnvDirName, group, EnvMetaFileName)
 	if err != nil {
 		return nil, err

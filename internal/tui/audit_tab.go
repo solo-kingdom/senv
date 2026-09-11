@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbletea"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 )
 
@@ -72,7 +73,9 @@ func (t *auditTab) Reload() tea.Cmd {
 func (t *auditTab) load() tea.Cmd {
 	source := t.source
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-audit")
 		rows, skipped, err := source.LoadAuditEvents()
+		st.With("rows", len(rows)).EndErr(err)
 		return auditLoadedMsg{rows: rows, skipped: skipped, err: err}
 	}
 }

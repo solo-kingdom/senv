@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -151,7 +152,15 @@ func derivePublicKey(privateKey []byte) (publicKey, fingerprint, comment string,
 }
 
 // ListKeyPairs returns safe keypair metadata sorted by name.
+// ListKeyPairs 列出全部密钥对摘要，附耗时日志。
 func (m *Manager) ListKeyPairs() ([]KeyPairSummary, error) {
+	st := perflog.Start("ssh.list-keypairs")
+	res, err := m.listKeyPairsSummaries()
+	st.EndErr(err)
+	return res, err
+}
+
+func (m *Manager) listKeyPairsSummaries() ([]KeyPairSummary, error) {
 	names, err := m.listKeyPairs()
 	if err != nil {
 		return nil, err

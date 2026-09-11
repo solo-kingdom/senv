@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/syncschema"
@@ -165,6 +166,13 @@ func validateRemoteEntries(entries []Entry) error {
 // collect enumerates the cache through trusted roots. Invalid historical names,
 // symlinks, and special files fail closed rather than being followed or skipped.
 func (c *localCache) collect() (map[string]Entry, error) {
+	st := perflog.Start("sync.collect")
+	entries, err := c.collectEntries()
+	st.With("items", len(entries)).EndErr(err)
+	return entries, err
+}
+
+func (c *localCache) collectEntries() (map[string]Entry, error) {
 	entries := make(map[string]Entry)
 	dataRoot, err := c.openExistingRoot(c.dataPath)
 	if err != nil {

@@ -76,6 +76,7 @@ func TestHistoryTabBrowseAndRestore(t *testing.T) {
 	src := &fakeHistorySource{rows: sampleHistoryRows()}
 	var tab Tab = newHistoryTab(src)
 	tab.SetSize(80, 20)
+	tab.(*historyTab).visited = true // 模拟用户已激活（延迟加载语义）
 
 	// 初始加载（recent 模式）
 	msg := drainCmd(t, tab.Init())
@@ -123,6 +124,7 @@ func TestHistoryTabDecryptFailureShownNotFatal(t *testing.T) {
 	}}
 	var tab Tab = newHistoryTab(src)
 	tab.SetSize(80, 20)
+	tab.(*historyTab).visited = true // 模拟用户已激活（延迟加载语义）
 	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
 	_ = cmd
 	view := tab.View()
@@ -135,6 +137,7 @@ func TestHistoryTabRestoreErrorReported(t *testing.T) {
 	src := &fakeHistorySource{rows: sampleHistoryRows(), restoreE: errors.New("boom")}
 	var tab Tab = newHistoryTab(src)
 	tab.SetSize(80, 20)
+	tab.(*historyTab).visited = true // 模拟用户已激活（延迟加载语义）
 	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
 	_ = cmd
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})

@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"sync"
+
 	"github.com/wii/senv/internal/securefs"
 )
 
@@ -270,6 +272,71 @@ func (m *Manager) loadRekeyManifest() (*rekeyManifest, error) {
 		return nil, err
 	}
 	return &manifest, nil
+}
+
+// manifestCacheEntry 是跨 Manager 实例的 rekey manifest 进程内缓存：以
+// metadata.json 的 stat 代际 + manifest 文件存在性为失效界。读路径每次
+// 锁内清算都要问一次「有没有未完成 rekey」；逐次 OpenRoot+Read+校验是
+// 全量装载的主要固定税之一（tui-perf-load）。
+//
+// 失效正确性：rekey 事务在持锁期间创建 journal（manifest 出现）→ stat 必见
+// 存在 → 走完整读取与恢复；成功 rekey 会原子改写 metadata（代际变化）并删除
+// manifest → 缓存失效重算；中途崩溃（manifest 在、metadata 未换）同样因
+// 「存在性」维度命中完整路径。任意读写都先过 flock，stat 对只出现在持锁
+// 清算路径上。
+type manifestCacheEntry struct {
+	valid       bool
+	metaSize    int64
+	metaModNano int64
+	hasManifest bool
+	manifest    *rekeyManifest
+}
+
+var (
+	manifestCacheMu sync.Mutex
+	manifestCache   = map[string]manifestCacheEntry{}
+)
+
+func (m *Manager) loadRekeyManifestCached() (*rekeyManifest, error) {
+	cacheKey := m.configPath + "\x00" + m.dataPath
+	metaStat, metaErr := os.Lstat(filepath.Join(m.configPath, MetadataFile))
+	_, manifestErr := os.Lstat(filepath.Join(m.configPath, rekeyManifestFile))
+	hasManifest := manifestErr == nil
+	// stat 异常（权限等）或 metadata 本身缺失的非常规形态：退回完整读取
+	if (manifestErr != nil && !errors.Is(manifestErr, os.ErrNotExist)) ||
+		(metaErr != nil && !errors.Is(metaErr, os.ErrNotExist)) {
+		return m.loadRekeyManifest()
+	}
+
+	var metaSize, metaModNano int64
+	if metaErr == nil {
+		metaSize, metaModNano = metaStat.Size(), metaStat.ModTime().UnixNano()
+	}
+
+	manifestCacheMu.Lock()
+	cached, ok := manifestCache[cacheKey]
+	manifestCacheMu.Unlock()
+	if ok && cached.valid && cached.metaSize == metaSize && cached.metaModNano == metaModNano && cached.hasManifest == hasManifest {
+		if !cached.hasManifest {
+			return nil, nil
+		}
+		return cached.manifest, nil
+	}
+
+	manifest, err := m.loadRekeyManifest()
+	if err != nil {
+		return nil, err
+	}
+	manifestCacheMu.Lock()
+	manifestCache[cacheKey] = manifestCacheEntry{
+		valid:       true,
+		metaSize:    metaSize,
+		metaModNano: metaModNano,
+		hasManifest: hasManifest,
+		manifest:    manifest,
+	}
+	manifestCacheMu.Unlock()
+	return manifest, nil
 }
 
 func rekeySidecar(identity []string, tx string, suffix string) []string {

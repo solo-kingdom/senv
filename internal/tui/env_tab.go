@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -120,30 +121,31 @@ func (t *envTab) Init() tea.Cmd {
 	return t.load()
 }
 
-// Reload drops cached data and reloads; the top level calls it after a
-// background sync applies remote changes. The envLoadedMsg handler preserves
-// cursor and form state.
+// Reload re-reads data in the background; the top level calls it after a
+// background sync applies remote changes. stale-while-revalidate：重载期间
+// 旧数据保持可见（不清回占位），完成后 envLoadedMsg 静默替换并保留光标与
+// 表单状态。
 func (t *envTab) Reload() tea.Cmd {
-	t.loaded = false
 	return t.load()
 }
 
 func (t *envTab) load() tea.Cmd {
 	mgr := t.mgr.Env
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-env")
 		if mgr == nil {
+			st.End(false)
 			return envLoadedMsg{err: fmt.Errorf("env manager unavailable")}
 		}
-		gis, err := mgr.ListGroups()
+		// 单趟快照：分组列表与全部变量一次批量装载（tui-perf-load）
+		allVars, gis, err := mgr.Snapshot()
 		if err != nil {
-			return envLoadedMsg{err: err}
-		}
-		allVars, err := mgr.List("") // map[group]map[key]value
-		if err != nil {
+			st.End(false)
 			return envLoadedMsg{err: err}
 		}
 		groups := make([]envGroupRow, 0, len(gis))
 		itemsByGroup := make(map[string][]envItemRow, len(gis))
+		itemCount := 0
 		for _, gi := range gis {
 			// Hide groups that have no keys, except the default group which is
 			// always shown as a stable landing point.
@@ -157,6 +159,7 @@ func (t *envTab) load() tea.Cmd {
 				varCount:  gi.VarCount,
 			})
 			itemsByGroup[gi.Name] = buildEnvItems(allVars[gi.Name])
+			itemCount += len(itemsByGroup[gi.Name])
 		}
 		sort.SliceStable(groups, func(i, j int) bool {
 			if groups[i].isDefault != groups[j].isDefault {
@@ -164,6 +167,7 @@ func (t *envTab) load() tea.Cmd {
 			}
 			return groups[i].name < groups[j].name
 		})
+		st.With("groups", len(groups), "items", itemCount).End(true)
 		return envLoadedMsg{groups: groups, itemsByGroup: itemsByGroup}
 	}
 }

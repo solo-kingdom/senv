@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -34,7 +35,18 @@ func (m *Manager) GetHost(alias string) (*storage.HostEntry, error) {
 }
 
 // ListHosts decrypts all hosts sorted by alias.
+// ListHosts 列出全部主机档案，附耗时日志。
 func (m *Manager) ListHosts() ([]*storage.HostEntry, error) {
+	st := perflog.Start("ssh.list-hosts")
+	res, err := m.listHostsEntries()
+	if err == nil {
+		st.With("hosts", len(res))
+	}
+	st.EndErr(err)
+	return res, err
+}
+
+func (m *Manager) listHostsEntries() ([]*storage.HostEntry, error) {
 	var names []string
 	err := m.storage.WithVaultMutation(func(locked *storage.Manager) error {
 		var err error

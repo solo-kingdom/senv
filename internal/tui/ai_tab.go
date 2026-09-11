@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/llm"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -155,24 +156,29 @@ func (t *aiTab) Init() tea.Cmd {
 // Reload drops cached data and reloads; the top level calls it after a
 // background sync applies remote changes.
 func (t *aiTab) Reload() tea.Cmd {
-	t.loaded = false
+	// stale-while-revalidate：后台重载期间旧数据保持可见，完成后静默替换。
 	return t.load()
 }
 
 func (t *aiTab) load() tea.Cmd {
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-ai")
 		if t.mgr.LLM == nil {
+			st.End(true)
 			return aiLoadedMsg{}
 		}
 		providers, err := t.mgr.LLM.ListProviders()
 		if err != nil {
+			st.End(false)
 			return aiLoadedMsg{err: err}
 		}
 		sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 		rows, warning, err := sm.Status()
 		if err != nil {
+			st.End(false)
 			return aiLoadedMsg{err: err}
 		}
+		st.With("providers", len(providers)).End(true)
 		return aiLoadedMsg{
 			providers:      providers,
 			rows:           rows,

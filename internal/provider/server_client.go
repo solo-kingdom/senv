@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wii/senv/internal/perflog"
 )
 
 // Entry 是一条同步条目（与 senv-server v1 API 的 wire 格式一致）。
@@ -84,8 +87,25 @@ func newServerClient(baseURL, token string) *serverClient {
 	}
 }
 
-// do 发起认证请求并统一错误解析（401/404/409/其他）
+// do 发起认证请求并统一错误解析（401/404/409/其他），附耗时日志与建连维度
+// （conns_new=1 表示本请求新建了 TCP+TLS 连接，0 表示复用连接池）。
 func (c *serverClient) do(ctx context.Context, method, path string, body any, out any) error {
+	st := perflog.Start("net.request").With("op", method+" "+path)
+	var connsNew int
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if !info.Reused {
+				connsNew = 1
+			}
+		},
+	}
+	err := c.doOnce(httptrace.WithClientTrace(ctx, trace), method, path, body, out)
+	st.With("conns_new", connsNew)
+	st.EndErr(err)
+	return err
+}
+
+func (c *serverClient) doOnce(ctx context.Context, method, path string, body any, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

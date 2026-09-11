@@ -44,6 +44,11 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - **不可判定不销毁**：`Unverifiable` 的缓存可能是唯一能解密数据的钥匙，默认保留不清理；排查原因后重试，确要丢弃才用 `senv session clear --all`。
 - **MCP 绑定到 vault**：每个请求按 `keyHash+saltHash+dataPathHash` 校验，session ID 只进审计。**重新 `session start` 不再撤销正在运行的 MCP**；`session clear`、salt 变化（rekey/换密码）才会拒绝，需要时重启 MCP server。
 
+## 耗时日志（perf log）
+
+- 关键路径耗时（启动各阶段、vault 各域装载、同步请求、本地扫描）超过阈值时追加 JSON 行到 `~/.log/senv/perf.log`；默认开启、阈值 100ms。与操作审计（`audit.log`）分离：perf 记"花了多久"，审计记"做了什么"。
+- `SENV_PERF=off` 整体关闭；`SENV_PERF_THRESHOLD=<毫秒>` 调阈值（非法或 ≤0 回退默认）。用户反馈「senv 慢」时先看这份日志定位阶段，不需要额外 debug 开关。
+
 ## TUI 键位（人机交互，agent 不驱动）
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。
@@ -78,12 +83,14 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
 - 档案与凭据存 vault：`senv ai provider add/edit/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
-- 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。`show`/MCP 的 `model_info` 会展示已保存的 context window。
+- 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。输出上限与推理能力可显式设置：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位分号分隔；非空即视为推理模型），TUI 表单对应「模型输出」「模型推理」字段。`show`/MCP 的 `model_info` 展示已保存的 context window/output/reasoning。
 - `senv ai provider edit <alias>` 就地编辑：alias 是主键不可改；只改传入的字段，省略的保持原值。轮换自有凭据用 `--rotate-key`（TTY）或 `--api-key-stdin`；改走外部引用用 `--key-ref`（会删除原自有凭据）。任一步失败不留部分更新。
 - 接入地址统一按 OpenAI 兼容形态落库：`add`/`edit` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
 - `--api-shape`（`openai-chat` | `openai-responses` | `anthropic`）可选声明接口形态；`--api-shape ""` 清除回推断。留空时 `switch` 按目标 agent 协议族归一接入地址；声明后成为兼容判据，形态与目标 agent 协议族不匹配时 `switch` 拒绝写文件并提示「改档案形态或换 provider」。
 - `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--models m1,m2] [--default-model D]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。**省略 `--models` 即全选 Provider 模型集**，显式给出时保序（逗号分隔或重复给出均可，去重保序）；`--default-model` 只覆盖本次写入的起始模型，**不回写档案**。`--model` 已移除：出现即以非 0 退出并提示替代用法（参数校验发生在解锁与写盘之前）。接入地址按 agent 协议族写回：claude-code（Anthropic Messages）剥离末段 `/v1`，其余保持带版本形态；命令输出 provider、默认模型、模型集条数与实际写入的接入地址。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。
 - Agent 模型集按各 agent 原生机制落盘，使 agent 自己的模型选择器能在集合内换模型：claude-code 写 `modelPicker`（`replaceBuiltInOptions: true`，每行带 `behavesAs` 映射到已知 Claude 模型，避免新版本把自定义模型当未知模型告警）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models."senv-<alias>/<m>"]`、pi 写 `providers.<id>.models[]`（若 `settings.json` 已有非空 `enabledModels`，同时把本次默认模型置顶并加入 `senv-<alias>/*`，否则 PI 会优先选 scope 首个模型而不是默认模型）、opencode 写 `provider.<id>.models{}`。模型集超过 20 个时命令提示可用 `--models` 缩小。
+- 模型元数据随切换投影进各 agent，避免落到内置默认值（pi 缺省 context 128k/output 16k、opencode 缺省 limit 0、kimi 无 thinking）：context window 写 pi `contextWindow`、opencode `limit.context`、kimi `max_context_size`、codex catalog `context_window`；输出上限写 pi `maxTokens`、opencode `limit.output`、kimi `max_output_size`；推理能力写 pi/opencode `reasoning: true`、kimi `capabilities=["thinking"]`+`support_efforts`、codex `supported_reasoning_levels`。未知字段一律省略而不是写 0/false。
+- 档案显式声明的 `api_shape` 还决定 OpenAI 兼容族内的线协议：pi `api` 字段与 kimi provider `type` 在 `openai-completions`/`openai`（chat）与 `openai-responses`/`openai_responses`（responses）间选择，codex `wire_api` 在声明 `openai-chat` 时写 `chat`，opencode 在声明 `openai-responses` 时用 `@ai-sdk/openai`；未声明时维持各自既有默认。
 - 切换会清理上一次 senv 写入、本次不再需要的条目，并删除不再被任何 agent 指向的 `senv-<alias>.json` catalog；**用户自有条目与自有文件既不改也不删**。缩集或换 provider 后重跑一次 `senv ai switch` 即可对齐。
 - `senv ai status` 免解锁可用，显示 `provider / 默认模型（N 个模型）` 与切换时间；vault 已解锁且指针里的模型已不在档案中（档案缩集/改名）时附漂移提示，判定只看指针与档案、**不解析 agent 配置文件**，档案不可得时省略提示。TUI AI Tab 的 `m` 是「仅换默认模型」入口（限定在已写入的 Agent 模型集内）。
 - MCP 只提供 provider 档案与 agent 指向的只读查询；不能通过 MCP 添加 provider 或切换 agent。

@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
@@ -109,18 +110,21 @@ func (t *textTab) Init() tea.Cmd {
 // Reload drops cached data and reloads; the top level calls it after a
 // background sync applies remote changes.
 func (t *textTab) Reload() tea.Cmd {
-	t.loaded = false
+	// stale-while-revalidate：后台重载期间旧数据保持可见，完成后静默替换。
 	return t.load()
 }
 
 func (t *textTab) load() tea.Cmd {
 	mgr := t.mgr.Text
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-text")
 		if mgr == nil {
+			st.End(false)
 			return textLoadedMsg{err: fmt.Errorf("text manager unavailable")}
 		}
 		gs, err := mgr.ListGroups()
 		if err != nil {
+			st.End(false)
 			return textLoadedMsg{err: err}
 		}
 		groups := make([]textGroupRow, 0, len(gs))
@@ -148,6 +152,7 @@ func (t *textTab) load() tea.Cmd {
 			}
 			return groups[i].name < groups[j].name
 		})
+		st.With("groups", len(groups)).End(true)
 		return textLoadedMsg{groups: groups, itemsByGroup: itemsByGroup}
 	}
 }

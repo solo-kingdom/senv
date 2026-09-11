@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wii/senv/internal/exportfile"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -394,7 +395,18 @@ func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 // for legacy entries whose non-portable identities were skipped. Warnings are
 // informational only: the call still succeeds so read-only UX degrades
 // gracefully instead of failing the whole listing.
+// ListWithWarnings 列出配置（含隔离警告），附耗时日志。
 func (m *Manager) ListWithWarnings(groupFilter string) ([]ConfigInfo, []QuarantineWarning, error) {
+	st := perflog.Start("config.list").With("group", groupFilter)
+	items, quarantined, err := m.listWithWarnings(groupFilter)
+	if err == nil {
+		st.With("items", len(items))
+	}
+	st.EndErr(err)
+	return items, quarantined, err
+}
+
+func (m *Manager) listWithWarnings(groupFilter string) ([]ConfigInfo, []QuarantineWarning, error) {
 	if groupFilter != "" {
 		if _, err := normalizeConfigGroup(groupFilter); err != nil {
 			return nil, nil, err

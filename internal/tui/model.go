@@ -296,7 +296,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = idx
-			return m, m.tabs[idx].Init()
+			return m, m.activateTab(idx)
 		}
 
 		switch msg.String() {
@@ -325,12 +325,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active + 1) % len(m.tabs)
-			return m, m.tabs[m.active].Init()
+			return m, m.activateTab(m.active)
 		case "shift+tab":
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
-			return m, m.tabs[m.active].Init()
+			return m, m.activateTab(m.active)
 		}
 
 		// Swallow the key that dismissed the banner so the user sees it clear
@@ -349,8 +349,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Default: forward to the active tab. A completed write additionally
-	// refreshes the sync badge and kicks off a best-effort background push.
+	// Default: forward to the active tab. A completed load is broadcast to
+	// every tab so a background tab's data lands even when the user has
+	// switched away (otherwise the load is dropped and re-issued on return).
+	// A completed write additionally refreshes the sync badge and kicks off a
+	// best-effort background push.
+	if isLoadBroadcastMsg(msg) {
+		var cmds []tea.Cmd
+		for i, tab := range m.tabs {
+			var c tea.Cmd
+			m.tabs[i], c = tab.Update(msg)
+			cmds = append(cmds, c)
+		}
+		return m, tea.Batch(cmds...)
+	}
 	var cmd tea.Cmd
 	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
 	if writeDoneMsg(msg) {
@@ -364,6 +376,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// isLoadBroadcastMsg 报告一条消息是否为 Tab 数据装载完成事件；这类事件属于
+// 发出请求的那个 Tab，但后台 Tab 装载完成时用户可能已切走，需要广播投递。
+func isLoadBroadcastMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case envLoadedMsg, textLoadedMsg, configLoadedMsg, sshLoadedMsg,
+		aiLoadedMsg, auditLoadedMsg, historyLoadedMsg:
+		return true
+	}
+	return false
+}
+
 // tabIndexFor maps a single digit key ("1"–"9") to a zero-based tab index.
 // It reports false for non-digit keys and for digits past the last tab.
 func tabIndexFor(key string, tabs int) (int, bool) {
@@ -375,6 +398,15 @@ func tabIndexFor(key string, tabs int) (int, bool) {
 		return 0, false
 	}
 	return idx, true
+}
+
+// activateTab 把 Tab 标记为已激活（History Tab 依赖它做首次激活延迟加载）
+// 并执行该 Tab 的 Init。
+func (m Model) activateTab(idx int) tea.Cmd {
+	if h, ok := m.tabs[idx].(*historyTab); ok {
+		h.visited = true
+	}
+	return m.tabs[idx].Init()
 }
 
 // applyJump closes the overlay and moves the cursor to the chosen entry across
@@ -393,7 +425,7 @@ func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 		if f, ok := t.(jumpFocuser); ok {
 			f.focusJump(j.group, j.key)
 		}
-		return m, t.Init()
+		return m, m.activateTab(i)
 	}
 	return m, nil
 }

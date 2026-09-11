@@ -807,17 +807,17 @@ func TestAITabSwitchHelpDocumentsMultiSelect(t *testing.T) {
 	}
 }
 
-// TestAITabReloadDropsCacheAndReloads 验证后台同步触发的 Reload：先置回
-// loaded，经 aiLoadedMsg 回灌后恢复数据。
-func TestAITabReloadDropsCacheAndReloads(t *testing.T) {
+// TestAITabReloadKeepsDataVisibleAndReloads 验证 stale-while-revalidate：
+// Reload 保持旧数据可见，经 aiLoadedMsg 回灌后静默替换。
+func TestAITabReloadKeepsDataVisibleAndReloads(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	if !tab.loaded {
 		t.Fatal("ai tab should be loaded after load")
 	}
 	cmd := tab.Reload()
-	if tab.loaded {
-		t.Fatal("Reload must drop the loaded flag immediately")
+	if !tab.loaded {
+		t.Fatal("Reload must keep the loaded flag (stale data stays visible)")
 	}
 	if cmd == nil {
 		t.Fatal("expected a load command from Reload")

@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/text"
@@ -31,12 +32,15 @@ forces that background pull past the throttle window. See "TUI mode" in the
 README for the keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		managersSt := perflog.Start("tui.managers")
 		envMgr, textMgr, configMgr, err := getManagers()
 		if err != nil {
+			managersSt.End(false)
 			return err
 		}
 		sshMgr, err := getSSHManager()
 		if err != nil {
+			managersSt.End(false)
 			return err
 		}
 		// LLM 管理器在 vault 可用时注入；不可用（如 git 模式）时 AI Tab
@@ -48,12 +52,19 @@ README for the keybinding reference.`,
 			llmPointer = filepath.Join(getConfigPath(), "agent-pointers.json")
 			llmHome, err = agentHomeDir()
 			if err != nil {
+				managersSt.End(false)
 				return err
 			}
 		}
+		managersSt.End(true)
 
 		auditMgr := session.NewManager(getConfigPath(), getDataPath())
 		defer auditMgr.Close()
+
+		sourcesSt := perflog.Start("tui.sources")
+		historySource := buildTUIHistorySource()
+		syncSource := newTUISyncSource()
+		sourcesSt.End(true)
 
 		m := tui.New(tui.Managers{
 			Env:         envMgr,
@@ -64,12 +75,12 @@ README for the keybinding reference.`,
 			LLMPointer:  llmPointer,
 			LLMHome:     llmHome,
 			LLMCatalog:  catalogCachePath(),
-			History:     buildTUIHistorySource(),
+			History:     historySource,
 			Audit:       tuiAuditSource{},
 			AuditWriter: newTUIAuditWriter(auditMgr),
 			// Refresh 透传 --refresh：启动后台拉取绕过节流窗口（TUI 内不阻塞）。
 			Refresh: refreshRequested(cmd),
-			Sync:    newTUISyncSource(),
+			Sync:    syncSource,
 		})
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
