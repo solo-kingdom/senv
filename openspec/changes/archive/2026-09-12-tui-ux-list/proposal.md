@@ -22,3 +22,6 @@
 - 不迁移其余 6 个 Tab（它们随 ④⑤⑥ 的能力接入逐个迁移）
 - 不在本 change 引入多选集与过滤状态（后续子 change 叠加）
 - 不改任何按键语义（keymap ② 已完成）
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：`List` 组件（Cursor/SetCursor/Move/Page/Home/End/VisibleRange/SetHeight）与 `paneBudgets` 落地 `list.go`，单元测试覆盖窗口边界/翻页/空列表/双栏几何；helper 收敛至 `helpers.go`（`modalBox`/`isPrintable`/`clamp`/`maxLen` 自 env_tab，`cursorLine`/`sortedKeys`/`max` 自 ssh_tab，`orDash` 自 ai_tab），全部保持原实现语义；audit tab 删除手写 `top`/`pageSize`/`clampWindow`、history tab 删除 `visibleRows` 居中窗口（按 design 统一为跟随式，可见内容集合不变）；`make check` 全部通过。

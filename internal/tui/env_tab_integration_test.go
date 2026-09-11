@@ -59,11 +59,14 @@ func TestEnvManagerOpsDirect(t *testing.T) {
 	tab.SetSize(80, 20)
 	tab = flush(tab, tab.load())
 
-	if len(tab.groups) == 0 || tab.groups[0].name != "default" {
-		t.Fatalf("expected default group first, got %#v", tab.groups)
+	if len(tab.groups) < 2 || tab.groups[0].name != envAllLabel || !tab.groups[0].isAll {
+		t.Fatalf("expected All pseudo-group first, got %#v", tab.groups)
 	}
-	if !tab.groups[0].isActive || !tab.groups[0].isDefault {
-		t.Fatalf("default group must be active+default: %#v", tab.groups[0])
+	if tab.groups[1].name != "default" {
+		t.Fatalf("expected default group second, got %#v", tab.groups[1])
+	}
+	if !tab.groups[1].isActive || !tab.groups[1].isDefault {
+		t.Fatalf("default group must be active+default: %#v", tab.groups[1])
 	}
 
 	// Set two variables in default.
@@ -98,7 +101,7 @@ func TestEnvManagerOpsDirect(t *testing.T) {
 	// Deleting the default group via deactivate must be refused. The tab layer
 	// intercepts the default group locally and reports a warning toast instead of
 	// calling the manager.
-	tab.groupIndex = 0 // default
+	tab.groupIndex = 1 // default（All 伪组占 0）
 	cmd := tab.doDeactivate()
 	msgs := runCmd(cmd)
 	if len(msgs) != 1 {
@@ -128,31 +131,20 @@ func TestEnvNewVarModalFlow(t *testing.T) {
 	tab.SetSize(80, 20)
 	tab = flush(tab, tab.load())
 
-	// Press "n" to start the new-variable flow.
+	// Select the default group (All pseudo-group occupies index 0).
+	tab = driveKey(tab, "j")
+	// Press "n" to open the structured new-variable form (grill D6-⑥).
 	tab = driveKey(tab, "n")
-	if tab.mode != envModeNewKey {
-		t.Fatalf("expected envModeNewKey, got %v", tab.mode)
+	if tab.form == nil {
+		t.Fatal("n should open the structured form")
 	}
 
-	// Type the key "API_KEY" (typing returns a blink cmd we can ignore).
-	for _, r := range "API_KEY" {
-		tab = driveKey(tab, string(r))
-	}
-	// Submit key -> advances to value entry.
-	tab = driveKey(tab, "enter")
-	if tab.mode != envModeNewValue {
-		t.Fatalf("expected envModeNewValue, got %v", tab.mode)
-	}
-	if tab.pendingNewKey != "API_KEY" {
-		t.Fatalf("pendingNewKey=%q want API_KEY", tab.pendingNewKey)
-	}
-
-	// Type the value.
-	for _, r := range "sk-live-1234" {
-		tab = driveKey(tab, string(r))
-	}
-	// Submit value: this triggers the manager mutation + reload, so flush.
-	next, cmd := tab.Update(runeKey("enter"))
+	// Fill key then value fields.
+	tab.form = replaceFormText(t, tab.form, "API_KEY")
+	tab.form, _ = tab.form.Update(tea.KeyMsg{Type: tea.KeyTab})
+	tab.form = replaceFormText(t, tab.form, "sk-live-1234")
+	// Submit: triggers the manager mutation + reload, so flush.
+	next, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab = flush(next.(*envTab), cmd)
 
 	if tab.mode != envModeNormal {
@@ -163,38 +155,16 @@ func TestEnvNewVarModalFlow(t *testing.T) {
 	}
 }
 
-// TestEnvNewVarGroupKey adds a variable to a non-default group via group:key
-// without selecting that group in the left pane (empty groups are hidden).
+// TestEnvNewVarGroupKey 在 All 视图下新建必须显式给出分组名（表单校验）。
 func TestEnvNewVarGroupKey(t *testing.T) {
 	envMgr := newTestEnvManager(t)
 	tab := newEnvTab(Managers{Env: envMgr})
 	tab.SetSize(80, 20)
 	tab = flush(tab, tab.load())
-	tab.groupIndex = 0 // cursor on default
-
+	// 游标停在 All 伪组（index 0）：无默认落组，n 应提示并拒绝打开表单
 	tab = driveKey(tab, "n")
-	for _, r := range "prod:SECRET" {
-		tab = driveKey(tab, string(r))
-	}
-	tab = driveKey(tab, "enter")
-	if tab.mode != envModeNewValue {
-		t.Fatalf("expected envModeNewValue, got %v", tab.mode)
-	}
-	if tab.pendingNewGroup != "prod" || tab.pendingNewKey != "SECRET" {
-		t.Fatalf("pending = %q/%q, want prod/SECRET", tab.pendingNewGroup, tab.pendingNewKey)
-	}
-
-	for _, r := range "top-secret" {
-		tab = driveKey(tab, string(r))
-	}
-	next, cmd := tab.Update(runeKey("enter"))
-	tab = flush(next.(*envTab), cmd)
-
-	if groupIndexByName(tab, "prod") < 0 {
-		t.Fatal("prod group should appear after adding a key via group:key")
-	}
-	if !hasEnvItem(tab, "prod", "SECRET", "top-secret") {
-		t.Errorf("SECRET not persisted in prod: %#v", tab.itemsByGroup["prod"])
+	if tab.form != nil {
+		t.Fatal("All view must refuse new-variable without a concrete group")
 	}
 }
 

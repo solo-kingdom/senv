@@ -28,3 +28,6 @@
 ## Non-goals
 
 - 不做 alias 过渡、不动多选/过滤/侧栏（后续子 change）、不改 Manager 层
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：keymap.go 注册表（KeyAction + 共享动词常量 + overlay/frame chrome 常量）；Tab 接口 `Help()`→`Bindings()`，`?` overlay 与状态栏提示均由注册表渲染，`parseHelp` 删除；model.go 新增全局 `Ctrl+R` 刷新；键位裁决落地：ssh/ai/audit 刷新→`Ctrl+R`、history 恢复→`R`、env 组 `t` 切换（default 不可停用保留）、text 导出 `o`→`x`、AI model-only `m`→`M`；确认框收紧：config/MCP plan 页与 MCP 删除确认仅 `esc`/`n` 取消、其余键忽略；`g`/`G` 补齐 SSH/AI/MCP（audit/history 一并补齐）、PgUp/PgDn 补齐 env/text/config/ssh/ai/mcp/history；相关测试更新（R→r、m→M、r→R 断言）；SKILL.md TUI 键位小节同步；`make check` 全部通过。

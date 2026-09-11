@@ -41,6 +41,7 @@ type aiTab struct {
 	providerIndex int
 	agentIndex    int
 	focusLeft     bool
+	filterBox     Filter // `/` 过滤左栏主列表（provider alias 标识）
 	pendingJump   string
 	detail        *detailOverlay
 
@@ -118,28 +119,68 @@ func newAITab(mgr Managers) *aiTab {
 
 func (t *aiTab) Title() string { return "AI" }
 
-func (t *aiTab) Help() string {
+func (t *aiTab) Bindings() []KeyAction {
 	if t.form != nil {
-		return "tab/↑↓ 切换字段 · ←→ 选候选 · enter 提交 · esc 取消"
+		return []KeyAction{
+			{[]string{"tab/↑↓"}, "切换字段"},
+			{[]string{"←→"}, "选候选"},
+			{[]string{"enter"}, "提交"},
+			{[]string{"esc"}, "取消"},
+		}
 	}
 	switch t.flow {
 	case aiFlowSelectModel:
-		return "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消"
+		return []KeyAction{
+			{[]string{"space"}, "勾选"},
+			actUp, actDown,
+			{[]string{"enter"}, "下一步"},
+			{[]string{"esc"}, "取消"},
+		}
 	case aiFlowSelectDefault:
-		return "↑↓/jk 选默认模型 · enter 下一步 · esc 返回"
+		return []KeyAction{actUp, actDown, {[]string{"enter"}, "下一步"}, {[]string{"esc"}, "返回"}}
 	case aiFlowConfirm:
-		return "enter/y 确认 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "确认"}, {[]string{"esc/n"}, "取消"}}
 	}
 	if t.mode == aiModeDeleteProvider {
-		return "enter/y 确认 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "确认"}, {[]string{"esc/n"}, "取消"}}
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · s 切换 · m 换默认模型 · r 刷新"
+	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
+		actTop, actBottom, actPageUp, actPageDn, actFilter},
+		KeyAction{[]string{"n"}, "新建 provider"},
+		KeyAction{[]string{"e"}, "编辑 provider"},
+		KeyAction{[]string{"d"}, "删除 provider"},
+		KeyAction{[]string{"s"}, "切换（选模型集+默认模型）"},
+		KeyAction{[]string{"M"}, "仅换默认模型"},
+		KeyAction{[]string{"ctrl+r"}, "刷新"},
+	)
 }
 
 // InputMode reports that the tab owns the keyboard: forms, the switch wizard and
 // destructive confirmations must not be interrupted by global shortcuts.
 func (t *aiTab) InputMode() bool {
-	return t.form != nil || t.flow != aiFlowNone || t.mode != aiModeNormal
+	return t.form != nil || t.flow != aiFlowNone || t.mode != aiModeNormal || t.filterBox.Active()
+}
+
+// visibleProviders 返回过滤后的左栏可见列表（空词 = 全量）。
+func (t *aiTab) visibleProviders() []*storage.LLMProviderEntry {
+	if t.filterBox.Term() == "" {
+		return t.providers
+	}
+	out := make([]*storage.LLMProviderEntry, 0, len(t.providers))
+	for _, p := range t.providers {
+		if t.filterBox.Matches(p.Alias) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// clampLeft 把左栏游标收回可见范围。
+func (t *aiTab) clampLeft() {
+	n := len(t.visibleProviders())
+	if t.providerIndex >= n {
+		t.providerIndex = max(n-1, 0)
+	}
 }
 
 func (t *aiTab) SetSize(width, height int) {
@@ -309,6 +350,26 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case tea.KeyMsg:
+		if t.filterBox.Active() && t.form == nil && t.flow == aiFlowNone && t.mode == aiModeNormal {
+			switch msg.String() {
+			case "esc":
+				t.filterBox.Clear()
+				t.clampLeft()
+				return t, nil
+			case "enter":
+				t.filterBox.Confirm()
+				return t, nil
+			case "backspace":
+				t.filterBox.Backspace()
+				t.clampLeft()
+				return t, nil
+			}
+			if isPrintable(msg) {
+				t.filterBox.Append(msg.String())
+				t.clampLeft()
+				return t, nil
+			}
+		}
 		if t.detail != nil {
 			var cmd tea.Cmd
 			t.detail, cmd = t.detail.Update(msg)
@@ -334,7 +395,7 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.agentIndex--
 		}
 	case "down", "j":
-		if t.focusLeft && t.providerIndex < len(t.providers)-1 {
+		if t.focusLeft && t.providerIndex < len(t.visibleProviders())-1 {
 			t.providerIndex++
 		} else if !t.focusLeft && t.agentIndex < len(t.rows)-1 {
 			t.agentIndex++
@@ -343,7 +404,11 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.focusLeft = true
 	case "right", "l":
 		t.focusLeft = false
-	case "r":
+	case "/":
+		t.focusLeft = true
+		t.filterBox.EnterFresh()
+		return t, nil
+	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
 	case "enter":
@@ -365,10 +430,48 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		}
 	case "s":
 		return t.startSwitch(false)
-	case "m":
+	case "M":
+		// M=仅换默认模型（与 s 成对，大写为变体；grill D7）
 		return t.startSwitch(true)
+	case "g":
+		t.jumpFocus(0)
+	case "G":
+		t.jumpFocus(t.focusListLen() - 1)
+	case "pgup":
+		t.jumpFocus(t.cursorForFocus() - pageStep(t.height))
+	case "pgdown":
+		t.jumpFocus(t.cursorForFocus() + pageStep(t.height))
 	}
 	return t, nil
+}
+
+// cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
+func (t *aiTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.providerIndex
+	}
+	return t.agentIndex
+}
+
+func (t *aiTab) focusListLen() int {
+	if t.focusLeft {
+		return len(t.visibleProviders())
+	}
+	return len(t.rows)
+}
+
+func (t *aiTab) jumpFocus(idx int) {
+	n := t.focusListLen()
+	if n == 0 || idx < 0 {
+		idx = 0
+	} else if idx > n-1 {
+		idx = n - 1
+	}
+	if t.focusLeft {
+		t.providerIndex = idx
+	} else {
+		t.agentIndex = idx
+	}
 }
 
 func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
@@ -1042,10 +1145,11 @@ func agentDetailLines(row llm.StatusRow) []string {
 // --- lookups ---
 
 func (t *aiTab) currentProvider() *storage.LLMProviderEntry {
-	if t.providerIndex < 0 || t.providerIndex >= len(t.providers) {
+	providers := t.visibleProviders()
+	if t.providerIndex < 0 || t.providerIndex >= len(providers) {
 		return nil
 	}
-	return t.providers[t.providerIndex]
+	return providers[t.providerIndex]
 }
 
 func (t *aiTab) providerByAlias(alias string) *storage.LLMProviderEntry {
@@ -1082,6 +1186,7 @@ func (t *aiTab) applyPendingJump() {
 	if t.pendingJump == "" {
 		return
 	}
+	t.filterBox.Clear() // 跳转前清过滤，保证目标可见
 	for i, p := range t.providers {
 		if p.Alias == t.pendingJump {
 			t.providerIndex = i
@@ -1260,7 +1365,11 @@ func (t *aiTab) viewBaseAt(height int) string {
 	providerLines := t.providerLines(max(leftW-4, 8))
 	agentLines := t.agentLines(max(rightW-4, 8))
 
-	left := windowedPane(fmt.Sprintf("Providers (%d)", len(t.providers)), providerLines, t.providerIndex, height, leftW)
+	leftTitle := fmt.Sprintf("Providers (%d)", len(t.visibleProviders()))
+	if t.filterBox.Active() {
+		leftTitle += "  " + t.filterBox.Prompt()
+	}
+	left := windowedPane(leftTitle, providerLines, t.providerIndex, height, leftW)
 	right := windowedPane("Agents · 当前指向", agentLines, t.agentIndex, height, rightW)
 
 	if t.focusLeft {
@@ -1280,8 +1389,9 @@ func (t *aiTab) providerLines(width int) []string {
 			pointed[r.Pointer.Provider] = true
 		}
 	}
-	lines := make([]string, 0, len(t.providers))
-	for i, p := range t.providers {
+	providers := t.visibleProviders()
+	lines := make([]string, 0, len(providers))
+	for i, p := range providers {
 		def := p.DefaultModel
 		if def == "" {
 			def = "-"
@@ -1371,11 +1481,4 @@ func (t *aiTab) renderFlow() string {
 	title := fmt.Sprintf("选择 Agent 模型集（已选 %d/%d）— %s → %s",
 		len(t.flowSelectedModels()), len(t.flowCandidates), agent, t.flowProvider)
 	return modalBox(title, strings.Join(lines, "\n"), "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消")
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }

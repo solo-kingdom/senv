@@ -10,8 +10,10 @@ type Tab interface {
 	// Title returns the label shown in the tab strip.
 	Title() string
 
-	// Help returns the keybinding hint shown in the status bar.
-	Help() string
+	// Bindings 声明当前模式下的键位（keymap 注册表）。它是键位唯一真相
+	// 源：Update 分发与状态栏提示、`?` 键位总览渲染共用同一组常量，键位
+	// 与帮助不可能漂移。同一动作在不同 Tab 使用相同按键。
+	Bindings() []KeyAction
 
 	// InputMode reports whether the tab is currently capturing text input
 	// (e.g. an inline edit modal or filter box). When true, the top-level

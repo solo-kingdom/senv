@@ -53,8 +53,11 @@ func TestTextManagerLoadAndOps(t *testing.T) {
 	tab.SetSize(80, 20)
 	tab = flushText(tab, tab.load())
 
-	if len(tab.groups) == 0 || tab.groups[0].name != "default" {
-		t.Fatalf("expected default group, got %#v", tab.groups)
+	if len(tab.groups) < 2 || tab.groups[0].name != textAllLabel || !tab.groups[0].isAll {
+		t.Fatalf("expected All pseudo-group first, got %#v", tab.groups)
+	}
+	if tab.groups[1].name != "default" {
+		t.Fatalf("expected default group second, got %#v", tab.groups[1])
 	}
 	items := tab.itemsByGroup["default"]
 	if len(items) != 2 {

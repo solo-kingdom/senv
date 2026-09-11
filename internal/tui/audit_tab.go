@@ -33,13 +33,12 @@ type auditTab struct {
 	rows      []session.AuditEntry
 	skipped   int
 	filterIdx int
-	// filter 是 'f' 预设之外的自由文本过滤（匹配 event type / target / message），
-	// filtering 为 true 时键盘输入进入过滤器而不是移动光标。
-	filter    string
-	filtering bool
-	cursor    int
-	top       int
-	loadErr   string
+	// filterBox 是 'f' 预设之外的自由文本过滤状态机（匹配 event type /
+	// target / message）；输入态下键盘进入过滤器而不是移动光标。
+	filterBox Filter
+	// list 承载游标与窗口（共享列表组件），替代手写 top/pageSize/clampWindow。
+	list    List
+	loadErr string
 }
 
 type auditLoadedMsg struct {
@@ -54,11 +53,15 @@ func newAuditTab(source AuditSource) *auditTab {
 
 func (t *auditTab) Title() string { return "Audit" }
 
-func (t *auditTab) Help() string {
-	return "↑↓/jk 移动 · PgUp/PgDn 翻页 · f 预设过滤(" + auditFilterPresets[t.filterIdx].label + ") · / 文本过滤 · r 刷新"
+func (t *auditTab) Bindings() []KeyAction {
+	return []KeyAction{
+		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
+		{[]string{"f"}, "预设过滤(" + auditFilterPresets[t.filterIdx].label + ")"},
+		actFilter, actRefresh,
+	}
 }
 
-func (t *auditTab) InputMode() bool { return t.filtering }
+func (t *auditTab) InputMode() bool { return t.filterBox.Active() }
 
 func (t *auditTab) Init() tea.Cmd {
 	return t.load()
@@ -95,27 +98,24 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case tea.KeyMsg:
-		// Free-text filter input owns every key while active (mirrors the env
-		// tab filter: live match, esc clears, enter keeps).
-		if t.filtering {
+		// 自由文本过滤（共享 Filter 状态机）：live match、esc 清词、enter 确认；
+		// 匹配谓词保留 audit 专属的 auditEntryMatches（比 matchKey 多匹配 message）。
+		if t.filterBox.Active() {
 			switch msg.String() {
 			case "esc":
-				t.filter = ""
-				t.filtering = false
+				t.filterBox.Clear()
 				t.clampCursor()
 				return t, nil
 			case "enter":
-				t.filtering = false
+				t.filterBox.Confirm()
 				return t, nil
 			case "backspace":
-				if r := []rune(t.filter); len(r) > 0 {
-					t.filter = string(r[:len(r)-1])
-				}
+				t.filterBox.Backspace()
 				t.clampCursor()
 				return t, nil
 			}
 			if isPrintable(msg) {
-				t.filter += msg.String()
+				t.filterBox.Append(msg.String())
 				t.clampCursor()
 			}
 			return t, nil
@@ -123,30 +123,26 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 		switch msg.String() {
 		case "/":
-			t.filtering = true
+			t.filterBox.Enter()
 			t.clampCursor()
 			return t, nil
 		case "up", "k":
-			if t.cursor > 0 {
-				t.cursor--
-				t.clampWindow()
-			}
+			t.list.Move(-1, len(t.filtered()))
 		case "down", "j":
-			if t.cursor < len(t.filtered())-1 {
-				t.cursor++
-				t.clampWindow()
-			}
+			t.list.Move(1, len(t.filtered()))
 		case "pgup":
-			t.cursor -= t.pageSize()
-			t.clampCursor()
+			t.list.Page(-1, len(t.filtered()))
 		case "pgdown":
-			t.cursor += t.pageSize()
-			t.clampCursor()
+			t.list.Page(1, len(t.filtered()))
 		case "f":
 			t.filterIdx = (t.filterIdx + 1) % len(auditFilterPresets)
 			t.clampCursor()
-		case "r":
+		case "ctrl+r":
 			return t, t.load()
+		case "g":
+			t.list.Home()
+		case "G":
+			t.list.End(len(t.filtered()))
 		}
 	}
 	return t, nil
@@ -154,7 +150,7 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 func (t *auditTab) filtered() []session.AuditEntry {
 	match := auditFilterPresets[t.filterIdx].match
-	needle := strings.ToLower(strings.TrimSpace(t.filter))
+	needle := strings.ToLower(strings.TrimSpace(t.filterBox.Term()))
 	out := make([]session.AuditEntry, 0, len(t.rows))
 	for _, e := range t.rows {
 		if !match(e) {
@@ -174,39 +170,15 @@ func auditEntryMatches(e session.AuditEntry, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
 
-func (t *auditTab) pageSize() int {
-	h := t.height - 6
-	if h < 1 {
-		h = 1
-	}
-	return h
-}
-
 func (t *auditTab) clampCursor() {
-	n := len(t.filtered())
-	if t.cursor >= n {
-		t.cursor = n - 1
-	}
-	if t.cursor < 0 {
-		t.cursor = 0
-	}
-	t.clampWindow()
+	t.list.SetCursor(t.list.Cursor(), len(t.filtered()))
 }
 
-func (t *auditTab) clampWindow() {
-	h := t.pageSize()
-	if t.top > t.cursor-h+1 {
-		t.top = t.cursor - h + 1
-	}
-	if t.top < 0 {
-		t.top = 0
-	}
-	if t.top > t.cursor {
-		t.top = t.cursor
-	}
+func (t *auditTab) SetSize(width, height int) {
+	t.width, t.height = width, height
+	// 6 行 chrome：表头行 + 空行 + 提示行 + 边距（原 pageSize 公式）。
+	t.list.SetHeight(height - 6)
 }
-
-func (t *auditTab) SetSize(width, height int) { t.width, t.height = width, height }
 
 func (t *auditTab) View() string {
 	if t.loadErr != "" {
@@ -217,25 +189,21 @@ func (t *auditTab) View() string {
 	}
 	rows := t.filtered()
 	if len(rows) == 0 {
-		if t.filter != "" {
-			return paneStyle.Render(emptyStateStyle.Render("（没有匹配 /" + t.filter + " 的审计事件）"))
+		if t.filterBox.Term() != "" {
+			return paneStyle.Render(emptyStateStyle.Render("（没有匹配 /" + t.filterBox.Term() + " 的审计事件）"))
 		}
 		return paneStyle.Render(emptyStateStyle.Render("（暂无审计事件）"))
 	}
 
 	var b strings.Builder
 	filterLabel := auditFilterPresets[t.filterIdx].label
-	if t.filter != "" {
-		filterLabel += " + /" + t.filter
+	if t.filterBox.Term() != "" {
+		filterLabel += " + /" + t.filterBox.Term()
 	}
 	b.WriteString(fmt.Sprintf("本机审计事件（过滤: %s，共 %d 条，时间新到旧）\n\n",
 		filterLabel, len(rows)))
-	page := t.pageSize()
-	end := t.top + page
-	if end > len(rows) {
-		end = len(rows)
-	}
-	for i := t.top; i < end; i++ {
+	start, end := t.list.VisibleRange(len(rows))
+	for i := start; i < end; i++ {
 		e := rows[i]
 		outcome := "✓"
 		if !e.Success {
@@ -245,7 +213,7 @@ func (t *auditTab) View() string {
 			e.Timestamp.Local().Format("2006-01-02 15:04:05"),
 			string(e.EventType), outcome, e.Target)
 		prefix := "  "
-		if i == t.cursor {
+		if i == t.list.Cursor() {
 			prefix = "> "
 			line = selectedLineStyle.Render(line)
 		}
@@ -254,8 +222,8 @@ func (t *auditTab) View() string {
 	if t.skipped > 0 {
 		b.WriteString(fmt.Sprintf("\n⚠ 跳过 %d 行无法解析的记录\n", t.skipped))
 	}
-	if t.filtering {
-		b.WriteString("\n/" + t.filter + "_（enter 确认 · esc 清除）\n")
+	if t.filterBox.Active() {
+		b.WriteString("\n" + t.filterBox.Prompt() + "（enter 确认 · esc 清除）\n")
 	}
 	return paneStyle.Render(b.String())
 }

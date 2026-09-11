@@ -27,11 +27,16 @@ type sshTab struct {
 
 	hosts     []storage.HostEntry
 	keyPairs  []ssh.KeyPairSummary
-	focusLeft bool
-	hostIndex int
-	keyIndex  int
-	loadErr   string
-	detail    *detailOverlay
+	filterBox Filter // `/` 过滤左栏主列表（alias/hostname 标识）
+	sel       List   // 仅承载 host 多选集（space 勾选 / a 全选可见）
+
+	// pendingBatchHosts 批量删除确认页暂存的 host 别名列表。
+	pendingBatchHosts []string
+	focusLeft         bool
+	hostIndex         int
+	keyIndex          int
+	loadErr           string
+	detail            *detailOverlay
 	// pendingJump holds a host alias requested by the global search before the
 	// tab finished loading, since there is nothing to point at yet.
 	pendingJump string
@@ -63,6 +68,7 @@ const (
 	sshModeDeleteKey
 	sshModeMaterialize
 	sshModeExportPreview
+	sshModeBatchDeleteHost
 )
 
 type sshLoadedMsg struct {
@@ -92,23 +98,98 @@ func newSSHTab(mgr Managers) *sshTab {
 
 func (t *sshTab) Title() string { return "SSH" }
 
-func (t *sshTab) Help() string {
+func (t *sshTab) Bindings() []KeyAction {
 	if t.form != nil {
-		return "tab/↑↓ 切换字段 · enter 提交 · esc 取消"
+		return []KeyAction{
+			{[]string{"tab/↑↓"}, "切换字段"},
+			{[]string{"enter"}, "提交"},
+			{[]string{"esc"}, "取消"},
+		}
 	}
 	switch t.mode {
-	case sshModeDeleteHost, sshModeDeleteKey, sshModeMaterialize:
-		return "enter/y 确认 · esc/n 取消"
+	case sshModeDeleteHost, sshModeDeleteKey, sshModeMaterialize, sshModeBatchDeleteHost:
+		return []KeyAction{{[]string{"enter/y"}, "确认"}, {[]string{"esc/n"}, "取消"}}
 	case sshModeExportPreview:
-		return "w 写入文件 · esc 取消"
+		return []KeyAction{{[]string{"w"}, "写入文件"}, {[]string{"esc"}, "取消"}}
 	}
+	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
+		actTop, actBottom, actPageUp, actPageDn, actRefresh, actFilter}
 	if t.focusLeft {
-		return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · x 导出 · r 刷新"
+		return append(nav, actNew, actEdit, actDelete, actExport)
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · i 导入 · R 重命名 · m materialize · d 删除 · x 导出全部 · r 刷新"
+	return append(nav,
+		KeyAction{[]string{"i"}, "导入 keypair"},
+		KeyAction{[]string{"r"}, "重命名 keypair"},
+		KeyAction{[]string{"m"}, "materialize"},
+		KeyAction{[]string{"d"}, "删除"},
+		KeyAction{[]string{"x"}, "导出 OpenSSH 片段"},
+	)
 }
 
-func (t *sshTab) InputMode() bool { return t.form != nil || t.mode != sshModeNormal }
+func (t *sshTab) InputMode() bool {
+	return t.form != nil || t.mode != sshModeNormal || t.filterBox.Active()
+}
+
+// visibleHosts 返回过滤后的左栏可见列表（空词 = 全量）。
+func (t *sshTab) visibleHosts() []storage.HostEntry {
+	if t.filterBox.Term() == "" {
+		return t.hosts
+	}
+	out := make([]storage.HostEntry, 0, len(t.hosts))
+	for _, h := range t.hosts {
+		if t.filterBox.Matches(h.Alias + " " + h.Hostname) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// enterFilter 进入 `/` 过滤（清词重新开始，与 env/text/config 一致）。
+func (t *sshTab) enterFilter() {
+	t.focusLeft = true
+	t.filterBox.EnterFresh()
+}
+
+// handleFilterKeys 处理过滤输入态按键；返回 true 表示按键已被消费。
+func (t *sshTab) handleFilterKeys(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "esc":
+		t.filterBox.Clear()
+		t.clampFocus()
+		return true
+	case "enter":
+		t.filterBox.Confirm()
+		return true
+	case "backspace":
+		t.filterBox.Backspace()
+		t.clampFocus()
+		return true
+	}
+	if isPrintable(msg) {
+		t.filterBox.Append(msg.String())
+		t.clampFocus()
+		return true
+	}
+	return false
+}
+
+// visibleHostAliases 返回可见 host 的别名（计数提示用）。
+func (t *sshTab) visibleHostAliases() []string {
+	hosts := t.visibleHosts()
+	out := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, h.Alias)
+	}
+	return out
+}
+
+// clampFocus 把两栏游标都收回可见范围。
+func (t *sshTab) clampFocus() {
+	n := len(t.visibleHosts())
+	if t.hostIndex >= n {
+		t.hostIndex = max(n-1, 0)
+	}
+}
 
 func (t *sshTab) SetSize(width, height int) {
 	t.width, t.height = width, height
@@ -156,6 +237,11 @@ func (t *sshTab) load() tea.Cmd {
 }
 
 func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && t.filterBox.Active() && t.form == nil && t.mode == sshModeNormal {
+		if t.handleFilterKeys(key) {
+			return t, nil
+		}
+	}
 	// Form results must be handled before routing further messages into the
 	// still-open form.
 	switch msg := msg.(type) {
@@ -245,7 +331,7 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.keyIndex--
 		}
 	case "down", "j":
-		if t.focusLeft && t.hostIndex < len(t.hosts)-1 {
+		if t.focusLeft && t.hostIndex < len(t.visibleHosts())-1 {
 			t.hostIndex++
 		} else if !t.focusLeft && t.keyIndex < len(t.keyPairs)-1 {
 			t.keyIndex++
@@ -254,7 +340,12 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.focusLeft = true
 	case "right", "l":
 		t.focusLeft = false
-	case "r":
+	case "/":
+		if t.focusLeft {
+			t.enterFilter()
+			return t, nil
+		}
+	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
 	case "enter":
@@ -264,19 +355,12 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t.enterHostForm(nil)
 		}
 		return t.enterImportKeyPair()
-	case "e":
-		if t.focusLeft {
-			host, ok := t.currentHost()
-			if !ok {
-				return t, warnToast("没有选中的 host")
-			}
-			return t.enterHostForm(&host)
-		}
 	case "i":
 		if !t.focusLeft {
 			return t.enterImportKeyPair()
 		}
-	case "R":
+	case "r":
+		// r=重命名全局唯一：keypair 重命名从 R 迁到 r（host 重命名走 e 表单）
 		if !t.focusLeft {
 			return t.enterRenameKeyPair()
 		}
@@ -284,12 +368,80 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		if !t.focusLeft {
 			return t.enterMaterialize()
 		}
+	case " ", "space":
+		if t.focusLeft {
+			if host, ok := t.currentHost(); ok {
+				t.sel.Toggle(host.Alias)
+			}
+		}
+	case "a":
+		if t.focusLeft {
+			keys := make([]string, 0, len(t.visibleHosts()))
+			for _, h := range t.visibleHosts() {
+				keys = append(keys, h.Alias)
+			}
+			t.sel.SelectVisible(keys)
+		}
 	case "x":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t.enterBatchHostExport()
+		}
 		return t.enterExport()
 	case "d":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t.enterBatchDeleteHosts()
+		}
 		return t.enterDelete()
+	case "e":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t, warnToast("已多选 host：编辑需先缩小到单选")
+		}
+		if t.focusLeft {
+			host, ok := t.currentHost()
+			if !ok {
+				return t, warnToast("没有选中的 host")
+			}
+			return t.enterHostForm(&host)
+		}
+	case "g":
+		t.jumpFocus(0)
+	case "G":
+		t.jumpFocus(t.focusListLen() - 1)
+	case "pgup":
+		t.jumpFocus(t.cursorForFocus() - pageStep(t.height))
+	case "pgdown":
+		t.jumpFocus(t.cursorForFocus() + pageStep(t.height))
 	}
 	return t, nil
+}
+
+// cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
+func (t *sshTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.hostIndex
+	}
+	return t.keyIndex
+}
+
+func (t *sshTab) focusListLen() int {
+	if t.focusLeft {
+		return len(t.hosts)
+	}
+	return len(t.keyPairs)
+}
+
+func (t *sshTab) jumpFocus(idx int) {
+	n := t.focusListLen()
+	if n == 0 || idx < 0 {
+		idx = 0
+	} else if idx > n-1 {
+		idx = n - 1
+	}
+	if t.focusLeft {
+		t.hostIndex = idx
+	} else {
+		t.keyIndex = idx
+	}
 }
 
 // updateMode handles the delete/materialize/export confirmation modals.
@@ -299,6 +451,16 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		switch msg.String() {
 		case "enter", "y":
 			return t.doDeleteHost(t.pendingHost)
+		case "esc", "n":
+			t.cancelMode()
+		}
+	case sshModeBatchDeleteHost:
+		switch msg.String() {
+		case "enter", "y":
+			targets := t.pendingBatchHosts
+			t.cancelMode()
+			t.sel.ClearSelection() // 提交即清空多选集
+			return t, t.doBatchDeleteHosts(targets)
 		case "esc", "n":
 			t.cancelMode()
 		}
@@ -347,6 +509,98 @@ func (t *sshTab) cancelMode() {
 
 // enterDelete stages the focused host or keypair for deletion, gathering the
 // keypair's referencing hosts so the confirmation can list them.
+// enterBatchDeleteHosts 多选集批量删除 host：一次确认列全部目标。
+func (t *sshTab) enterBatchDeleteHosts() (Tab, tea.Cmd) {
+	targets := t.selectedHostAliases()
+	if len(targets) == 0 {
+		return t, warnToast("多选集为空")
+	}
+	t.pendingBatchHosts = targets
+	t.mode = sshModeBatchDeleteHost
+	return t, nil
+}
+
+// selectedHostAliases 返回多选集命中的可见 host 别名。
+func (t *sshTab) selectedHostAliases() []string {
+	var out []string
+	for _, h := range t.visibleHosts() {
+		if t.sel.IsSelected(h.Alias) {
+			out = append(out, h.Alias)
+		}
+	}
+	return out
+}
+
+// doBatchDeleteHosts 逐条删除；单条失败不中止其余。
+func (t *sshTab) doBatchDeleteHosts(aliases []string) tea.Cmd {
+	mgr := t.mgr.SSH
+	mgrs := t.mgr
+	return func() tea.Msg {
+		failed := 0
+		for _, alias := range aliases {
+			if err := mgr.DeleteHost(alias); err != nil {
+				failed++
+				recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "delete 失败")
+				continue
+			}
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "delete")
+		}
+		if failed > 0 {
+			return warnMsg{text: fmt.Sprintf("批量删除完成，%d 个失败", failed)}
+		}
+		return sshReloadMsg{toast: fmt.Sprintf("已删除 %d 个 host", len(aliases))}
+	}
+}
+
+// enterBatchHostExport 批量导出：选目录，每个 host 写入 <目录>/<alias>.conf。
+func (t *sshTab) enterBatchHostExport() (Tab, tea.Cmd) {
+	targets := t.selectedHostAliases()
+	if len(targets) == 0 {
+		return t, warnToast("多选集为空")
+	}
+	f := newForm("批量导出 host 片段",
+		formField{
+			key: "dir", label: "输出目录", kind: formPath, placeholder: "~/.ssh/config.d",
+			validate: func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("输出目录不能为空")
+				}
+				return nil
+			},
+		},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		dir := strings.TrimSpace(values["dir"])
+		targets := t.selectedHostAliases()
+		t.sel.ClearSelection()
+		return t.doBatchExportHosts(dir, targets)
+	})
+	return t, nil
+}
+
+// doBatchExportHosts 逐个导出；单条失败不中止其余并汇总。
+func (t *sshTab) doBatchExportHosts(dir string, aliases []string) tea.Cmd {
+	mgr := t.mgr.SSH
+	return func() tea.Msg {
+		failed := 0
+		for _, alias := range aliases {
+			content, err := mgr.Export(alias)
+			if err != nil {
+				failed++
+				continue
+			}
+			path := filepath.Join(expandHome(dir), alias+".conf")
+			if err := storage.WriteSensitiveFile(path, []byte(content), 0o700, 0o600); err != nil {
+				failed++
+			}
+		}
+		if failed > 0 {
+			return warnMsg{text: fmt.Sprintf("批量导出完成，%d 个失败", failed)}
+		}
+		return sshReloadMsg{toast: fmt.Sprintf("已导出 %d 个 host 到 %s", len(aliases), dir)}
+	}
+}
+
 func (t *sshTab) enterDelete() (Tab, tea.Cmd) {
 	if t.focusLeft {
 		host, ok := t.currentHost()
@@ -1004,16 +1258,6 @@ func keyPairDetailLines(k ssh.KeyPairSummary) []string {
 	return append(lines, "  "+k.PublicKey)
 }
 
-// sortedKeys returns map keys in stable order.
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // --- cursor ---
 
 // focusJump positions the cursor on a host alias (global search target).
@@ -1074,7 +1318,7 @@ func (t *sshTab) View() string {
 	if len(t.hosts) == 0 && len(t.keyPairs) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("SSH"),
-			emptyStateStyle.Render("暂无 SSH 资产；按 n 新建 host 或导入 keypair，之后按 r 刷新"))
+			emptyStateStyle.Render("暂无 SSH 资产；按 n 新建 host 或导入 keypair，之后按 Ctrl+R 刷新"))
 	}
 	overlay := ""
 	if t.form != nil {
@@ -1107,7 +1351,12 @@ func (t *sshTab) viewBaseAt(height int) string {
 	hostLines := t.hostListLines(max(leftW-4, 8))
 	keyLines := t.keyPairListLines(max(rightW-4, 8))
 
-	left := windowedPane(fmt.Sprintf("Hosts (%d)", len(t.hosts)), hostLines, t.hostIndex, height, leftW)
+	leftTitle := fmt.Sprintf("Hosts (%d)", len(t.visibleHosts()))
+	if t.filterBox.Active() {
+		leftTitle += "  " + t.filterBox.Prompt()
+	}
+	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleHostAliases()))
+	left := windowedPane(leftTitle, hostLines, t.hostIndex, height, leftW)
 	right := windowedPane(fmt.Sprintf("KeyPairs (%d) · 私钥已遮蔽", len(t.keyPairs)), keyLines, t.keyIndex, height, rightW)
 
 	if t.focusLeft {
@@ -1127,8 +1376,9 @@ func (t *sshTab) hostListLines(width int) []string {
 	for _, k := range t.keyPairs {
 		byName[k.Name] = k
 	}
-	lines := make([]string, 0, len(t.hosts))
-	for i, host := range t.hosts {
+	hosts := t.visibleHosts()
+	lines := make([]string, 0, len(hosts))
+	for i, host := range hosts {
 		line := truncateWidth(hostListLabel(host, byName), width)
 		lines = append(lines, cursorLine(line, i == t.hostIndex))
 	}
@@ -1180,6 +1430,13 @@ func shortFingerprint(fp string) string {
 
 func (t *sshTab) renderModal() string {
 	switch t.mode {
+	case sshModeBatchDeleteHost:
+		var b strings.Builder
+		for _, alias := range t.pendingBatchHosts {
+			b.WriteString(alias + "\n")
+		}
+		return modalBox(fmt.Sprintf("删除 %d 个 host？", len(t.pendingBatchHosts)),
+			strings.TrimRight(b.String(), "\n"), "enter/y 全部删除 · esc/n 取消")
 	case sshModeDeleteHost:
 		body := "删除后不可恢复。"
 		if host, ok := t.hostByAlias(t.pendingHost); ok {
@@ -1207,19 +1464,4 @@ func (t *sshTab) renderModal() string {
 		return modalBox("导出 OpenSSH 片段 — "+t.exportLabel, t.exportContent, "w 写入文件 · esc 取消")
 	}
 	return ""
-}
-
-// cursorLine renders a selectable list row with a fixed-width selection marker.
-func cursorLine(line string, selected bool) string {
-	if selected {
-		return selectedLineStyle.Render(cursorPrefix(true) + line)
-	}
-	return cursorPrefix(false) + line
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

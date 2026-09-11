@@ -13,7 +13,12 @@ func newLoadedTextTab(t *testing.T) *textTab {
 	t.Helper()
 	tab := newTextTab(Managers{Text: newTestTextManager(t)})
 	tab.SetSize(80, 20)
-	return flushText(tab, tab.load())
+	tab = flushText(tab, tab.load())
+	// 侧栏范式：All 伪组占 0，条目类测试默认落在 default 分组
+	if i := indexOfTextGroup(tab, "default"); i >= 0 {
+		tab.groupIndex = i
+	}
+	return tab
 }
 
 func replaceFormText(t *testing.T, f *form, value string) *form {

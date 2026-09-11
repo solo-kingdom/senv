@@ -329,6 +329,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+		case "ctrl+r":
+			// 刷新当前 Tab（grill D7：refresh 统一 Ctrl+R，腾出 r=rename）。
+			m.err = ""
+			return m, m.tabs[m.active].Reload()
 		case "S":
 			// Open the global cross-type search overlay (task 10.1).
 			m.search = newSearchTab(m.mgr)
@@ -336,7 +340,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.search.Init()
 		case "?":
 			// Open the keybinding overview for the active tab.
-			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active].Help())
+			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active])
 			m.help.SetSize(m.width, m.height)
 			return m, nil
 		case "tab":
@@ -542,7 +546,7 @@ func (m Model) View() string {
 		}
 		bottom = m.bottomBar(prefix+m.toast, style)
 	default:
-		bottom = m.bottomBar(m.tabs[m.active].Help(), statusBarStyle)
+		bottom = m.bottomBar(hintsFromBindings(m.tabs[m.active].Bindings()), statusBarStyle)
 	}
 
 	// Stack the chrome inside the frame. lipgloss v1.x draws borders

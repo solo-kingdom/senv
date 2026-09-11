@@ -152,3 +152,167 @@ func windowedPane(title string, lines []string, cursor, height, width int) strin
 	}
 	return out
 }
+
+// ---------- 共享列表组件（tui-ux-list） ----------
+
+// List 是共享列表视图状态：游标 + 可视高度。它不持有业务数据，也不做行
+// 渲染——Tab 负责把数据变成行，组件负责「可见哪些行、游标在哪」。过滤与
+// 多选状态由后续子 change 在其上叠加。
+type List struct {
+	cursor   int
+	height   int // 可视行预算；<=0 表示不窗口化（全量展示）
+	selected map[string]bool
+}
+
+// Cursor 返回当前游标。
+func (l *List) Cursor() int { return l.cursor }
+
+// SetHeight 更新可视行预算。
+func (l *List) SetHeight(h int) { l.height = h }
+
+// SetCursor 将游标 clamp 到 [0, n)。
+func (l *List) SetCursor(idx, n int) {
+	if n <= 0 {
+		l.cursor = 0
+		return
+	}
+	l.cursor = clamp(idx, 0, n-1)
+}
+
+// Move 游标移动 delta（clamp 到列表范围）。
+func (l *List) Move(delta, n int) { l.SetCursor(l.cursor+delta, n) }
+
+// Home/End 跳顶/跳底。
+func (l *List) Home() { l.cursor = 0 }
+func (l *List) End(n int) {
+	if n > 0 {
+		l.cursor = n - 1
+	}
+}
+
+// Page 按当前可视页整页移动游标（dir=-1 上翻，1 下翻）。
+func (l *List) Page(dir, n int) {
+	page := listPageSize(l.height)
+	if page <= 0 {
+		page = 1
+	}
+	l.Move(dir*page, n)
+}
+
+// VisibleRange 返回包含游标的可见窗口 [start, end)。
+func (l *List) VisibleRange(n int) (start, end int) {
+	return visibleRange(n, l.cursor, listPageSize(l.height))
+}
+
+// paneBudgets 计算双栏宽度：左栏 = width*ratioNum/ratioDen 并 clamp 到
+// [minLeft, maxLeft]，右栏吃剩余（预留 5 列栏间 chrome：1 间隙 + 左右栏
+// 各 2 列边框，lipgloss 边框画在 Width 之外）。
+func paneBudgets(width, ratioNum, ratioDen, minLeft, maxLeft int) (left, right int) {
+	left = width * ratioNum / ratioDen
+	if left > maxLeft {
+		left = maxLeft
+	}
+	if left < minLeft {
+		left = minLeft
+	}
+	right = width - left - 5
+	if right < 4 {
+		right = 4
+	}
+	return left, right
+}
+
+// ---------- 多选集（tui-ux-multiselect） ----------
+
+// Toggle 勾选/取消勾选一个稳定标识（如 "group/key"、alias）。
+func (l *List) Toggle(key string) {
+	if l.selected == nil {
+		l.selected = map[string]bool{}
+	}
+	if l.selected[key] {
+		delete(l.selected, key)
+		return
+	}
+	l.selected[key] = true
+}
+
+// SelectVisible 全选/取消全选可见集：可见集已全部选中则整体取消，否则整体勾选。
+func (l *List) SelectVisible(keys []string) {
+	if l.selected == nil {
+		l.selected = map[string]bool{}
+	}
+	allSelected := true
+	for _, k := range keys {
+		if !l.selected[k] {
+			allSelected = false
+			break
+		}
+	}
+	for _, k := range keys {
+		if allSelected {
+			delete(l.selected, k)
+		} else {
+			l.selected[k] = true
+		}
+	}
+}
+
+// IsSelected 报告标识是否在多选集中。
+func (l *List) IsSelected(key string) bool { return l.selected[key] }
+
+// SelectionCount 返回多选集大小（含被过滤隐藏的已选项）。
+func (l *List) SelectionCount() int { return len(l.selected) }
+
+// SelectedIn 返回 keys 中被选中的个数（宿主据此计算「被过滤隐藏」数）。
+func (l *List) SelectedIn(keys []string) int {
+	n := 0
+	for _, k := range keys {
+		if l.selected[k] {
+			n++
+		}
+	}
+	return n
+}
+
+// ClearSelection 清空多选集（批量操作提交后调用）。
+func (l *List) ClearSelection() { l.selected = nil }
+
+// SelectionHint 渲染标题栏计数提示；无勾选返回空串。hidden 为被过滤隐藏
+// 的已选数（>0 时附带提示）。
+func (l *List) SelectionHint(hidden int) string {
+	n := len(l.selected)
+	if n == 0 {
+		return ""
+	}
+	if hidden > 0 {
+		return fmt.Sprintf(" · 已选 %d（%d 被过滤）", n, hidden)
+	}
+	return fmt.Sprintf(" · 已选 %d", n)
+}
+
+// ---------- 分组侧栏（tui-ux-sidebar：config 范式下沉共享） ----------
+
+// SidebarRow 是侧栏一行的展示数据。
+type SidebarRow struct {
+	Marker   string // 行首标记（"◯"=All、"●"=激活、" "=普通）
+	Name     string
+	Count    int
+	Selected bool
+}
+
+// renderSidebar 渲染分组侧栏（config 范式：All 置顶 + 过滤感知计数），
+// 三处（config/env/text）共用同一实现以保证视觉与行为一致。
+func renderSidebar(rows []SidebarRow, cursor, height, width int) string {
+	inner := width - 2
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		line := truncateRunes(fmt.Sprintf("%s %s  [%d]", r.Marker, r.Name, r.Count), inner-2)
+		if r.Selected {
+			line = selectedLineStyle.Render(cursorPrefix(true) + line)
+		} else {
+			line = cursorPrefix(false) + line
+		}
+		lines = append(lines, line)
+	}
+	return windowedPane(fmt.Sprintf("Groups (%d)", len(rows)), lines, cursor, height, width)
+}

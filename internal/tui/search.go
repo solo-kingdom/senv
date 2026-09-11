@@ -59,8 +59,13 @@ func newSearchTab(mgr Managers) *searchTab {
 
 func (s *searchTab) Title() string { return "Search" }
 
-func (s *searchTab) Help() string {
-	return "输入以搜索 key/名称 · ↑↓ 选择 · enter 跳转 · esc 关闭"
+func (s *searchTab) Bindings() []KeyAction {
+	return []KeyAction{
+		{[]string{"键入"}, "搜索 key/名称（只匹配标识）"},
+		actUp, actDown,
+		{[]string{"enter"}, "跳转"},
+		{[]string{"esc"}, "关闭"},
+	}
 }
 
 // InputMode is always true for the search overlay: it captures all keys.
@@ -242,27 +247,51 @@ func (s *searchTab) refilter() {
 // --- view ---
 
 func (s *searchTab) View() string {
-	header := lipgloss.NewStyle().Bold(true).Render("Search") +
-		"  " + statusBarStyle.Render(s.input+"_")
+	// s.width/s.height come from SetSize with the FULL terminal size; budget
+	// constants (frame/overlay chrome) are package-level in keymap.go. Results
+	// render inside what is left so a large inventory can never push the box
+	// past the outer frame.
+	innerH := s.height - frameRows - overlayRows
+	if innerH < 1 {
+		innerH = 1
+	}
+	innerW := s.width - overlayCols
+	if innerW < 10 {
+		innerW = 10
+	}
 
-	parts := []string{header}
+	title := "Search"
+	var lines []string
 	if len(s.results) == 0 {
-		parts = append(parts, emptyStateStyle.Render(
+		lines = append(lines, emptyStateStyle.Render(
 			"无匹配"+emptyHint(s.input)))
 	} else {
-		for i, r := range s.results {
+		// 1-line header + windowed results, cursor kept visible (same
+		// primitives as windowedPane).
+		page := listPageSize(innerH)
+		start, end := visibleRange(len(s.results), s.index, page)
+		if start > 0 || end < len(s.results) {
+			title = fmt.Sprintf("%s  %d–%d / %d", title, start+1, end, len(s.results))
+		}
+		for i, r := range s.results[start:end] {
 			badge := typeBadge(r.resultType)
-			line := fmt.Sprintf("%s  %s  %s", badge, secondaryLabel(r.group, r.key), r.preview)
-			if i == s.index {
-				line = selectedLineStyle.Render("▸ ") + line
+			line := truncateWidth(
+				fmt.Sprintf("%s  %s  %s", badge, secondaryLabel(r.group, r.key), r.preview),
+				innerW-2)
+			if start+i == s.index {
+				line = cursorPrefix(true) + selectedLineStyle.Render(line)
 			} else {
-				line = "  " + line
+				line = cursorPrefix(false) + line
 			}
-			parts = append(parts, line)
+			lines = append(lines, line)
 		}
 	}
-	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	return box
+	header := lipgloss.NewStyle().Bold(true).Render(title) +
+		"  " + statusBarStyle.Render(s.input+"_")
+	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+		append([]string{header}, lines...)...))
+	// Last line of defence: the overlay must stay inside the frame budget.
+	return clipLines(box, s.height-frameRows)
 }
 
 func emptyHint(input string) string {

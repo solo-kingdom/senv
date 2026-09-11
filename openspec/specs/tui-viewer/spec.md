@@ -64,11 +64,19 @@ TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH�
 
 ### Requirement: Env Tab 浏览与操作
 
-Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分组的环境变量列表。Env Tab MUST 支持完整的环境变量管理操作：浏览、新建、内联编辑、重命名 key、删除、复制、激活/停用分组、新建/重命名/删除分组、解引用视图切换、Tab 内过滤。重命名与删除 SHALL 走存储层的原子操作，MUST NOT 以「新建 + 删除」组合实现。`default` 分组 MUST NOT 被重命名或删除。
+Env Tab SHALL 采用双栏分组侧栏布局：左侧为分组侧栏（顶部为 All 伪组且默认选中，其下为分组列表——default 分组置顶并带 `(default)` 标识，激活分组显示 `●`），各组显示条目计数且计数随 `/` 过滤结果更新；右侧为环境变量列表。All 视图显示全部分组的环境变量（行前缀 `group/key`）；选中真实分组时右侧仅显示该分组。`←→/hl` SHALL 在侧栏与列表间切换焦点，切到列表时定位到该分组第一条。Env Tab MUST 支持完整的环境变量管理操作：浏览、新建、内联编辑、重命名 key、删除、复制、激活/停用分组、新建/重命名/删除分组、解引用视图切换、Tab 内过滤。重命名与删除 SHALL 走存储层的原子操作，MUST NOT 以「新建 + 删除」组合实现。`default` 分组 MUST NOT 被重命名或删除。分组激活/停用统一由 `t` 键切换。新建 SHALL 走结构化表单，value 以遮蔽输入收集，明文 MUST NOT 进入任何渲染文本。
+
+#### Scenario: 默认全览
+- **WHEN** 打开 Env Tab
+- **THEN** 左侧侧栏顶部为 All（默认选中），其下按 default 置顶、名称排序列出分组及条目计数，右侧显示全部环境变量并带 `group/key` 前缀
+
+#### Scenario: 侧栏计数随过滤更新
+- **WHEN** 用户输入过滤词且仅部分变量匹配
+- **THEN** 右侧仅显示匹配条目，侧栏各组计数更新为匹配数量，All 计数为总匹配数
 
 #### Scenario: 浏览分组的环境变量
-- **WHEN** 用户在 Env Tab 选中左侧某分组
-- **THEN** 右侧显示该分组所有环境变量的 key=value（值默认遮蔽），激活的分组在左侧显示 `●` 标记
+- **WHEN** 用户在左侧侧栏选中某分组
+- **THEN** 右侧显示该分组所有环境变量的 key=value（值默认遮蔽），激活的分组在侧栏显示 `●` 标记
 
 #### Scenario: 内联编辑环境变量
 - **WHEN** 用户选中某环境变量按 `e` 键
@@ -76,7 +84,7 @@ Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分
 
 #### Scenario: 新建环境变量
 - **WHEN** 用户按 `n` 键
-- **THEN** 弹出输入框依次收集 key 和 value，调用 `env.Manager.Set` 保存到当前分组
+- **THEN** 弹出结构化表单收集 key 与 value（value 为遮蔽输入），key 组内冲突或为空时内联报错、表单保持打开；校验通过后调用 `env.Manager.Set` 保存到当前分组，列表刷新
 
 #### Scenario: 删除环境变量
 - **WHEN** 用户选中某变量按 `d` 键
@@ -91,27 +99,31 @@ Env Tab SHALL 显示左侧分组列表（含激活标记 `●`）和右侧该分
 - **THEN** 表单内联提示冲突，保持打开且不写入
 
 #### Scenario: 重命名分组
-- **WHEN** 用户在分组栏对非 default 分组触发重命名并输入新名称
+- **WHEN** 用户在侧栏对非 default 分组触发重命名并输入新名称
 - **THEN** 分组改名且其条目与激活态保持不变
 
 #### Scenario: 删除分组
-- **WHEN** 用户在分组栏对非 default 分组触发删除并确认
+- **WHEN** 用户在侧栏对非 default 分组触发删除并确认
 - **THEN** 该分组及其条目被删除，列表刷新；删除激活分组时确认提示 SHALL 额外说明其激活态将被移除
 
 #### Scenario: 激活分组
-- **WHEN** 用户选中左侧未激活的分组按 `a` 键
+- **WHEN** 用户选中侧栏未激活的分组按 `t` 键
 - **THEN** 调用 `env.Manager.ActivateGroup`，该分组显示 `●` 标记
 
 #### Scenario: 停用分组
-- **WHEN** 用户选中左侧已激活的非默认分组按 `x` 键
+- **WHEN** 用户选中侧栏已激活的非默认分组按 `t` 键
 - **THEN** 调用 `env.Manager.DeactivateGroup`，移除 `●` 标记（default 分组不可停用）
 
 ### Requirement: Text Tab 浏览与操作
 
-Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/更新时间，不显示内容）。Text Tab MUST 支持浏览、新建（vim）、vim 编辑、重命名 key、删除、复制、导出文件、从文件导入、新建/重命名/删除分组、解引用切换、Tab 内过滤。重命名 SHALL 走存储层原子操作。
+Text Tab SHALL 采用双栏分组侧栏布局：左侧为分组侧栏（顶部为 All 伪组且默认选中，其下为分组列表——default 分组置顶），各组显示文本块计数且计数随 `/` 过滤结果更新，空分组 SHALL 显示且计数为 0；右侧为文本块列表（仅 key/size/更新时间，不显示内容）。All 视图显示全部分组的文本块（行前缀 `group/key`）；选中真实分组时右侧仅显示该分组。`←→/hl` SHALL 在侧栏与列表间切换焦点。Text Tab MUST 支持浏览、新建（vim）、vim 编辑、重命名 key、删除、复制、导出文件、从文件导入、新建/重命名/删除分组、解引用切换、Tab 内过滤。重命名 SHALL 走存储层原子操作。导出文件统一为 `x` 键（与全局导出语义一致）。
+
+#### Scenario: 默认全览
+- **WHEN** 打开 Text Tab
+- **THEN** 左侧侧栏顶部为 All（默认选中），其下列出分组及文本块计数（空分组计数 0），右侧显示全部文本块并带 `group/key` 前缀
 
 #### Scenario: 浏览文本块元信息
-- **WHEN** 用户在 Text Tab 选中某分组
+- **WHEN** 用户在侧栏选中某分组
 - **THEN** 右侧显示该分组所有文本块的 key、大小（字节）、更新时间，不显示内容
 
 #### Scenario: 用 vim 编辑文本块
@@ -119,7 +131,7 @@ Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/�
 - **THEN** TUI 通过 `tea.ExecProcess` 挂起，调用 `text.Manager.SetViaEditor` 打开 vim（预填现有内容），vim 退出后恢复 TUI，若有改动则重新加密保存并刷新列表
 
 #### Scenario: 导出文本块到文件
-- **WHEN** 用户选中某文本块按 `o` 键并指定路径
+- **WHEN** 用户选中某文本块按 `x` 键并指定路径
 - **THEN** 调用 `text.Manager.GetToFile` 写入指定路径
 
 #### Scenario: 从文件导入文本块
@@ -131,16 +143,16 @@ Text Tab SHALL 显示左侧分组列表和右侧文本块列表（仅 key/size/�
 - **THEN** 调用存储层 rename 原子改名，内容不变，列表刷新
 
 #### Scenario: 分组重命名与删除
-- **WHEN** 用户在分组栏对某分组触发重命名或删除并确认
+- **WHEN** 用户在侧栏对某分组触发重命名或删除并确认
 - **THEN** 分别调用 `RenameGroup`/`DeleteGroup`，列表刷新，光标落在有效条目上
 
 ### Requirement: Config Tab 浏览与操作
 
-Config Tab SHALL 采用单栏列表布局（无左侧分组栏），显示所有配置文件的 name、target 路径、更新时间。Config Tab MUST 支持浏览、创建（从文件导入）、vim 编辑、重命名条目、编辑元信息（分组、描述）、导出到 target、删除、查看详情、Tab 内过滤。重命名 SHALL 走存储层原子操作，MUST NOT 改变条目的 target 路径与内容。
+Config Tab SHALL 采用双栏分组浏览布局：左侧为分组侧栏（顶部 All 伪组，其下真实分组与条目计数），右侧为条目列表，详细行为见 config-tui 能力规约。Config Tab MUST 支持浏览、创建（从文件导入，走结构化表单）、vim 编辑、重命名条目、编辑元信息（分组、描述）、导出到 target、删除、查看详情、Tab 内过滤。重命名 SHALL 走存储层原子操作，MUST NOT 改变条目的 target 路径与内容。
 
 #### Scenario: 浏览配置文件列表
 - **WHEN** 用户切换到 Config Tab
-- **THEN** 单栏显示所有配置文件的 name、target 路径、更新时间
+- **THEN** 左侧分组侧栏默认选中 All，右侧显示全部配置条目的 group/name、target 路径、更新时间
 
 #### Scenario: 用 vim 编辑配置文件
 - **WHEN** 用户选中某配置按 `e` 键
@@ -151,8 +163,8 @@ Config Tab SHALL 采用单栏列表布局（无左侧分组栏），显示所有
 - **THEN** 调用 `config.Manager.Export` 解密写回该配置的 target 路径
 
 #### Scenario: 创建配置（从文件导入）
-- **WHEN** 用户按 `n` 键并依次输入 name、源文件路径、target 路径
-- **THEN** 调用 `config.Manager.Create` 加密导入
+- **WHEN** 用户按 `n` 键并在表单中填写 name、源文件路径、target 路径、分组与描述后提交
+- **THEN** 必填缺失或 name 冲突时内联报错且表单保持打开；校验通过后调用 `config.Manager.Create` 加密导入，列表刷新
 
 #### Scenario: 重命名配置条目
 - **WHEN** 用户对选中配置触发重命名并输入不冲突的新 name
@@ -200,11 +212,15 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: Tab 内过滤
 
-每个 Tab SHALL 支持按 ` / ` 键触发当前 Tab 内的过滤，仅匹配 key/name（不匹配值）。
+每个 Tab SHALL 支持按 `/` 键触发当前 Tab 内的过滤，仅匹配 key/name 等标识字段（不匹配值），匹配大小写不敏感。单栏 Tab 过滤作用于其主列表；SSH/AI/MCP 双栏 Tab 过滤作用于左栏主列表，右栏 SHALL 随左栏当前选中项联动；Config Tab 的过滤与侧栏计数行为见 config-tui 能力规约；Audit Tab 的预设过滤快捷键 SHALL 保留并与自由文本过滤叠加。`esc` SHALL 清除过滤并恢复完整列表。
 
 #### Scenario: 过滤当前列表
 - **WHEN** 用户在 Env Tab 按 `/` 键并输入 `DATABASE`
 - **THEN** 右侧列表仅显示 key 含 `DATABASE` 的环境变量（忽略大小写）
+
+#### Scenario: 双栏 Tab 过滤主列表
+- **WHEN** 用户在 SSH Tab 按 `/` 键并输入 `web`
+- **THEN** 左栏仅显示别名或 hostname 含 `web` 的 host（忽略大小写），右栏显示当前选中 host 的 keypair 联动信息
 
 #### Scenario: 清除过滤
 - **WHEN** 用户清空过滤输入框或按 `esc`
@@ -280,7 +296,7 @@ TUI SHALL 在操作出错时不崩溃，并通过统一提示条反馈结果：�
 
 #### Scenario: 空状态覆盖全部 Tab
 - **WHEN** 用户切换到 SSH Tab 且没有任何 host 或 keypair
-- **THEN** 显示空状态提示说明如何创建（如"执行 senv host add 添加后按 r 刷新"），不显示空白面板
+- **THEN** 显示空状态提示说明如何创建（如"执行 senv host add 添加后按 Ctrl+R 刷新"），不显示空白面板
 
 #### Scenario: 错误条清除
 - **WHEN** 错误条显示后用户执行下一次操作
@@ -327,7 +343,7 @@ TUI SHALL 以一圈连续的边框字符包裹整个界面（顶、底、左、�
 
 ### Requirement: 键位总览
 
-TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与当前 Tab 的键位，`?` 或 `esc` SHALL 关闭它。文本输入模式（`InputMode`）下 `?` MUST 作为普通字符输入而不触发 overlay。
+TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与当前 Tab 的键位，`?` 或 `esc` SHALL 关闭它。文本输入模式（`InputMode`）下 `?` MUST 作为普通字符输入而不触发 overlay。键位总览与状态栏提示 SHALL 由中央 keymap 注册表生成，列出的键位与说明 MUST 和实际行为一致。同一动作在不同 Tab MUST 使用相同按键：重命名统一为 `r`，刷新统一为 `Ctrl+R`，确认统一为 `y`/`enter`、取消统一为 `esc`/`n`（计划确认页中除 `esc`/`n`/`y`/`enter`/`F` 外的按键 MUST 被忽略，MUST NOT 被解释为取消或放行）。
 
 #### Scenario: 打开键位总览
 - **WHEN** 用户按 `?`
@@ -336,6 +352,10 @@ TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与�
 #### Scenario: 输入模式不劫持
 - **WHEN** 用户正在表单/过滤输入框中输入 `?`
 - **THEN** `?` 作为字符进入输入框，不打开 overlay
+
+#### Scenario: 键位说明与实际行为一致
+- **WHEN** 任一 Tab 的键位总览列出某按键与动作
+- **THEN** 在该 Tab 按下该键执行所述动作；同一动作（如重命名、刷新）在所有列表 Tab 使用同一按键
 
 ### Requirement: 面板内容截断与详情
 
@@ -415,4 +435,36 @@ TUI 对 vault 数据的全量消费 SHALL 通过单趟加载构建的内存快�
 
 - **WHEN** 用户在 TUI 内修改一个环境变量
 - **THEN** 快照失效并单趟重建，期间 UI 不清空、其余条目不再重复读取
+
+### Requirement: 多选集与批量操作
+
+TUI 列表（Env 变量、Text 文本块、SSH host/keypair、Config 条目、MCP 档案）SHALL 支持 `space` 勾选/取消勾选光标条目形成多选集；`a` SHALL 全选当前过滤可见集，再按一次取消全选可见集。多选集 SHALL 跨过滤条件变化持久，被过滤隐藏的已选项 MUST 保持选中，状态栏 SHALL 提示已选总数与被过滤隐藏数（无勾选时不显示）。批量安全写动词（删除、导出、安装/卸载、导出/撤回）在多选集非空时 SHALL 作用于多选集，为空时 SHALL 回落为游标单条（纯单选行为不变）；批量执行 SHALL 复用既有确认流（计划预览、逐条确认或删除二次确认），MUST NOT 出现免确认批量写，单条失败 MUST NOT 中止其余并在结束时汇总。单实体操作（编辑、重命名、meta、详情）仅在选择数 ≤1 时可用。多选集 MUST NOT 跨栏（双栏 Tab 的侧栏/次栏不参与勾选）；批量操作提交后 SHALL 清空多选集。AI Tab 切换向导内的模型勾选保持自有流程，MUST NOT 与列表多选集混淆。
+
+#### Scenario: 勾选并批量删除
+- **WHEN** 用户在 Env Tab 对 3 个变量按 `space` 勾选后按 `d` 并确认
+- **THEN** 一次确认列出 3 个目标，确认后 3 条全部删除，选择集清空
+
+#### Scenario: 全选过滤可见集
+- **WHEN** 用户以 `web` 过滤后按 `a`
+- **THEN** 仅当前可见的匹配条目入选多选集，不匹配的未过滤条目不在集内
+
+#### Scenario: 选择集跨过滤持久
+- **WHEN** 用户勾选 2 条后按 `esc` 清除过滤
+- **THEN** 这 2 条保持选中，状态栏提示已选 2；被过滤隐藏的已选项在清过滤后仍为选中态
+
+#### Scenario: 空选择集回落游标
+- **WHEN** 用户未勾选任何条目按 `d`
+- **THEN** 仅游标所在条目进入删除确认，行为与引入多选前一致
+
+#### Scenario: 单实体操作受限
+- **WHEN** 用户勾选 ≥2 条后按 `e`
+- **THEN** 界面提示需先缩小到单选（取消多余勾选或清空选择集），不打开编辑
+
+#### Scenario: 批量导出需确认
+- **WHEN** 用户在 SSH Tab 勾选 3 个 host 按 `x`
+- **THEN** 确认页列出将生成的全部目标路径，确认后逐条导出，单条失败不中止其余并汇总结果
+
+#### Scenario: AI 向导不混淆
+- **WHEN** 用户在 AI 切换向导的模型集步骤按 `space`
+- **THEN** 勾选的是向导内的候选模型，与列表多选集无关
 

@@ -38,23 +38,24 @@ type envTab struct {
 	derefResults map[string]derefResult // resolved values for the current group
 	derefGroup   string                 // group derefResults corresponds to
 	derefErrors  int                    // count of failed resolutions in current view
-	filter       string
-	filtering    bool
+	filterBox    Filter
+	// sel 仅承载多选集（游标仍由 groupIndex/itemIndex 承载，随侧栏改造统一）。
+	sel List
 
-	input           textinput.Model
-	mode            envMode
-	pendingNewGroup string // staging the group during the two-step "new" flow
-	pendingNewKey   string // staging the key during the two-step "new" flow
+	input textinput.Model
+	mode  envMode
 }
 
 type envGroupRow struct {
 	name      string
 	isActive  bool
 	isDefault bool
+	isAll     bool // All 伪组（侧栏顶部固定项）
 	varCount  int
 }
 
 type envItemRow struct {
+	group string // 所属分组（All 视图行前缀与选择标识用）
 	key   string
 	value string // raw stored value
 }
@@ -64,12 +65,11 @@ type envMode int
 const (
 	envModeNormal envMode = iota
 	envModeEditValue
-	envModeNewKey
-	envModeNewValue
 	envModeDeleteConfirm
 	envModeAddGroup
 	envModeFilter
 	envModeDeleteGroupConfirm
+	envModeBatchDeleteConfirm
 )
 
 func newEnvTab(mgr Managers) *envTab {
@@ -80,8 +80,26 @@ func newEnvTab(mgr Managers) *envTab {
 
 func (t *envTab) Title() string { return "Env" }
 
-func (t *envTab) Help() string {
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · v 显隐 · e 编辑 · n 新建 · d 删除 · r 重命名 · a/x 激活停用 · + 新建分组 · D 解引用 · y 复制 · / 过滤"
+func (t *envTab) Bindings() []KeyAction {
+	return []KeyAction{
+		actUp, actDown, actLeft, actRight,
+		{[]string{"v"}, "显隐当前值"},
+		actTop, actBottom, actPageUp, actPageDn,
+		actEdit, actNew, actDelete, actRename,
+		{[]string{"t"}, "激活/停用分组（切换）"},
+		{[]string{"+"}, "新建分组"},
+		{[]string{"D"}, "解引用切换"},
+		{[]string{"y"}, "复制"},
+		actFilter, actRefresh,
+	}
+}
+
+// cursorForFocus 返回当前焦点栏的游标位置（翻页用）。
+func (t *envTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.groupIndex
+	}
+	return t.itemIndex
 }
 
 func (t *envTab) InputMode() bool {
@@ -89,8 +107,9 @@ func (t *envTab) InputMode() bool {
 		return true
 	}
 	switch t.mode {
-	case envModeFilter, envModeEditValue, envModeNewKey, envModeNewValue,
-		envModeAddGroup, envModeDeleteConfirm, envModeDeleteGroupConfirm:
+	case envModeFilter, envModeEditValue,
+		envModeAddGroup, envModeDeleteConfirm, envModeDeleteGroupConfirm,
+		envModeBatchDeleteConfirm:
 		return true
 	}
 	return false
@@ -158,7 +177,7 @@ func (t *envTab) load() tea.Cmd {
 				isDefault: gi.IsDefault,
 				varCount:  gi.VarCount,
 			})
-			itemsByGroup[gi.Name] = buildEnvItems(allVars[gi.Name])
+			itemsByGroup[gi.Name] = buildEnvItems(gi.Name, allVars[gi.Name])
 			itemCount += len(itemsByGroup[gi.Name])
 		}
 		sort.SliceStable(groups, func(i, j int) bool {
@@ -167,13 +186,15 @@ func (t *envTab) load() tea.Cmd {
 			}
 			return groups[i].name < groups[j].name
 		})
+		// All 伪组置顶（默认选中）：聚合全部条目（grill D3 侧栏范式）
+		groups = append([]envGroupRow{{name: envAllLabel, isAll: true, varCount: itemCount}}, groups...)
 		st.With("groups", len(groups), "items", itemCount).End(true)
 		return envLoadedMsg{groups: groups, itemsByGroup: itemsByGroup}
 	}
 }
 
 // buildEnvItems converts a group's key->value map into a key-sorted item list.
-func buildEnvItems(vars map[string]string) []envItemRow {
+func buildEnvItems(group string, vars map[string]string) []envItemRow {
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
 		keys = append(keys, k)
@@ -181,9 +202,17 @@ func buildEnvItems(vars map[string]string) []envItemRow {
 	sort.Strings(keys)
 	items := make([]envItemRow, 0, len(keys))
 	for _, k := range keys {
-		items = append(items, envItemRow{key: k, value: vars[k]})
+		items = append(items, envItemRow{group: group, key: k, value: vars[k]})
 	}
 	return items
+}
+
+// envAllLabel 是 env 侧栏顶部的 All 伪组标签。
+const envAllLabel = "All"
+
+// currentGroupFor 带分组感知的条目标识（group/key）。
+func envWithGroup(group, key string) envItemRow {
+	return envItemRow{group: group, key: key, value: ""}
 }
 
 // resolveDeref computes dereferenced values for the current group's items
@@ -211,13 +240,27 @@ func (t *envTab) currentGroup() string {
 }
 
 func (t *envTab) filteredItems() []envItemRow {
-	all := t.itemsByGroup[t.currentGroup()]
-	if t.filter == "" {
+	var all []envItemRow
+	if gr, ok := t.currentGroupRow(); ok && gr.isAll {
+		// All 视图：聚合全部分组条目（行前缀 group/key 由渲染层处理）
+		for _, rows := range t.itemsByGroup {
+			all = append(all, rows...)
+		}
+		sort.SliceStable(all, func(i, j int) bool {
+			if all[i].group != all[j].group {
+				return all[i].group < all[j].group
+			}
+			return all[i].key < all[j].key
+		})
+	} else {
+		all = t.itemsByGroup[t.currentGroup()]
+	}
+	if t.filterBox.Term() == "" {
 		return all
 	}
 	out := make([]envItemRow, 0, len(all))
 	for _, it := range all {
-		if matchKey(it.key, t.filter) {
+		if t.filterBox.Matches(it.key) {
 			out = append(out, it)
 		}
 	}
@@ -326,6 +369,7 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		case "right", "l":
 			t.focusLeft = false
 			t.maskRevealed = false
+			t.itemIndex = 0 // 切到条目栏定位该分组第一条（侧栏范式）
 		case "v":
 			if !t.focusLeft {
 				t.maskRevealed = !t.maskRevealed
@@ -334,21 +378,59 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.jumpCursor(0)
 		case "G":
 			t.jumpCursor(len(t.listForFocus()) - 1)
+		case "pgup":
+			t.jumpCursor(t.cursorForFocus() - pageStep(t.height))
+		case "pgdown":
+			t.jumpCursor(t.cursorForFocus() + pageStep(t.height))
+		case " ", "space":
+			if !t.focusLeft {
+				t.sel.Toggle(t.selectionKey())
+			}
+
+		case "a":
+			if !t.focusLeft {
+				keys := make([]string, 0, len(t.filteredItems()))
+				for _, it := range t.filteredItems() {
+					keys = append(keys, t.currentGroup()+"/"+it.key)
+				}
+				t.sel.SelectVisible(keys)
+			}
 		case "e":
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("已多选条目：编辑需先缩小到单选")
+			}
 			return t.enterEditMode()
 		case "n":
 			return t.enterNewKeyMode()
 		case "d":
 			if t.focusLeft {
+				if row, ok := t.currentGroupRow(); ok && row.isAll {
+					return t, warnToast("All 无法删除，请选择具体分组")
+				}
 				return t.enterDeleteGroupConfirm()
+			}
+			if t.sel.SelectionCount() > 1 {
+				return t.enterBatchDeleteConfirm()
 			}
 			return t.enterDeleteConfirm()
 		case "r":
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("已多选条目：重命名需先缩小到单选")
+			}
+			if t.focusLeft {
+				if row, ok := t.currentGroupRow(); ok && row.isAll {
+					return t, warnToast("All 无法重命名，请选择具体分组")
+				}
+			}
 			return t.enterRenameMode()
-		case "a":
+		case "t":
+			if row, ok := t.currentGroupRow(); ok && row.isAll {
+				return t, warnToast("All 无激活语义，请选择具体分组")
+			}
+			if row, ok := t.currentGroupRow(); ok && row.isActive {
+				return t, t.doDeactivate()
+			}
 			return t, t.doActivate()
-		case "x":
-			return t, t.doDeactivate()
 		case "+":
 			return t.enterAddGroupMode()
 		case "y":
@@ -433,7 +515,7 @@ func (t *envTab) clampCursors() {
 // focusJump positions the cursor at (group, key) for search-result navigation.
 // It clears any filter and mask so the target is visible at its real position.
 func (t *envTab) focusJump(group, key string) {
-	t.filter = ""
+	t.filterBox.Clear()
 	t.mode = envModeNormal
 	for i, g := range t.groups {
 		if g.name == group {
@@ -455,6 +537,21 @@ func (t *envTab) focusJump(group, key string) {
 // --- modal handling ---
 
 func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
+	// 批量删除确认：enter/y 提交（提交即清空多选集），esc/n 取消。
+	if t.mode == envModeBatchDeleteConfirm {
+		targets := t.selectedTargets()
+		switch msg.String() {
+		case "enter", "y":
+			t.mode = envModeNormal
+			t.sel.ClearSelection()
+			return t, t.doBatchDelete(targets)
+		case "esc", "n":
+			t.mode = envModeNormal
+			return t, nil
+		}
+		return t, nil
+	}
+
 	// Group deletion confirmation uses dedicated keys (no text input).
 	if t.mode == envModeDeleteGroupConfirm {
 		name := t.currentGroup()
@@ -480,7 +577,7 @@ func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			if !ok {
 				return t, nil
 			}
-			return t, t.doDelete(t.currentGroup(), it.key)
+			return t, t.doDelete(t.focusGroup(it), it.key)
 		default: // esc, n, anything else
 			t.mode = envModeNormal
 			return t, nil
@@ -490,7 +587,7 @@ func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		if t.mode == envModeFilter {
-			t.filter = "" // esc clears the filter and restores the full list
+			t.filterBox.Clear() // esc 清词并退出，恢复完整列表
 		}
 		t.mode = envModeNormal
 		t.input.Blur()
@@ -499,19 +596,17 @@ func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t.submitModal()
 	}
 
-	// Filter mode (task 6.2): typing updates the filter live.
+	// Filter mode（共享 Filter 状态机）：输入即过滤。
 	if t.mode == envModeFilter {
 		switch msg.String() {
 		case "backspace":
-			if len(t.filter) > 0 {
-				t.filter = t.filter[:len(t.filter)-1]
+			if t.filterBox.Backspace() {
+				t.itemIndex = 0
 			}
-			t.itemIndex = 0
 			return t, nil
 		}
-		// Append printable runes.
 		if isPrintable(msg) {
-			t.filter += msg.String()
+			t.filterBox.Append(msg.String())
 			t.itemIndex = 0
 		}
 		return t, nil
@@ -524,10 +619,6 @@ func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 }
 
 // isPrintable reports whether a KeyMsg is a single printable rune.
-func isPrintable(msg tea.KeyMsg) bool {
-	return msg.Type == tea.KeyRunes && len(msg.Runes) == 1
-}
-
 func (t *envTab) submitModal() (Tab, tea.Cmd) {
 	switch t.mode {
 	case envModeEditValue:
@@ -537,35 +628,9 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 			return t, nil
 		}
 		value := t.input.Value()
-		group := t.currentGroup()
+		group := t.focusGroup(it)
 		key := it.key
 		t.mode = envModeNormal
-		t.input.Blur()
-		return t, t.doSet(group, key, value)
-
-	case envModeNewKey:
-		group, key := parseKeyAddress(t.input.Value(), t.currentGroup())
-		if key == "" {
-			return t, warnToast("key 不能为空")
-		}
-		if group == "" {
-			return t, warnToast("请先选择分组，或使用 group:key 形式")
-		}
-		t.pendingNewGroup = group
-		t.pendingNewKey = key
-		t.input.SetValue("")
-		t.mode = envModeNewValue
-		t.input.Placeholder = "值"
-		t.input.Focus()
-		return t, textinput.Blink
-
-	case envModeNewValue:
-		value := t.input.Value()
-		group := t.pendingNewGroup
-		key := t.pendingNewKey
-		t.mode = envModeNormal
-		t.pendingNewGroup = ""
-		t.pendingNewKey = ""
 		t.input.Blur()
 		return t, t.doSet(group, key, value)
 
@@ -597,14 +662,43 @@ func (t *envTab) enterEditMode() (Tab, tea.Cmd) {
 	return t, textinput.Blink
 }
 
+// enterNewKeyMode 新建环境变量走结构化表单（key + 遮蔽 value，grill D6-⑥）。
 func (t *envTab) enterNewKeyMode() (Tab, tea.Cmd) {
-	t.mode = envModeNewKey
-	t.pendingNewGroup = ""
-	t.pendingNewKey = ""
-	t.input.SetValue("")
-	t.input.Placeholder = "key 或 group:key"
-	t.input.Focus()
-	return t, textinput.Blink
+	group := t.realGroup()
+	if group == "" {
+		return t, warnToast("请先选择分组，或使用分组栏选择具体分组后新建")
+	}
+	siblings := make(map[string]bool, len(t.itemsByGroup[group]))
+	for _, row := range t.itemsByGroup[group] {
+		siblings[row.key] = true
+	}
+	f := newForm("新建环境变量 — "+group,
+		formField{key: "key", label: "key", kind: formText, placeholder: "DB_HOST",
+			validate: func(v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return fmt.Errorf("key 不能为空")
+				}
+				if err := storage.ValidateName(v); err != nil {
+					return fmt.Errorf("非法 key")
+				}
+				if siblings[v] {
+					return fmt.Errorf("key %s 已存在于 %s", v, group)
+				}
+				return nil
+			}},
+		formField{key: "value", label: "value", kind: formSecret, placeholder: "值（回显遮蔽）",
+			validate: func(v string) error {
+				if v == "" {
+					return fmt.Errorf("值不能为空")
+				}
+				return nil
+			}},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		return t.doSet(group, strings.TrimSpace(values["key"]), values["value"])
+	})
+	return t, nil
 }
 
 func (t *envTab) enterDeleteConfirm() (Tab, tea.Cmd) {
@@ -613,6 +707,70 @@ func (t *envTab) enterDeleteConfirm() (Tab, tea.Cmd) {
 	}
 	t.mode = envModeDeleteConfirm
 	return t, nil
+}
+
+// focusGroup 返回条目操作应使用的分组名：All 视图下取条目自带分组，
+// 普通视图为当前分组。
+func (t *envTab) focusGroup(it envItemRow) string {
+	if it.group != "" {
+		return it.group
+	}
+	return t.currentGroup()
+}
+
+// realGroup 返回当前选中的真实分组名；All 伪组返回 ""。
+func (t *envTab) realGroup() string {
+	if row, ok := t.currentGroupRow(); ok && row.isAll {
+		return ""
+	}
+	return t.currentGroup()
+}
+
+// selectionKey 返回当前条目的稳定选择标识（group/key）。
+func (t *envTab) selectionKey() string {
+	if it, ok := t.currentItem(); ok {
+		return it.group + "/" + it.key
+	}
+	return ""
+}
+
+// selectedTargets 返回多选集命中的可见条目（group, key）。
+func (t *envTab) selectedTargets() [][2]string {
+	var out [][2]string
+	for _, it := range t.filteredItems() {
+		k := it.group + "/" + it.key
+		if t.sel.IsSelected(k) {
+			out = append(out, [2]string{it.group, it.key})
+		}
+	}
+	return out
+}
+
+// enterBatchDeleteConfirm 多选集批量删除：一次确认列全部目标（grill D9）。
+func (t *envTab) enterBatchDeleteConfirm() (Tab, tea.Cmd) {
+	if len(t.selectedTargets()) == 0 {
+		return t, warnToast("多选集为空或不含当前分组的条目")
+	}
+	t.mode = envModeBatchDeleteConfirm
+	return t, nil
+}
+
+// doBatchDelete 逐条删除选择集；单条失败不中止其余，结束统一提示。
+// 多选集在确认提交时已清空（grill D9：提交后不残留失效选择）。
+func (t *envTab) doBatchDelete(targets [][2]string) tea.Cmd {
+	mgr := t.mgr.Env
+	return func() tea.Msg {
+		failed := 0
+		for _, tgt := range targets {
+			if err := mgr.Delete(tgt[0], tgt[1]); err != nil {
+				failed++
+			}
+		}
+		if failed > 0 {
+			return warnMsg{text: fmt.Sprintf("批量删除完成，%d 条失败", failed)}
+		}
+		return okToast(fmt.Sprintf("已删除 %d 条", len(targets)))
+	}
 }
 
 func (t *envTab) enterAddGroupMode() (Tab, tea.Cmd) {
@@ -685,7 +843,7 @@ func (t *envTab) enterRenameMode() (Tab, tea.Cmd) {
 	if !ok {
 		return t, warnToast("没有可重命名的条目")
 	}
-	group := t.currentGroup()
+	group := t.focusGroup(it)
 	siblings := make(map[string]bool)
 	for _, row := range t.itemsByGroup[group] {
 		siblings[row.key] = true
@@ -717,7 +875,7 @@ func (t *envTab) enterRenameMode() (Tab, tea.Cmd) {
 
 func (t *envTab) enterFilterMode() (Tab, tea.Cmd) {
 	t.mode = envModeFilter
-	t.filter = ""
+	t.filterBox.EnterFresh() // env 语义：`/` 清词重新开始
 	return t, nil
 }
 
@@ -918,24 +1076,28 @@ func (t *envTab) renderGroups(width, height int) string {
 	if len(t.groups) == 0 {
 		return emptyStateStyle.Render("暂无分组 — 按 + 新建")
 	}
-	inner := width - 2
-	var lines []string
+	rows := make([]SidebarRow, 0, len(t.groups))
 	for i, g := range t.groups {
 		marker := " "
-		if g.isActive {
+		if g.isAll {
+			marker = "◯"
+		} else if g.isActive {
 			marker = "●"
 		}
 		name := g.name
-		if g.isDefault {
+		if g.isAll {
+			name = "All"
+		} else if g.isDefault {
 			name += " (default)"
 		}
-		line := truncateRunes(fmt.Sprintf("%s %s  [%d]", marker, name, g.varCount), inner-2)
-		if i == t.groupIndex && t.focusLeft {
-			line = selectedLineStyle.Render("▸ " + line)
-		}
-		lines = append(lines, line)
+		rows = append(rows, SidebarRow{
+			Marker:   marker,
+			Name:     name,
+			Count:    g.varCount,
+			Selected: i == t.groupIndex && t.focusLeft,
+		})
 	}
-	return windowedPane(fmt.Sprintf("Groups (%d)", len(t.groups)), lines, t.groupIndex, height, width)
+	return renderSidebar(rows, t.groupIndex, height, width)
 }
 
 func (t *envTab) renderItems(width, height int) string {
@@ -948,19 +1110,25 @@ func (t *envTab) renderItems(width, height int) string {
 	}
 	items := t.filteredItems()
 	header := group
-	if t.filter != "" {
-		header += "  /" + t.filter
+	if t.filterBox.Term() != "" {
+		header += "  /" + t.filterBox.Term()
 	}
+	visibleKeys := make([]string, 0, len(items))
+	for _, it := range items {
+		visibleKeys = append(visibleKeys, it.group+"/"+it.key)
+	}
+	header += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(visibleKeys))
 	if len(items) == 0 {
 		hint := "该分组暂无环境变量"
-		if t.filter != "" {
-			hint = "no keys match /" + t.filter
+		if t.filterBox.Term() != "" {
+			hint = "no keys match /" + t.filterBox.Term()
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, paneTitleStyle.Render(header), emptyStateStyle.Render(hint))
 	}
 	inner := width - 2
 	var lines []string
 	for i, it := range items {
+		_ = i // cursor 高亮在下方按索引判断
 		shown := it.value
 		failed := false
 		if t.deref {
@@ -974,8 +1142,14 @@ func (t *envTab) renderItems(width, height int) string {
 			shown = maskValue(shown)
 		}
 		keyLabel := it.key
+		if group == "" {
+			keyLabel = it.group + "/" + keyLabel
+		}
+		if t.sel.IsSelected(it.group + "/" + it.key) {
+			keyLabel = "[x] " + keyLabel
+		}
 		if failed {
-			keyLabel = "⚠ " + it.key
+			keyLabel = "⚠ " + keyLabel
 		}
 		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the pane.
 		shown = truncateRunes(shown, max(4, inner-2-len([]rune(keyLabel))-1))
@@ -995,13 +1169,17 @@ func (t *envTab) renderModal() string {
 	switch t.mode {
 	case envModeEditValue:
 		return modalBox("编辑 "+t.currentItemKeyLabel(), t.input.View(), "enter 保存 · esc 取消")
-	case envModeNewKey:
-		return modalBox("新建变量 — key 或 group:key", t.input.View(), "enter 下一步 · esc 取消")
-	case envModeNewValue:
-		return modalBox("为 "+t.pendingNewGroup+"/"+t.pendingNewKey+" 设置新值", t.input.View(), "enter 保存 · esc 取消")
 	case envModeDeleteConfirm:
 		it, _ := t.currentItem()
 		return modalBox("删除 "+it.key+"？", "", "enter/y 确认 · esc/n 取消")
+	case envModeBatchDeleteConfirm:
+		targets := t.selectedTargets()
+		var b strings.Builder
+		for _, tgt := range targets {
+			fmt.Fprintf(&b, "%s/%s\n", tgt[0], tgt[1])
+		}
+		return modalBox(fmt.Sprintf("删除 %d 条变量？", len(targets)),
+			strings.TrimRight(b.String(), "\n"), "enter/y 全部删除 · esc/n 取消")
 	case envModeDeleteGroupConfirm:
 		row, _ := t.currentGroupRow()
 		hint := "enter/y 确认 · esc/n 取消"
@@ -1013,7 +1191,7 @@ func (t *envTab) renderModal() string {
 	case envModeAddGroup:
 		return modalBox("新建分组", t.input.View(), "enter 创建 · esc 取消")
 	case envModeFilter:
-		return modalBox("过滤 key（忽略大小写）", "/"+t.filter+"_", "esc 清除")
+		return modalBox("过滤 key（忽略大小写）", "/"+t.filterBox.Term()+"_", "esc 清除")
 	}
 	return ""
 }
@@ -1026,23 +1204,6 @@ func (t *envTab) currentItemKeyLabel() string {
 }
 
 // modalBox renders a bordered modal line with a title, body and hint.
-func modalBox(title, body, hint string) string {
-	head := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Render("» " + title)
-	parts := []string{head}
-	if body != "" {
-		parts = append(parts, body)
-	}
-	if hint != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(hint))
-	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(colorAccent)).
-		Padding(0, 1).
-		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	return box
-}
-
 // --- masking ---
 
 func maskValue(v string) string {
@@ -1063,20 +1224,6 @@ func renderValue(v string, revealed bool) string {
 	}
 	return maskedValueStyle.Render(v)
 }
-
-// --- helpers ---
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-func maxLen[T any](s []T) int { return len(s) }
 
 // Compile-time guard: *envTab satisfies Tab.
 var _ Tab = (*envTab)(nil)

@@ -27,3 +27,6 @@ config 创建是 5 步手搓 `textinput` 向导、env 新建是手搓连续弹�
 ## Non-goals
 
 - text 新建保持 vim 闭环（自由长文本不适合表单）；不改 form 引擎契约（tui-forms spec 不动）；SSH/AI/MCP 表单已在引擎上，不动
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：env 新建迁移结构化表单（key 必填+组内冲突校验、value=formSecret 遮蔽、All 视图要求先选具体分组）；config 创建迁移结构化表单（name 重名校验/source/target 必填/分组预填当前组/描述），提交失败经 reopen 模式回填；手搓状态机整段移除（envModeNewKey/NewValue、configModeCreate*、pending* 暂存字段及对应 submitModal/renderModal 分支）；测试重写为表单流（API_KEY 持久化、All 视图拒绝无组新建）；SKILL.md 补表单化新建描述；`make check` 全部通过。

@@ -8,20 +8,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// KeyBinding is one key/hint row in the help overlay.
-type KeyBinding struct {
-	Keys string
-	Desc string
-}
-
-// globalKeys are handled by the top-level model, so they are shown for every
-// tab. Tab-specific rows come from the active tab's Help() string.
-var globalKeys = []KeyBinding{
-	{"1–9", "直达对应 Tab"},
-	{"Tab / Shift+Tab", "循环切换 Tab"},
-	{"S", "全局搜索"},
-	{"?", "键位总览"},
-	{"q / ctrl+c", "退出"},
+// globalKeys 是顶层 model 处理的键，对每个 Tab 生效；Tab 专属键位来自该
+// Tab 的 Bindings()（keymap 注册表），因此总览与实际行为同源、不可能漂移。
+var globalKeys = []KeyAction{
+	{[]string{"1–9"}, "直达对应 Tab"},
+	{[]string{"Tab / Shift+Tab"}, "循环切换 Tab"},
+	{[]string{"S"}, "全局搜索"},
+	{[]string{"ctrl+r"}, "刷新当前 Tab"},
+	{[]string{"?"}, "键位总览"},
+	{[]string{"esc"}, "回上一层：清过滤 / 关弹层 / 向导回退"},
+	{[]string{"q / ctrl+c"}, "退出（q 仍有待推送时先提示一次）"},
 }
 
 // helpTab is the keybinding overview overlay (triggered by `?`).
@@ -30,7 +26,7 @@ var globalKeys = []KeyBinding{
 // it captures every key, and `?`/`esc` close it.
 type helpTab struct {
 	title    string
-	bindings []KeyBinding
+	bindings []KeyAction
 	width    int
 	height   int
 }
@@ -38,37 +34,19 @@ type helpTab struct {
 // helpCloseMsg asks the top-level model to close the help overlay.
 type helpCloseMsg struct{}
 
-// newHelpTab builds the overlay for a tab. Tab-specific rows are parsed out of
-// the tab's own Help() string so the overlay and the status bar cannot drift.
-func newHelpTab(title, activeHelp string) *helpTab {
-	return &helpTab{title: title, bindings: parseHelp(activeHelp)}
+// newHelpTab builds the overlay for a tab. Tab-specific rows come straight
+// from the tab's keymap bindings, so the overlay and the status bar cannot
+// drift from what the tab actually handles.
+func newHelpTab(title string, tab Tab) *helpTab {
+	return &helpTab{title: title, bindings: tab.Bindings()}
 }
 
-// parseHelp splits "keys desc · keys desc" into rows. The first space separates
-// the key column from the description, matching every tab's Help() format.
-func parseHelp(help string) []KeyBinding {
-	var out []KeyBinding
-	for _, part := range strings.Split(help, " · ") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		keys, desc, found := strings.Cut(part, " ")
-		if !found {
-			out = append(out, KeyBinding{Keys: part})
-			continue
-		}
-		out = append(out, KeyBinding{Keys: keys, Desc: strings.TrimSpace(desc)})
-	}
-	return out
-}
-
-func (h *helpTab) Title() string     { return "Help" }
-func (h *helpTab) Help() string      { return "? / esc close" }
-func (h *helpTab) InputMode() bool   { return true }
-func (h *helpTab) Init() tea.Cmd     { return nil }
-func (h *helpTab) Reload() tea.Cmd   { return nil }
-func (h *helpTab) SetSize(w, hh int) { h.width, h.height = w, hh }
+func (h *helpTab) Title() string         { return "Help" }
+func (h *helpTab) Bindings() []KeyAction { return nil }
+func (h *helpTab) InputMode() bool       { return true }
+func (h *helpTab) Init() tea.Cmd         { return nil }
+func (h *helpTab) Reload() tea.Cmd       { return nil }
+func (h *helpTab) SetSize(w, hh int)     { h.width, h.height = w, hh }
 
 func (h *helpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
@@ -99,13 +77,13 @@ func (h *helpTab) View() string {
 	}
 	rows = append(rows, "", statusBarStyle.Render("? / esc 关闭"))
 	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
-	return clipLines(box, h.height)
+	return clipLines(box, h.height-frameRows)
 }
 
 // renderBinding renders one key/desc row with a fixed key column so the
 // descriptions line up.
-func renderBinding(b KeyBinding) string {
-	return fmt.Sprintf("  %-18s %s", b.Keys, b.Desc)
+func renderBinding(b KeyAction) string {
+	return fmt.Sprintf("  %-18s %s", strings.Join(b.Keys, "/"), b.Desc)
 }
 
 // Compile-time guard.

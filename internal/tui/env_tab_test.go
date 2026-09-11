@@ -119,32 +119,32 @@ func TestFilterMatchesKeysOnly(t *testing.T) {
 	)
 
 	// "secret-db" appears only in a value -> no keys match (security: never match values).
-	tab.filter = "secret-db"
+	tab.filterBox = Filter{term: "secret-db"}
 	if got := len(tab.filteredItems()); got != 0 {
 		t.Errorf("value-only filter leaked %d items", got)
 	}
 
 	// "database" matches the DATABASE_URL key only.
-	tab.filter = "database"
+	tab.filterBox = Filter{term: "database"}
 	got := tab.filteredItems()
 	if len(got) != 1 || got[0].key != "DATABASE_URL" {
 		t.Errorf("database filter = %#v, want DATABASE_URL only", got)
 	}
 
 	// Case-insensitive.
-	tab.filter = "DATABASE"
+	tab.filterBox = Filter{term: "DATABASE"}
 	if len(tab.filteredItems()) != 1 {
 		t.Errorf("uppercase filter should match case-insensitively, got %d", len(tab.filteredItems()))
 	}
 
 	// "api" matches API_KEY only (disambiguates from DATABASE_URL).
-	tab.filter = "api"
+	tab.filterBox = Filter{term: "api"}
 	if got := len(tab.filteredItems()); got != 1 {
 		t.Errorf("api filter = %d items, want 1", got)
 	}
 
 	// Empty filter restores all items.
-	tab.filter = ""
+	tab.filterBox = Filter{term: ""}
 	if got := len(tab.filteredItems()); got != 3 {
 		t.Errorf("empty filter = %d items, want 3", got)
 	}
@@ -176,8 +176,8 @@ func TestFilterModeFlow(t *testing.T) {
 	if tab.mode != envModeNormal {
 		t.Fatalf("expected normal mode after esc, got %v", tab.mode)
 	}
-	if tab.filter != "" {
-		t.Errorf("filter should be cleared on esc, got %q", tab.filter)
+	if tab.filterBox.Term() != "" {
+		t.Errorf("filter should be cleared on esc, got %q", tab.filterBox.Term())
 	}
 	if got := len(tab.filteredItems()); got != 2 {
 		t.Errorf("after clearing filter: %d items, want 2", got)

@@ -27,3 +27,6 @@
 ## Non-goals
 
 - 不给 SSH/AI/MCP 加数据分组；不改 config 侧栏行为（它是范式源）；不动多选/过滤语义
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：config 侧栏范式下沉为共享 `renderSidebar`（SidebarRow），config/env/text 三处消费，config 行为等价；env/text 装载层追加 All 伪组（置顶、默认选中、计数=条目总数）并让条目携带 group 字段；All 视图聚合全部分组条目（group/key 前缀、组名排序）；多选/选择标识改为 it.group 前缀（跨组安全）；All 上组操作（t/r/d）护栏提示；新建/导入落组走 realGroup（All 视图回落 default 或要求 group:key）；`→` 切栏定位第一条；text 空分组改显示（计数 0）；相关测试断言更新（All 置顶、fixture 落 default 组）；SKILL.md 侧栏段重写；`make check` 全部通过。
