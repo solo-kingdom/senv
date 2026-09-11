@@ -128,6 +128,7 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 			Slug                     string `json:"slug"`
 			DisplayName              string `json:"display_name"`
 			Description              string `json:"description"`
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
 			SupportedReasoningLevels []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
@@ -147,6 +148,9 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if len(first.SupportedReasoningLevels) != 2 || first.SupportedReasoningLevels[0].Effort != "low" {
 		t.Fatalf("catalog[0] reasoning levels = %+v", first.SupportedReasoningLevels)
 	}
+	if first.DefaultReasoningLevel != "low" {
+		t.Fatalf("catalog[0] default_reasoning_level = %q, want first supported effort", first.DefaultReasoningLevel)
+	}
 	if first.ContextWindow != 300000 {
 		t.Fatalf("catalog[0] context_window = %d", first.ContextWindow)
 	}
@@ -154,8 +158,11 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if unknown.Slug != "m3" || unknown.DisplayName != "m3" {
 		t.Fatalf("catalog[2] = %+v, want id fallback", unknown)
 	}
-	if unknown.ContextWindow != 0 || len(unknown.SupportedReasoningLevels) != 0 {
-		t.Fatalf("catalog[2] should fall back to templates: %+v", unknown)
+	if unknown.ContextWindow != 0 {
+		t.Fatalf("catalog[2] context_window = %d, want omitted/0", unknown.ContextWindow)
+	}
+	if unknown.DefaultReasoningLevel != "none" || len(unknown.SupportedReasoningLevels) != 1 || unknown.SupportedReasoningLevels[0].Effort != "none" {
+		t.Fatalf("catalog[2] should fall back to a single none reasoning level: %+v", unknown)
 	}
 }
 
