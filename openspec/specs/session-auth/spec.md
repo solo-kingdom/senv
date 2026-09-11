@@ -4,6 +4,7 @@
 
 统一 senv 各命令入口的 session 认证契约：有有效 session 则复用 derived key；无 session 时功能内密码仅作临时认证；仅 `senv session start` 写入 session cache。
 ## Requirements
+
 ### Requirement: 有效 session 时全入口复用
 
 系统 SHALL 在所有需要解密的命令入口（`env`、`text`、`config`、`tui`、`interactive`）优先使用有效 session cache 中的 derived key，且 MUST NOT 再次提示密码。
@@ -145,8 +146,9 @@
 - 当安全存储可用时，session 缓存 MUST 写入安全存储。
 - 当安全存储不可用时：Linux MUST fail closed，除非用户显式开启磁盘逃生舱；无法证明 memory-backed 的平台（含 stock Darwin）MUST 将磁盘逃生舱作为默认写目标，并在 `session start` 写入时输出醒目安全警告。
 - 系统 MUST NOT 调用钥匙串读写或删除会话缓存；遗留钥匙串 item MUST NOT 被读取或收养。
+- 读路径为同一 vault slot 同时读到安全存储缓存与磁盘逃生舱缓存时，SHALL 确定性地选用其一而非硬失败；无论选中哪个，其 MUST 通过完整有效性校验，未被选中的缓存 MUST NOT 被删除（它可能是另一 slot 的唯一恢复钥匙或便于排查）。
 
-磁盘逃生舱（显式或因无法提供安全存储而默认）MUST 保持 0600/0700 权限、独占/原子写入与 boot ID 校验。错误信息在 fail closed 时 MUST 给出可行动指引（平台推荐存储与逃生舱说明）。
+磁盘逃生舱（显式或因无法提供安全存储而默认）MUST 保持 0600/0700 权限、独占/原子写入与 boot ID 校验。错误信息在 fail closed 时 MUST 给出可行动指引（平台推荐存储与逃生舱说明）。读路径最终选中磁盘逃生舱缓存时——无论它以较新胜过同时可读的安全存储缓存，还是安全存储读取失败后的回退——系统 SHALL 向 stderr 输出安全警告（同进程至多一次，语义与写路径警告一致：派生会话密钥以明文存储在 0600 磁盘文件中），且 SHALL 提供进程内状态供支持操作审计的命令在审计中留下「缓存来自磁盘逃生舱」的记录；MUST NOT 在无任何警告或审计痕迹的情况下静默使用磁盘逃生舱缓存完成解密。
 
 系统 SHALL 在写缓存时清理历史遗留的 `~/.local/share/senv/session/` 持久化缓存文件。安全存储不承诺跨重启留存。磁盘逃生舱上 duration 会话按 `expires_at` 跨重启仍有效；`restart` 与重启失效语义在所有平台保持不变。
 
@@ -221,6 +223,26 @@
 
 - **WHEN** Linux 上平台安全存储不可用且用户未显式开启磁盘逃生舱
 - **THEN** 所有 timeout 模式均拒绝创建 cache，不写入任何磁盘文件
+
+#### Scenario: 双缓存时逃生舱胜出输出警告
+
+- **WHEN** 同一 slot 同时读到可读的安全存储缓存与磁盘逃生舱缓存，逃生舱缓存较新被选中
+- **THEN** 进程继续以逃生舱缓存完成解密，但 stderr 输出磁盘逃生舱安全警告（同进程至多一次）；安全存储缓存不被删除
+
+#### Scenario: 安全存储读取失败回退逃生舱输出警告
+
+- **WHEN** 安全存储读取失败（锁定/不可用），同 slot 存在可用的磁盘逃生舱缓存并被选中
+- **THEN** 命令成功完成，stderr 输出磁盘逃生舱安全警告（同进程至多一次）
+
+#### Scenario: 逃生舱选中留审计痕迹
+
+- **WHEN** 支持操作审计的命令使用磁盘逃生舱缓存完成解密
+- **THEN** 操作审计可查到本次执行选中了磁盘逃生舱缓存，记录不含密钥明文
+
+#### Scenario: 仅安全存储时不产生逃生舱警告
+
+- **WHEN** 某 slot 只存在安全存储缓存且读取成功
+- **THEN** 不输出磁盘逃生舱安全警告，审计不留逃生舱记录
 
 ### Requirement: 超时值校验
 

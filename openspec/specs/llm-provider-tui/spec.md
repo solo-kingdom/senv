@@ -3,6 +3,7 @@
 ## Purpose
 把 provider 档案浏览与 agent 切换纳入 `senv tui` 全屏界面：浏览时不得泄露凭据，切换复用 agents 子 change 的 SwitchManager（原子写 + 指针 + 回滚），让用户不离开 TUI 即可完成「哪个 agent 用哪个 provider 的哪个模型」。
 ## Requirements
+
 ### Requirement: AI Tab 注册
 `senv tui` 在 vault 解锁后 SHALL 注册 AI Tab；`tui.Managers` 的 LLM 管理器为 nil（如 git 模式）时 SHALL 跳过注册且不影响其他 Tab。
 
@@ -84,7 +85,7 @@ AI Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭
 - **THEN** 成功提示只包含别名与来源类型，不含任何 key 片段
 
 ### Requirement: AI Tab 档案写操作
-AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段（格式 `<model>=<tokens>`）、模型输出上限字段（格式 `<model>=<tokens>`）、模型推理档位字段（格式 `<model>=<effort>[;<effort>...]`）、默认推理档字段（格式 `<model>=<effort>` 或集合级单一档位）与输入模态字段（格式 `<model>=<mod>[,<mod>...]`）；编辑表单 SHALL 用档案既有元数据预填这些字段。新建或改动模型集/元数据时缺失 context window，或某模型已填推理档位但缺默认推理档，SHALL 经统一提示条回显并保持在表单内修正。provider 详情 SHALL 在模型列表中展示已保存的 context window、输出上限、推理档位、默认推理档与输入模态。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
+AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段（格式 `<model>=<tokens>`）、模型输出上限字段（格式 `<model>=<tokens>`）、模型推理档位字段（格式 `<model>=<effort>[;<effort>...]`）、默认推理档字段（格式 `<model>=<effort>` 或集合级单一档位）与输入模态字段（格式 `<model>=<mod>[,<mod>...]`）；编辑表单 SHALL 用档案既有元数据预填这些字段。编辑表单中某个元数据字段被清空后提交，SHALL 等价于通过 `EditProvider` 显式清空该元数据：档案对应条目被移除、详情不再展示，MUST NOT 回填编辑前旧值。新建或改动模型集/元数据时缺失 context window，或某模型已填推理档位但缺默认推理档，SHALL 经统一提示条回显并保持在表单内修正。provider 详情 SHALL 在模型列表中展示已保存的 context window、输出上限、推理档位、默认推理档与输入模态。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
 
 #### Scenario: TUI 新建档案
 - **WHEN** 用户在 AI Tab 按 `n` 并填写别名、base_url、模型集、模型 context window 与凭据来源后提交
@@ -105,6 +106,14 @@ AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字�
 #### Scenario: TUI 设置输入模态
 - **WHEN** 用户在新建表单的输入模态字段填 `s1=text,image` 后提交成功
 - **THEN** 档案保存 s1 的输入模态，详情展示该项
+
+#### Scenario: TUI 清空默认推理档
+- **WHEN** 档案 s1 已有默认推理档 `high`，用户按 `e` 打开编辑表单、清空默认推理档字段并提交
+- **THEN** `EditProvider` 移除 s1 的默认推理档，详情不再展示，重新打开编辑表单时该字段为空，旧值 `high` 不再出现
+
+#### Scenario: TUI 清空输入模态与输出上限
+- **WHEN** 用户在编辑表单同时清空输入模态与模型输出上限字段并提交成功
+- **THEN** 档案中这两项元数据均被移除，详情不再展示，且同次提交中其他字段的修改不受影响
 
 #### Scenario: TUI 编辑档案
 - **WHEN** 用户按 `e` 修改选中档案的 base_url 或默认模型并提交
