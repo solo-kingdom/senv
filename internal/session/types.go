@@ -1,6 +1,9 @@
 package session
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // TimeoutType defines the type of session timeout
 type TimeoutType string
@@ -41,6 +44,20 @@ const (
 	ReasonVaultChanged InvalidReason = "vault-changed" // 缓存属于另一个 vault
 	ReasonUnknownType  InvalidReason = "unknown-type"  // 无法解释的 timeout_type
 	ReasonUnreadable   InvalidReason = "unreadable"    // 环境故障或缓存本身损坏
+)
+
+// AuthRootCause classifies why a command needs the user to re-enter the
+// password. It is the single vocabulary shared by command errors and
+// `senv session status`, so the two can never disagree about the cause.
+type AuthRootCause string
+
+const (
+	AuthCauseExpired          AuthRootCause = "expired"           // duration expires_at elapsed
+	AuthCauseRestarted        AuthRootCause = "restarted"         // restart session met a changed boot ID
+	AuthCauseVaultChanged     AuthRootCause = "vault-changed"     // cache belongs to another vault
+	AuthCauseMultipleCache    AuthRootCause = "multiple-cache"    // two caches share one created_at
+	AuthCauseUnreadable       AuthRootCause = "unreadable"        // environment or payload failure
+	AuthCauseMetadataReplaced AuthRootCause = "metadata-replaced" // metadata replaced (salt/key mismatch)
 )
 
 // SessionState is the externally reported state of the current vault's session.
@@ -99,4 +116,31 @@ type AuditEntry struct {
 	Message     string         `json:"message,omitempty"`
 	Hostname    string         `json:"hostname"`
 	Username    string         `json:"username"`
+}
+
+// ClassifyAuthCause maps a session error to its re-auth root cause. The second
+// return is false when the error does not represent a "user must re-enter the
+// password" condition (for example a data-desync diagnosis that must NOT be
+// papered over with a password prompt).
+func ClassifyAuthCause(err error) (AuthRootCause, bool) {
+	if err == nil {
+		return "", false
+	}
+	switch {
+	case errors.Is(err, ErrSessionExpired):
+		return AuthCauseExpired, true
+	case errors.Is(err, ErrSessionStaleMetadata), errors.Is(err, ErrSessionStaleKey):
+		return AuthCauseMetadataReplaced, true
+	case errors.Is(err, errMultipleSessionCaches):
+		return AuthCauseMultipleCache, true
+	case errors.Is(err, ErrSessionInvalidated):
+		if errors.Is(err, ErrSessionVaultChanged) {
+			return AuthCauseVaultChanged, true
+		}
+		return AuthCauseRestarted, true
+	case errors.Is(err, ErrSessionUnverifiable):
+		return AuthCauseUnreadable, true
+	default:
+		return "", false
+	}
 }

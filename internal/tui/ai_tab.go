@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/llm"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -155,24 +156,29 @@ func (t *aiTab) Init() tea.Cmd {
 // Reload drops cached data and reloads; the top level calls it after a
 // background sync applies remote changes.
 func (t *aiTab) Reload() tea.Cmd {
-	t.loaded = false
+	// stale-while-revalidate：后台重载期间旧数据保持可见，完成后静默替换。
 	return t.load()
 }
 
 func (t *aiTab) load() tea.Cmd {
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-ai")
 		if t.mgr.LLM == nil {
+			st.End(true)
 			return aiLoadedMsg{}
 		}
 		providers, err := t.mgr.LLM.ListProviders()
 		if err != nil {
+			st.End(false)
 			return aiLoadedMsg{err: err}
 		}
 		sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 		rows, warning, err := sm.Status()
 		if err != nil {
+			st.End(false)
 			return aiLoadedMsg{err: err}
 		}
+		st.With("providers", len(providers)).End(true)
 		return aiLoadedMsg{
 			providers:      providers,
 			rows:           rows,
@@ -187,14 +193,10 @@ func (t *aiTab) load() tea.Cmd {
 func gatherCredentialRefs(mgr Managers) []string {
 	var refs []string
 	if mgr.Env != nil {
-		if groups, err := mgr.Env.ListGroups(); err == nil {
-			for _, g := range groups {
-				vars, err := mgr.Env.List(g.Name)
-				if err != nil {
-					continue
-				}
-				for key := range vars[g.Name] {
-					refs = append(refs, "env:"+g.Name+"/"+key)
+		if vars, _, err := envSnapshot(mgr); err == nil {
+			for g, keys := range vars {
+				for key := range keys {
+					refs = append(refs, "env:"+g+"/"+key)
 				}
 			}
 		}
@@ -296,6 +298,9 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		if out.CredentialEnv != "" {
 			notice += fmt.Sprintf("；%s 从环境变量 %s 读取凭据", out.AgentName, out.CredentialEnv)
+		}
+		if len(out.Warnings) > 0 {
+			notice += "；" + out.Warnings[0]
 		}
 		return t, tea.Batch(okToast(notice), t.load())
 
@@ -654,6 +659,26 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			placeholder: "m1=1000000（自定义模型缺少目录元数据时必填）",
 		},
 		formField{
+			key: "model_outputs", label: "模型输出", kind: formText,
+			value:       formatModelOutputs(base.Models, base.ModelInfo),
+			placeholder: "m1=32000（输出上限，可选）",
+		},
+		formField{
+			key: "model_reasoning", label: "模型推理", kind: formText,
+			value:       formatModelReasoning(base.Models, base.ModelInfo),
+			placeholder: "m1=low;high（推理档位，可选）",
+		},
+		formField{
+			key: "model_default_reasoning", label: "默认推理档", kind: formText,
+			value:       formatModelDefaultReasoning(base.Models, base.ModelInfo),
+			placeholder: "m1=high 或集合级 high（有档位时必填）",
+		},
+		formField{
+			key: "model_modalities", label: "输入模态", kind: formText,
+			value:       formatModelModalities(base.Models, base.ModelInfo),
+			placeholder: "m1=text,image（可选）",
+		},
+		formField{
 			key: "default_model", label: "默认模型", kind: formText, value: base.DefaultModel,
 			placeholder: "m1（可选）",
 		},
@@ -724,6 +749,22 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if err != nil {
 		return reopen("model_contexts", err)
 	}
+	modelOutputs, err := llm.ParseModelOutputs(parseModelList(values["model_outputs"]))
+	if err != nil {
+		return reopen("model_outputs", err)
+	}
+	modelReasoning, err := llm.ParseModelReasoning(parseModelList(values["model_reasoning"]))
+	if err != nil {
+		return reopen("model_reasoning", err)
+	}
+	modelDefaultReasoning, collectionDefault, err := parseDefaultReasoningField(values["model_default_reasoning"])
+	if err != nil {
+		return reopen("model_default_reasoning", err)
+	}
+	modelModalities, err := llm.ParseModelModalities(parseModalityList(values["model_modalities"]))
+	if err != nil {
+		return reopen("model_modalities", err)
+	}
 	if catalog == "" && len(models) == 0 {
 		return reopen("models", fmt.Errorf("模型集不能为空：填写模型或目录 provider"))
 	}
@@ -748,16 +789,21 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 
 	if create {
 		opts := llm.AddProviderOptions{
-			Alias:                alias,
-			BaseURL:              baseURL,
-			AllowHTTP:            allowHTTP,
-			CatalogPath:          catalogPath,
-			CatalogProvider:      catalog,
-			Models:               models,
-			ModelContexts:        modelContexts,
-			RequireModelMetadata: true,
-			DefaultModel:         defaultModel,
-			APIShape:             apiShape,
+			Alias:                 alias,
+			BaseURL:               baseURL,
+			AllowHTTP:             allowHTTP,
+			CatalogPath:           catalogPath,
+			CatalogProvider:       catalog,
+			Models:                models,
+			ModelContexts:         modelContexts,
+			ModelOutputs:          modelOutputs,
+			ModelReasoning:        modelReasoning,
+			ModelDefaultReasoning: modelDefaultReasoning,
+			DefaultReasoning:      collectionDefault,
+			ModelModalities:       modelModalities,
+			RequireModelMetadata:  true,
+			DefaultModel:          defaultModel,
+			APIShape:              apiShape,
 		}
 		if credential == aiNewCredential {
 			opts.APIKey = apiKey
@@ -788,11 +834,34 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		DefaultModel: &defaultModel,
 	}
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
-	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider || contextsChanged {
+	outputsChanged := strings.TrimSpace(values["model_outputs"]) != strings.TrimSpace(formatModelOutputs(existing.Models, existing.ModelInfo))
+	reasoningChanged := strings.TrimSpace(values["model_reasoning"]) != strings.TrimSpace(formatModelReasoning(existing.Models, existing.ModelInfo))
+	defaultReasoningChanged := strings.TrimSpace(values["model_default_reasoning"]) != strings.TrimSpace(formatModelDefaultReasoning(existing.Models, existing.ModelInfo))
+	modalitiesChanged := strings.TrimSpace(values["model_modalities"]) != strings.TrimSpace(formatModelModalities(existing.Models, existing.ModelInfo))
+	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider || contextsChanged ||
+		reasoningChanged || defaultReasoningChanged {
 		opts.Models = models
 		opts.CatalogProvider = &catalog
-		opts.ModelContexts = modelContexts
 		opts.RequireModelMetadata = true
+	}
+	// 变更字段才进 opts；nil 解析结果按「显式清空」传递（ClearingMap），
+	// 否则编辑入口的清空意图会被档案旧值回填吞掉。未变更字段 MUST NOT
+	// 进 opts，避免空哨兵误清未展示的目录元数据。
+	if contextsChanged {
+		opts.ModelContexts = llm.ClearingMap(modelContexts)
+	}
+	if outputsChanged {
+		opts.ModelOutputs = llm.ClearingMap(modelOutputs)
+	}
+	if reasoningChanged {
+		opts.ModelReasoning = llm.ClearingMap(modelReasoning)
+	}
+	if defaultReasoningChanged {
+		opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
+		opts.DefaultReasoning = &collectionDefault
+	}
+	if modalitiesChanged {
+		opts.ModelModalities = llm.ClearingMap(modelModalities)
 	}
 	if credential == aiNewCredential {
 		opts.APIKey = apiKey
@@ -862,6 +931,14 @@ func providerErrorField(err error) string {
 		return "api_key"
 	case strings.Contains(msg, "context"):
 		return "model_contexts"
+	case strings.Contains(msg, "output"):
+		return "model_outputs"
+	case strings.Contains(msg, "default reasoning"), strings.Contains(msg, "默认推理"):
+		return "model_default_reasoning"
+	case strings.Contains(msg, "modalit"):
+		return "model_modalities"
+	case strings.Contains(msg, "reasoning"):
+		return "model_reasoning"
 	case strings.Contains(msg, "model"):
 		return "models"
 	case strings.Contains(msg, "catalog"):
@@ -905,8 +982,22 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 	}
 	for _, m := range p.Models {
 		line := "  " + m
-		if info, ok := p.ModelInfo[m]; ok && info.ContextWindow > 0 {
-			line += fmt.Sprintf("  context=%d", info.ContextWindow)
+		if info, ok := p.ModelInfo[m]; ok {
+			if info.ContextWindow > 0 {
+				line += fmt.Sprintf("  context=%d", info.ContextWindow)
+			}
+			if info.OutputLimit > 0 {
+				line += fmt.Sprintf("  output=%d", info.OutputLimit)
+			}
+			if len(info.ReasoningEfforts) > 0 {
+				line += "  reasoning=" + strings.Join(info.ReasoningEfforts, ";")
+			}
+			if info.DefaultReasoning != "" {
+				line += "  default_reasoning=" + info.DefaultReasoning
+			}
+			if len(info.InputModalities) > 0 {
+				line += "  modalities=" + strings.Join(info.InputModalities, ",")
+			}
 		}
 		lines = append(lines, line)
 	}
@@ -1036,6 +1127,25 @@ func parseModelList(raw string) []string {
 	return out
 }
 
+// parseModalityList 保留模态列表里的逗号：`s1=text,image` 不能被 parseModelList
+// 拆成非法的 `image` 片段。
+func parseModalityList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.Contains(p, "=") || len(out) == 0 {
+			out = append(out, p)
+			continue
+		}
+		out[len(out)-1] += "," + p
+	}
+	return out
+}
+
 func formatModelContexts(models []string, info map[string]storage.LLMModelInfo) string {
 	parts := make([]string, 0, len(models))
 	for _, model := range models {
@@ -1044,6 +1154,62 @@ func formatModelContexts(models []string, info map[string]storage.LLMModelInfo) 
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// formatModelOutputs 把档案里的输出上限渲染回表单字段（与 model_contexts 同风格）。
+func formatModelOutputs(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && meta.OutputLimit > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", model, meta.OutputLimit))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatModelReasoning 把档案里的推理档位渲染回表单字段；档位用分号分隔，
+// 避免与字段级逗号分隔符冲突。
+func formatModelReasoning(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && len(meta.ReasoningEfforts) > 0 {
+			parts = append(parts, model+"="+strings.Join(meta.ReasoningEfforts, ";"))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatModelDefaultReasoning(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && meta.DefaultReasoning != "" {
+			parts = append(parts, model+"="+meta.DefaultReasoning)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatModelModalities(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && len(meta.InputModalities) > 0 {
+			parts = append(parts, model+"="+strings.Join(meta.InputModalities, ","))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// parseDefaultReasoningField 接受 per-model `m1=high`（逗号分隔）或集合级单一档位。
+func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
+	spec := strings.TrimSpace(raw)
+	if spec == "" {
+		return nil, "", nil
+	}
+	if strings.Contains(spec, "=") {
+		perModel, err := llm.ParseModelDefaultReasoning(parseModelList(spec))
+		return perModel, "", err
+	}
+	return nil, spec, nil
 }
 
 // --- view ---

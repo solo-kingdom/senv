@@ -124,7 +124,7 @@ func shortReason(err error) string {
 // (as opposed to a plain read/reload of the same tab).
 func writeDoneMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case envReloadMsg, textReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg:
+	case envReloadMsg, textReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg, mcpReloadMsg:
 		return true
 	}
 	return false

@@ -258,7 +258,6 @@ server SHALL 在创建 vault、推进 revision 或写入任一条目前验证 pu
 - **WHEN** push 批次同时包含合法条目和一个非法 identity
 - **THEN** server 返回可理解的验证错误，不创建 vault、不推进 revision、不写入任何条目
 
-
 ### Requirement: 同步 apply 失败必须报告恢复结果
 
 客户端对已验证 pull 批次的本地 apply SHALL 将被替换、删除或状态更新的缓存条目视为一个可恢复批次。任一前向写入失败时，系统 MUST 尝试恢复每个已变更条目的完整旧内容和同步 state；任一恢复步骤失败时，返回错误 MUST 明确表明 rollback 未完成，且 MUST NOT 将缓存描述为已完整回滚或推进 revision。
@@ -274,3 +273,18 @@ server SHALL 在创建 vault、推进 revision 或写入任一条目前验证 pu
 #### Scenario: 恢复父目录失败
 - **WHEN** 恢复被删除条目所需的父目录无法安全创建或访问
 - **THEN** 命令返回恢复失败错误，不静默忽略该失败，也不继续提交同步 state
+
+### Requirement: 同步状态快照增量收集
+
+本地同步状态快照（待推送条目数等）SHALL 支持增量收集：自上次快照后 vault 无写入变更时，收集过程 MUST 仅做条目存在性与变更标记比对（stat 级），MUST NOT 全量读取并解密全部密文文件；有写入变更时仅重读变更部分。增量结果 SHALL 与全量收集等价（待推送判定不漏不多）。
+
+#### Scenario: 无变更时状态刷新廉价
+
+- **WHEN** TUI 在无本地写入的会话内刷新同步状态徽标
+- **THEN** 收集过程不解密任何密文内容，耗时日志可见扫描耗时为 stat 级
+
+#### Scenario: 写入后增量重扫
+
+- **WHEN** 用户写入 2 个条目后刷新同步状态
+- **THEN** 仅这 2 个条目被重读评估，待推送计数与全量收集一致
+

@@ -109,6 +109,7 @@ var (
 		typeConfig: lipgloss.NewStyle().Foreground(lipgloss.Color("215")), // orange
 		typeSSH:    lipgloss.NewStyle().Foreground(lipgloss.Color("141")), // violet
 		typeAI:     lipgloss.NewStyle().Foreground(lipgloss.Color("213")), // pink
+		typeMCP:    lipgloss.NewStyle().Foreground(lipgloss.Color("81")),  // cyan
 	}
 
 	// emptyStateStyle renders empty-state hints.

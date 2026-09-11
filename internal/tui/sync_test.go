@@ -257,11 +257,15 @@ func TestSyncPullAppliedReloadsTabsWithToast(t *testing.T) {
 	m := focusAllTabs(syncModel(t, src))
 	out, cmd := m.Update(syncPullMsg{out: PullOutcome{Applied: 2, MetadataUpdated: true}})
 	m = out.(Model)
-	// Reload drops every loaded flag immediately; inactive tabs self-heal via
-	// their Init on the next visit, the active tab recovers from the reload.
+	// stale-while-revalidate：应用变更后每个已加载 Tab 保持旧数据可见
+	// （loaded 不清空），由 Reload 返回的装载命令后台静默替换。
 	for i, tab := range m.tabs {
-		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && loaded {
-			t.Errorf("tabs[%d] kept its loaded flag after an applied pull", i)
+		// History 是网络型 Tab：Reload 仍失效缓存待重查（无 SWR 语义）
+		if tab.Title() == "History" {
+			continue
+		}
+		if loaded, hasFlag := tabLoadedFlag(tab); hasFlag && !loaded {
+			t.Errorf("tabs[%d] dropped its loaded flag after an applied pull", i)
 		}
 	}
 	if cmd == nil {
@@ -284,9 +288,9 @@ func TestSyncPullAppliedReloadsTabsWithToast(t *testing.T) {
 	if loaded, hasFlag := tabLoadedFlag(m.tabs[m.active]); hasFlag && !loaded {
 		t.Error("active tab did not finish reloading")
 	}
-	// Visiting an unloaded tab must issue its lazy reload.
-	if _, visit := m.Update(runeKey("2")); visit == nil {
-		t.Error("visiting an unloaded tab must issue a load command after an applied pull")
+	// 切走再切回：SWR 下 Tab 仍是已加载状态，激活时不应重复触发全量装载
+	if _, visit := m.Update(runeKey("2")); visit != nil {
+		t.Error("visiting a loaded tab must not re-issue a load command after an applied pull")
 	}
 }
 

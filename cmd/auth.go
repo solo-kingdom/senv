@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"golang.org/x/term"
@@ -17,6 +18,73 @@ import (
 // prompt but the invocation is non-interactive (or env export stdout is
 // captured). The error text guides the user to start a session.
 var ErrNeedSession = errors.New("no active session; run: senv session start")
+
+// authCauseError carries the re-auth root cause plus the single next action a
+// user should take. Every "you must re-enter your password" path funnels
+// through it so command errors and `senv session status` never disagree.
+type authCauseError struct {
+	cause  session.AuthRootCause
+	action string
+	detail string
+}
+
+func (e *authCauseError) Error() string {
+	if e.detail != "" {
+		return fmt.Sprintf("session needs re-authentication (%s): %s; next: %s", e.cause, e.detail, e.action)
+	}
+	return fmt.Sprintf("session needs re-authentication (%s); next: %s", e.cause, e.action)
+}
+
+// causeAction maps a root cause to exactly one deterministic next action.
+func causeAction(cause session.AuthRootCause) string {
+	switch cause {
+	case session.AuthCauseExpired:
+		return "senv session start"
+	case session.AuthCauseRestarted:
+		return "senv session start"
+	case session.AuthCauseVaultChanged:
+		return "senv session clear --all, then senv session start"
+	case session.AuthCauseMultipleCache:
+		return "senv session clear --all"
+	case session.AuthCauseUnreadable:
+		return "resolve the environment issue above, then retry"
+	case session.AuthCauseMetadataReplaced:
+		return "senv doctor"
+	default:
+		return "senv session start"
+	}
+}
+
+// wrapAuthCause converts a session error into the shared cause vocabulary
+// while preserving the original session sentinels for errors.Is assertions: the
+// returned error wraps BOTH the descriptive authCauseError and the original err.
+func wrapAuthCause(err error) error {
+	cause, ok := session.ClassifyAuthCause(err)
+	if !ok {
+		return err
+	}
+	wrapper := &authCauseError{
+		cause:  cause,
+		action: causeAction(cause),
+		detail: causeDetail(err),
+	}
+	return errors.Join(wrapper, err)
+}
+
+// causeDetail extracts a short, secret-free human detail for the cause.
+func causeDetail(err error) string {
+	msg := err.Error()
+	switch {
+	case errors.Is(err, session.ErrSessionInvalidated) && errors.Is(err, session.ErrSessionVaultChanged):
+		return "cached session belongs to a different vault"
+	case errors.Is(err, session.ErrSessionInvalidated):
+		return "system rebooted since the session was created"
+	case errors.Is(err, session.ErrSessionStaleMetadata), errors.Is(err, session.ErrSessionStaleKey):
+		return "metadata no longer matches the cached key"
+	default:
+		return msg
+	}
+}
 
 // deriveKeyWithIterations is a package-private seam for entry-boundary tests.
 var deriveKeyWithIterations = crypto.DeriveKeyWithIterations
@@ -134,7 +202,10 @@ func clearAuthMemo() {
 //
 // Successful results are memoized for the process lifetime so getEnvManager /
 // getTextManager / resolveValue do not re-prompt within the same invocation.
-func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authResult, error) {
+func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (res *authResult, err error) {
+	st := perflog.Start("auth.resolve")
+	defer func() { st.EndErr(err) }()
+
 	if cached := lookupAuthMemo(configPath, dataPath); cached != nil {
 		return cached, nil
 	}
@@ -151,6 +222,9 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authRes
 	// 1. Try session reuse.
 	key, err := sm.GetCachedKey()
 	if err == nil {
+		// 会话可能来自磁盘逃生舱（较新胜出或安全存储失败回退）；
+		// 该降级路径已在 stderr 警告过，这里补一条审计痕迹。
+		auditHatchCacheSelectedOnce()
 		auth := &authResult{storage: store, key: key}
 		storeAuthMemo(configPath, dataPath, auth)
 		return auth, nil
@@ -168,15 +242,34 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (*authRes
 	// 3. Non-interactive / captured-stdout: refuse to prompt.
 	if !stdinIsTerminal() || (activeAuthOpts.requireStdoutTTY && !stdoutIsTerminal()) {
 		// A platform-store failure is not the same as "there is no session".
-		// In particular, macOS Keychain lock/unavailability must remain
-		// actionable instead of being rewritten to the generic hint.
+		// Linux tmpfs unavailability must remain actionable instead of being
+		// rewritten to the generic hint.
 		if errors.Is(err, session.ErrNoSecureSessionStore) {
 			return nil, err
+		}
+		// Root causes that a password could not fix anyway (multiple caches,
+		// unreadable environment) stay actionable and are not collapsed into
+		// "run session start", which would loop the user back here.
+		if cause, ok := session.ClassifyAuthCause(err); ok {
+			switch cause {
+			case session.AuthCauseMultipleCache, session.AuthCauseUnreadable:
+				return nil, wrapAuthCause(err)
+			}
 		}
 		return nil, ErrNeedSession
 	}
 
-	// 4. Fall back to password (temporary auth; does not write a session).
+	// 4. Some root causes cannot be resolved by re-entering the password, so
+	// report them instead of prompting and looping. Expired/restarted/metadata
+	// replaced do fall through to the prompt, which is the intended recovery.
+	if cause, ok := session.ClassifyAuthCause(err); ok {
+		switch cause {
+		case session.AuthCauseMultipleCache, session.AuthCauseUnreadable:
+			return nil, wrapAuthCause(err)
+		}
+	}
+
+	// 4b. Fall back to password (temporary auth; does not write a session).
 	password, perr := prompt("Senv - Enter password: ")
 	if perr != nil {
 		return nil, fmt.Errorf("failed to read password: %w", perr)

@@ -10,6 +10,7 @@ import (
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
+	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
 )
@@ -17,13 +18,20 @@ import (
 // Managers bundles the three domain managers shared by all tabs. The TUI is a
 // pure interaction layer over these existing managers (no storage changes).
 // History 为 nil 时不注册 History Tab（git 模式 / 未配置 server）；
-// Audit 为 nil 时不注册审计 Tab；LLM 为 nil 时不注册 AI Tab。
+// Audit 为 nil 时不注册审计 Tab；LLM 为 nil 时不注册 AI Tab；
+// MCP 为 nil 时不注册 MCP Tab。
 type Managers struct {
 	Env    *env.Manager
 	Text   *text.Manager
 	Config *config.Manager
 	SSH    *ssh.Manager
 	LLM    *llm.ProviderManager
+	MCP    *mcp.Manager
+	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
+	MCPLedger string
+	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
+	// 回退到 os.UserHomeDir。测试注入临时目录以免写进真实 agent 配置。
+	MCPHome string
 	// LLMPointer/LLMHome 是 agent 指针文件路径与 agent 配置根目录；
 	// 为空时按用户默认位置解析（测试可注入临时目录）。
 	LLMPointer string
@@ -41,6 +49,9 @@ type Managers struct {
 	// Refresh 透传 `senv tui --refresh`：启动后台拉取绕过节流窗口。TUI 从不
 	// 因网络阻塞——本地数据先行渲染，拉取完成后自动更新界面。
 	Refresh bool
+	// snap 是 env vault 的进程内共享快照。由 New 注入；写操作与 pull 应用
+	// 变更后失效。nil 时消费方直接走 Manager.Snapshot。
+	snap *snapshotRegistry
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -104,6 +115,9 @@ func warnToast(text string) tea.Cmd {
 // New creates the TUI model backed by the given managers. SSH is registered
 // only when supplied; this keeps existing tests and limited integrations stable.
 func New(mgr Managers) Model {
+	if mgr.snap == nil {
+		mgr.snap = newSnapshotRegistry(mgr.Env)
+	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
 	m.tabs = []Tab{
 		newEnvTab(mgr),
@@ -115,6 +129,9 @@ func New(mgr Managers) Model {
 	}
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))
+	}
+	if mgr.MCP != nil {
+		m.tabs = append(m.tabs, newMCPTab(mgr))
 	}
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
@@ -267,6 +284,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshSync()
 		}
 		if msg.out.Applied > 0 || msg.out.MetadataUpdated {
+			m.mgr.snap.Invalidate()
 			return m, tea.Batch(
 				okToast(fmt.Sprintf("已从 server 更新 %d 条", msg.out.Applied)),
 				reloadAllTabs(m),
@@ -296,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = idx
-			return m, m.tabs[idx].Init()
+			return m, m.activateTab(idx)
 		}
 
 		switch msg.String() {
@@ -325,12 +343,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active + 1) % len(m.tabs)
-			return m, m.tabs[m.active].Init()
+			return m, m.activateTab(m.active)
 		case "shift+tab":
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
-			return m, m.tabs[m.active].Init()
+			return m, m.activateTab(m.active)
 		}
 
 		// Swallow the key that dismissed the banner so the user sees it clear
@@ -349,11 +367,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Default: forward to the active tab. A completed write additionally
-	// refreshes the sync badge and kicks off a best-effort background push.
+	// Default: forward to the active tab. A completed load is broadcast to
+	// every tab so a background tab's data lands even when the user has
+	// switched away (otherwise the load is dropped and re-issued on return).
+	// A completed write additionally refreshes the sync badge and kicks off a
+	// best-effort background push.
+	if isLoadBroadcastMsg(msg) {
+		var cmds []tea.Cmd
+		for i, tab := range m.tabs {
+			var c tea.Cmd
+			m.tabs[i], c = tab.Update(msg)
+			cmds = append(cmds, c)
+		}
+		return m, tea.Batch(cmds...)
+	}
 	var cmd tea.Cmd
 	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
 	if writeDoneMsg(msg) {
+		m.mgr.snap.Invalidate()
 		if c := m.refreshSync(); c != nil {
 			cmd = tea.Batch(cmd, c)
 		}
@@ -362,6 +393,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// isLoadBroadcastMsg 报告一条消息是否为 Tab 数据装载完成事件；这类事件属于
+// 发出请求的那个 Tab，但后台 Tab 装载完成时用户可能已切走，需要广播投递。
+func isLoadBroadcastMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case envLoadedMsg, textLoadedMsg, configLoadedMsg, sshLoadedMsg,
+		aiLoadedMsg, mcpLoadedMsg, auditLoadedMsg, historyLoadedMsg:
+		return true
+	}
+	return false
 }
 
 // tabIndexFor maps a single digit key ("1"–"9") to a zero-based tab index.
@@ -375,6 +417,15 @@ func tabIndexFor(key string, tabs int) (int, bool) {
 		return 0, false
 	}
 	return idx, true
+}
+
+// activateTab 把 Tab 标记为已激活（History Tab 依赖它做首次激活延迟加载）
+// 并执行该 Tab 的 Init。
+func (m Model) activateTab(idx int) tea.Cmd {
+	if h, ok := m.tabs[idx].(*historyTab); ok {
+		h.visited = true
+	}
+	return m.tabs[idx].Init()
 }
 
 // applyJump closes the overlay and moves the cursor to the chosen entry across
@@ -393,7 +444,7 @@ func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 		if f, ok := t.(jumpFocuser); ok {
 			f.focusJump(j.group, j.key)
 		}
-		return m, t.Init()
+		return m, m.activateTab(i)
 	}
 	return m, nil
 }

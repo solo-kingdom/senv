@@ -13,11 +13,11 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// projectionMeta 覆盖三种元数据情形：完整（name/description/context/efforts）、
-// 只有 name、完全未知。
+// projectionMeta 覆盖三种元数据情形：完整（name/description/context/output/
+// efforts）、只有 name、完全未知。
 func projectionMeta() map[string]ModelMetadata {
 	return map[string]ModelMetadata{
-		"m1": {Name: "Model One", Description: "first model", ContextLimit: 300000, ReasoningEfforts: []string{"low", "high"}},
+		"m1": {Name: "Model One", Description: "first model", ContextLimit: 300000, OutputLimit: 32000, ReasoningEfforts: []string{"low", "high"}, DefaultReasoning: "high"},
 		"m2": {Name: "Model Two"},
 		"m3": {},
 	}
@@ -128,10 +128,12 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 			Slug                     string `json:"slug"`
 			DisplayName              string `json:"display_name"`
 			Description              string `json:"description"`
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
 			SupportedReasoningLevels []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
-			ContextWindow int `json:"context_window"`
+			ContextWindow   int      `json:"context_window"`
+			InputModalities []string `json:"input_modalities"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(mustRead(t, catalogPath), &catalog); err != nil {
@@ -147,6 +149,9 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if len(first.SupportedReasoningLevels) != 2 || first.SupportedReasoningLevels[0].Effort != "low" {
 		t.Fatalf("catalog[0] reasoning levels = %+v", first.SupportedReasoningLevels)
 	}
+	if first.DefaultReasoningLevel != "high" {
+		t.Fatalf("catalog[0] default_reasoning_level = %q, want declared high (not first effort)", first.DefaultReasoningLevel)
+	}
 	if first.ContextWindow != 300000 {
 		t.Fatalf("catalog[0] context_window = %d", first.ContextWindow)
 	}
@@ -154,8 +159,14 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if unknown.Slug != "m3" || unknown.DisplayName != "m3" {
 		t.Fatalf("catalog[2] = %+v, want id fallback", unknown)
 	}
-	if unknown.ContextWindow != 0 || len(unknown.SupportedReasoningLevels) != 0 {
-		t.Fatalf("catalog[2] should fall back to templates: %+v", unknown)
+	if unknown.ContextWindow != 0 {
+		t.Fatalf("catalog[2] context_window = %d, want omitted/0", unknown.ContextWindow)
+	}
+	if unknown.DefaultReasoningLevel != "none" || len(unknown.SupportedReasoningLevels) != 1 || unknown.SupportedReasoningLevels[0].Effort != "none" {
+		t.Fatalf("catalog[2] should fall back to a single none reasoning level: %+v", unknown)
+	}
+	if !slices.Equal(unknown.InputModalities, []string{"text"}) {
+		t.Fatalf("catalog[2] input_modalities = %v, want text template", unknown.InputModalities)
 	}
 }
 
@@ -176,9 +187,20 @@ func TestKimiProjectsModelSet(t *testing.T) {
 	if m1["max_context_size"] != int64(300000) || m1["display_name"] != "Model One" {
 		t.Fatalf("m1 = %v, want catalog context and name", m1)
 	}
+	if m1["max_output_size"] != int64(32000) {
+		t.Fatalf("m1 max_output_size = %v, want catalog output limit", m1["max_output_size"])
+	}
+	caps := anySlice(m1["capabilities"])
+	efforts := anySlice(m1["support_efforts"])
+	if !slices.Equal(caps, []string{"thinking"}) || !slices.Equal(efforts, []string{"low", "high"}) {
+		t.Fatalf("m1 reasoning projection = caps %v / efforts %v", caps, efforts)
+	}
 	m2 := models["senv-main/m2"].(map[string]any)
 	if m2["max_context_size"] != int64(kimiMaxContextSizeFallback) {
 		t.Fatalf("m2 max_context_size = %v, want fallback", m2["max_context_size"])
+	}
+	if _, ok := m2["capabilities"]; ok {
+		t.Fatalf("m2 should not claim thinking without metadata: %v", m2)
 	}
 	m3 := models["senv-main/m3"].(map[string]any)
 	if m3["display_name"] != "m3" || m3["provider"] != "senv-main" || m3["model"] != "m3" {
@@ -199,6 +221,16 @@ func TestPiAndOpencodeProjectModelSets(t *testing.T) {
 	if list[0].(map[string]any)["id"] != "m1" || list[0].(map[string]any)["name"] != "Model One" {
 		t.Fatalf("pi models[0] = %v", list[0])
 	}
+	m1 := list[0].(map[string]any)
+	if m1["contextWindow"] != float64(300000) || m1["maxTokens"] != float64(32000) {
+		t.Fatalf("pi m1 = %v, want contextWindow/maxTokens from metadata", m1)
+	}
+	if m1["reasoning"] != true {
+		t.Fatalf("pi m1 reasoning = %v, want true with efforts", m1["reasoning"])
+	}
+	if _, ok := list[1].(map[string]any)["contextWindow"]; ok {
+		t.Fatalf("pi m2 should omit unknown contextWindow: %v", list[1])
+	}
 	settings := readJSONFile(t, filepath.Join(filepath.Dir(pi.ConfigPath(home)), "settings.json"))
 	if settings["defaultProvider"] != "senv-main" || settings["defaultModel"] != "m2" {
 		t.Fatalf("pi settings = %v", settings)
@@ -210,13 +242,115 @@ func TestPiAndOpencodeProjectModelSets(t *testing.T) {
 	if oc["model"] != "senv-main/m2" {
 		t.Fatalf("opencode model = %v", oc["model"])
 	}
-	ocModels := oc["provider"].(map[string]any)["senv-main"].(map[string]any)["models"].(map[string]any)
+	ocProvider := oc["provider"].(map[string]any)["senv-main"].(map[string]any)
+	if ocProvider["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("opencode npm = %v, want openai-compatible when shape undeclared", ocProvider["npm"])
+	}
+	ocModels := ocProvider["models"].(map[string]any)
 	if len(ocModels) != 3 {
 		t.Fatalf("opencode models = %v, want 3 entries", ocModels)
 	}
-	if ocModels["m1"].(map[string]any)["name"] != "Model One" {
-		t.Fatalf("opencode models[m1] = %v", ocModels["m1"])
+	ocM1 := ocModels["m1"].(map[string]any)
+	if ocM1["name"] != "Model One" {
+		t.Fatalf("opencode models[m1] = %v", ocM1)
 	}
+	limit, ok := ocM1["limit"].(map[string]any)
+	if !ok || limit["context"] != float64(300000) || limit["output"] != float64(32000) {
+		t.Fatalf("opencode m1 limit = %v, want context/output from metadata", ocM1["limit"])
+	}
+	if ocM1["reasoning"] != true {
+		t.Fatalf("opencode m1 reasoning = %v, want true with efforts", ocM1["reasoning"])
+	}
+	if _, ok := ocModels["m2"].(map[string]any)["limit"]; ok {
+		t.Fatalf("opencode m2 should omit unknown limit: %v", ocModels["m2"])
+	}
+}
+
+// TestAdapterDeclaredShapePicksWireProtocol 覆盖 ADR-0006 的 OpenAI 兼容族内
+// 细分：显式声明的 api_shape 决定各 agent 的线协议字段，未声明时保持原默认。
+func TestAdapterDeclaredShapePicksWireProtocol(t *testing.T) {
+	home := t.TempDir()
+
+	pi := piAdapter()
+	req := projectionRequest(t, pi, home, []string{"m1"}, "m1")
+	req.APIShape = "openai-responses"
+	if err := pi.Apply(req); err != nil {
+		t.Fatalf("pi Apply() error = %v", err)
+	}
+	piProv := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)
+	if piProv["api"] != "openai-responses" {
+		t.Fatalf("pi api = %v, want openai-responses for declared shape", piProv["api"])
+	}
+
+	kimi := kimiAdapter()
+	kreq := projectionRequest(t, kimi, home, []string{"m1"}, "m1")
+	kreq.APIShape = "openai-responses"
+	if err := kimi.Apply(kreq); err != nil {
+		t.Fatalf("kimi Apply() error = %v", err)
+	}
+	kimiCfg := readTOMLFile(t, kimi.ConfigPath(home))
+	kimiProv := kimiCfg["providers"].(map[string]any)["senv-main"].(map[string]any)
+	if kimiProv["type"] != "openai_responses" {
+		t.Fatalf("kimi type = %v, want openai_responses for declared shape", kimiProv["type"])
+	}
+
+	codex := codexAdapter()
+	creq := projectionRequest(t, codex, home, []string{"m1"}, "m1")
+	creq.APIShape = "openai-chat"
+	if err := codex.Apply(creq); err != nil {
+		t.Fatalf("codex Apply() error = %v", err)
+	}
+	codexCfg := readTOMLFile(t, codex.ConfigPath(home))
+	codexProv := codexCfg["model_providers"].(map[string]any)["senv-main"].(map[string]any)
+	if codexProv["wire_api"] != "chat" {
+		t.Fatalf("codex wire_api = %v, want chat for declared openai-chat", codexProv["wire_api"])
+	}
+
+	opencode := opencodeAdapter()
+	oreq := projectionRequest(t, opencode, home, []string{"m1"}, "m1")
+	oreq.APIShape = "openai-responses"
+	if err := opencode.Apply(oreq); err != nil {
+		t.Fatalf("opencode Apply() error = %v", err)
+	}
+	ocNPM := readJSONFile(t, opencode.ConfigPath(home))["provider"].(map[string]any)["senv-main"].(map[string]any)["npm"]
+	if ocNPM != "@ai-sdk/openai" {
+		t.Fatalf("opencode npm = %v, want @ai-sdk/openai for declared responses", ocNPM)
+	}
+}
+
+// anySlice 把 TOML/JSON 解析出的数组统一成字符串切片（非字符串元素丢弃）。
+func anySlice(raw any) []string {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if text, ok := item.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// projectionRequest 构造一个未落盘的 SwitchRequest（只用于直接调用 Apply）。
+func projectionRequest(t *testing.T, a AgentAdapter, home string, models []string, defaultModel string) SwitchRequest {
+	t.Helper()
+	req := SwitchRequest{
+		AgentID:       a.ID,
+		ProviderAlias: "main",
+		BaseURL:       "https://api.example.com",
+		Models:        models,
+		DefaultModel:  defaultModel,
+		Credential:    "sk-secret",
+		ConfigPath:    a.ConfigPath(home),
+		Home:          home,
+		ModelMetadata: projectionMeta(),
+	}
+	if a.Credential == CredentialEnvVar {
+		req.Credential = senvEnvKeyName("main")
+	}
+	return req
 }
 
 // TestAdapterProjectionIsIdempotent 覆盖任务 3.5：五个 agent 重复切换同一模型
@@ -494,5 +628,112 @@ func TestSwitchToleratesMissingStaleArtifacts(t *testing.T) {
 	}
 	if _, err := sm.Switch("codex", "alt", nil, ""); err != nil {
 		t.Fatalf("Switch(alt) with missing stale artifact error = %v", err)
+	}
+}
+
+func TestCodexUsesDeclaredDefaultNotFirstEffort(t *testing.T) {
+	home := t.TempDir()
+	a := codexAdapter()
+	req := projectionRequest(t, a, home, []string{"m1"}, "m1")
+	req.ModelMetadata = map[string]ModelMetadata{
+		"m1": {ReasoningEfforts: []string{"low", "high"}, DefaultReasoning: "high", InputModalities: []string{"text", "image"}},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string   `json:"default_reasoning_level"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	got := catalog.Models[0]
+	if got.DefaultReasoningLevel != "high" {
+		t.Fatalf("default = %q, want declared high", got.DefaultReasoningLevel)
+	}
+	if len(got.SupportedReasoningLevels) != 2 || got.SupportedReasoningLevels[0].Effort != "low" {
+		t.Fatalf("levels = %+v", got.SupportedReasoningLevels)
+	}
+	if !slices.Equal(got.InputModalities, []string{"text", "image"}) {
+		t.Fatalf("input_modalities = %v", got.InputModalities)
+	}
+}
+
+func TestCodexMissingDefaultUsesNoneTemplate(t *testing.T) {
+	home := t.TempDir()
+	a := codexAdapter()
+	req := projectionRequest(t, a, home, []string{"m1"}, "m1")
+	req.ModelMetadata = map[string]ModelMetadata{
+		"m1": {ReasoningEfforts: []string{"low", "high"}},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string   `json:"default_reasoning_level"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	got := catalog.Models[0]
+	if got.DefaultReasoningLevel != "none" || len(got.SupportedReasoningLevels) != 1 || got.SupportedReasoningLevels[0].Effort != "none" {
+		t.Fatalf("missing default should use none template: %+v", got)
+	}
+	if !slices.Equal(got.InputModalities, []string{"text"}) {
+		t.Fatalf("missing modalities = %v, want text template", got.InputModalities)
+	}
+}
+
+func TestProjectionInputModalities(t *testing.T) {
+	home := t.TempDir()
+	meta := map[string]ModelMetadata{
+		"m1": {Name: "M1", ContextLimit: 1000, ReasoningEfforts: []string{"high"}, DefaultReasoning: "high", InputModalities: []string{"text", "image", "video"}},
+	}
+
+	kimi := kimiAdapter()
+	req := projectionRequest(t, kimi, home, []string{"m1"}, "m1")
+	req.ModelMetadata = meta
+	if err := kimi.Apply(req); err != nil {
+		t.Fatalf("kimi Apply() error = %v", err)
+	}
+	kimiM1 := readTOMLFile(t, kimi.ConfigPath(home))["models"].(map[string]any)["senv-main/m1"].(map[string]any)
+	caps := anySlice(kimiM1["capabilities"])
+	if !slices.Equal(caps, []string{"thinking", "image_in", "video_in"}) {
+		t.Fatalf("kimi capabilities = %v", caps)
+	}
+
+	pi := piAdapter()
+	preq := projectionRequest(t, pi, home, []string{"m1"}, "m1")
+	preq.ModelMetadata = meta
+	if err := pi.Apply(preq); err != nil {
+		t.Fatalf("pi Apply() error = %v", err)
+	}
+	piM1 := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)[0].(map[string]any)
+	if got := anySlice(piM1["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
+		t.Fatalf("pi input = %v", piM1["input"])
+	}
+
+	opencode := opencodeAdapter()
+	oreq := projectionRequest(t, opencode, home, []string{"m1"}, "m1")
+	oreq.ModelMetadata = meta
+	if err := opencode.Apply(oreq); err != nil {
+		t.Fatalf("opencode Apply() error = %v", err)
+	}
+	ocM1 := readJSONFile(t, opencode.ConfigPath(home))["provider"].(map[string]any)["senv-main"].(map[string]any)["models"].(map[string]any)["m1"].(map[string]any)
+	mods := ocM1["modalities"].(map[string]any)
+	if got := anySlice(mods["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
+		t.Fatalf("opencode modalities.input = %v", mods["input"])
 	}
 }

@@ -184,20 +184,25 @@ func TestFilterModeFlow(t *testing.T) {
 	}
 }
 
-// TestEnvTabReloadDropsCacheAndReloads 验证后台同步触发的 Reload：先置回
-// loaded，经 LoadedMsg 回灌后恢复为已加载。
-func TestEnvTabReloadDropsCacheAndReloads(t *testing.T) {
+// TestEnvTabReloadKeepsDataVisibleAndReloads 验证 stale-while-revalidate：
+// 后台同步触发的 Reload 不清空旧数据（保持可见可操作），经 LoadedMsg 回灌
+// 后静默替换且仍为已加载。
+func TestEnvTabReloadKeepsDataVisibleAndReloads(t *testing.T) {
 	tab := newEnvTab(newFullManagers(t))
 	tab = flushTab(tab, tab.Init()).(*envTab)
 	if !tab.loaded {
 		t.Fatal("env tab should be loaded after Init")
 	}
+	staleCount := len(tab.itemsByGroup[tab.currentGroup()])
 	cmd := tab.Reload()
-	if tab.loaded {
-		t.Fatal("Reload must drop the loaded flag immediately")
+	if !tab.loaded {
+		t.Fatal("Reload must keep the loaded flag (stale data stays visible)")
 	}
 	tab = flushTab(tab, cmd).(*envTab)
 	if !tab.loaded {
-		t.Fatal("env tab should be loaded again after the reload lands")
+		t.Fatal("env tab should be loaded after the reload lands")
+	}
+	if got := len(tab.itemsByGroup[tab.currentGroup()]); got != staleCount {
+		t.Fatalf("items after reload = %d, want %d", got, staleCount)
 	}
 }

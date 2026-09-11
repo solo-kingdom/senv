@@ -89,6 +89,9 @@ OpenAI-compatible agents with it.`,
 				"⚠ %s 从环境变量读取凭据（不写入配置文件）：请确保 %s 已设置，可用 senv env 能力在启动该 agent 的环境中暴露\n",
 				out.AgentName, out.CredentialEnv)
 		}
+		for _, w := range out.Warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ %s\n", w)
+		}
 		return nil
 	},
 }

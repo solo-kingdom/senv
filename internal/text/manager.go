@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wii/senv/internal/exportfile"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -148,7 +149,18 @@ type TextInfo struct {
 }
 
 // List lists all text entries in a group with metadata
+// List 列出分组内 text 条目，附耗时日志。
 func (m *Manager) List(group string) ([]TextInfo, error) {
+	st := perflog.Start("text.list").With("group", group)
+	res, err := m.listEntries(group)
+	if err == nil {
+		st.With("items", len(res))
+	}
+	st.EndErr(err)
+	return res, err
+}
+
+func (m *Manager) listEntries(group string) ([]TextInfo, error) {
 	if err := validateGroup(group); err != nil {
 		return nil, err
 	}
@@ -434,7 +446,18 @@ type GroupInfo struct {
 	KeyCount int
 }
 
+// ListGroups 列出全部分组，附耗时日志。
 func (m *Manager) ListGroups() ([]GroupInfo, error) {
+	st := perflog.Start("text.list-groups")
+	res, err := m.listGroupsInfo()
+	if err == nil {
+		st.With("groups", len(res))
+	}
+	st.EndErr(err)
+	return res, err
+}
+
+func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
 	groups, err := m.storage.ListTextGroups()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list groups: %w", err)

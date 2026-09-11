@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
 )
@@ -65,23 +66,30 @@ func autoPull(cmd *cobra.Command, refresh bool) {
 	if err != nil || sp == nil {
 		return
 	}
+	st := perflog.Start("sync.autopull")
 	ctx, cancel := context.WithTimeout(commandContext(cmd), autoSyncPullBudget)
 	defer cancel()
 	res, _, err := sp.AutoPull(ctx, sp.SyncThrottleWindow(), refresh)
 	if err != nil {
+		st.End(false)
 		exitOnClientBlocked(cmd.ErrOrStderr(), err)
 		if !errors.Is(err, provider.ErrClientBlocked) {
 			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto pull 失败")
 		}
 		return
 	}
-	if res != nil && (res.Applied > 0 || res.MetadataUpdated) {
-		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, fmt.Sprintf("auto pull %d 条", res.Applied))
-		fmt.Fprintf(cmd.ErrOrStderr(), "✓ 已从 server 更新 %d 条\n", res.Applied)
-		if res.MetadataUpdated {
-			fmt.Fprintln(cmd.ErrOrStderr(), "✓ 已从 server 更新 vault metadata")
+	applied := 0
+	if res != nil {
+		applied = res.Applied
+		if res.Applied > 0 || res.MetadataUpdated {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, fmt.Sprintf("auto pull %d 条", res.Applied))
+			fmt.Fprintf(cmd.ErrOrStderr(), "✓ 已从 server 更新 %d 条\n", res.Applied)
+			if res.MetadataUpdated {
+				fmt.Fprintln(cmd.ErrOrStderr(), "✓ 已从 server 更新 vault metadata")
+			}
 		}
 	}
+	st.With("applied", applied).End(true)
 }
 
 // newAutoPuller lets a long-running MCP server reuse the same throttled path on
@@ -100,12 +108,15 @@ func postRunAutoPush(cmd *cobra.Command) {
 	if err != nil || sp == nil {
 		return
 	}
+	st := perflog.Start("sync.autopush")
 	ctx, cancel := context.WithTimeout(commandContext(cmd), autoSyncPushBudget)
 	defer cancel()
 	out, err := sp.AutoPush(ctx, autoSyncPushBudget)
 	if err == nil || out == nil || out.Skip == provider.AutoSyncSkipClean || out.Skip == provider.AutoSyncSkipLocked {
+		st.End(true)
 		return
 	}
+	st.End(false)
 	exitOnClientBlocked(os.Stderr, err)
 	if errors.Is(err, provider.ErrClientBlocked) {
 		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "auto push 被屏蔽拦截")

@@ -30,8 +30,13 @@ func setProviderAddFlags(t *testing.T, set func()) {
 	old := providerAddFlags{
 		baseURL: providerAddBaseURL, keyRef: providerAddKeyRef,
 		catalog: providerAddCatalog, models: providerAddModels,
-		modelCtx:     providerAddModelCtx,
-		defaultModel: providerAddDefault, force: providerAddForce,
+		modelCtx:           providerAddModelCtx,
+		modelOut:           providerAddModelOut,
+		modelReason:        providerAddModelReason,
+		modelDefaultReason: providerAddModelDefaultReason,
+		defaultReasoning:   providerAddDefaultReasoning,
+		modelModalities:    providerAddModelModalities,
+		defaultModel:       providerAddDefault, force: providerAddForce,
 		stdin: providerAddAPIKeyStdin, allowHTTP: providerAddAllowHTTP,
 	}
 	set()
@@ -41,6 +46,11 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		providerAddCatalog = old.catalog
 		providerAddModels = old.models
 		providerAddModelCtx = old.modelCtx
+		providerAddModelOut = old.modelOut
+		providerAddModelReason = old.modelReason
+		providerAddModelDefaultReason = old.modelDefaultReason
+		providerAddDefaultReasoning = old.defaultReasoning
+		providerAddModelModalities = old.modelModalities
 		providerAddDefault = old.defaultModel
 		providerAddForce = old.force
 		providerAddAPIKeyStdin = old.stdin
@@ -49,10 +59,11 @@ func setProviderAddFlags(t *testing.T, set func()) {
 }
 
 type providerAddFlags struct {
-	baseURL, keyRef, catalog, defaultModel string
-	models, modelCtx                       []string
-	force                                  bool
-	stdin, allowHTTP                       bool
+	baseURL, keyRef, catalog, defaultModel, defaultReasoning string
+	models, modelCtx, modelOut, modelReason                  []string
+	modelDefaultReason, modelModalities                      []string
+	force                                                    bool
+	stdin, allowHTTP                                         bool
 }
 
 func setProviderCredentialReader(t *testing.T, value string) {
@@ -397,6 +408,92 @@ func TestAIProviderEditBackfillsModelContext(t *testing.T) {
 	}
 }
 
+// TestAIProviderModelInfoFlags 覆盖 add/edit 的 --model-output 与
+// --model-reasoning：写入档案元数据、show 展示，且不在模型集内时报错。
+func TestAIProviderModelInfoFlags(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddModelOut = []string{"m1=32000"}
+		providerAddModelReason = []string{"m1=low;high"}
+		providerAddModelDefaultReason = []string{"m1=high"}
+		providerAddModelModalities = []string{"m1=text,image"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	info := entry.ModelInfo["m1"]
+	if info.OutputLimit != 32000 || strings.Join(info.ReasoningEfforts, ";") != "low;high" {
+		t.Fatalf("add model info = %+v", info)
+	}
+	if info.DefaultReasoning != "high" || strings.Join(info.InputModalities, ",") != "text,image" {
+		t.Fatalf("add default/modalities = %+v", info)
+	}
+
+	// 不在模型集内的模型被拒且不落盘。
+	setProviderEditFlag(t, "model-output", "ghost=100")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err == nil ||
+		!strings.Contains(err.Error(), "--model-output") {
+		t.Fatalf("unknown --model-output error = %v", err)
+	}
+
+	// edit 只补推理档位时模型集不变，已有元数据保留。pflag 的 StringSlice
+	// 是追加语义，先手工清掉上一步留下的值与 Changed 标记。
+	providerEditModelOut = nil
+	aiProviderEditCmd.Flags().Lookup("model-output").Changed = false
+	providerEditModelReason = nil
+	aiProviderEditCmd.Flags().Lookup("model-reasoning").Changed = false
+	providerEditModelDefaultReason = nil
+	aiProviderEditCmd.Flags().Lookup("model-default-reasoning").Changed = false
+	setProviderEditFlag(t, "model-reasoning", "m1=medium")
+	setProviderEditFlag(t, "model-default-reasoning", "m1=medium")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err != nil {
+		t.Fatalf("edit reasoning: %v", err)
+	}
+	entry, err = mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	info = entry.ModelInfo["m1"]
+	if info.ContextWindow != 128000 || info.OutputLimit != 32000 {
+		t.Fatalf("existing metadata clobbered: %+v", info)
+	}
+	if strings.Join(info.ReasoningEfforts, ";") != "medium" {
+		t.Fatalf("reasoning efforts = %v, want medium", info.ReasoningEfforts)
+	}
+	if info.DefaultReasoning != "medium" {
+		t.Fatalf("default reasoning = %q, want medium", info.DefaultReasoning)
+	}
+
+	showOut, err := runAIProviderCmd(t, aiProviderShowCmd, []string{"main"})
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	for _, want := range []string{"context=128000", "output=32000", "reasoning=medium", "default_reasoning=medium", "modalities=text,image"} {
+		if !strings.Contains(showOut, want) {
+			t.Fatalf("show output missing %q:\n%s", want, showOut)
+		}
+	}
+
+	// 非法档位参数在解析期拒绝（放在最后，避免 Changed 标记污染后续步骤）。
+	setProviderEditFlag(t, "model-reasoning", "m1")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err == nil ||
+		!strings.Contains(err.Error(), "--model-reasoning") {
+		t.Fatalf("invalid --model-reasoning error = %v", err)
+	}
+}
+
 // TestAIProviderEditStdinFlagRoutesToStdin 覆盖 add/edit 各自 --api-key-stdin
 // 的取凭据路径互不串线（edit 曾误用 add 的 flag）。
 func TestAIProviderEditStdinFlagRoutesToStdin(t *testing.T) {
@@ -436,5 +533,87 @@ func TestAIProviderEditStdinFlagRoutesToStdin(t *testing.T) {
 	}
 	if entry.CredentialRef != llm.OwnedCredentialRef("main") {
 		t.Fatalf("CredentialRef = %q", entry.CredentialRef)
+	}
+}
+
+func TestAIProviderDefaultReasoningRequired(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddModelReason = []string{"m1=low;high"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err == nil ||
+		!strings.Contains(err.Error(), "default reasoning") {
+		t.Fatalf("missing default reasoning error = %v", err)
+	}
+}
+
+func TestAIProviderCollectionDefaultReasoning(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1", "m2"}
+		providerAddModelCtx = []string{"m1=128000", "m2=200000"}
+		providerAddModelReason = []string{"m1=low;high"}
+		providerAddDefaultReasoning = "high"
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.ModelInfo["m1"].DefaultReasoning != "high" {
+		t.Fatalf("m1 default = %q", entry.ModelInfo["m1"].DefaultReasoning)
+	}
+	if entry.ModelInfo["m2"].DefaultReasoning != "" {
+		t.Fatalf("m2 default = %q, want empty", entry.ModelInfo["m2"].DefaultReasoning)
+	}
+}
+
+func TestAIProviderEditDefaultReasoning(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddModelReason = []string{"m1=low;high"}
+		providerAddModelDefaultReason = []string{"m1=high"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	providerEditModelDefaultReason = []string{"m1=low"}
+	aiProviderEditCmd.Flags().Lookup("model-default-reasoning").Changed = true
+	t.Cleanup(func() {
+		providerEditModelDefaultReason = nil
+		aiProviderEditCmd.Flags().Lookup("model-default-reasoning").Changed = false
+	})
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err != nil {
+		t.Fatalf("edit default reasoning: %v", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.ModelInfo["m1"].DefaultReasoning != "low" {
+		t.Fatalf("default = %q, want low", entry.ModelInfo["m1"].DefaultReasoning)
+	}
+	if strings.Join(entry.ModelInfo["m1"].ReasoningEfforts, ";") != "low;high" {
+		t.Fatalf("efforts changed: %v", entry.ModelInfo["m1"].ReasoningEfforts)
 	}
 }

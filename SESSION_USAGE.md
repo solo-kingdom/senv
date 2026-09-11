@@ -29,12 +29,16 @@ senv session status
 
 | 状态 | 含义 | 下一步 |
 |------|------|--------|
-| `Active` | 可用 | 直接使用；业务命令会滑动续期 |
+| `Active` | 可用 | 直接使用；业务命令会滑动续期，同时显示距绝对上限（`session cap`）的剩余时间 |
 | `Expired` | duration 到期 | `senv session start` |
-| `Invalidated` | 重启后 `restart` 会话失效，或缓存属于别的 vault | `senv session start` |
-| `Unverifiable` | boot ID 读不到、缓存损坏、同槽多份缓存 | 排查原因后重试；确要丢弃用 `senv session clear --all` |
+| `Invalidated` | 重启后 `restart` 会话失效，或缓存属于别的 vault | 重启：`senv session start`；属于别的 vault：`senv session clear --all` 后再 `senv session start` |
+| `Unverifiable` | boot ID 读不到、缓存损坏 | 排查原因后重试；确要丢弃用 `senv session clear --all` |
 
-`Expired` / `Invalidated` 的缓存会在下次使用时清理；`Unverifiable` 默认保留，不会静默删除。
+**只有 `Expired` 会被自动清理。** `Invalidated` 与 `Unverifiable` 的缓存一律保留，因为它们可能是另一个 vault 的唯一恢复钥匙；需要丢弃时显式执行 `senv session clear` / `--all`。
+
+同一 vault 槽位若同时存在平台安全存储与磁盘逃生舱两份缓存，系统按 `created_at` **新者优先**完成校验并复用，保留另一份；只有两份时间戳完全相同时才报错并提示 `senv session clear --all`。被选中的缓存仍须通过 salt 与 key 校验，不会被跳过。
+
+需要重新输入口令时，命令错误会给出**根因 + 一条确定的下一步动作**（`expired` / `restarted` / `vault-changed` / `multiple-cache` / `unreadable` / `metadata-replaced`）。
 
 ### 2. 启动或续期会话
 
@@ -251,10 +255,15 @@ senv session status
 # 或会话仍有效、只想延长
 senv session refresh
 
+# 失效时（缓存保留，不会被自动删除）
+# Session: Invalidated
+# Cache: retained
+# Next: senv session start
+
 # 不可判定时
 # Session: Unverifiable
 # Cache: retained (not deleted)
-# Next: resolve the cause above, then retry; `senv session clear --all` discards it
+# Next: resolve the environment issue above, then retry (`senv session clear --all` discards the cache)
 ```
 
 ### 缓存文件权限错误
@@ -279,11 +288,11 @@ ls -la ~/.log/senv/
 
 ### 缓存文件位置
 
-- **duration / restart**（临时，均不跨重启留存；槽名是 data path 规范化后的 hash）:
-  - `$XDG_RUNTIME_DIR/senv/session-<uid>-<slot>`（优先）
-  - 后备: `$TMPDIR/` 下随机命名的 `senv-<uid>-<slot>-<rand>` 0700 目录
-  - macOS: Keychain service `senv.session.<uid>`，account `senv.v1.<slot>`
-- **--insecure-cache 逃生舱**: `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`
+- **duration / restart**（能证明 tmpfs 时写 runtime；否则 Darwin 默认磁盘逃生舱。槽名是 data path 规范化后的 hash）:
+  - `$XDG_RUNTIME_DIR/senv/session-<uid>-<slot>`（优先，须经确认的 tmpfs/ramfs）
+  - 后备: `$TMPDIR/` 下随机命名的 `senv-<uid>-<slot>-<rand>` 0700 目录（同样须 memory-backed）
+- **磁盘逃生舱** (`--insecure-cache`；stock Darwin 无 tmpfs 时的默认写目标): `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`
+- 旧版登录钥匙串条目（`senv.session.<uid>` / `senv.v1*`）不再读取或删除；需要时可在钥匙串访问中手动删除
 
 ### 缓存文件结构
 

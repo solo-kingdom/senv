@@ -2,7 +2,17 @@ package session
 
 import (
 	"fmt"
+	"strings"
 )
+
+func isMemoryBackedFSType(name string) bool {
+	switch strings.ToLower(strings.TrimRight(name, "\x00")) {
+	case "tmpfs", "ramfs":
+		return true
+	default:
+		return false
+	}
+}
 
 type runtimeFilesystemKind uint8
 

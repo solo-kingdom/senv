@@ -12,12 +12,14 @@ import (
 )
 
 const (
-	codexCatalogDirName     = "model-catalogs"
-	codexCatalogShellType   = "shell_command"
-	codexCatalogVisibility  = "list"
-	codexTruncationMode     = "bytes"
-	codexTruncationLimit    = 10000
-	codexReasoningLevelDesc = "Reasoning effort"
+	codexCatalogDirName        = "model-catalogs"
+	codexCatalogShellType      = "shell_command"
+	codexCatalogVisibility     = "list"
+	codexTruncationMode        = "bytes"
+	codexTruncationLimit       = 10000
+	codexReasoningLevelDesc    = "Reasoning effort"
+	codexFallbackReasoning     = "none"
+	codexFallbackReasoningDesc = "No extra reasoning"
 )
 
 // codexReasoningLevel 对应 catalog 里的 supported_reasoning_levels 条目。
@@ -34,11 +36,14 @@ type codexTruncationPolicy struct {
 
 // codexModelEntry 是 senv 生成的 catalog 条目。字段一律无 omitempty：
 // codex 对 supported_reasoning_levels 与 experimental_supported_tools 等字段
-// 是「必须存在」，省略会直接解析失败（空数组合法）。
+// 是「必须存在」，省略会直接解析失败。supported_reasoning_levels 还必须
+// 非空：空数组能解析，但 TUI /model 选择器把 0 档当成「多档、不关父列表」，
+// 再把空档合成 1 档自动应用，回车无法退出。
 type codexModelEntry struct {
 	Slug                       string                `json:"slug"`
 	DisplayName                string                `json:"display_name"`
 	Description                string                `json:"description"`
+	DefaultReasoningLevel      string                `json:"default_reasoning_level"`
 	SupportedReasoningLevels   []codexReasoningLevel `json:"supported_reasoning_levels"`
 	ShellType                  string                `json:"shell_type"`
 	Visibility                 string                `json:"visibility"`
@@ -51,6 +56,7 @@ type codexModelEntry struct {
 	ExperimentalSupportedTools []string              `json:"experimental_supported_tools"`
 	ContextWindow              int                   `json:"context_window,omitempty"`
 	MaxContextWindow           int                   `json:"max_context_window,omitempty"`
+	InputModalities            []string              `json:"input_modalities"`
 }
 
 // codexCatalogPath 返回某 provider alias 对应的 catalog 文件路径（senv 自有
@@ -76,17 +82,12 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 		if displayName == "" {
 			displayName = model
 		}
-		levels := make([]codexReasoningLevel, 0, len(meta.ReasoningEfforts))
-		for _, effort := range meta.ReasoningEfforts {
-			if strings.TrimSpace(effort) == "" {
-				continue
-			}
-			levels = append(levels, codexReasoningLevel{Effort: effort, Description: codexReasoningLevelDesc})
-		}
+		levels, defaultLevel := codexReasoningLevels(meta)
 		entry := codexModelEntry{
 			Slug:                       model,
 			DisplayName:                displayName,
 			Description:                meta.Description,
+			DefaultReasoningLevel:      defaultLevel,
 			SupportedReasoningLevels:   levels,
 			ShellType:                  codexCatalogShellType,
 			Visibility:                 codexCatalogVisibility,
@@ -97,6 +98,7 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 			TruncationPolicy:           codexTruncationPolicy{Mode: codexTruncationMode, Limit: codexTruncationLimit},
 			SupportsParallelToolCalls:  true,
 			ExperimentalSupportedTools: []string{},
+			InputModalities:            codexInputModalities(meta.InputModalities),
 		}
 		if meta.ContextLimit > 0 {
 			entry.ContextWindow = meta.ContextLimit
@@ -117,6 +119,38 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
+// codexReasoningLevels 把档案声明的推理档位投影成 catalog 条目。无档位或旧
+// 档案缺默认推理档时写入单档 none：这是 agent 模板，不是从列表首项推断。
+func codexReasoningLevels(meta ModelMetadata) ([]codexReasoningLevel, string) {
+	if len(meta.ReasoningEfforts) == 0 || strings.TrimSpace(meta.DefaultReasoning) == "" {
+		return []codexReasoningLevel{{
+			Effort:      codexFallbackReasoning,
+			Description: codexFallbackReasoningDesc,
+		}}, codexFallbackReasoning
+	}
+	levels := make([]codexReasoningLevel, 0, len(meta.ReasoningEfforts))
+	for _, effort := range meta.ReasoningEfforts {
+		if strings.TrimSpace(effort) == "" {
+			continue
+		}
+		levels = append(levels, codexReasoningLevel{Effort: effort, Description: codexReasoningLevelDesc})
+	}
+	if len(levels) == 0 {
+		return []codexReasoningLevel{{
+			Effort:      codexFallbackReasoning,
+			Description: codexFallbackReasoningDesc,
+		}}, codexFallbackReasoning
+	}
+	return levels, meta.DefaultReasoning
+}
+
+func codexInputModalities(mods []string) []string {
+	if len(mods) == 0 {
+		return []string{"text"}
+	}
+	return append([]string(nil), mods...)
+}
+
 // validateCodexCatalog 校验 codex 解析 catalog 时必须存在的字段；任一缺失或
 // 非法即返回带字段名的错误，由调用方回滚并原样上报。
 func validateCodexCatalog(entries []codexModelEntry) error {
@@ -131,8 +165,10 @@ func validateCodexCatalog(entries []codexModelEntry) error {
 			return fmt.Errorf("%s: slug is empty", where)
 		case strings.TrimSpace(entry.DisplayName) == "":
 			return fmt.Errorf("%s (%s): display_name is empty", where, entry.Slug)
-		case entry.SupportedReasoningLevels == nil:
-			return fmt.Errorf("%s (%s): supported_reasoning_levels is missing", where, entry.Slug)
+		case len(entry.SupportedReasoningLevels) == 0:
+			return fmt.Errorf("%s (%s): supported_reasoning_levels is empty", where, entry.Slug)
+		case strings.TrimSpace(entry.DefaultReasoningLevel) == "":
+			return fmt.Errorf("%s (%s): default_reasoning_level is empty", where, entry.Slug)
 		case strings.TrimSpace(entry.ShellType) == "":
 			return fmt.Errorf("%s (%s): shell_type is empty", where, entry.Slug)
 		case strings.TrimSpace(entry.Visibility) == "":
@@ -143,6 +179,18 @@ func validateCodexCatalog(entries []codexModelEntry) error {
 			return fmt.Errorf("%s (%s): truncation_policy is missing or invalid", where, entry.Slug)
 		case entry.ExperimentalSupportedTools == nil:
 			return fmt.Errorf("%s (%s): experimental_supported_tools is missing", where, entry.Slug)
+		}
+		defaultOK := false
+		for _, level := range entry.SupportedReasoningLevels {
+			if strings.TrimSpace(level.Effort) == "" {
+				return fmt.Errorf("%s (%s): supported_reasoning_levels has an empty effort", where, entry.Slug)
+			}
+			if level.Effort == entry.DefaultReasoningLevel {
+				defaultOK = true
+			}
+		}
+		if !defaultOK {
+			return fmt.Errorf("%s (%s): default_reasoning_level %q is not in supported_reasoning_levels", where, entry.Slug, entry.DefaultReasoningLevel)
 		}
 		if _, dup := seen[entry.Slug]; dup {
 			return fmt.Errorf("%s: duplicate model slug %q", where, entry.Slug)

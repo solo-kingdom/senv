@@ -11,6 +11,10 @@ var (
 	// caller should fall back to prompting for a password.
 	ErrNoSession = errors.New("no active session")
 
+	// ErrNoSecureSessionStore reports that no platform-verified secure store is
+	// available. Every occurrence must carry an actionable remediation hint.
+	ErrNoSecureSessionStore = errors.New("no secure session store available")
+
 	// ErrSessionExpired is returned when a cache exists but its timeout has
 	// elapsed (duration expired or system rebooted for "restart" type). The
 	// cache is genuinely unusable; clearing it is safe.
@@ -18,9 +22,15 @@ var (
 
 	// ErrSessionInvalidated is returned when a cache exists but its binding no
 	// longer holds (the system rebooted for a "restart"/legacy "never" session,
-	// or the cache belongs to a different vault). Like ErrSessionExpired the
-	// cache is genuinely unusable, so clearing it is safe.
+	// or the cache belongs to a different vault). Unlike ErrSessionExpired the
+	// cache is PRESERVED: a vault-mismatched cache may be the only recovery key
+	// for that other vault (see ADR-0017).
 	ErrSessionInvalidated = errors.New("session invalidated")
+
+	// ErrSessionVaultChanged refines ErrSessionInvalidated for the case where
+	// the cache belongs to a different vault slot. Kept separate so callers can
+	// report "this cache is for another vault" instead of "the system restarted".
+	ErrSessionVaultChanged = errors.New("session belongs to a different vault")
 
 	// ErrSessionUnverifiable is returned when an environmental failure leaves
 	// the cache neither confirmed valid nor confirmed unusable (boot ID

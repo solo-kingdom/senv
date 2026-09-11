@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/perflog"
 )
 
 var (
@@ -38,7 +39,10 @@ It provides encrypted storage for sensitive data with group-based organization.`
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	st := perflog.Start("cli.total")
+	err := rootCmd.Execute()
+	st.End(err == nil)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

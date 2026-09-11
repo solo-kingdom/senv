@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/storage"
 	"golang.org/x/term"
 )
 
@@ -50,27 +51,37 @@ var aiProviderCmd = &cobra.Command{
 }
 
 var (
-	providerAddBaseURL     string
-	providerAddAPIKeyStdin bool
-	providerAddAllowHTTP   bool
-	providerAddKeyRef      string
-	providerAddCatalog     string
-	providerAddModels      []string
-	providerAddModelCtx    []string
-	providerAddDefault     string
-	providerAddAPIShape    string
-	providerAddForce       bool
+	providerAddBaseURL            string
+	providerAddAPIKeyStdin        bool
+	providerAddAllowHTTP          bool
+	providerAddKeyRef             string
+	providerAddCatalog            string
+	providerAddModels             []string
+	providerAddModelCtx           []string
+	providerAddModelOut           []string
+	providerAddModelReason        []string
+	providerAddModelDefaultReason []string
+	providerAddDefaultReasoning   string
+	providerAddModelModalities    []string
+	providerAddDefault            string
+	providerAddAPIShape           string
+	providerAddForce              bool
 
-	providerEditBaseURL     string
-	providerEditAPIKeyStdin bool
-	providerEditRotateKey   bool
-	providerEditAllowHTTP   bool
-	providerEditKeyRef      string
-	providerEditCatalog     string
-	providerEditModels      []string
-	providerEditModelCtx    []string
-	providerEditDefault     string
-	providerEditAPIShape    string
+	providerEditBaseURL            string
+	providerEditAPIKeyStdin        bool
+	providerEditRotateKey          bool
+	providerEditAllowHTTP          bool
+	providerEditKeyRef             string
+	providerEditCatalog            string
+	providerEditModels             []string
+	providerEditModelCtx           []string
+	providerEditModelOut           []string
+	providerEditModelReason        []string
+	providerEditModelDefaultReason []string
+	providerEditDefaultReasoning   string
+	providerEditModelModalities    []string
+	providerEditDefault            string
+	providerEditAPIShape           string
 
 	// providerCredentialReader is a test seam; production input never becomes
 	// a flag value and is dropped when AddProvider returns.
@@ -98,6 +109,22 @@ its own shape at switch time; the command reports the normalized value.
 		if err != nil {
 			return err
 		}
+		modelOutputs, err := llm.ParseModelOutputs(providerAddModelOut)
+		if err != nil {
+			return err
+		}
+		modelReasoning, err := llm.ParseModelReasoning(providerAddModelReason)
+		if err != nil {
+			return err
+		}
+		modelDefaultReasoning, err := llm.ParseModelDefaultReasoning(providerAddModelDefaultReason)
+		if err != nil {
+			return err
+		}
+		modelModalities, err := llm.ParseModelModalities(providerAddModelModalities)
+		if err != nil {
+			return err
+		}
 		mgr, err := getAIProviderManager()
 		if err != nil {
 			return err
@@ -111,19 +138,24 @@ its own shape at switch time; the command reports the normalized value.
 			apiKey = string(credential)
 		}
 		res, err := mgr.AddProvider(llm.AddProviderOptions{
-			Alias:                args[0],
-			BaseURL:              providerAddBaseURL,
-			AllowHTTP:            providerAddAllowHTTP,
-			APIKey:               apiKey,
-			KeyRef:               providerAddKeyRef,
-			CatalogPath:          catalogCachePath(),
-			CatalogProvider:      providerAddCatalog,
-			Models:               providerAddModels,
-			ModelContexts:        modelContexts,
-			RequireModelMetadata: true,
-			DefaultModel:         providerAddDefault,
-			APIShape:             providerAddAPIShape,
-			Force:                providerAddForce,
+			Alias:                 args[0],
+			BaseURL:               providerAddBaseURL,
+			AllowHTTP:             providerAddAllowHTTP,
+			APIKey:                apiKey,
+			KeyRef:                providerAddKeyRef,
+			CatalogPath:           catalogCachePath(),
+			CatalogProvider:       providerAddCatalog,
+			Models:                providerAddModels,
+			ModelContexts:         modelContexts,
+			ModelOutputs:          modelOutputs,
+			ModelReasoning:        modelReasoning,
+			ModelDefaultReasoning: modelDefaultReasoning,
+			DefaultReasoning:      providerAddDefaultReasoning,
+			ModelModalities:       modelModalities,
+			RequireModelMetadata:  true,
+			DefaultModel:          providerAddDefault,
+			APIShape:              providerAddAPIShape,
+			Force:                 providerAddForce,
 		})
 		if err != nil {
 			auditOp(session.AuditOpLLMProvider, "provider:"+args[0], false, "add 失败")
@@ -162,6 +194,10 @@ When the model set, catalog provider or model context metadata changes, every
 final model must resolve a context window; legacy profiles can still edit other
 fields without being forced to backfill model metadata.
 
+Passing a model metadata flag with no usable values (for example
+--model-output "") clears that metadata dimension from the profile; the TUI
+edit form clears a dimension the same way when its field is emptied.
+
 The base URL and api_shape are validated exactly like add. Any failure leaves
 the profile, credential and references untouched.`,
 	Args: cobra.ExactArgs(1),
@@ -170,6 +206,38 @@ the profile, credential and references untouched.`,
 		if cmd.Flags().Changed("model-context") {
 			var err error
 			modelContexts, err = llm.ParseModelContexts(providerEditModelCtx)
+			if err != nil {
+				return err
+			}
+		}
+		var modelOutputs map[string]int
+		if cmd.Flags().Changed("model-output") {
+			var err error
+			modelOutputs, err = llm.ParseModelOutputs(providerEditModelOut)
+			if err != nil {
+				return err
+			}
+		}
+		var modelReasoning map[string][]string
+		if cmd.Flags().Changed("model-reasoning") {
+			var err error
+			modelReasoning, err = llm.ParseModelReasoning(providerEditModelReason)
+			if err != nil {
+				return err
+			}
+		}
+		var modelDefaultReasoning map[string]string
+		if cmd.Flags().Changed("model-default-reasoning") {
+			var err error
+			modelDefaultReasoning, err = llm.ParseModelDefaultReasoning(providerEditModelDefaultReason)
+			if err != nil {
+				return err
+			}
+		}
+		var modelModalities map[string][]string
+		if cmd.Flags().Changed("model-modalities") {
+			var err error
+			modelModalities, err = llm.ParseModelModalities(providerEditModelModalities)
 			if err != nil {
 				return err
 			}
@@ -195,7 +263,23 @@ the profile, credential and references untouched.`,
 			opts.Models = providerEditModels
 		}
 		if cmd.Flags().Changed("model-context") {
-			opts.ModelContexts = modelContexts
+			// flag 已给但解析为空（如 --model-context ""）表示清空该维度。
+			opts.ModelContexts = llm.ClearingMap(modelContexts)
+		}
+		if cmd.Flags().Changed("model-output") {
+			opts.ModelOutputs = llm.ClearingMap(modelOutputs)
+		}
+		if cmd.Flags().Changed("model-reasoning") {
+			opts.ModelReasoning = llm.ClearingMap(modelReasoning)
+		}
+		if cmd.Flags().Changed("model-default-reasoning") {
+			opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
+		}
+		if cmd.Flags().Changed("default-reasoning") {
+			opts.DefaultReasoning = &providerEditDefaultReasoning
+		}
+		if cmd.Flags().Changed("model-modalities") {
+			opts.ModelModalities = llm.ClearingMap(modelModalities)
 		}
 		if cmd.Flags().Changed("default-model") {
 			opts.DefaultModel = &providerEditDefault
@@ -211,7 +295,9 @@ the profile, credential and references untouched.`,
 			opts.APIKey = string(credential)
 		}
 		opts.RequireModelMetadata = cmd.Flags().Changed("model") ||
-			cmd.Flags().Changed("catalog-provider") || cmd.Flags().Changed("model-context")
+			cmd.Flags().Changed("catalog-provider") || cmd.Flags().Changed("model-context") ||
+			cmd.Flags().Changed("model-reasoning") || cmd.Flags().Changed("model-default-reasoning") ||
+			cmd.Flags().Changed("default-reasoning")
 		res, err := mgr.EditProvider(opts)
 		if err != nil {
 			auditOp(session.AuditOpLLMProvider, "provider:"+args[0], false, "edit 失败")
@@ -284,11 +370,17 @@ var aiProviderShowCmd = &cobra.Command{
 		fmt.Fprintf(out, "接入形态：%s\n", orDash(e.APIShape))
 		fmt.Fprintf(out, "模型（%d）：%s\n", len(e.Models), strings.Join(e.Models, ", "))
 		if len(e.ModelInfo) > 0 {
-			fmt.Fprintln(out, "模型 context window：")
+			fmt.Fprintln(out, "模型信息：")
 			for _, model := range e.Models {
-				if info, ok := e.ModelInfo[model]; ok && info.ContextWindow > 0 {
-					fmt.Fprintf(out, "  %s = %d\n", model, info.ContextWindow)
+				info, ok := e.ModelInfo[model]
+				if !ok {
+					continue
 				}
+				details := modelInfoDetails(info)
+				if details == "" {
+					continue
+				}
+				fmt.Fprintf(out, "  %s: %s\n", model, details)
 			}
 		}
 		fmt.Fprintf(out, "默认模型：%s\n", orDash(e.DefaultModel))
@@ -322,6 +414,30 @@ var aiProviderRemoveCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// modelInfoDetails 把单条模型信息渲染成紧凑键值串（空字段跳过）。
+func modelInfoDetails(info storage.LLMModelInfo) string {
+	var parts []string
+	if info.ContextWindow > 0 {
+		parts = append(parts, fmt.Sprintf("context=%d", info.ContextWindow))
+	}
+	if info.OutputLimit > 0 {
+		parts = append(parts, fmt.Sprintf("output=%d", info.OutputLimit))
+	}
+	if len(info.ReasoningEfforts) > 0 {
+		parts = append(parts, "reasoning="+strings.Join(info.ReasoningEfforts, ";"))
+	}
+	if info.DefaultReasoning != "" {
+		parts = append(parts, "default_reasoning="+info.DefaultReasoning)
+	}
+	if len(info.InputModalities) > 0 {
+		parts = append(parts, "modalities="+strings.Join(info.InputModalities, ","))
+	}
+	if info.Name != "" {
+		parts = append(parts, "name="+info.Name)
+	}
+	return strings.Join(parts, " ")
 }
 
 func orDash(s string) string {
@@ -371,6 +487,11 @@ func init() {
 	aiProviderAddCmd.Flags().StringVar(&providerAddCatalog, "catalog-provider", "", "models.dev provider id for auto model loading")
 	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModels, "model", nil, "custom model id (repeatable)")
 	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModelCtx, "model-context", nil, "model context window: <model>=<tokens> (repeatable; required when metadata is unavailable)")
+	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModelOut, "model-output", nil, "model output limit: <model>=<tokens> (repeatable)")
+	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModelReason, "model-reasoning", nil, "model reasoning efforts: <model>=<effort>[;<effort>...] (repeatable; marks the model as reasoning-capable)")
+	aiProviderAddCmd.Flags().StringSliceVar(&providerAddModelDefaultReason, "model-default-reasoning", nil, "model default reasoning effort: <model>=<effort> (repeatable; required when the model has reasoning efforts)")
+	aiProviderAddCmd.Flags().StringVar(&providerAddDefaultReasoning, "default-reasoning", "", "collection default reasoning effort; fills models that have efforts but no resolved default")
+	aiProviderAddCmd.Flags().StringArrayVar(&providerAddModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefault, "default-model", "", "default model (must be in the model set)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty derives it from the target agent)")
 	aiProviderAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing profile")
@@ -382,6 +503,11 @@ func init() {
 	aiProviderEditCmd.Flags().StringVar(&providerEditCatalog, "catalog-provider", "", "models.dev provider id; re-assembles the model set")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModels, "model", nil, "custom model id (repeatable); replaces the model set")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelCtx, "model-context", nil, "model context window: <model>=<tokens> (repeatable; required when metadata is unavailable)")
+	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelOut, "model-output", nil, "model output limit: <model>=<tokens> (repeatable)")
+	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelReason, "model-reasoning", nil, "model reasoning efforts: <model>=<effort>[;<effort>...] (repeatable; marks the model as reasoning-capable)")
+	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelDefaultReason, "model-default-reasoning", nil, "model default reasoning effort: <model>=<effort> (repeatable; required when changing reasoning efforts)")
+	aiProviderEditCmd.Flags().StringVar(&providerEditDefaultReasoning, "default-reasoning", "", "collection default reasoning effort; fills models that have efforts but no resolved default")
+	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
 	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)

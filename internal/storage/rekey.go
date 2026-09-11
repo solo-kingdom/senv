@@ -474,7 +474,7 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 }
 
 func (m *Manager) recoverRekeyLocked() error {
-	manifest, err := m.loadRekeyManifest()
+	manifest, err := m.loadRekeyManifestCached()
 	if err != nil {
 		return fmt.Errorf("%w: %v; run senv doctor with a newer senv version", ErrRekeyRecoveryRequired, err)
 	}

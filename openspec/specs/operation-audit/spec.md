@@ -6,14 +6,14 @@ client 在本机记录业务操作流水（何事、对哪个目标、何时、�
 
 ### Requirement: 业务操作事件记录
 
-client 对 env/text/config 的增删改（含重命名与分组管理）、config 安装/卸载、SSH host/keypair 写操作、LLM provider 写操作与切换、同步（push/pull）与冲突解决 SHALL 追加审计事件；事件 SHALL 包含操作类型、目标标识（kind/group/key 或文件名）、日期时间与结果（成功/失败），MUST NOT 包含任何值、明文内容或派生密钥材料。经 TUI 发起的写操作 MUST 与 CLI 发起的同类操作记录同一类事件。
+client 对 env/text/config 的增删改（含重命名与分组管理）、config 安装/卸载、SSH host/keypair 写操作、LLM provider 写操作与切换、MCP Server 档案写操作与导出/撤回、同步（push/pull）与冲突解决 SHALL 追加审计事件；事件 SHALL 包含操作类型、目标标识（kind/group/key 或文件名）、日期时间与结果（成功/失败），MUST NOT 包含任何值、明文内容或派生密钥材料。经 TUI 发起的写操作 MUST 与 CLI 发起的同类操作记录同一类事件。
 
 #### Scenario: 记录 env 修改
 - **WHEN** 用户成功修改 env 条目
 - **THEN** 审计文件追加一条含操作类型、目标标识、时间戳与成功结果的记录
 
 #### Scenario: TUI 写操作同样留痕
-- **WHEN** 用户在 TUI 中新建/编辑/删除 env、text、config、SSH 或 LLM provider 数据
+- **WHEN** 用户在 TUI 中新建/编辑/删除 env、text、config、SSH、LLM provider 或 MCP Server 档案数据，或在 TUI 中执行 MCP 导出/撤回
 - **THEN** 审计文件追加与 CLI 同类操作一致的事件，且 TUI 的 Audit Tab 能查到
 
 #### Scenario: 失败也留痕

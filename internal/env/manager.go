@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -210,8 +211,19 @@ func (m *Manager) Delete(group string, key string) error {
 	return m.storage.DeleteEnvVar(group, key)
 }
 
-// List lists all environment variables in a group (or all groups if group is empty)
+// List lists all environment variables in a group (or all groups if group is
+// empty)，附耗时日志（组名是既有审计也使用的非敏感标识）。
 func (m *Manager) List(group string) (map[string]map[string]string, error) {
+	st := perflog.Start("env.list").With("group", group)
+	res, err := m.listEntries(group)
+	if err == nil {
+		st.With("groups", len(res))
+	}
+	st.EndErr(err)
+	return res, err
+}
+
+func (m *Manager) listEntries(group string) (map[string]map[string]string, error) {
 	if group != "" {
 		if err := validateGroup(group); err != nil {
 			return nil, err
@@ -226,21 +238,70 @@ func (m *Manager) List(group string) (map[string]map[string]string, error) {
 		}
 		result[group] = envGroup.Variables
 	} else {
-		groups, err := m.storage.ListEnvGroups()
+		all, err := m.loadEnvVault()
 		if err != nil {
-			return nil, fmt.Errorf("failed to list groups: %w", err)
+			return nil, err
 		}
-
-		for _, g := range groups {
-			envGroup, err := m.loadEnvGroup(g)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load group %s: %w", g, err)
-			}
-			result[g] = envGroup.Variables
+		for g, eg := range all {
+			result[g] = eg.Variables
 		}
 	}
 
 	return result, nil
+}
+
+// loadEnvVault 一次锁内批量加载全部分组（key 或 password 认证，tui-perf-load）。
+func (m *Manager) loadEnvVault() (map[string]*storage.EnvGroup, error) {
+	if m.key != nil {
+		return m.storage.LoadEnvVaultWithKey(m.key)
+	}
+	return m.storage.LoadEnvVault(m.password)
+}
+
+// Snapshot 一次批量加载全部分组与变量（单锁单 root），同时返回变量视图与
+// 分组信息，供 TUI 等「分组列表 + 全部变量」消费方单趟取数。
+func (m *Manager) Snapshot() (map[string]map[string]string, []GroupInfo, error) {
+	st := perflog.Start("env.snapshot")
+	all, err := m.loadEnvVault()
+	if err != nil {
+		st.End(false)
+		return nil, nil, err
+	}
+	settings, err := m.storage.LoadSettings()
+	if err != nil {
+		st.End(false)
+		return nil, nil, err
+	}
+
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	vars := make(map[string]map[string]string, len(all))
+	gis := make([]GroupInfo, 0, len(all))
+	for _, name := range names {
+		eg := all[name]
+		vars[name] = eg.Variables
+		isActive := name == settings.DefaultGroup
+		if !isActive {
+			for _, g := range settings.ActiveGroups {
+				if g == name {
+					isActive = true
+					break
+				}
+			}
+		}
+		gis = append(gis, GroupInfo{
+			Name:      name,
+			IsActive:  isActive,
+			VarCount:  len(eg.Variables),
+			IsDefault: name == settings.DefaultGroup,
+		})
+	}
+	st.With("groups", len(gis), "items", len(vars)).End(true)
+	return vars, gis, nil
 }
 
 // Export exports environment variables from active groups
@@ -403,44 +464,20 @@ func (m *Manager) DeactivateGroup(name string) error {
 }
 
 // ListGroups lists all groups and their status
+// ListGroups 列出全部分组（完整加载每个分组），附耗时日志。
 func (m *Manager) ListGroups() ([]GroupInfo, error) {
-	groups, err := m.storage.ListEnvGroups()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list groups: %w", err)
+	st := perflog.Start("env.list-groups")
+	gis, err := m.listGroupsInfo()
+	if err == nil {
+		st.With("groups", len(gis))
 	}
+	st.EndErr(err)
+	return gis, err
+}
 
-	settings, err := m.storage.LoadSettings()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load settings: %w", err)
-	}
-
-	var result []GroupInfo
-	for _, name := range groups {
-		isActive := name == settings.DefaultGroup
-		if !isActive {
-			for _, g := range settings.ActiveGroups {
-				if g == name {
-					isActive = true
-					break
-				}
-			}
-		}
-
-		envGroup, err := m.loadEnvGroup(name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load group %s: %w", name, err)
-		}
-		varCount := len(envGroup.Variables)
-
-		result = append(result, GroupInfo{
-			Name:      name,
-			IsActive:  isActive,
-			VarCount:  varCount,
-			IsDefault: name == settings.DefaultGroup,
-		})
-	}
-
-	return result, nil
+func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
+	_, gis, err := m.Snapshot()
+	return gis, err
 }
 
 // GroupInfo represents information about a group

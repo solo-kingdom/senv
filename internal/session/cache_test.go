@@ -1,12 +1,16 @@
 package session
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wii/senv/internal/crypto"
 )
 
 func setRuntimeProbe(t *testing.T, kind runtimeFilesystemKind, probeErr error) {
@@ -227,4 +231,204 @@ func TestSessionCacheFilesystemClearsLegacyPersistentCache(t *testing.T) {
 	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("legacy persistent cache still exists: %v", err)
 	}
+}
+
+// plantBothStores writes one cache into a fake platform store and one into the
+// disk escape hatch for the same slot, so multi-cache selection can be tested
+// without depending on tmpfs availability.
+func plantBothStores(t *testing.T, slot string, primary, hatch *SessionCache) *fakeSessionStore {
+	t.Helper()
+	fake := &fakeSessionStore{cache: primary}
+	setActiveSessionStore(t, fake)
+	if err := (diskCacheStore{}).Save(slot, hatch); err != nil {
+		t.Fatalf("save hatch: %v", err)
+	}
+	return fake
+}
+
+func baseCache(slot string, created time.Time) *SessionCache {
+	return &SessionCache{
+		Key:          base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize)),
+		Salt:         "salt",
+		CreatedAt:    created,
+		ExpiresAt:    created.Add(8 * time.Hour),
+		TimeoutType:  string(TimeoutDuration),
+		DataPathHash: slot,
+		SessionID:    "sess-" + created.Format("150405.000"),
+	}
+}
+
+func TestLoadCacheMultipleSelection(t *testing.T) {
+	isolateSessionCache(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	slot := testSlot
+	past := time.Now().Add(-2 * time.Hour)
+
+	t.Run("newer hatch wins and both survive", func(t *testing.T) {
+		primary := baseCache(slot, past)
+		hatch := baseCache(slot, past.Add(time.Hour))
+		plantBothStores(t, slot, primary, hatch)
+
+		got, err := loadCache(slot)
+		if err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if got.SessionID != hatch.SessionID {
+			t.Fatalf("expected newer hatch cache %q, got %q", hatch.SessionID, got.SessionID)
+		}
+		if h, _ := (diskCacheStore{}).Load(slot); h == nil {
+			t.Fatal("selected hatch must be preserved")
+		}
+	})
+
+	t.Run("newer primary wins", func(t *testing.T) {
+		primary := baseCache(slot, past.Add(time.Hour))
+		hatch := baseCache(slot, past)
+		plantBothStores(t, slot, primary, hatch)
+
+		got, err := loadCache(slot)
+		if err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if got.SessionID != primary.SessionID {
+			t.Fatalf("expected newer primary cache %q, got %q", primary.SessionID, got.SessionID)
+		}
+		if h, _ := (diskCacheStore{}).Load(slot); h == nil {
+			t.Fatal("ignored hatch must be preserved")
+		}
+	})
+
+	t.Run("exact tie is actionable error", func(t *testing.T) {
+		created := past.Truncate(time.Second)
+		primary := baseCache(slot, created)
+		primary.SessionID = "sess-a"
+		hatch := baseCache(slot, created)
+		hatch.SessionID = "sess-b"
+		plantBothStores(t, slot, primary, hatch)
+
+		if _, err := loadCache(slot); !errors.Is(err, errMultipleSessionCaches) {
+			t.Fatalf("expected errMultipleSessionCaches on tie, got %v", err)
+		}
+		if h, _ := (diskCacheStore{}).Load(slot); h == nil {
+			t.Fatal("tie must not delete either cache (hatch)")
+		}
+	})
+}
+
+// TestSelectedCacheStillValidated proves multi-cache selection does not relax
+// the validation gate: a newer cache with a wrong key is selected, still fails
+// salt/key verification, and never yields a usable key (ADR-0017 security).
+func TestSelectedCacheStillValidated(t *testing.T) {
+	isolateSessionCache(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configPath, dataPath := setupProject(t, "correct-secret")
+	slot := vaultSlotFor(dataPath)
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	defer sm.Close()
+
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	good, err := sm.LoadCache()
+	if err != nil || good == nil {
+		t.Fatalf("load good cache: %v", err)
+	}
+
+	// A forged cache with a bogus key but a NEWER timestamp: selection prefers
+	// it, yet verification must reject it instead of handing back a key.
+	forged := baseCache(slot, good.CreatedAt.Add(time.Hour))
+	forged.Salt = good.Salt
+	forged.Key = base64.StdEncoding.EncodeToString(make([]byte, crypto.KeySize))
+	if err := (diskCacheStore{}).Save(slot, forged); err != nil {
+		t.Fatalf("save forged hatch: %v", err)
+	}
+	setActiveSessionStore(t, &fakeSessionStore{cache: good})
+
+	selected, err := sm.LoadCache()
+	if err != nil {
+		t.Fatalf("loadCache: %v", err)
+	}
+	if selected.SessionID != forged.SessionID {
+		t.Fatalf("expected forged newer cache to be selected, got %q", selected.SessionID)
+	}
+
+	if _, err := sm.GetCachedKey(); err == nil {
+		t.Fatal("forged newer cache must not yield a usable key")
+	}
+}
+
+func resetHatchSelectionForTest(t *testing.T) {
+	t.Helper()
+	prev := HatchCacheSelected()
+	hatchCacheSelectedFlag.Store(false)
+	t.Cleanup(func() { hatchCacheSelectedFlag.Store(prev) })
+}
+
+func TestLoadCacheHatchSelectionWarnsAndFlags(t *testing.T) {
+	isolateSessionCache(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	slot := testSlot
+	past := time.Now().Add(-2 * time.Hour)
+
+	t.Run("hatch win warns once and sets flag", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		plantBothStores(t, slot, baseCache(slot, past), baseCache(slot, past.Add(time.Hour)))
+		stderr := captureStderr(t)
+		got, err := loadCache(slot)
+		if err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if got.SessionID != "sess-"+past.Add(time.Hour).Format("150405.000") && got.CreatedAt.Before(past.Add(30*time.Minute)) {
+			t.Fatalf("expected newer hatch cache, got created %v", got.CreatedAt)
+		}
+		if !HatchCacheSelected() {
+			t.Fatal("hatch selection flag not set")
+		}
+		if !strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("hatch win did not warn on stderr")
+		}
+		// 同进程内第二次选中不重复警告。
+		stderr = captureStderr(t)
+		if _, err := loadCache(slot); err != nil {
+			t.Fatalf("second loadCache: %v", err)
+		}
+		if strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("hatch warning must print at most once per process")
+		}
+	})
+
+	t.Run("secure store failure fallback warns", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		setActiveSessionStore(t, &fakeSessionStore{err: errors.New("keychain locked")})
+		if err := (diskCacheStore{}).Save(slot, baseCache(slot, past)); err != nil {
+			t.Fatalf("save hatch: %v", err)
+		}
+		stderr := captureStderr(t)
+		got, err := loadCache(slot)
+		if err != nil || got == nil {
+			t.Fatalf("loadCache = (%v, %v), want hatch cache", got, err)
+		}
+		if !HatchCacheSelected() {
+			t.Fatal("fallback flag not set")
+		}
+		if !strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("fallback to hatch did not warn")
+		}
+	})
+
+	t.Run("primary win stays silent", func(t *testing.T) {
+		resetHatchSelectionForTest(t)
+		plantBothStores(t, slot, baseCache(slot, past.Add(time.Hour)), baseCache(slot, past))
+		stderr := captureStderr(t)
+		if _, err := loadCache(slot); err != nil {
+			t.Fatalf("loadCache: %v", err)
+		}
+		if HatchCacheSelected() {
+			t.Fatal("flag must stay unset when primary wins")
+		}
+		if strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("primary win must not warn")
+		}
+	})
 }

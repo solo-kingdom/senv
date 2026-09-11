@@ -179,3 +179,51 @@ func TestSessionLifecycleSmoke(t *testing.T) {
 		t.Fatalf("runtime cache dir missing: %v", err)
 	}
 }
+
+// TestSessionRebootRetainsCacheE2E is the end-to-end companion for ADR-0017:
+// after a simulated reboot of a `restart` session, an interactive command must
+// report the cause with a single next action, refresh must not prompt, and the
+// cache must survive so it can still be used as a recovery key.
+func TestSessionRebootRetainsCacheE2E(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+	useProjectPaths(t, cfg, data)
+	feedPassword := sessionSmokeStdin(t, "correct-secret")
+
+	feedPassword()
+	if err := sessionStartCmd.Flags().Set("timeout", "restart"); err != nil {
+		t.Fatalf("set timeout: %v", err)
+	}
+	t.Cleanup(func() { _ = sessionStartCmd.Flags().Set("timeout", "") })
+	if err := sessionStartCmd.RunE(sessionStartCmd, nil); err != nil {
+		t.Fatalf("session start: %v", err)
+	}
+
+	// Simulate reboot: point the cache's boot ID at a different system.
+	rewriteCurrentVaultCache(t, func(doc map[string]any) {
+		doc["boot_id"] = "some-other-boot"
+	})
+
+	// A business command requiring the key must fail with the cause and a
+	// single deterministic action, and must NOT prompt for a password (the
+	// prompt would consume the supplied stdin and mask the retention check).
+	stdinIsTerminal = func() bool { return false }
+	_, err := resolveAuth(cfg, data, func(string) (string, error) {
+		t.Fatal("resolveAuth must not prompt: reboot invalidation cannot be fixed interactively here")
+		return "", nil
+	})
+	if err == nil {
+		t.Fatal("resolveAuth must fail after reboot")
+	}
+	if !strings.Contains(err.Error(), "senv session start") {
+		t.Fatalf("error must give a next action: %v", err)
+	}
+
+	// refresh never prompts and must not delete the cache.
+	if err := sessionRefreshCmd.RunE(sessionRefreshCmd, nil); err == nil {
+		t.Fatal("refresh must fail on an invalidated session")
+	}
+	if _, cache, err := session.NewManager(cfg, data).PeekCachedKey(); err != nil || cache == nil {
+		t.Fatalf("cache must survive reboot handling: cache=%v err=%v", cache, err)
+	}
+}

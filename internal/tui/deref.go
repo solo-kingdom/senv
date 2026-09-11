@@ -17,9 +17,18 @@ import (
 type tuiGetter struct {
 	envMgr  *env.Manager
 	textMgr *text.Manager
+	envSnap map[string]map[string]string
 }
 
 func (g tuiGetter) GetEnvValue(group, key string) (string, error) {
+	if g.envSnap != nil {
+		if vars, ok := g.envSnap[group]; ok {
+			if v, ok := vars[key]; ok {
+				return v, nil
+			}
+		}
+		return "", fmt.Errorf("variable %s not found in group %s", key, group)
+	}
 	return g.envMgr.Get(group, key)
 }
 
@@ -41,7 +50,11 @@ func resolveValues(mgr Managers, currentGroup string, items []envItemRow) (map[s
 	if mgr.Env == nil || mgr.Text == nil {
 		return nil, fmt.Errorf("managers unavailable for dereference")
 	}
-	getter := tuiGetter{envMgr: mgr.Env, textMgr: mgr.Text}
+	vars, _, snapErr := envSnapshot(mgr)
+	if snapErr != nil {
+		vars = nil
+	}
+	getter := tuiGetter{envMgr: mgr.Env, textMgr: mgr.Text, envSnap: vars}
 	opts := ref.ResolveOptions{CurrentGroup: currentGroup}
 	out := make(map[string]derefResult, len(items))
 	for _, it := range items {

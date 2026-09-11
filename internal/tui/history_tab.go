@@ -24,6 +24,9 @@ type historyTab struct {
 	source        HistorySource
 	width, height int
 	loaded        bool
+	// visited 延迟加载开关：启动批量 Init 不触发查询（不发网络请求），
+	// 用户首次激活本 Tab 时由顶层置位后才装载。
+	visited bool
 
 	rows    []provider.HistoryVersion
 	cursor  int
@@ -71,7 +74,7 @@ func (t *historyTab) Help() string {
 func (t *historyTab) InputMode() bool { return t.mode == historyModeConfirm }
 
 func (t *historyTab) Init() tea.Cmd {
-	if t.loaded {
+	if !t.visited || t.loaded {
 		return nil
 	}
 	return t.load("")
@@ -79,8 +82,12 @@ func (t *historyTab) Init() tea.Cmd {
 
 // Reload re-queries history for the currently visible entry (or the recent
 // list); the top level calls it after a background sync applies remote changes.
+// 从未激活过时保持延迟语义：只失效缓存，不发查询。
 func (t *historyTab) Reload() tea.Cmd {
 	t.loaded = false
+	if !t.visited {
+		return nil
+	}
 	return t.load(t.entryID)
 }
 

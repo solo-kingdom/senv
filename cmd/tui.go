@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/text"
@@ -22,7 +24,8 @@ import (
 var tuiCmd = &cobra.Command{
 	Use:   "tui",
 	Short: "Launch the full-screen TUI",
-	Long: `Launch the full-screen TUI to browse, search and edit env, text and config.
+	Long: `Launch the full-screen TUI to browse, search and edit env, text, config,
+SSH, LLM providers and MCP server profiles.
 
 Reuses a valid session cache when available; otherwise prompts for a one-time
 password (does not write session). Startup never waits on the network: local
@@ -31,52 +34,76 @@ forces that background pull past the throttle window. See "TUI mode" in the
 README for the keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		envMgr, textMgr, configMgr, err := getManagers()
+		managersSt := perflog.Start("tui.managers")
+		mgrs, auditMgr, err := loadTUIManagers(refreshRequested(cmd))
 		if err != nil {
+			managersSt.End(false)
 			return err
 		}
-		sshMgr, err := getSSHManager()
-		if err != nil {
-			return err
-		}
-		// LLM 管理器在 vault 可用时注入；不可用（如 git 模式）时 AI Tab
-		// 不注册，TUI 其余功能不受影响。
-		llmMgr, llmErr := getAIProviderManager()
-		var llmPointer string
-		var llmHome string
-		if llmErr == nil {
-			llmPointer = filepath.Join(getConfigPath(), "agent-pointers.json")
-			llmHome, err = agentHomeDir()
-			if err != nil {
-				return err
-			}
-		}
-
-		auditMgr := session.NewManager(getConfigPath(), getDataPath())
+		managersSt.End(true)
 		defer auditMgr.Close()
 
-		m := tui.New(tui.Managers{
-			Env:         envMgr,
-			Text:        textMgr,
-			Config:      configMgr,
-			SSH:         sshMgr,
-			LLM:         llmMgr,
-			LLMPointer:  llmPointer,
-			LLMHome:     llmHome,
-			LLMCatalog:  catalogCachePath(),
-			History:     buildTUIHistorySource(),
-			Audit:       tuiAuditSource{},
-			AuditWriter: newTUIAuditWriter(auditMgr),
-			// Refresh 透传 --refresh：启动后台拉取绕过节流窗口（TUI 内不阻塞）。
-			Refresh: refreshRequested(cmd),
-			Sync:    newTUISyncSource(),
-		})
+		m := tui.New(mgrs)
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			return fmt.Errorf("failed to run TUI: %w", err)
 		}
 		return nil
 	},
+}
+
+// loadTUIManagers 解锁 vault 并装配 TUI 所需的全部管理器。MCP 对齐 SSH：
+// 解锁失败则 TUI 不起；LLM 不可用时只跳过 AI Tab。
+func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
+	envMgr, textMgr, configMgr, err := getManagers()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
+	sshMgr, err := getSSHManager()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
+	mcpMgr, err := getMCPManager()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
+	mcpHome, err := agentHomeDir()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
+	// LLM 管理器在 vault 可用时注入；不可用时 AI Tab 不注册，其余不受影响。
+	llmMgr, llmErr := getAIProviderManager()
+	var llmPointer string
+	var llmHome string
+	if llmErr == nil {
+		llmPointer = filepath.Join(getConfigPath(), "agent-pointers.json")
+		llmHome = mcpHome
+	}
+
+	auditMgr := session.NewManager(getConfigPath(), getDataPath())
+	sourcesSt := perflog.Start("tui.sources")
+	historySource := buildTUIHistorySource()
+	syncSource := newTUISyncSource()
+	sourcesSt.End(true)
+
+	return tui.Managers{
+		Env:         envMgr,
+		Text:        textMgr,
+		Config:      configMgr,
+		SSH:         sshMgr,
+		LLM:         llmMgr,
+		LLMPointer:  llmPointer,
+		LLMHome:     llmHome,
+		LLMCatalog:  catalogCachePath(),
+		MCP:         mcpMgr,
+		MCPHome:     mcpHome,
+		MCPLedger:   mcp.LedgerPathForConfigDir(getConfigPath()),
+		History:     historySource,
+		Audit:       tuiAuditSource{},
+		AuditWriter: newTUIAuditWriter(auditMgr),
+		Refresh:     refresh,
+		Sync:        syncSource,
+	}, auditMgr, nil
 }
 
 // tuiHistorySource 把 server provider 与已认证 key 适配为 TUI 的 History

@@ -340,14 +340,18 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 		t.Fatal("create form must expose the alias field")
 	}
 	tab = submitAIForm(t, tab, map[string]string{
-		"alias":          "second",
-		"base_url":       "https://second.example.com",
-		"api_shape":      string(llm.APIShapeAnthropic),
-		"models":         "s1, s2",
-		"model_contexts": "s1=128000, s2=200000",
-		"default_model":  "s2",
-		"credential":     aiNewCredential,
-		"api_key":        "sk-second-secret",
+		"alias":                   "second",
+		"base_url":                "https://second.example.com",
+		"api_shape":               string(llm.APIShapeAnthropic),
+		"models":                  "s1, s2",
+		"model_contexts":          "s1=128000, s2=200000",
+		"model_outputs":           "s1=32000",
+		"model_reasoning":         "s1=low;high",
+		"model_default_reasoning": "s1=high",
+		"model_modalities":        "s1=text,image",
+		"default_model":           "s2",
+		"credential":              aiNewCredential,
+		"api_key":                 "sk-second-secret",
 	})
 	if tab.form != nil {
 		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)
@@ -358,6 +362,12 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 	}
 	if p.APIShape != string(llm.APIShapeAnthropic) || p.DefaultModel != "s2" || len(p.Models) != 2 {
 		t.Fatalf("unexpected provider: %+v", p)
+	}
+	if got := p.ModelInfo["s1"]; got.OutputLimit != 32000 || strings.Join(got.ReasoningEfforts, ";") != "low;high" {
+		t.Fatalf("s1 model info = %+v, want output/reasoning from form", got)
+	}
+	if got := p.ModelInfo["s1"]; got.DefaultReasoning != "high" || strings.Join(got.InputModalities, ",") != "text,image" {
+		t.Fatalf("s1 default/modalities = %+v", got)
 	}
 	if p.BaseURL != "https://second.example.com/v1" {
 		t.Fatalf("BaseURL = %q", p.BaseURL)
@@ -397,6 +407,61 @@ func TestAITabCreateFormRequiresCredential(t *testing.T) {
 	}
 	if tab.providerByAlias("second") != nil {
 		t.Fatal("invalid form wrote a provider")
+	}
+}
+
+func TestAITabCreateFormRequiresDefaultReasoning(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias": "second", "base_url": "https://second.example.com",
+		"models": "s1", "model_contexts": "s1=128000",
+		"model_reasoning": "s1=low;high",
+		"credential":      aiNewCredential, "api_key": "sk-second",
+	})
+	if tab.form == nil {
+		t.Fatal("missing default reasoning must keep the form open")
+	}
+	index := tab.form.fieldIndex("model_default_reasoning")
+	if index < 0 || !strings.Contains(strings.ToLower(tab.form.errs[index]), "default reasoning") {
+		t.Fatalf("inline error missing: %#v", tab.form.errs)
+	}
+	if tab.providerByAlias("second") != nil {
+		t.Fatal("invalid form wrote a provider")
+	}
+}
+
+func TestAITabDetailShowsDefaultReasoningAndModalities(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias": "vision", "base_url": "https://vision.example.com",
+		"models": "s1", "model_contexts": "s1=128000",
+		"model_reasoning":         "s1=low;high",
+		"model_default_reasoning": "s1=high",
+		"model_modalities":        "s1=text,image",
+		"credential":              aiNewCredential, "api_key": "sk-vision",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close: %#v", tab.form.errs)
+	}
+	for i, p := range tab.providers {
+		if p.Alias == "vision" {
+			tab.providerIndex = i
+			break
+		}
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	detail := tab.View()
+	for _, want := range []string{"default_reasoning=high", "modalities=text,image"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail missing %q:\n%s", want, detail)
+		}
 	}
 }
 
@@ -807,26 +872,87 @@ func TestAITabSwitchHelpDocumentsMultiSelect(t *testing.T) {
 	}
 }
 
-// TestAITabReloadDropsCacheAndReloads 验证后台同步触发的 Reload：先置回
-// loaded，经 aiLoadedMsg 回灌后恢复数据。
-func TestAITabReloadDropsCacheAndReloads(t *testing.T) {
+// TestAITabReloadKeepsDataVisibleAndReloads 验证 stale-while-revalidate：
+// Reload 保持旧数据可见，经 aiLoadedMsg 回灌后静默替换。
+func TestAITabReloadKeepsDataVisibleAndReloads(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	if !tab.loaded {
 		t.Fatal("ai tab should be loaded after load")
 	}
 	cmd := tab.Reload()
-	if tab.loaded {
-		t.Fatal("Reload must drop the loaded flag immediately")
+	if !tab.loaded {
+		t.Fatal("Reload must keep the loaded flag (stale data stays visible)")
 	}
 	if cmd == nil {
 		t.Fatal("expected a load command from Reload")
 	}
 	runAITabLoad(t, tab)
 	if !tab.loaded {
-		t.Fatal("ai tab should be loaded again after the reload lands")
+		t.Fatal("ai tab should be loaded after the reload lands")
 	}
 	if len(tab.providers) != 1 {
 		t.Fatalf("providers = %d after reload, want 1", len(tab.providers))
+	}
+}
+
+func TestAITabEditProviderClearsMetadataFields(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	// 先给档案补上 context window 与全套元数据，编辑入口才有可清空的值。
+	if _, err := tab.mgr.LLM.EditProvider(llm.EditProviderOptions{
+		Alias:                 "main",
+		ModelContexts:         map[string]int{"m1": 200_000, "m2": 100_000},
+		ModelOutputs:          map[string]int{"m1": 32_000},
+		ModelReasoning:        map[string][]string{"m1": {"low", "high"}},
+		ModelDefaultReasoning: map[string]string{"m1": "high"},
+		ModelModalities:       map[string][]string{"m1": {"text", "image"}},
+		RequireModelMetadata:  true,
+	}); err != nil {
+		t.Fatalf("seed metadata: %v", err)
+	}
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+
+	out, _ := tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	values := tab.form.Values()
+	if values["model_outputs"] == "" || values["model_default_reasoning"] == "" || values["model_modalities"] == "" {
+		t.Fatalf("metadata prefill missing: %#v", values)
+	}
+
+	// 清空输出上限、默认推理档与输入模态后提交。
+	tab = submitAIForm(t, tab, map[string]string{
+		"model_outputs":           "",
+		"model_default_reasoning": "",
+		"model_modalities":        "",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close after clearing metadata: %#v", tab.form.errs)
+	}
+	p := tab.providerByAlias("main")
+	if p == nil {
+		t.Fatal("provider lost")
+	}
+	info := p.ModelInfo["m1"]
+	if info.OutputLimit != 0 || info.DefaultReasoning != "" || len(info.InputModalities) != 0 {
+		t.Fatalf("metadata not cleared: %+v", info)
+	}
+	if strings.Join(info.ReasoningEfforts, ",") != "low,high" {
+		t.Fatalf("reasoning efforts = %v, want preserved", info.ReasoningEfforts)
+	}
+	if got := info.ContextWindow; got != 200_000 {
+		t.Fatalf("context window = %d, want preserved", got)
+	}
+
+	// 重开编辑表单：清空过的字段不再回填旧值，保留字段照常预填。
+	out, _ = tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	values = tab.form.Values()
+	if values["model_outputs"] != "" || values["model_default_reasoning"] != "" || values["model_modalities"] != "" {
+		t.Fatalf("reopen shows stale metadata: %#v", values)
+	}
+	if !strings.Contains(values["model_reasoning"], "low") {
+		t.Fatalf("reasoning prefill lost: %#v", values)
 	}
 }

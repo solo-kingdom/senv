@@ -2,7 +2,10 @@ package session
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"runtime"
+	"sync/atomic"
 )
 
 // SessionStore persists one vault's session cache in a platform-verified
@@ -32,33 +35,56 @@ func (tmpfsStore) ClearAll() error                             { return clearAll
 func (tmpfsStore) LoadLegacy() (*SessionCache, error)          { return loadLegacyTmpfsCache() }
 func (tmpfsStore) ClearLegacy() error                          { return clearLegacyTmpfsCache() }
 
-// defaultSessionStoreFor selects the platform-verified secure store: the macOS
-// login keychain on darwin, and the hardened memory-backed filesystem
-// implementation elsewhere.
-func defaultSessionStoreFor(slot string) SessionStore {
-	if runtime.GOOS == "darwin" {
-		return keychainStore{slot: slot}
-	}
+// sessionHostOS is the store-selection OS; tests may override it to exercise
+// Darwin fallback on Linux CI.
+var sessionHostOS = runtime.GOOS
+
+// defaultSessionStoreFor selects the Unix filesystem secure store on every OS.
+func defaultSessionStoreFor(string) SessionStore {
 	return tmpfsStore{}
 }
 
-// errMultipleSessionCaches protects the single-session invariant when both the
-// platform store and the escape hatch hold valid-looking caches.
-var errMultipleSessionCaches = errors.New("multiple session caches found; run: senv session clear --all")
+// errMultipleSessionCaches is returned only when two readable caches for one
+// slot carry an identical created_at, so selection cannot be decided
+// deterministically. Distinct timestamps resolve to the newer cache instead
+// (ADR-0017); this remains an actionable error, never a silent deletion.
+var errMultipleSessionCaches = errors.New("multiple session caches with identical timestamps; run: senv session clear --all")
 
 // insecureCacheEnabled records the explicit --insecure-cache opt-in from the
 // CLI. It only redirects writes; reads always inspect both stores.
 var insecureCacheEnabled bool
 
 // InsecureCacheWarning is printed to stderr before the escape hatch is used.
-const InsecureCacheWarning = "WARNING: --insecure-cache will store the derived session key unencrypted on disk (0600). " +
+const InsecureCacheWarning = "WARNING: storing the derived session key unencrypted on disk (0600). " +
 	"Any process running as your user, backups, and sync tools may read it. " +
-	"Use this escape hatch only in headless macOS or CI environments without a secure store."
+	"On Darwin this is the default when no verified tmpfs/ramfs is available; " +
+	"on Linux/CI pass --insecure-cache explicitly."
 
 // EnableInsecureCache redirects session cache writes to the explicit opt-in
 // disk escape hatch. Reads always consider both stores.
 func EnableInsecureCache() {
 	insecureCacheEnabled = true
+}
+
+// hatchCacheSelectedFlag records that a read path resolved to the disk escape
+// hatch cache; the first occurrence also warns on stderr (once per process).
+var hatchCacheSelectedFlag atomic.Bool
+
+// markHatchCacheSelected is called when a read picks the disk escape hatch —
+// either because it is newer than a readable secure-store cache or because the
+// secure store failed. The warning prints at most once per process.
+func markHatchCacheSelected() {
+	if hatchCacheSelectedFlag.Swap(true) {
+		return
+	}
+	fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+}
+
+// HatchCacheSelected reports whether any read in this process used the disk
+// escape hatch cache. Callers that record operation audit use it to leave a
+// "cache-source=disk-hatch" trace; it never carries key material.
+func HatchCacheSelected() bool {
+	return hatchCacheSelectedFlag.Load()
 }
 
 // activeSessionStoreFor is the package-level store seam; tests may inject fakes.
@@ -70,6 +96,10 @@ func saveCache(slot string, cache *SessionCache) error {
 		err = (diskCacheStore{}).Save(slot, cache)
 	} else {
 		err = activeSessionStoreFor(slot).Save(slot, cache)
+		if shouldFallbackToDiskHatch(err) {
+			fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+			err = (diskCacheStore{}).Save(slot, cache)
+		}
 	}
 	if err != nil {
 		return err
@@ -78,6 +108,10 @@ func saveCache(slot string, cache *SessionCache) error {
 	removeLegacyRuntimeCache()
 	removeLegacyPersistentCache()
 	return nil
+}
+
+func shouldFallbackToDiskHatch(err error) bool {
+	return err != nil && errors.Is(err, ErrNoSecureSessionStore) && sessionHostOS == "darwin"
 }
 
 func clearCache(slot string) error {

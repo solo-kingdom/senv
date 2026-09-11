@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSlot = "0123456789abcdef"
@@ -138,17 +139,54 @@ func TestDiskCacheStoreLoadMissingAndCorrupt(t *testing.T) {
 	}
 }
 
-func TestLoadCacheRejectsMultipleStores(t *testing.T) {
+// TestLoadCacheSelectsNewerAcrossStores covers ADR-0017: when both the platform
+// store and the escape hatch hold a cache for one slot, the newer created_at
+// wins instead of hard-failing. An exact tie remains an actionable error.
+func TestLoadCacheSelectsNewerAcrossStores(t *testing.T) {
 	isolateSessionCache(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	setActiveSessionStore(t, &fakeSessionStore{cache: &SessionCache{SessionID: "primary"}})
-	if err := (diskCacheStore{}).Save(testSlot, &SessionCache{SessionID: "hatch"}); err != nil {
-		t.Fatalf("save hatch: %v", err)
-	}
+	past := time.Now().Add(-2 * time.Hour)
 
-	if _, err := loadCache(testSlot); !errors.Is(err, errMultipleSessionCaches) {
-		t.Fatalf("loadCache() error = %v, want errMultipleSessionCaches", err)
-	}
+	t.Run("newer hatch wins", func(t *testing.T) {
+		setActiveSessionStore(t, &fakeSessionStore{cache: &SessionCache{
+			SessionID: "primary", CreatedAt: past,
+		}})
+		if err := (diskCacheStore{}).Save(testSlot, &SessionCache{
+			SessionID: "hatch", CreatedAt: past.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("save hatch: %v", err)
+		}
+
+		loaded, err := loadCache(testSlot)
+		if err != nil {
+			t.Fatalf("loadCache() error = %v", err)
+		}
+		if loaded.SessionID != "hatch" {
+			t.Fatalf("loadCache() = %q, want newer hatch cache", loaded.SessionID)
+		}
+		if h, _ := (diskCacheStore{}).Load(testSlot); h == nil {
+			t.Fatal("ignored hatch must be preserved")
+		}
+	})
+
+	t.Run("exact tie is actionable error", func(t *testing.T) {
+		created := past.Truncate(time.Second)
+		setActiveSessionStore(t, &fakeSessionStore{cache: &SessionCache{
+			SessionID: "primary", CreatedAt: created,
+		}})
+		if err := (diskCacheStore{}).Save(testSlot, &SessionCache{
+			SessionID: "hatch", CreatedAt: created,
+		}); err != nil {
+			t.Fatalf("save hatch: %v", err)
+		}
+
+		if _, err := loadCache(testSlot); !errors.Is(err, errMultipleSessionCaches) {
+			t.Fatalf("loadCache() error = %v, want errMultipleSessionCaches", err)
+		}
+		if h, _ := (diskCacheStore{}).Load(testSlot); h == nil {
+			t.Fatal("tie must not delete the hatch")
+		}
+	})
 }
 
 func TestLoadCacheFallsBackToHatchWhenPlatformStoreUnavailable(t *testing.T) {

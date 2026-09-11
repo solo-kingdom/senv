@@ -158,3 +158,35 @@ func TestLogOpBestEffort(t *testing.T) {
 		t.Log("write after Close unexpectedly succeeded")
 	}
 }
+
+func TestAuditHatchCacheSelectedOnce(t *testing.T) {
+	newAuditTestProject(t)
+
+	prevProbe := hatchCacheSelectedProbe
+	hatchCacheSelectedProbe = func() bool { return true }
+	t.Cleanup(func() { hatchCacheSelectedProbe = prevProbe })
+	auditHatchLogged.Store(false)
+	t.Cleanup(func() { auditHatchLogged.Store(false) })
+
+	auditHatchCacheSelectedOnce()
+	log := readAuditLogForTest(t)
+	if !strings.Contains(log, `"message":"cache-source=disk-hatch"`) ||
+		!strings.Contains(log, `"target":"session:cache"`) {
+		t.Fatalf("audit log missing hatch trace: %q", log)
+	}
+
+	// 进程内第二次不重复记录。
+	before := strings.Count(log, "cache-source=disk-hatch")
+	auditHatchCacheSelectedOnce()
+	if after := strings.Count(readAuditLogForTest(t), "cache-source=disk-hatch"); after != before {
+		t.Fatalf("hatch audit recorded %d times, want once", after)
+	}
+
+	// probe 为 false（未选逃生舱）时不记录。
+	auditHatchLogged.Store(false)
+	hatchCacheSelectedProbe = func() bool { return false }
+	auditHatchCacheSelectedOnce()
+	if after := strings.Count(readAuditLogForTest(t), "cache-source=disk-hatch"); after != before {
+		t.Fatalf("hatch audit recorded without selection: %d entries", after)
+	}
+}

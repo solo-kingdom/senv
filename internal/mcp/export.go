@@ -437,10 +437,12 @@ type UnexportPlan struct {
 	Items []UnexportItem
 }
 
-// NeedsWrite reports whether anything would be removed.
+// NeedsWrite reports whether anything would be removed or rewritten: remove
+// items execute directly, changed items execute after per-item confirmation.
+// Only absent items (never exported, already gone) mean there is nothing to do.
 func (p *UnexportPlan) NeedsWrite() bool {
 	for _, item := range p.Items {
-		if item.Action == UnexportRemove {
+		if item.Action == UnexportRemove || item.Action == UnexportChanged {
 			return true
 		}
 	}

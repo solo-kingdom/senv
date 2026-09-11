@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-11
+goal: 优化性能，senv tui 加载变量什么的太慢了，另外需要高耗时日志打印
+skip_specs: true

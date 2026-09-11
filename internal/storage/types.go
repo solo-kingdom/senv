@@ -121,12 +121,12 @@ type LLMProviderEntry struct {
 	// APIShape optionally declares the wire protocol this profile speaks
 	// (openai-chat | openai-responses | anthropic). Empty keeps the legacy
 	// behavior of deriving the shape from the target agent (ADR-0006).
-	APIShape     string    `json:"api_shape,omitempty"`
-	Models       []string  `json:"models"`
+	APIShape     string                  `json:"api_shape,omitempty"`
+	Models       []string                `json:"models"`
 	ModelInfo    map[string]LLMModelInfo `json:"model_info,omitempty"`
-	DefaultModel string    `json:"default_model,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	DefaultModel string                  `json:"default_model,omitempty"`
+	CreatedAt    time.Time               `json:"created_at"`
+	UpdatedAt    time.Time               `json:"updated_at"`
 }
 
 // LLMModelInfo is the per-model metadata senv persists with a provider profile.
@@ -138,6 +138,8 @@ type LLMModelInfo struct {
 	ContextWindow    int      `json:"context_window,omitempty"`
 	OutputLimit      int      `json:"output_limit,omitempty"`
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	DefaultReasoning string   `json:"default_reasoning,omitempty"`
+	InputModalities  []string `json:"input_modalities,omitempty"`
 }
 
 // MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up

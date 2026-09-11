@@ -3,9 +3,7 @@
 ## Purpose
 
 保证 vault 改口令与密钥轮换在任意文件系统错误、进程崩溃或机器重启后都不会暴露混合密钥状态，并能确定性恢复为完整可解锁的旧版本或新版本。
-
 ## Requirements
-
 ### Requirement: rekey 预检完整且失败关闭
 
 系统 SHALL 在修改任何密文或 metadata 前完整枚举并以旧 key 验证所有受管 env、text、config 密文及 config index。任一遍历、读取、索引解析、身份校验或解密错误 MUST 中止 rekey，且不得修改 vault。
@@ -58,7 +56,6 @@ rekey SHALL 作为可恢复事务执行。任意单次写入、同步、替换�
 - **WHEN** rekey 进行中另一个进程尝试修改同一 vault
 - **THEN** 该写入不会与 rekey 交错，也不会产生未被事务覆盖的条目
 
-
 ### Requirement: rekey journal entry 必须为规范受管身份
 
 rekey manifest 的每个 entry SHALL 声明并通过其规范受管身份校验。系统 MUST 仅接受属于已验证 env、text 或 config 布局的身份；config entry 还 MUST 与有效 config index 对应。控制文件、同步 state、锁、journal 文件、sidecar 名称、未知路径布局或仅满足通用单路径段规则的 entry MUST 在执行恢复前被拒绝。
@@ -74,3 +71,23 @@ rekey manifest 的每个 entry SHALL 声明并通过其规范受管身份校验�
 #### Scenario: 规范 entry 恢复
 - **WHEN** manifest 中所有 entry 都是经验证的 env、text 或 config 身份，且 generation hash 与 metadata generation 匹配
 - **THEN** 系统按既有 rollback 或 roll-forward 规则恢复完整单一 generation 并清理事务材料
+
+### Requirement: 读路径批量清算与 manifest 缓存
+
+vault 读路径 SHALL 支持在单次锁获取内完成批量读取（一次清算、一次 manifest 读取、批量解密），MUST NOT 为每个条目重复获取锁与重读 rekey manifest。rekey manifest SHALL 可在进程内缓存：缓存 MUST 以 vault 元数据代际（metadata.json 的变更）为失效界，且进程内完成任何写操作或恢复动作后 MUST 立即失效。读路径的混合密钥代际隔离语义 MUST NOT 削弱：首次读取、跨进程 rekey 后的读取仍 MUST 经锁内清算，读者 MUST NOT 看见 rekey 过程中的混合代际状态。
+
+#### Scenario: 批量读取单次锁
+
+- **WHEN** TUI 启动全量装载含 N 个条目的 vault
+- **THEN** 锁获取与清算次数为常数级（而非 N 次），耗时日志可见装载耗时显著低于逐文件基线
+
+#### Scenario: 本进程写后缓存失效
+
+- **WHEN** 同一进程内完成一次写操作或 rekey 动作后再次批量读取
+- **THEN** manifest 缓存已失效并重新加载，读取结果与逐文件路径一致
+
+#### Scenario: 跨进程 rekey 后读取安全
+
+- **WHEN** 另一进程完成 rekey 后，本进程（含缓存的 manifest）发起读取
+- **THEN** 读取按元数据代际变化重新清算，不产生混合代际读取或静默解密失败之外的错误行为
+

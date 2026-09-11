@@ -56,6 +56,9 @@ type formField struct {
 	optional    bool     // prepends an empty "无" choice for enum/ref
 	validate    func(string) error
 	placeholder string
+	// preview, if set, replaces the default editor-field summary so a tab can
+	// show identifiers (env keys) without echoing the field value.
+	preview func(string) string
 }
 
 // enumOptions returns the selectable candidates, with an explicit empty choice
@@ -381,6 +384,9 @@ func (f *form) renderValue(i int) string {
 	case formEditor:
 		// Multi-line content is never echoed into the form; only a summary,
 		// because the full text belongs in $EDITOR.
+		if field.preview != nil {
+			return mutedStyle().Render(field.preview(field.value))
+		}
 		lines := 0
 		if trimmed := strings.TrimRight(field.value, "\n"); strings.TrimSpace(trimmed) != "" {
 			lines = strings.Count(trimmed, "\n") + 1

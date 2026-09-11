@@ -29,6 +29,14 @@ func TestPanesNeverWrapLongValues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add provider: %v", err)
 	}
+	if err := mgrs.MCP.Add(&storage.MCPServerEntry{
+		Alias:     long,
+		Transport: storage.MCPTransportStdio,
+		Command:   long,
+		Env:       map[string]string{"VERY_LONG_ENV_KEY": strings.Repeat("secret-value-", 8)},
+	}); err != nil {
+		t.Fatalf("add mcp: %v", err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -36,6 +44,7 @@ func TestPanesNeverWrapLongValues(t *testing.T) {
 	}{
 		{"ssh", newSSHTab(mgrs)},
 		{"ai", newAITab(mgrs)},
+		{"mcp", newMCPTab(mgrs)},
 	} {
 		tab := tc.tab
 		tab.SetSize(80, 20)

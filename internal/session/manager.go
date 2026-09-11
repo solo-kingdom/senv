@@ -151,16 +151,19 @@ var errInvalidSessionPassword = errors.New("invalid session password")
 
 // GetCachedKey retrieves the cached key if the session is still valid.
 //
-// Destructive contract: only genuinely unusable caches (ErrSessionExpired /
-// ErrSessionInvalidated) are cleared. Unverifiable caches (environmental
+// Destructive contract: only a genuinely timed-out cache (ErrSessionExpired,
+// i.e. ReasonExpired) is cleared. Invalidated caches (ErrSessionInvalidated:
+// system rebooted for a "restart" session, or the cache belongs to another
+// vault) are preserved, because a vault-mismatched cache may be the only
+// recovery key for that other vault. Unverifiable caches (environmental
 // failures, corrupt payloads, duplicate slots) and stale caches
-// (ErrSessionStaleMetadata / ErrSessionStaleKey) are preserved, because they may
-// be the only remaining credential able to decrypt the user's data.
+// (ErrSessionStaleMetadata / ErrSessionStaleKey) are preserved for the same
+// reason. See CONTEXT.md "自动清理" and ADR-0017.
 func (m *Manager) GetCachedKey() ([]byte, error) {
 	key, cache, _, err := m.loadValidatedCredential()
 	if err != nil {
 		m.auditValidationFailure(cache, err)
-		if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSessionInvalidated) {
+		if errors.Is(err, ErrSessionExpired) {
 			_ = clearCache(m.slot())
 		}
 		return nil, err
@@ -247,8 +250,10 @@ func (m *Manager) loadValidatedCredential() ([]byte, *SessionCache, string, erro
 	case ReasonNone:
 	case ReasonExpired:
 		return nil, cache, "", ErrSessionExpired
-	case ReasonRestarted, ReasonVaultChanged:
+	case ReasonRestarted:
 		return nil, cache, "", fmt.Errorf("%w: %s", ErrSessionInvalidated, reason)
+	case ReasonVaultChanged:
+		return nil, cache, "", fmt.Errorf("%w: %w", ErrSessionInvalidated, ErrSessionVaultChanged)
 	default:
 		return nil, cache, "", fmt.Errorf("%w: %s", ErrSessionUnverifiable, reason)
 	}

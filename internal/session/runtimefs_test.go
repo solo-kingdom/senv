@@ -38,6 +38,25 @@ func TestRuntimeFilesystemProbe(t *testing.T) {
 	}
 }
 
+func TestMemoryBackedFSType(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "tmpfs", want: true},
+		{name: "TMPFS", want: true},
+		{name: "ramfs", want: true},
+		{name: "apfs", want: false},
+		{name: "hfs", want: false},
+		{name: "", want: false},
+	}
+	for _, test := range tests {
+		if got := isMemoryBackedFSType(test.name); got != test.want {
+			t.Fatalf("isMemoryBackedFSType(%q) = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
 func TestUnsafeRuntimeErrorsAreActionable(t *testing.T) {
 	original := runtimeFilesystemProbe
 	t.Cleanup(func() { runtimeFilesystemProbe = original })

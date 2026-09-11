@@ -35,10 +35,15 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add provider: %v", err)
 	}
+	if err := mgrs.MCP.Add(&storage.MCPServerEntry{
+		Alias: "github", Transport: storage.MCPTransportStdio, Command: "npx",
+	}); err != nil {
+		t.Fatalf("add mcp: %v", err)
+	}
 
 	all := gatherAll(t, mgrs)
 
-	var sawHost, sawProvider bool
+	var sawHost, sawProvider, sawMCP bool
 	for _, r := range all {
 		switch {
 		case r.resultType == typeSSH && r.key == "web":
@@ -48,6 +53,11 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 			}
 		case r.resultType == typeAI && r.key == "main":
 			sawProvider = true
+		case r.resultType == typeMCP && r.key == "github":
+			sawMCP = true
+			if r.extra != "npx" || r.preview != "npx" {
+				t.Fatalf("unexpected MCP preview: %+v", r)
+			}
 		}
 	}
 	if !sawHost {
@@ -55,6 +65,9 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 	}
 	if !sawProvider {
 		t.Fatal("LLM provider not gathered into search inventory")
+	}
+	if !sawMCP {
+		t.Fatal("MCP profile not gathered into search inventory")
 	}
 
 	// Alias and hostname are both matchable identifiers.
@@ -66,6 +79,12 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 	}
 	if got := searchFor(all, "mai"); len(got) == 0 {
 		t.Fatal("provider alias did not match")
+	}
+	if got := searchFor(all, "github"); len(got) == 0 {
+		t.Fatal("MCP alias did not match")
+	}
+	if got := searchFor(all, "npx"); len(got) == 0 {
+		t.Fatal("MCP command did not match")
 	}
 }
 
@@ -98,9 +117,18 @@ func TestSearchNeverMatchesSecrets(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("add provider: %v", err)
 	}
+	const mcpToken = "mcp-env-secret-token"
+	if err := mgrs.MCP.Add(&storage.MCPServerEntry{
+		Alias:     "github",
+		Transport: storage.MCPTransportStdio,
+		Command:   "npx",
+		Env:       map[string]string{"GITHUB_TOKEN": mcpToken},
+	}); err != nil {
+		t.Fatalf("add mcp: %v", err)
+	}
 
 	all := gatherAll(t, mgrs)
-	for _, needle := range []string{body, apiKey} {
+	for _, needle := range []string{body, apiKey, mcpToken} {
 		if got := searchFor(all, needle); len(got) != 0 {
 			t.Fatalf("search matched %q for secret %q", got, needle)
 		}

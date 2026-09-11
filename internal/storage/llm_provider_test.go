@@ -171,6 +171,22 @@ func TestLLMProviderAPIShape(t *testing.T) {
 	if err := legacy.ValidateLLMProvider(); err != nil {
 		t.Fatalf("legacy entry rejected: %v", err)
 	}
+
+	// 向后兼容：存量模型元数据没有默认推理档 / 输入模态。
+	var legacyInfo LLMModelInfo
+	if err := json.Unmarshal([]byte(`{"name":"m1","context_window":128000,"reasoning_efforts":["low","high"]}`), &legacyInfo); err != nil {
+		t.Fatalf("unmarshal legacy model info: %v", err)
+	}
+	if legacyInfo.DefaultReasoning != "" || legacyInfo.InputModalities != nil {
+		t.Fatalf("legacy model info new fields = %+v, want zero", legacyInfo)
+	}
+	encodedInfo, err := json.Marshal(LLMModelInfo{Name: "m1", ContextWindow: 128000})
+	if err != nil {
+		t.Fatalf("marshal model info: %v", err)
+	}
+	if strings.Contains(string(encodedInfo), "default_reasoning") || strings.Contains(string(encodedInfo), "input_modalities") {
+		t.Fatalf("empty default_reasoning/input_modalities should be omitted: %s", encodedInfo)
+	}
 	// 空形态也不会被写入 JSON。
 	encoded, err := json.Marshal(validProviderEntry("main"))
 	if err != nil {
@@ -181,5 +197,32 @@ func TestLLMProviderAPIShape(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "model_info") {
 		t.Fatalf("empty model_info should be omitted: %s", encoded)
+	}
+}
+
+func TestLLMModelInfoDefaultReasoningAndModalitiesRoundTrip(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	entry := validProviderEntry("main")
+	entry.ModelInfo = map[string]LLMModelInfo{
+		"m1": {
+			ContextWindow:    128000,
+			ReasoningEfforts: []string{"low", "high"},
+			DefaultReasoning: "high",
+			InputModalities:  []string{"text", "image"},
+		},
+	}
+	if err := mgr.SaveLLMProvider("main", entry, "test-password"); err != nil {
+		t.Fatalf("SaveLLMProvider: %v", err)
+	}
+	got, err := mgr.LoadLLMProvider("main", "test-password")
+	if err != nil {
+		t.Fatalf("LoadLLMProvider: %v", err)
+	}
+	info := got.ModelInfo["m1"]
+	if info.DefaultReasoning != "high" {
+		t.Fatalf("DefaultReasoning = %q, want high", info.DefaultReasoning)
+	}
+	if !reflect.DeepEqual(info.InputModalities, []string{"text", "image"}) {
+		t.Fatalf("InputModalities = %v", info.InputModalities)
 	}
 }

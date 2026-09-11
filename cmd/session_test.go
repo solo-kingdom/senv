@@ -15,6 +15,9 @@ func TestSessionStartInsecureCacheFlag(t *testing.T) {
 	if flag.DefValue != "false" {
 		t.Fatalf("--insecure-cache default = %q, want false", flag.DefValue)
 	}
+	if strings.Contains(sessionCmd.Long, "Keychain") || strings.Contains(sessionStartCmd.Long, "Keychain") {
+		t.Fatal("session help still mentions Keychain")
+	}
 	if !strings.Contains(sessionStartCmd.Long, "--insecure-cache") {
 		t.Fatal("session start help does not document --insecure-cache")
 	}

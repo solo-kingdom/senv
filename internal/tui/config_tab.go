@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/config"
+	"github.com/wii/senv/internal/perflog"
 	sessionpkg "github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -166,7 +167,7 @@ func (t *configTab) Init() tea.Cmd {
 // Reload drops cached data and reloads; the top level calls it after a
 // background sync applies remote changes.
 func (t *configTab) Reload() tea.Cmd {
-	t.loaded = false
+	// stale-while-revalidate：后台重载期间旧数据保持可见，完成后静默替换。
 	return t.load()
 }
 
@@ -218,11 +219,14 @@ func (t *configTab) positionAt(group, name string) {
 func (t *configTab) load() tea.Cmd {
 	mgr := t.mgr.Config
 	return func() tea.Msg {
+		st := perflog.Start("tui.load-config")
 		if mgr == nil {
+			st.End(false)
 			return configLoadedMsg{err: fmt.Errorf("config manager unavailable")}
 		}
 		cfgs, warnings, err := mgr.ListWithWarnings("")
 		if err != nil {
+			st.End(false)
 			return configLoadedMsg{err: err}
 		}
 		itemsByGroup := make(map[string][]configRow)
@@ -246,6 +250,7 @@ func (t *configTab) load() tea.Cmd {
 			itemsByGroup[g] = items
 			groups = append(groups, configGroupRow{name: g})
 		}
+		st.With("items", len(cfgs)).End(true)
 		return configLoadedMsg{groups: groups, itemsByGroup: itemsByGroup, warnings: warnings}
 	}
 }

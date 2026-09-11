@@ -134,7 +134,8 @@ func platformReadDir(rootFD int, segments []string) ([]DirEntry, error) {
 		case uint32(unix.S_IFDIR):
 			result = append(result, DirEntry{Name: name, IsDir: true})
 		case uint32(unix.S_IFREG):
-			result = append(result, DirEntry{Name: name})
+			sec, nsec := statMtime(stat)
+			result = append(result, DirEntry{Name: name, Size: stat.Size, ModSec: sec, ModNsec: nsec})
 		default:
 			return nil, &PathError{Op: "read directory", Path: displayPath(appendPath(segments, name)), Err: ErrNotRegular}
 		}
