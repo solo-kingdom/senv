@@ -47,6 +47,9 @@ type SwitchRequest struct {
 	// ModelMetadata 是本次模型集在模型目录里的元数据（可缺失），供各适配器
 	// 填充 agent 原生格式需要的字段。
 	ModelMetadata map[string]ModelMetadata
+	// APIShape 是档案显式声明的接口形态（已归一；空表示未声明）。适配器用它
+	// 在 OpenAI 兼容族内选择 chat / responses 线协议（ADR-0006 的落点）。
+	APIShape string
 	// PriorProvider/PriorModels 是上一次成功切换的本机记录，作为清理差集的
 	// 依据；首次切换时为零值。
 	PriorProvider string
@@ -384,7 +387,7 @@ func codexAdapter() AgentAdapter {
 					"name":                 "senv " + req.ProviderAlias,
 					"base_url":             req.BaseURL,
 					"env_key":              req.Credential,
-					"wire_api":             "responses",
+					"wire_api":             codexWireAPI(req.APIShape),
 					"requires_openai_auth": false,
 				})
 				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
@@ -417,7 +420,7 @@ func kimiAdapter() AgentAdapter {
 			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
 				root["default_model"] = modelAlias
 				setTOMLPath(root, []string{"providers", id}, map[string]any{
-					"type":     "openai",
+					"type":     kimiProviderType(req.APIShape),
 					"base_url": req.BaseURL,
 					"api_key":  req.Credential,
 				})
@@ -435,17 +438,68 @@ func kimiAdapter() AgentAdapter {
 				}
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
-					setTOMLPath(root, []string{"models", id + "/" + model}, map[string]any{
+					entry := map[string]any{
 						"provider":         id,
 						"model":            model,
 						"max_context_size": kimiContextSize(meta),
 						"display_name":     modelLabel(model, meta),
-					})
+					}
+					if meta.OutputLimit > 0 {
+						entry["max_output_size"] = meta.OutputLimit
+					}
+					if modelSupportsReasoning(meta) {
+						entry["capabilities"] = []string{"thinking"}
+						entry["support_efforts"] = append([]string(nil), meta.ReasoningEfforts...)
+					}
+					setTOMLPath(root, []string{"models", id + "/" + model}, entry)
 				}
 				return nil
 			}, req.tx)
 		},
 	}
+}
+
+// piAPIType 返回 pi provider 的 api 字段：档案显式声明 openai-responses 时
+// 走 Responses 线协议，其余（未声明 / openai-chat）保持 Chat Completions。
+func piAPIType(declaredShape string) string {
+	if declaredShape == storage.LLMAPIShapeOpenAIResponses {
+		return "openai-responses"
+	}
+	return "openai-completions"
+}
+
+// kimiProviderType 与 piAPIType 同理：kimi-code 的 provider type 在 Chat
+// Completions（openai）与 Responses（openai_responses）之间按声明形态选择。
+func kimiProviderType(declaredShape string) string {
+	if declaredShape == storage.LLMAPIShapeOpenAIResponses {
+		return "openai_responses"
+	}
+	return "openai"
+}
+
+// codexWireAPI 返回 codex model_provider 的 wire_api：声明 openai-chat 的
+// 档案只讲 Chat Completions，必须写 chat；其余维持 responses（未声明时的
+// 既有默认）。
+func codexWireAPI(declaredShape string) string {
+	if declaredShape == storage.LLMAPIShapeOpenAIChat {
+		return "chat"
+	}
+	return "responses"
+}
+
+// opencodeProviderNPM 返回 opencode provider 的 npm 适配包：声明
+// openai-responses 的档案走 @ai-sdk/openai（默认 Responses 线协议），其余
+// 用通用 openai-compatible（Chat Completions）。
+func opencodeProviderNPM(declaredShape string) string {
+	if declaredShape == storage.LLMAPIShapeOpenAIResponses {
+		return "@ai-sdk/openai"
+	}
+	return "@ai-sdk/openai-compatible"
+}
+
+// modelSupportsReasoning 报告目录/档案元数据是否标明该模型具备推理能力。
+func modelSupportsReasoning(meta ModelMetadata) bool {
+	return len(meta.ReasoningEfforts) > 0
 }
 
 // piAdapter：~/.pi/agent/models.json 写 provider 定义（含 apiKey），
@@ -475,14 +529,28 @@ func piAdapter() AgentAdapter {
 				}
 				models := make([]map[string]any, 0, len(req.Models))
 				for _, model := range req.Models {
-					models = append(models, map[string]any{
+					meta := req.ModelMetadata[model]
+					entry := map[string]any{
 						"id":   model,
-						"name": modelLabel(model, req.ModelMetadata[model]),
-					})
+						"name": modelLabel(model, meta),
+					}
+					// pi 对缺失字段用内置默认（contextWindow 128k、maxTokens
+					// 16k、reasoning false），只在已知时写入真实值；写 0 会被
+					// pi 直接拒绝。
+					if meta.ContextLimit > 0 {
+						entry["contextWindow"] = meta.ContextLimit
+					}
+					if meta.OutputLimit > 0 {
+						entry["maxTokens"] = meta.OutputLimit
+					}
+					if modelSupportsReasoning(meta) {
+						entry["reasoning"] = true
+					}
+					models = append(models, entry)
 				}
 				providers[id] = map[string]any{
 					"baseUrl": req.BaseURL,
-					"api":     "openai-completions",
+					"api":     piAPIType(req.APIShape),
 					"apiKey":  req.Credential,
 					"models":  models,
 				}
@@ -578,10 +646,27 @@ func opencodeAdapter() AgentAdapter {
 				}
 				models := make(map[string]any, len(req.Models))
 				for _, model := range req.Models {
-					models[model] = map[string]any{"name": modelLabel(model, req.ModelMetadata[model])}
+					meta := req.ModelMetadata[model]
+					entry := map[string]any{"name": modelLabel(model, meta)}
+					// opencode 对缺省 limit 记 0、reasoning 记 false；已知时
+					// 写入真实值，让 agent 侧上下文统计与推理开关保持正确。
+					if meta.ContextLimit > 0 || meta.OutputLimit > 0 {
+						limit := map[string]any{}
+						if meta.ContextLimit > 0 {
+							limit["context"] = meta.ContextLimit
+						}
+						if meta.OutputLimit > 0 {
+							limit["output"] = meta.OutputLimit
+						}
+						entry["limit"] = limit
+					}
+					if modelSupportsReasoning(meta) {
+						entry["reasoning"] = true
+					}
+					models[model] = entry
 				}
 				providers[id] = map[string]any{
-					"npm":  "@ai-sdk/openai-compatible",
+					"npm":  opencodeProviderNPM(req.APIShape),
 					"name": "senv " + req.ProviderAlias,
 					"options": map[string]any{
 						"baseURL": req.BaseURL,
@@ -770,9 +855,12 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 
 	// api_shape 显式声明时，形态必须与目标 agent 的协议族一致；不兼容时拒绝
 	// 且不写任何文件（ADR-0006）。空值走既有行为：只按 agent 协议族归一。
-	if shape, err := ParseAPIShape(entry.APIShape); err != nil {
+	// 声明值同时传给适配器，用于在 OpenAI 兼容族内选 chat / responses 线协议。
+	shape, err := ParseAPIShape(entry.APIShape)
+	if err != nil {
 		return nil, err
-	} else if shape != "" {
+	}
+	if shape != "" {
 		family, ok := shape.Protocol()
 		if !ok || family != adapter.Protocol {
 			return nil, fmt.Errorf(
@@ -837,6 +925,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		ConfigPath:    configPath,
 		Home:          home,
 		ModelMetadata: ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels),
+		APIShape:      string(shape),
 		PriorProvider: prior.Provider,
 		PriorModels:   prior.Models,
 		tx:            tx,

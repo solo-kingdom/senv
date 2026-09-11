@@ -80,7 +80,7 @@ AI Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭
 - **THEN** 成功提示只包含别名与来源类型，不含任何 key 片段
 
 ### Requirement: AI Tab 档案写操作
-AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段，格式为 `<model>=<tokens>`；新建或改动模型集/元数据时缺失 context window SHALL 经统一提示条回显并保持在表单内修正。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
+AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段（格式 `<model>=<tokens>`）、模型输出上限字段（格式 `<model>=<tokens>`）与模型推理档位字段（格式 `<model>=<effort>[;<effort>...]`，分号分隔档位）；编辑表单 SHALL 用档案既有元数据预填这三个字段。新建或改动模型集/元数据时缺失 context window SHALL 经统一提示条回显并保持在表单内修正。provider 详情 SHALL 在模型列表中展示已保存的 context window、输出上限与推理档位。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。
 
 #### Scenario: TUI 新建档案
 - **WHEN** 用户在 AI Tab 按 `n` 并填写别名、base_url、模型集、模型 context window 与凭据来源后提交
@@ -89,6 +89,10 @@ AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字�
 #### Scenario: TUI 缺少模型 context window
 - **WHEN** 新建自定义模型但表单未提供对应 context window，且目录元数据也不存在
 - **THEN** 提交失败，表单聚焦模型上下文字段并显示 `--model-context` 指引，不创建档案或凭据
+
+#### Scenario: TUI 设置模型输出与推理
+- **WHEN** 用户在新建表单的模型输出字段填 `s1=32000`、模型推理字段填 `s1=low;high` 后提交成功
+- **THEN** 档案 `model_info` 保存 s1 的输出上限与推理档位，详情展示两者
 
 #### Scenario: TUI 编辑档案
 - **WHEN** 用户按 `e` 修改选中档案的 base_url 或默认模型并提交

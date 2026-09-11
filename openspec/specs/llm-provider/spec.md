@@ -5,7 +5,7 @@
 ## Requirements
 
 ### Requirement: 添加 LLM Provider 档案
-`senv ai provider add` SHALL 以别名为唯一标识保存档案。凭据必须且只能通过交互式 TTY prompt 或 `--api-key-stdin` 提供；prompt 或 stdin 值 SHALL 只进入 vault 保留 text 组 `llm-keys/<alias>`，档案存引用 `text:llm-keys/<alias>`，且 MUST NOT 作为 CLI flag 值传入。也可用 `--key-ref` 指向既有 env/text entry（`env:<group>/<key>` 或 `text:<group>/<key>`）。base URL SHALL 默认仅接受 HTTPS；显式 `--allow-http` 后接受 HTTP；两种方案 MUST 拒绝 host 为空或包含 userinfo。base URL 落库前 SHALL 归一为 OpenAI 兼容形态：收敛路径尾斜杠，并在路径末段不为 `v1` 时追加 `/v1`；归一 MUST 保留 query 与 fragment，MUST NOT 改动中间路径段，且对已归一的输入保持原值。归一实际改动了输入时命令 SHALL 提示改写后的值。归一 MUST NOT 放宽既有校验：userinfo、空 host 与非允许的 HTTP 仍被拒绝。模型集为 `--catalog-provider` 指向的目录模型与 `--model` 自定义模型的并集且不得为空；每个模型 SHALL 解析 context window：显式 `--model-context <model>=<tokens>` 优先，其次档案既有元数据，最后 models.dev `limit.context`。add 时任一模型缺失 context window MUST 以非 0 退出且不写档案或凭据。`--default-model` 必须属于模型集。`--force` 覆盖档案时：未提供新自有凭据 SHALL 保留既有凭据与引用；从自有凭据改为外部引用 SHALL 删除原自有凭据；提供新自有凭据 SHALL 覆盖旧自有凭据。
+`senv ai provider add` SHALL 以别名为唯一标识保存档案。凭据必须且只能通过交互式 TTY prompt 或 `--api-key-stdin` 提供；prompt 或 stdin 值 SHALL 只进入 vault 保留 text 组 `llm-keys/<alias>`，档案存引用 `text:llm-keys/<alias>`，且 MUST NOT 作为 CLI flag 值传入。也可用 `--key-ref` 指向既有 env/text entry（`env:<group>/<key>` 或 `text:<group>/<key>`）。base URL SHALL 默认仅接受 HTTPS；显式 `--allow-http` 后接受 HTTP；两种方案 MUST 拒绝 host 为空或包含 userinfo。base URL 落库前 SHALL 归一为 OpenAI 兼容形态：收敛路径尾斜杠，并在路径末段不为 `v1` 时追加 `/v1`；归一 MUST 保留 query 与 fragment，MUST NOT 改动中间路径段，且对已归一的输入保持原值。归一实际改动了输入时命令 SHALL 提示改写后的值。归一 MUST NOT 放宽既有校验：userinfo、空 host 与非允许的 HTTP 仍被拒绝。模型集为 `--catalog-provider` 指向的目录模型与 `--model` 自定义模型的并集且不得为空；每个模型 SHALL 解析 context window：显式 `--model-context <model>=<tokens>` 优先，其次档案既有元数据，最后 models.dev `limit.context`。add 时任一模型缺失 context window MUST 以非 0 退出且不写档案或凭据。模型元数据还 SHALL 支持显式设置输出上限与推理档位：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位以分号分隔），显式值优先于目录与既有元数据；不在最终模型集内的模型、非正整数输出上限与空档位 MUST 以非 0 退出且不写档案或凭据。`--default-model` 必须属于模型集。`--force` 覆盖档案时：未提供新自有凭据 SHALL 保留既有凭据与引用；从自有凭据改为外部引用 SHALL 删除原自有凭据；提供新自有凭据 SHALL 覆盖旧自有凭据。
 
 #### Scenario: 交互凭据不进 argv
 - **WHEN** 用户在 TTY 执行 add 且按提示输入 API key
@@ -51,6 +51,14 @@
 - **WHEN** add 的自定义模型没有 `--model-context`，且目录也没有对应 `limit.context`
 - **THEN** 命令以非 0 退出并提示 `--model-context <model>=<tokens>`，不写档案或凭据
 
+#### Scenario: 显式设置输出上限与推理档位
+- **WHEN** 用户执行 add 并提供 `--model-output custom-1=32000 --model-reasoning custom-1=low;high`
+- **THEN** 档案保存该模型的输出上限与推理档位，`show` 的模型信息包含两者
+
+#### Scenario: 模型信息引用了模型集外的模型
+- **WHEN** add 的 `--model-output` 或 `--model-reasoning` 指向不在最终模型集内的模型
+- **THEN** 命令以非 0 退出并提示该 flag 与模型名，不写档案或凭据
+
 #### Scenario: 目录中无该 provider
 - **WHEN** `--catalog-provider` 在模型目录缓存中不存在
 - **THEN** 命令以非 0 退出并提示执行 `senv ai refresh`，不写入任何档案或凭据
@@ -68,7 +76,7 @@
 - **THEN** 命令以非 0 退出并提示使用 `--force`；加 `--force` 时按凭据覆盖语义更新档案
 
 ### Requirement: 查看 LLM Provider 档案
-`senv ai provider list` SHALL 列出全部档案的摘要（别名、base_url、模型数、默认模型、目录来源、凭据引用）；`senv ai provider show` SHALL 展示单个档案详情，并在已保存模型元数据时展示各模型 context window。两者 MUST NOT 输出凭据明文。
+`senv ai provider list` SHALL 列出全部档案的摘要（别名、base_url、模型数、默认模型、目录来源、凭据引用）；`senv ai provider show` SHALL 展示单个档案详情，并在已保存模型元数据时展示各模型的 context window、输出上限与推理档位。两者 MUST NOT 输出凭据明文。
 
 #### Scenario: 列出档案
 - **WHEN** vault 中存在档案且用户执行 list
@@ -105,7 +113,7 @@
 - **THEN** 提示输入口令，认证通过后完成写入
 
 ### Requirement: 编辑 LLM Provider 档案
-`senv ai provider edit <alias>` SHALL 支持修改 base_url、模型集、模型 context window、default_model、目录来源、凭据引用与 `api_shape`；alias 是主键 MUST NOT 被修改。凭据轮换语义 SHALL 与 `add` 一致：提供新自有凭据 SHALL 覆盖旧自有凭据；改为外部引用 SHALL 删除原自有凭据；未提供凭据来源 SHALL 保留既有凭据与引用。改动模型集、目录来源或模型 context window 时，context window 校验 SHALL 与 `add` 一致；仅修改其他字段时 MUST NOT 因旧档案缺少模型元数据而失败。校验（HTTPS 默认、拒绝 userinfo、模型集非空、`--default-model` 属于模型集、`--api-shape` 取值合法）SHALL 与 `add` 一致；任一步失败 MUST NOT 留下部分更新。TUI SHALL 通过同一方法提供等价编辑，别名在编辑态只读。
+`senv ai provider edit <alias>` SHALL 支持修改 base_url、模型集、模型 context window、模型输出上限、模型推理档位、default_model、目录来源、凭据引用与 `api_shape`；alias 是主键 MUST NOT 被修改。凭据轮换语义 SHALL 与 `add` 一致：提供新自有凭据 SHALL 覆盖旧自有凭据；改为外部引用 SHALL 删除原自有凭据；未提供凭据来源 SHALL 保留既有凭据与引用。改动模型集、目录来源或模型 context window 时，context window 校验 SHALL 与 `add` 一致；仅修改其他字段（含只补输出上限/推理档位）时 MUST NOT 因旧档案缺少模型元数据而失败。校验（HTTPS 默认、拒绝 userinfo、模型集非空、`--default-model` 属于模型集、`--api-shape` 取值合法）SHALL 与 `add` 一致；任一步失败 MUST NOT 留下部分更新。TUI SHALL 通过同一方法提供等价编辑，别名在编辑态只读。
 
 #### Scenario: 为旧档案补 context window
 - **WHEN** 旧档案只有模型名，用户执行 `edit main --model-context m1=1000000`

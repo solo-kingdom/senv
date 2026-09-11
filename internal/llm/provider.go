@@ -103,6 +103,11 @@ type AddProviderOptions struct {
 	Models          []string
 	// ModelContexts 是调用方显式提供的模型上下文窗口（token 数），覆盖目录值。
 	ModelContexts map[string]int
+	// ModelOutputs 是调用方显式提供的模型输出上限（token 数），覆盖目录值。
+	ModelOutputs map[string]int
+	// ModelReasoning 是调用方显式提供的模型推理档位，覆盖目录值；非空即视为
+	// 该模型具备推理能力，切换投影按此写各 agent 的推理开关。
+	ModelReasoning map[string][]string
 	// BaseMetadata 是编辑时用于保留既有元数据的内部输入；CLI/TUI 不直接设置。
 	BaseMetadata map[string]storage.LLMModelInfo
 	// RequireModelMetadata 为 true 时，最终模型集中每个模型都必须解析出
@@ -269,6 +274,10 @@ type EditProviderOptions struct {
 	// ModelContexts 非 nil 时补充或覆盖模型上下文窗口；只改元数据时 Models
 	// 保持 nil，最终模型集沿用档案原值。
 	ModelContexts map[string]int
+	// ModelOutputs / ModelReasoning 与 ModelContexts 同义：显式提供时覆盖对应
+	// 模型的输出上限 / 推理档位；nil 表示保留原值。
+	ModelOutputs   map[string]int
+	ModelReasoning map[string][]string
 	// RequireModelMetadata 与 AddProviderOptions 同义；仅在本次会改动模型集
 	// 或元数据时为 true，避免 editor 因旧档案缺元数据而无法修改其他字段。
 	RequireModelMetadata bool
@@ -323,7 +332,8 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 	if opts.CatalogProvider != nil {
 		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
 	}
-	if opts.Models != nil || opts.CatalogProvider != nil || opts.ModelContexts != nil {
+	if opts.Models != nil || opts.CatalogProvider != nil || opts.ModelContexts != nil ||
+		opts.ModelOutputs != nil || opts.ModelReasoning != nil {
 		models := opts.Models
 		if models == nil && opts.CatalogProvider == nil {
 			models = existing.Models
@@ -333,6 +343,8 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 			CatalogProvider:      entry.CatalogProvider,
 			Models:               models,
 			ModelContexts:        opts.ModelContexts,
+			ModelOutputs:         opts.ModelOutputs,
+			ModelReasoning:       opts.ModelReasoning,
 			BaseMetadata:         existing.ModelInfo,
 			RequireModelMetadata: opts.RequireModelMetadata,
 		})
@@ -520,6 +532,32 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 			metadata[id] = mergeModelMetadata(catalogMeta, metadata[id])
 		}
 	}
+	for model, output := range opts.ModelOutputs {
+		model = strings.TrimSpace(model)
+		if output <= 0 {
+			return nil, nil, nil, fmt.Errorf("model %q output limit must be a positive integer", model)
+		}
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("--model-output model %q is not in the final model set", model)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{OutputLimit: output})
+	}
+	for model, efforts := range opts.ModelReasoning {
+		model = strings.TrimSpace(model)
+		cleaned := make([]string, 0, len(efforts))
+		for _, effort := range efforts {
+			if effort = strings.TrimSpace(effort); effort != "" {
+				cleaned = append(cleaned, effort)
+			}
+		}
+		if len(cleaned) == 0 {
+			return nil, nil, nil, fmt.Errorf("model %q reasoning efforts must not be empty", model)
+		}
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("--model-reasoning model %q is not in the final model set", model)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{ReasoningEfforts: cleaned})
+	}
 	for model, contextWindow := range opts.ModelContexts {
 		model = strings.TrimSpace(model)
 		if contextWindow <= 0 {
@@ -579,6 +617,68 @@ func ParseModelContexts(specs []string) (map[string]int, error) {
 			return nil, fmt.Errorf("duplicate --model-context for model %q", model)
 		}
 		out[model] = tokens
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// ParseModelOutputs 解析重复的 --model-output <model>=<tokens> 参数。
+func ParseModelOutputs(specs []string) (map[string]int, error) {
+	out := map[string]int{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(spec, "=")
+		model = strings.TrimSpace(model)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("invalid --model-output %q: want <model>=<tokens>", raw)
+		}
+		tokens, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || tokens <= 0 {
+			return nil, fmt.Errorf("invalid --model-output %q: tokens must be a positive integer", raw)
+		}
+		if _, exists := out[model]; exists {
+			return nil, fmt.Errorf("duplicate --model-output for model %q", model)
+		}
+		out[model] = tokens
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// ParseModelReasoning 解析重复的 --model-reasoning <model>=<effort>[;<effort>...]
+// 参数。档位列表用分号分隔，避免与参数级逗号分隔符冲突。
+func ParseModelReasoning(specs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(spec, "=")
+		model = strings.TrimSpace(model)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("invalid --model-reasoning %q: want <model>=<effort>[;<effort>...]", raw)
+		}
+		var efforts []string
+		for _, effort := range strings.Split(value, ";") {
+			if effort = strings.TrimSpace(effort); effort != "" {
+				efforts = append(efforts, effort)
+			}
+		}
+		if len(efforts) == 0 {
+			return nil, fmt.Errorf("invalid --model-reasoning %q: want <model>=<effort>[;<effort>...]", raw)
+		}
+		if _, exists := out[model]; exists {
+			return nil, fmt.Errorf("duplicate --model-reasoning for model %q", model)
+		}
+		out[model] = efforts
 	}
 	if len(out) == 0 {
 		return nil, nil

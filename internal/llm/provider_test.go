@@ -54,6 +54,116 @@ func TestParseModelContexts(t *testing.T) {
 	}
 }
 
+func TestParseModelOutputs(t *testing.T) {
+	got, err := ParseModelOutputs([]string{"m1=32000", " m2 = 64000 "})
+	if err != nil {
+		t.Fatalf("ParseModelOutputs() error = %v", err)
+	}
+	if got["m1"] != 32000 || got["m2"] != 64000 {
+		t.Fatalf("outputs = %v", got)
+	}
+	if got, err := ParseModelOutputs(nil); err != nil || got != nil {
+		t.Fatalf("ParseModelOutputs(nil) = %v, %v", got, err)
+	}
+	for _, spec := range []string{"m1", "m1=nope", "m1=0", "m1=-5", "=100"} {
+		if _, err := ParseModelOutputs([]string{spec}); err == nil {
+			t.Fatalf("ParseModelOutputs(%q) unexpectedly succeeded", spec)
+		}
+	}
+	if _, err := ParseModelOutputs([]string{"m1=100", "m1=200"}); err == nil {
+		t.Fatal("duplicate model output unexpectedly succeeded")
+	}
+}
+
+func TestParseModelReasoning(t *testing.T) {
+	got, err := ParseModelReasoning([]string{"m1=low;high", " m2 = medium "})
+	if err != nil {
+		t.Fatalf("ParseModelReasoning() error = %v", err)
+	}
+	if strings.Join(got["m1"], ",") != "low,high" || strings.Join(got["m2"], ",") != "medium" {
+		t.Fatalf("reasoning = %v", got)
+	}
+	if got, err := ParseModelReasoning(nil); err != nil || got != nil {
+		t.Fatalf("ParseModelReasoning(nil) = %v, %v", got, err)
+	}
+	for _, spec := range []string{"m1", "m1=", "m1=;", "=low"} {
+		if _, err := ParseModelReasoning([]string{spec}); err == nil {
+			t.Fatalf("ParseModelReasoning(%q) unexpectedly succeeded", spec)
+		}
+	}
+	if _, err := ParseModelReasoning([]string{"m1=low", "m1=high"}); err == nil {
+		t.Fatal("duplicate model reasoning unexpectedly succeeded")
+	}
+}
+
+func TestAddProviderStoresOutputAndReasoning(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	res, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models:               []string{"custom-1"},
+		ModelContexts:        map[string]int{"custom-1": 200_000},
+		ModelOutputs:         map[string]int{"custom-1": 32_000},
+		ModelReasoning:       map[string][]string{"custom-1": {"low", "high"}},
+		RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	info := res.Entry.ModelInfo["custom-1"]
+	if info.ContextWindow != 200_000 || info.OutputLimit != 32_000 {
+		t.Fatalf("model info = %+v", info)
+	}
+	if strings.Join(info.ReasoningEfforts, ",") != "low,high" {
+		t.Fatalf("reasoning efforts = %v", info.ReasoningEfforts)
+	}
+
+	// 不在模型集内的模型要被拒绝。
+	_, err = mgr.AddProvider(AddProviderOptions{
+		Alias: "other", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 1},
+		ModelOutputs: map[string]int{"ghost": 10},
+		Force:        true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--model-output") {
+		t.Fatalf("AddProvider() error = %v, want --model-output membership error", err)
+	}
+	_, err = mgr.AddProvider(AddProviderOptions{
+		Alias: "other", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 1},
+		ModelReasoning: map[string][]string{"ghost": {"low"}},
+		Force:          true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--model-reasoning") {
+		t.Fatalf("AddProvider() error = %v, want --model-reasoning membership error", err)
+	}
+}
+
+func TestEditProviderAddsOutputAndReasoningWithoutChangingModels(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"custom-1"}, ModelContexts: map[string]int{"custom-1": 200_000},
+		RequireModelMetadata: true,
+	}); err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	res, err := mgr.EditProvider(EditProviderOptions{
+		Alias:          "main",
+		ModelOutputs:   map[string]int{"custom-1": 8_000},
+		ModelReasoning: map[string][]string{"custom-1": {"medium"}},
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	if strings.Join(res.Entry.Models, ",") != "custom-1" {
+		t.Fatalf("models = %v, want unchanged", res.Entry.Models)
+	}
+	info := res.Entry.ModelInfo["custom-1"]
+	if info.OutputLimit != 8_000 || strings.Join(info.ReasoningEfforts, ",") != "medium" || info.ContextWindow != 200_000 {
+		t.Fatalf("model info = %+v, want merged metadata", info)
+	}
+}
+
 func TestAddProviderWithCatalogAndCustomModels(t *testing.T) {
 	mgr, store, catalogPath := newTestProviderManager(t)
 	writeTestCatalog(t, catalogPath, catalogPayload, time.Now())

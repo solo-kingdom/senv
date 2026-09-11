@@ -340,14 +340,16 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 		t.Fatal("create form must expose the alias field")
 	}
 	tab = submitAIForm(t, tab, map[string]string{
-		"alias":          "second",
-		"base_url":       "https://second.example.com",
-		"api_shape":      string(llm.APIShapeAnthropic),
-		"models":         "s1, s2",
-		"model_contexts": "s1=128000, s2=200000",
-		"default_model":  "s2",
-		"credential":     aiNewCredential,
-		"api_key":        "sk-second-secret",
+		"alias":           "second",
+		"base_url":        "https://second.example.com",
+		"api_shape":       string(llm.APIShapeAnthropic),
+		"models":          "s1, s2",
+		"model_contexts":  "s1=128000, s2=200000",
+		"model_outputs":   "s1=32000",
+		"model_reasoning": "s1=low;high",
+		"default_model":   "s2",
+		"credential":      aiNewCredential,
+		"api_key":         "sk-second-secret",
 	})
 	if tab.form != nil {
 		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)
@@ -358,6 +360,9 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 	}
 	if p.APIShape != string(llm.APIShapeAnthropic) || p.DefaultModel != "s2" || len(p.Models) != 2 {
 		t.Fatalf("unexpected provider: %+v", p)
+	}
+	if got := p.ModelInfo["s1"]; got.OutputLimit != 32000 || strings.Join(got.ReasoningEfforts, ";") != "low;high" {
+		t.Fatalf("s1 model info = %+v, want output/reasoning from form", got)
 	}
 	if p.BaseURL != "https://second.example.com/v1" {
 		t.Fatalf("BaseURL = %q", p.BaseURL)
@@ -824,7 +829,7 @@ func TestAITabReloadKeepsDataVisibleAndReloads(t *testing.T) {
 	}
 	runAITabLoad(t, tab)
 	if !tab.loaded {
-		t.Fatal("ai tab should be loaded again after the reload lands")
+		t.Fatal("ai tab should be loaded after the reload lands")
 	}
 	if len(tab.providers) != 1 {
 		t.Fatalf("providers = %d after reload, want 1", len(tab.providers))

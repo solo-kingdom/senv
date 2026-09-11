@@ -660,6 +660,16 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			placeholder: "m1=1000000（自定义模型缺少目录元数据时必填）",
 		},
 		formField{
+			key: "model_outputs", label: "模型输出", kind: formText,
+			value:       formatModelOutputs(base.Models, base.ModelInfo),
+			placeholder: "m1=32000（输出上限，可选）",
+		},
+		formField{
+			key: "model_reasoning", label: "模型推理", kind: formText,
+			value:       formatModelReasoning(base.Models, base.ModelInfo),
+			placeholder: "m1=low;high（推理档位，可选）",
+		},
+		formField{
 			key: "default_model", label: "默认模型", kind: formText, value: base.DefaultModel,
 			placeholder: "m1（可选）",
 		},
@@ -730,6 +740,14 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if err != nil {
 		return reopen("model_contexts", err)
 	}
+	modelOutputs, err := llm.ParseModelOutputs(parseModelList(values["model_outputs"]))
+	if err != nil {
+		return reopen("model_outputs", err)
+	}
+	modelReasoning, err := llm.ParseModelReasoning(parseModelList(values["model_reasoning"]))
+	if err != nil {
+		return reopen("model_reasoning", err)
+	}
 	if catalog == "" && len(models) == 0 {
 		return reopen("models", fmt.Errorf("模型集不能为空：填写模型或目录 provider"))
 	}
@@ -761,6 +779,8 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			CatalogProvider:      catalog,
 			Models:               models,
 			ModelContexts:        modelContexts,
+			ModelOutputs:         modelOutputs,
+			ModelReasoning:       modelReasoning,
 			RequireModelMetadata: true,
 			DefaultModel:         defaultModel,
 			APIShape:             apiShape,
@@ -794,11 +814,19 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		DefaultModel: &defaultModel,
 	}
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
+	outputsChanged := strings.TrimSpace(values["model_outputs"]) != strings.TrimSpace(formatModelOutputs(existing.Models, existing.ModelInfo))
+	reasoningChanged := strings.TrimSpace(values["model_reasoning"]) != strings.TrimSpace(formatModelReasoning(existing.Models, existing.ModelInfo))
 	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider || contextsChanged {
 		opts.Models = models
 		opts.CatalogProvider = &catalog
 		opts.ModelContexts = modelContexts
 		opts.RequireModelMetadata = true
+	}
+	if outputsChanged {
+		opts.ModelOutputs = modelOutputs
+	}
+	if reasoningChanged {
+		opts.ModelReasoning = modelReasoning
 	}
 	if credential == aiNewCredential {
 		opts.APIKey = apiKey
@@ -868,6 +896,10 @@ func providerErrorField(err error) string {
 		return "api_key"
 	case strings.Contains(msg, "context"):
 		return "model_contexts"
+	case strings.Contains(msg, "output"):
+		return "model_outputs"
+	case strings.Contains(msg, "reasoning"):
+		return "model_reasoning"
 	case strings.Contains(msg, "model"):
 		return "models"
 	case strings.Contains(msg, "catalog"):
@@ -911,8 +943,16 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 	}
 	for _, m := range p.Models {
 		line := "  " + m
-		if info, ok := p.ModelInfo[m]; ok && info.ContextWindow > 0 {
-			line += fmt.Sprintf("  context=%d", info.ContextWindow)
+		if info, ok := p.ModelInfo[m]; ok {
+			if info.ContextWindow > 0 {
+				line += fmt.Sprintf("  context=%d", info.ContextWindow)
+			}
+			if info.OutputLimit > 0 {
+				line += fmt.Sprintf("  output=%d", info.OutputLimit)
+			}
+			if len(info.ReasoningEfforts) > 0 {
+				line += "  reasoning=" + strings.Join(info.ReasoningEfforts, ";")
+			}
 		}
 		lines = append(lines, line)
 	}
@@ -1047,6 +1087,29 @@ func formatModelContexts(models []string, info map[string]storage.LLMModelInfo) 
 	for _, model := range models {
 		if meta, ok := info[model]; ok && meta.ContextWindow > 0 {
 			parts = append(parts, fmt.Sprintf("%s=%d", model, meta.ContextWindow))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatModelOutputs 把档案里的输出上限渲染回表单字段（与 model_contexts 同风格）。
+func formatModelOutputs(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && meta.OutputLimit > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", model, meta.OutputLimit))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatModelReasoning 把档案里的推理档位渲染回表单字段；档位用分号分隔，
+// 避免与字段级逗号分隔符冲突。
+func formatModelReasoning(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && len(meta.ReasoningEfforts) > 0 {
+			parts = append(parts, model+"="+strings.Join(meta.ReasoningEfforts, ";"))
 		}
 	}
 	return strings.Join(parts, ", ")
