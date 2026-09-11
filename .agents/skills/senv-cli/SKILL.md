@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.5"
+  version: "1.7"
 ---
 
 # senv：agent 使用指南
@@ -29,19 +29,21 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - senv 解密需要密码，提示走 TTY。**管道/脚本环境里任何可能触发密码提示的命令都会卡住**——执行前先 `senv session status` 确认有活跃会话（它同时给出状态、原因与下一步）；没有会话就停下来让用户 `senv session start`。会话只是临近到期而非失效时，可用 `senv session refresh` 免密延长（见「会话（session）」）；agent 不要尝试替用户输密码。
 - 需要 env 注入 shell 时用 `eval "$(senv env export --if-session)"`：无会话时静默退出 0，不会卡。
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
-- headless/CI 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。
+- Linux 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱并警告，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
 - `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
 ## 会话（session）
 
 - **按 vault 分槽**：每个 data path（Abs+Clean+已存在前缀解析符号链接后）对应一个缓存槽，槽名是路径 hash 的 16 位十六进制。切 vault 不会覆盖另一个 vault 的会话；旧版本的单槽缓存按 hash 匹配收养，不匹配则保留并提示一次 `senv session clear --all`。
-- **状态四态**：`Active` / `Expired`（duration 到期）/ `Invalidated`（重启后 `restart`、槽不匹配）/ `Unverifiable`（boot ID 读不到、缓存损坏、同槽多份）。`senv session status` 输出状态、原因、剩余时间与下一步。
+- **状态四态**：`Active` / `Expired`（duration 到期）/ `Invalidated`（重启后 `restart`、槽不匹配）/ `Unverifiable`（boot ID 读不到、缓存损坏）。`senv session status` 输出状态、原因、剩余时间（Active 还给出 `Session cap` 绝对上限剩余）与下一步。
 - **续期**：`duration` 会话在业务命令复用 key 时滑动延长，但不超过绝对上限 `session.max_lifetime`（默认 24h）；`restart` 会话不看时间、只按 boot ID 判定，因此 `duration` 会话可跨重启存活到到期。只读命令（`session status`、`doctor`）不续期。
 - **`senv session refresh`**：只用缓存 key 延长，**从不提示密码**；过期/失效/不可判定时报原因与下一步，不新建会话、不删缓存。agent 需要延长会话时优先用它。
 - **`senv session start`**：已有有效会话时免密续期并保留原 timeout 策略；否则提示一次密码写入新会话。
 - **`senv session clear`**：默认只清当前 vault；`--all` 清所有槽位加旧单槽残留。
-- **不可判定不销毁**：`Unverifiable` 的缓存可能是唯一能解密数据的钥匙，默认保留不清理；排查原因后重试，确要丢弃才用 `senv session clear --all`。
+- **只有到期才自动清缓存**：`Expired` 才清；`Invalidated` 与 `Unverifiable` 一律保留，因为缓存可能是另一个 vault 的唯一恢复钥匙。需要丢弃时显式 `senv session clear` / `--all`。
+- **多缓存新者优先**：同一槽位同时有平台存储与逃生舱两份缓存时，按 `created_at` 选新的一份完成校验并复用，保留另一份；时间戳完全相同才报错要求 `senv session clear --all`。被选中的缓存仍须过 salt/key 校验。
+- **重认证根因**：需要重新输密码时，错误给出根因（`expired`/`restarted`/`vault-changed`/`multiple-cache`/`unreadable`/`metadata-replaced`）**加一条确定动作**。`multiple-cache` 与 `unreadable` 不会引导去输密码（输密码也修不好），agent 遇到时应报告根因而不是尝试 `session start`。
 - **MCP 绑定到 vault**：每个请求按 `keyHash+saltHash+dataPathHash` 校验，session ID 只进审计。**重新 `session start` 不再撤销正在运行的 MCP**；`session clear`、salt 变化（rekey/换密码）才会拒绝，需要时重启 MCP server。
 
 ## 耗时日志（perf log）
@@ -53,12 +55,13 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。
 
-- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname、provider alias，不匹配值/私钥/凭据）；`?` 键位总览；`q` 退出（仍有待推送时先提示一次）。
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname、provider alias、MCP 档案 alias/command，不匹配值/私钥/凭据/MCP env 值）；`?` 键位总览；`q` 退出（仍有待推送时先提示一次）。
 - 编辑面：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名（分组栏改分组/条目栏改 key）、`a`/`x` 激活停用分组、`+` 新建分组、`y` 复制；Text/Config `e` 走 vim、`n`/`d`、`r` 重命名；Text 另有 `i` 从文件导入、`o` 导出；Config 另有 `m` 编辑分组与描述、`x` 导出、`i`/`u`（`I`/`U` 批量）安装卸载（需在计划页确认）。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。
 - SSH Tab：两栏（host / keypair）。host 栏 `n` 新建、`e` 表单编辑、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段；keypair 栏 `n`/`i` 导入、`R` 重命名（自动联动 host `identityKey`）、`d` 删除、`m` materialize、`x` 导出全部。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`。
-- AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`m` 对已指向的 agent 仅换默认模型，候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、模型上下文、默认模型与凭据来源；模型上下文用 `<model>=<tokens>` 逗号分隔。凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。
-- 只读详情：Config/SSH/AI 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
+- AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`m` 对已指向的 agent 仅换默认模型，候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、模型上下文、模型输出、模型推理、默认推理档、输入模态、默认模型与凭据来源；模型上下文用 `<model>=<tokens>` 逗号分隔，默认推理档用 `<model>=<effort>` 或集合级单一档位，输入模态用 `<model>=<mod>[,<mod>...]`。凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。详情弹层展示各模型已保存的 context / output / reasoning / 默认推理档 / 输入模态。
+- MCP Tab：两栏（档案 / 导出目标 agent，agent 集合与 `senv mcp export` 相同，含 claude-desktop/cursor）。档案栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除（不自动撤回）、`enter` 详情；`x`/`u` 当前档案 × 当前 agent，`X`/`U` 当前档案 × 全部 agent。计划页 `y` 确认 / `esc` 取消 / `F` 覆盖漂移；撤回被改过的条目逐条 `y/n`。列表/详情/计划不渲染 env 字面量；`$EDITOR` 是 TUI 内唯一解密面。`mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
+- 只读详情：Config/SSH/AI/MCP 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
 - 同步状态：server 模式且未关闭 `auto_sync` 时底部常驻「N 条待推送 / 已同步 时间」；启动不等待网络——本地数据先行渲染，远端拉取在后台完成（2 秒预算，`--refresh` 绕过节流窗口），应用了变更会提示「已从 server 更新 N 条」并自动更新各标签；写操作后后台异步推送（2 秒预算）；git 模式不显示也不拉取。
 - TUI 写操作会进本机操作审计（`senv audit` 可见），target 只含 group/key/name 等标识，不含值。
 
@@ -83,13 +86,13 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
 - 档案与凭据存 vault：`senv ai provider add/edit/list/show/remove`。`show`/`list` 不返回凭据明文；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。
-- 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。输出上限与推理能力可显式设置：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位分号分隔；非空即视为推理模型），TUI 表单对应「模型输出」「模型推理」字段。`show`/MCP 的 `model_info` 展示已保存的 context window/output/reasoning。
+- 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。输出上限、推理档位、默认推理档与输入模态可显式设置：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位分号分隔；非空即视为推理模型）、`--model-default-reasoning <model>=<effort>`、`--model-modalities <model>=<mod>[,<mod>...]`，以及集合级 `--default-reasoning <effort>`（只填充有档位且尚未解析出默认档的模型）。有档位的模型必须声明默认推理档，且该值必须属于档位列表；senv 不从列表首项或模型名推断。TUI 表单对应「模型输出」「模型推理」「默认推理档」「输入模态」字段。`show`/MCP 的 `model_info` 展示已保存的 context window/output/reasoning/default_reasoning/input_modalities。
 - `senv ai provider edit <alias>` 就地编辑：alias 是主键不可改；只改传入的字段，省略的保持原值。轮换自有凭据用 `--rotate-key`（TTY）或 `--api-key-stdin`；改走外部引用用 `--key-ref`（会删除原自有凭据）。任一步失败不留部分更新。
 - 接入地址统一按 OpenAI 兼容形态落库：`add`/`edit` 会补末段 `/v1` 并收敛尾斜杠，改写时提示；已归一的输入静默通过。`list`/`show` 展示的是落库值。
 - `--api-shape`（`openai-chat` | `openai-responses` | `anthropic`）可选声明接口形态；`--api-shape ""` 清除回推断。留空时 `switch` 按目标 agent 协议族归一接入地址；声明后成为兼容判据，形态与目标 agent 协议族不匹配时 `switch` 拒绝写文件并提示「改档案形态或换 provider」。
 - `senv ai switch <claude-code|codex|kimi|pi|opencode> <provider> [--models m1,m2] [--default-model D]` 会事务式改写目标 coding agent 的原生配置并保存本机指向。**省略 `--models` 即全选 Provider 模型集**，显式给出时保序（逗号分隔或重复给出均可，去重保序）；`--default-model` 只覆盖本次写入的起始模型，**不回写档案**。`--model` 已移除：出现即以非 0 退出并提示替代用法（参数校验发生在解锁与写盘之前）。接入地址按 agent 协议族写回：claude-code（Anthropic Messages）剥离末段 `/v1`，其余保持带版本形态；命令输出 provider、默认模型、模型集条数与实际写入的接入地址。切换后多数 agent 配置中会出现解密后的 API key（文件 0600）；Codex 只写环境变量名。
 - Agent 模型集按各 agent 原生机制落盘，使 agent 自己的模型选择器能在集合内换模型：claude-code 写 `modelPicker`（`replaceBuiltInOptions: true`，每行带 `behavesAs` 映射到已知 Claude 模型，避免新版本把自定义模型当未知模型告警）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models."senv-<alias>/<m>"]`、pi 写 `providers.<id>.models[]`（若 `settings.json` 已有非空 `enabledModels`，同时把本次默认模型置顶并加入 `senv-<alias>/*`，否则 PI 会优先选 scope 首个模型而不是默认模型）、opencode 写 `provider.<id>.models{}`。模型集超过 20 个时命令提示可用 `--models` 缩小。
-- 模型元数据随切换投影进各 agent，避免落到内置默认值（pi 缺省 context 128k/output 16k、opencode 缺省 limit 0、kimi 无 thinking）：context window 写 pi `contextWindow`、opencode `limit.context`、kimi `max_context_size`、codex catalog `context_window`；输出上限写 pi `maxTokens`、opencode `limit.output`、kimi `max_output_size`；推理能力写 pi/opencode `reasoning: true`、kimi `capabilities=["thinking"]`+`support_efforts`、codex `supported_reasoning_levels` 与 `default_reasoning_level`。未知字段一律省略而不是写 0/false；codex catalog 除外——没有推理档位时必须写单档 `none`（并设 `default_reasoning_level`），空数组会让 Codex `/model` 选择器回车无法退出。
+- 模型元数据随切换投影进各 agent，避免落到内置默认值（pi 缺省 context 128k/output 16k、opencode 缺省 limit 0、kimi 无 thinking）：context window 写 pi `contextWindow`、opencode `limit.context`、kimi `max_context_size`、codex catalog `context_window`；输出上限写 pi `maxTokens`、opencode `limit.output`、kimi `max_output_size`；推理能力写 pi/opencode `reasoning: true`、kimi `capabilities=["thinking"]`+`support_efforts`、codex `supported_reasoning_levels` 与声明的 `default_reasoning_level`；输入模态写 Codex `input_modalities`、kimi `image_in`/`video_in`、pi `input`、opencode `modalities.input`。未知字段一律省略而不是写 0/false；codex catalog 除外——无档位或旧档案缺默认推理档时必须写单档 `none`（并设 `default_reasoning_level`），缺输入模态写 `["text"]`，空数组会让 Codex `/model` 选择器回车无法退出。不从档位列表首项推断默认档。旧档案缺声明仍可切换、不回写 vault，输出会提示可 `edit` 补全。
 - 档案显式声明的 `api_shape` 还决定 OpenAI 兼容族内的线协议：pi `api` 字段与 kimi provider `type` 在 `openai-completions`/`openai`（chat）与 `openai-responses`/`openai_responses`（responses）间选择，codex `wire_api` 在声明 `openai-chat` 时写 `chat`，opencode 在声明 `openai-responses` 时用 `@ai-sdk/openai`；未声明时维持各自既有默认。
 - 切换会清理上一次 senv 写入、本次不再需要的条目，并删除不再被任何 agent 指向的 `senv-<alias>.json` catalog；**用户自有条目与自有文件既不改也不删**。缩集或换 provider 后重跑一次 `senv ai switch` 即可对齐。
 - `senv ai status` 免解锁可用，显示 `provider / 默认模型（N 个模型）` 与切换时间；vault 已解锁且指针里的模型已不在档案中（档案缩集/改名）时附漂移提示，判定只看指针与档案、**不解析 agent 配置文件**，档案不可得时省略提示。TUI AI Tab 的 `m` 是「仅换默认模型」入口（限定在已写入的 Agent 模型集内）。
@@ -104,7 +107,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 漂移与覆盖：senv 用本机台账 `~/.config/senv/mcp-exports.json`（不进 vault、不同步）判断条目是否由自己写入；目标条目被本地改过或是别人写的，默认拒绝覆盖，需 `--force`。台账损坏时按「全部外部条目」处理。
 - 撤回：`senv mcp unexport --agent <id>|--all [alias...]`，依据台账移除；与 senv 写入内容一致的直接删除，被本地改过的需逐条确认。删除档案不会自动撤回已导出的条目。
 - `command` 原样写入，不做绝对路径归一（`npx`/`uvx` 依赖 agent 自身 PATH）；不透传 `disabled`/`autoApprove` 等 agent 特有键。
-- MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值与 env 键名）；导出与写入只能在 CLI 做。
+- MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值与 env 键名）；导出与写入走 CLI 或 TUI MCP Tab，不能通过 MCP 工具做。
 
 ## server 模式
 

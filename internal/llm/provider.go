@@ -108,10 +108,19 @@ type AddProviderOptions struct {
 	// ModelReasoning 是调用方显式提供的模型推理档位，覆盖目录值；非空即视为
 	// 该模型具备推理能力，切换投影按此写各 agent 的推理开关。
 	ModelReasoning map[string][]string
+	// ModelDefaultReasoning 是调用方显式提供的 per-model 默认推理档，覆盖档案
+	// 已有值、集合级声明与目录。
+	ModelDefaultReasoning map[string]string
+	// DefaultReasoning 是集合级默认推理档，只填充「有档位且尚未解析出默认档」
+	// 的模型，不盖到无档位模型上。
+	DefaultReasoning string
+	// ModelModalities 是调用方显式提供的输入模态，覆盖档案已有值与目录。
+	ModelModalities map[string][]string
 	// BaseMetadata 是编辑时用于保留既有元数据的内部输入；CLI/TUI 不直接设置。
 	BaseMetadata map[string]storage.LLMModelInfo
 	// RequireModelMetadata 为 true 时，最终模型集中每个模型都必须解析出
-	// ContextWindow；旧档案读取/不影响模型集的编辑保持 false。
+	// ContextWindow；有推理档位的模型还必须解析出默认推理档。旧档案读取/
+	// 不影响模型集的编辑保持 false。
 	RequireModelMetadata bool
 	DefaultModel         string
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
@@ -276,8 +285,12 @@ type EditProviderOptions struct {
 	ModelContexts map[string]int
 	// ModelOutputs / ModelReasoning 与 ModelContexts 同义：显式提供时覆盖对应
 	// 模型的输出上限 / 推理档位；nil 表示保留原值。
-	ModelOutputs   map[string]int
-	ModelReasoning map[string][]string
+	ModelOutputs          map[string]int
+	ModelReasoning        map[string][]string
+	ModelDefaultReasoning map[string]string
+	// DefaultReasoning 非 nil 时应用集合级默认推理档（空字符串表示不填充）。
+	DefaultReasoning *string
+	ModelModalities  map[string][]string
 	// RequireModelMetadata 与 AddProviderOptions 同义；仅在本次会改动模型集
 	// 或元数据时为 true，避免 editor 因旧档案缺元数据而无法修改其他字段。
 	RequireModelMetadata bool
@@ -333,21 +346,29 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
 	}
 	if opts.Models != nil || opts.CatalogProvider != nil || opts.ModelContexts != nil ||
-		opts.ModelOutputs != nil || opts.ModelReasoning != nil {
+		opts.ModelOutputs != nil || opts.ModelReasoning != nil ||
+		opts.ModelDefaultReasoning != nil || opts.DefaultReasoning != nil ||
+		opts.ModelModalities != nil {
 		models := opts.Models
 		if models == nil && opts.CatalogProvider == nil {
 			models = existing.Models
 		}
-		finalModels, modelInfo, modelWarnings, err := m.assembleModels(AddProviderOptions{
-			CatalogPath:          opts.CatalogPath,
-			CatalogProvider:      entry.CatalogProvider,
-			Models:               models,
-			ModelContexts:        opts.ModelContexts,
-			ModelOutputs:         opts.ModelOutputs,
-			ModelReasoning:       opts.ModelReasoning,
-			BaseMetadata:         existing.ModelInfo,
-			RequireModelMetadata: opts.RequireModelMetadata,
-		})
+		addOpts := AddProviderOptions{
+			CatalogPath:           opts.CatalogPath,
+			CatalogProvider:       entry.CatalogProvider,
+			Models:                models,
+			ModelContexts:         opts.ModelContexts,
+			ModelOutputs:          opts.ModelOutputs,
+			ModelReasoning:        opts.ModelReasoning,
+			ModelDefaultReasoning: opts.ModelDefaultReasoning,
+			ModelModalities:       opts.ModelModalities,
+			BaseMetadata:          existing.ModelInfo,
+			RequireModelMetadata:  opts.RequireModelMetadata,
+		}
+		if opts.DefaultReasoning != nil {
+			addOpts.DefaultReasoning = strings.TrimSpace(*opts.DefaultReasoning)
+		}
+		finalModels, modelInfo, modelWarnings, err := m.assembleModels(addOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -481,6 +502,9 @@ func ValidateCredentialRef(ref string) error {
 // assembleModels 装配模型集：目录模型 ∪ 自定义模型，去重升序，不得为空。
 // 每个模型的 context window 优先取显式 ModelContexts，其次取档案已有元数据，
 // 最后取 models.dev 目录；RequireModelMetadata 为 true 时缺一项即报错。
+// 默认推理档优先级：显式 per-model > 档案已有 > 集合级 DefaultReasoning > 目录。
+// 集合级只填充有档位且尚未解析出默认档的模型；有档位缺默认档在
+// RequireModelMetadata 或本次改动档位/默认档时拒绝。senv 不从档位列表推断。
 func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map[string]storage.LLMModelInfo, []string, error) {
 	var warnings []string
 	set := map[string]struct{}{}
@@ -527,8 +551,14 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 
 	// 先读目录元数据，再叠加档案里已有的值和调用方显式值。显式值优先，
 	// 保证用户可以用 --model-context 修正目录缺失或过时的数据。
+	// 目录默认推理档先抽出，装配末尾再按优先级填入，避免盖过集合级声明。
+	catalogDefaultReasoning := map[string]string{}
 	if opts.CatalogProvider != "" {
 		for id, catalogMeta := range LoadModelMetadata(opts.CatalogPath, opts.CatalogProvider, ids) {
+			if catalogMeta.DefaultReasoning != "" {
+				catalogDefaultReasoning[id] = catalogMeta.DefaultReasoning
+				catalogMeta.DefaultReasoning = ""
+			}
 			metadata[id] = mergeModelMetadata(catalogMeta, metadata[id])
 		}
 	}
@@ -568,6 +598,41 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 		}
 		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{ContextLimit: contextWindow})
 	}
+	for model, effort := range opts.ModelDefaultReasoning {
+		model = strings.TrimSpace(model)
+		effort = strings.TrimSpace(effort)
+		if effort == "" {
+			return nil, nil, nil, fmt.Errorf("model %q default reasoning must not be empty", model)
+		}
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("--model-default-reasoning model %q is not in the final model set", model)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{DefaultReasoning: effort})
+	}
+	for model, mods := range opts.ModelModalities {
+		model = strings.TrimSpace(model)
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("--model-modalities model %q is not in the final model set", model)
+		}
+		cleaned, err := normalizeInputModalities(mods)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("model %q: %w", model, err)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{InputModalities: cleaned})
+	}
+
+	collectionDefault := strings.TrimSpace(opts.DefaultReasoning)
+	for _, id := range ids {
+		meta := metadata[id]
+		if meta.DefaultReasoning == "" && len(meta.ReasoningEfforts) > 0 {
+			if collectionDefault != "" {
+				meta.DefaultReasoning = collectionDefault
+			} else if catalogDefaultReasoning[id] != "" {
+				meta.DefaultReasoning = catalogDefaultReasoning[id]
+			}
+			metadata[id] = meta
+		}
+	}
 
 	var missing []string
 	if opts.RequireModelMetadata {
@@ -584,6 +649,33 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 		}
 		return nil, nil, nil, fmt.Errorf(
 			"model(s) %s are missing context window metadata; pass --model-context <model>=<tokens>, or use a catalog model whose models.dev entry includes limit.context",
+			strings.Join(quoted, ", "))
+	}
+
+	requireDefault := opts.RequireModelMetadata ||
+		len(opts.ModelReasoning) > 0 || len(opts.ModelDefaultReasoning) > 0 || collectionDefault != ""
+	var missingDefault []string
+	for _, id := range ids {
+		meta := metadata[id]
+		if meta.DefaultReasoning == "" {
+			if requireDefault && len(meta.ReasoningEfforts) > 0 {
+				missingDefault = append(missingDefault, id)
+			}
+			continue
+		}
+		if len(meta.ReasoningEfforts) == 0 || !slices.Contains(meta.ReasoningEfforts, meta.DefaultReasoning) {
+			return nil, nil, nil, fmt.Errorf(
+				"model %q default reasoning %q is not in reasoning efforts %s",
+				id, meta.DefaultReasoning, strings.Join(meta.ReasoningEfforts, ";"))
+		}
+	}
+	if len(missingDefault) > 0 {
+		quoted := make([]string, len(missingDefault))
+		for i, id := range missingDefault {
+			quoted[i] = fmt.Sprintf("%q", id)
+		}
+		return nil, nil, nil, fmt.Errorf(
+			"model(s) %s declare reasoning efforts but have no default reasoning; pass --model-default-reasoning <model>=<effort> or --default-reasoning <effort>",
 			strings.Join(quoted, ", "))
 	}
 
@@ -684,6 +776,93 @@ func ParseModelReasoning(specs []string) (map[string][]string, error) {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// ParseModelDefaultReasoning 解析重复的 --model-default-reasoning <model>=<effort>。
+func ParseModelDefaultReasoning(specs []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(spec, "=")
+		model = strings.TrimSpace(model)
+		effort := strings.TrimSpace(value)
+		if !ok || model == "" || effort == "" {
+			return nil, fmt.Errorf("invalid --model-default-reasoning %q: want <model>=<effort>", raw)
+		}
+		if _, exists := out[model]; exists {
+			return nil, fmt.Errorf("duplicate --model-default-reasoning for model %q", model)
+		}
+		out[model] = effort
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+var knownInputModalities = map[string]struct{}{
+	"text": {}, "image": {}, "audio": {}, "video": {}, "pdf": {},
+}
+
+// ParseModelModalities 解析重复的 --model-modalities <model>=<mod>[,<mod>...]
+// 参数。模态以逗号或分号分隔。
+func ParseModelModalities(specs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		model, value, ok := strings.Cut(spec, "=")
+		model = strings.TrimSpace(model)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("invalid --model-modalities %q: want <model>=<mod>[,<mod>...]", raw)
+		}
+		var mods []string
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ';' }) {
+			if part = strings.TrimSpace(part); part != "" {
+				mods = append(mods, part)
+			}
+		}
+		cleaned, err := normalizeInputModalities(mods)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --model-modalities %q: %w", raw, err)
+		}
+		if _, exists := out[model]; exists {
+			return nil, fmt.Errorf("duplicate --model-modalities for model %q", model)
+		}
+		out[model] = cleaned
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func normalizeInputModalities(mods []string) ([]string, error) {
+	cleaned := make([]string, 0, len(mods))
+	seen := map[string]struct{}{}
+	for _, mod := range mods {
+		mod = strings.ToLower(strings.TrimSpace(mod))
+		if mod == "" {
+			continue
+		}
+		if _, ok := knownInputModalities[mod]; !ok {
+			return nil, fmt.Errorf("invalid input modality %q; want text, image, audio, video, or pdf", mod)
+		}
+		if _, dup := seen[mod]; dup {
+			continue
+		}
+		seen[mod] = struct{}{}
+		cleaned = append(cleaned, mod)
+	}
+	if len(cleaned) == 0 {
+		return nil, fmt.Errorf("input modalities must not be empty")
+	}
+	return cleaned, nil
 }
 
 // GetProvider 加载单个档案；不存在时返回带友好文案的错误。

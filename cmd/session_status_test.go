@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -97,5 +98,116 @@ func TestSessionStatusReportsFourStates(t *testing.T) {
 		!strings.Contains(out, "Cache: retained (not deleted)") ||
 		!strings.Contains(out, "senv session clear --all") {
 		t.Fatalf("unverifiable output = %q", out)
+	}
+}
+
+// TestSessionStatusShowsCapAndRetains covers ADR-0017 visibility: an active
+// duration session names its absolute cap, and non-reusable states say the
+// cache is retained plus exactly one next action.
+func TestSessionStatusShowsCapAndRetains(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+	useProjectPaths(t, cfg, data)
+
+	sm := session.NewManager(cfg, data)
+	defer sm.Close()
+	timeout, _ := session.ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	active := captureStdout(t, func() {
+		if err := sessionStatusCmd.RunE(sessionStatusCmd, nil); err != nil {
+			t.Errorf("session status: %v", err)
+		}
+	})
+	if !strings.Contains(active, "Session cap:") {
+		t.Fatalf("active output must name the absolute cap: %q", active)
+	}
+
+	// Rebooted restart session: retained and not auto-cleared.
+	rewriteCurrentVaultCache(t, func(doc map[string]any) {
+		doc["timeout_type"] = string(session.TimeoutRestart)
+		doc["boot_id"] = "some-other-boot"
+		doc["expires_at"] = time.Time{}.UTC().Format(time.RFC3339Nano)
+	})
+	invalidated := captureStdout(t, func() {
+		if err := sessionStatusCmd.RunE(sessionStatusCmd, nil); err != nil {
+			t.Errorf("session status: %v", err)
+		}
+	})
+	if !strings.Contains(invalidated, "Cache: retained") {
+		t.Fatalf("invalidated output must say the cache is retained: %q", invalidated)
+	}
+	if strings.Contains(invalidated, "will be cleared") {
+		t.Fatalf("invalidated output must not promise a clear: %q", invalidated)
+	}
+	if _, cache, err := sm.PeekCachedKey(); err != nil || cache == nil {
+		t.Fatalf("status must not clear the invalidated cache: cache=%v err=%v", cache, err)
+	}
+}
+
+// TestSessionRefreshErrorMessages asserts refresh reports a cause plus exactly
+// one next action for expired / invalidated / unverifiable sessions.
+func TestSessionRefreshErrorMessages(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+	useProjectPaths(t, cfg, data)
+
+	sm := session.NewManager(cfg, data)
+	defer sm.Close()
+	timeout, _ := session.ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	rewriteCurrentVaultCache(t, func(doc map[string]any) {
+		doc["expires_at"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)
+	})
+	err := sessionRefreshCmd.RunE(sessionRefreshCmd, nil)
+	if err == nil {
+		t.Fatal("refresh on expired session must fail")
+	}
+	if !strings.Contains(err.Error(), "next: senv session start") {
+		t.Fatalf("expired refresh error = %q, want single next action", err)
+	}
+	if !strings.Contains(err.Error(), "cache retained") {
+		t.Fatalf("expired refresh error = %q, want cache retained", err)
+	}
+}
+
+// TestSessionRefreshNoMutation asserts refresh never mutates or removes the
+// cache on non-reusable states, and never touches stdin for a prompt.
+func TestSessionRefreshNoMutation(t *testing.T) {
+	isolateSessionCache(t)
+	cfg, data := newInitializedProject(t, t.TempDir(), "correct-secret")
+	useProjectPaths(t, cfg, data)
+
+	sm := session.NewManager(cfg, data)
+	defer sm.Close()
+	timeout, _ := session.ParseTimeout("restart")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	before, cacheBefore, err := sm.PeekCachedKey()
+	if err != nil || cacheBefore == nil {
+		t.Fatalf("peek before: cache=%v err=%v", cacheBefore, err)
+	}
+
+	// Point the cache at another vault so it classifies as invalidated.
+	rewriteCurrentVaultCache(t, func(doc map[string]any) {
+		doc["data_path_hash"] = "ffffffffffffffff"
+	})
+
+	if err := sessionRefreshCmd.RunE(sessionRefreshCmd, nil); err == nil {
+		t.Fatal("refresh on invalidated session must fail")
+	}
+
+	after, cacheAfter, err := sm.PeekCachedKey()
+	if err != nil || cacheAfter == nil {
+		t.Fatalf("refresh must not delete the cache: cache=%v err=%v", cacheAfter, err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("refresh must not rewrite the cached key")
 	}
 }

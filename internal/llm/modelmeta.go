@@ -20,6 +20,8 @@ type ModelMetadata struct {
 	ContextLimit     int
 	OutputLimit      int
 	ReasoningEfforts []string
+	DefaultReasoning string
+	InputModalities  []string
 }
 
 // DefaultModelCatalogPath 返回与指针文件同级的目录缓存路径（senv 配置目录
@@ -41,9 +43,13 @@ type catalogModelEntry struct {
 		Output  int `json:"output"`
 	} `json:"limit"`
 	ReasoningOptions []struct {
-		Type   string   `json:"type"`
-		Values []string `json:"values"`
+		Type    string   `json:"type"`
+		Values  []string `json:"values"`
+		Default string   `json:"default"`
 	} `json:"reasoning_options"`
+	Modalities struct {
+		Input []string `json:"input"`
+	} `json:"modalities"`
 }
 
 // LoadModelMetadata 读取目录缓存，返回 catalogProvider 下给定模型的元数据。
@@ -74,16 +80,20 @@ func LoadModelMetadata(catalogPath, catalogProvider string, modelIDs []string) m
 			continue
 		}
 		meta := ModelMetadata{
-			Name:         entry.Name,
-			Description:  entry.Description,
-			ContextLimit: entry.Limit.Context,
-			OutputLimit:  entry.Limit.Output,
+			Name:            entry.Name,
+			Description:     entry.Description,
+			ContextLimit:    entry.Limit.Context,
+			OutputLimit:     entry.Limit.Output,
+			InputModalities: append([]string(nil), entry.Modalities.Input...),
 		}
 		for _, option := range entry.ReasoningOptions {
 			if option.Type != "effort" || len(option.Values) == 0 {
 				continue
 			}
 			meta.ReasoningEfforts = append(meta.ReasoningEfforts, option.Values...)
+			if meta.DefaultReasoning == "" && option.Default != "" {
+				meta.DefaultReasoning = option.Default
+			}
 		}
 		out[id] = meta
 	}
@@ -115,6 +125,8 @@ func modelMetadataFromStorage(info storage.LLMModelInfo) ModelMetadata {
 		ContextLimit:     info.ContextWindow,
 		OutputLimit:      info.OutputLimit,
 		ReasoningEfforts: append([]string(nil), info.ReasoningEfforts...),
+		DefaultReasoning: info.DefaultReasoning,
+		InputModalities:  append([]string(nil), info.InputModalities...),
 	}
 }
 
@@ -125,6 +137,8 @@ func storageModelInfo(meta ModelMetadata) storage.LLMModelInfo {
 		ContextWindow:    meta.ContextLimit,
 		OutputLimit:      meta.OutputLimit,
 		ReasoningEfforts: append([]string(nil), meta.ReasoningEfforts...),
+		DefaultReasoning: meta.DefaultReasoning,
+		InputModalities:  append([]string(nil), meta.InputModalities...),
 	}
 }
 
@@ -144,10 +158,17 @@ func mergeModelMetadata(base, override ModelMetadata) ModelMetadata {
 	if len(override.ReasoningEfforts) > 0 {
 		base.ReasoningEfforts = append([]string(nil), override.ReasoningEfforts...)
 	}
+	if override.DefaultReasoning != "" {
+		base.DefaultReasoning = override.DefaultReasoning
+	}
+	if len(override.InputModalities) > 0 {
+		base.InputModalities = append([]string(nil), override.InputModalities...)
+	}
 	return base
 }
 
 func modelMetadataEmpty(meta ModelMetadata) bool {
 	return meta.Name == "" && meta.Description == "" && meta.ContextLimit <= 0 &&
-		meta.OutputLimit <= 0 && len(meta.ReasoningEfforts) == 0
+		meta.OutputLimit <= 0 && len(meta.ReasoningEfforts) == 0 &&
+		meta.DefaultReasoning == "" && len(meta.InputModalities) == 0
 }

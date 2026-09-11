@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wii/senv/internal/storage"
 )
 
 // flushModel applies a command's message chain to the Model until no command
@@ -73,5 +74,32 @@ func TestModelSearchJumpSelectsEntry(t *testing.T) {
 	it, ok := et.currentItem()
 	if !ok || it.key != "API_KEY" {
 		t.Fatalf("item = %+v, want API_KEY", it)
+	}
+}
+
+func TestModelSearchJumpSelectsMCP(t *testing.T) {
+	mgrs := newFullManagers(t)
+	if err := mgrs.MCP.Add(&storage.MCPServerEntry{
+		Alias: "github", Transport: storage.MCPTransportStdio, Command: "npx",
+	}); err != nil {
+		t.Fatalf("add mcp: %v", err)
+	}
+
+	m := New(mgrs)
+	var mcpIdx int
+	for i, tab := range m.tabs {
+		if tab.Title() == "MCP" {
+			mcpIdx = i
+			break
+		}
+	}
+	next, cmd := m.Update(searchJumpMsg{resultType: typeMCP, key: "github"})
+	m = flushModel(next.(Model), cmd)
+	if m.active != mcpIdx {
+		t.Fatalf("active tab = %d, want %d (MCP)", m.active, mcpIdx)
+	}
+	tab := m.tabs[mcpIdx].(*mcpTab)
+	if srv := tab.currentServer(); srv == nil || srv.Alias != "github" {
+		t.Fatalf("MCP cursor = %+v, want github", srv)
 	}
 }

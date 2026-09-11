@@ -1,5 +1,12 @@
 # Release Notes
 
+## Unreleased: Unix filesystem session store
+
+**BREAKING (Darwin):** session cache no longer uses the macOS Keychain. Existing Keychain items are not read or deleted; run `senv session start` again. Remote/SSH use no longer needs a GUI click.
+
+- All platforms share one Unix store policy: a verified tmpfs/ramfs is the secure store. Linux still fails closed without one unless `--insecure-cache` is set. Stock Darwin defaults to the 0600 disk hatch (`${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`) and prints a warning. A user-provided Darwin tmpfs still uses the secure store.
+- Duration/restart expiry is unchanged (ADR-0009): duration follows `expires_at` even across reboot on disk; restart follows boot ID.
+
 ## Unreleased: security and reliability hardening
 
 This release closes the P1 vault-boundary gaps identified in the 2026-09-03 review.
@@ -7,7 +14,7 @@ This release closes the P1 vault-boundary gaps identified in the 2026-09-03 revi
 ### Security behavior
 
 - New vaults and successful `senv passwd` operations use PBKDF2-SHA256 with 600,000 iterations. Legacy metadata with a missing or zero `kdf_iterations` remains readable at 100,000 iterations. Explicit current-format values outside 100,000–1,000,000 are rejected before PBKDF2.
-- Session caches now use platform-verified secure stores: the macOS Keychain on Darwin (encrypted at rest, silent reads for per-request MCP validation) and an operating-system-verified memory-backed filesystem on Linux (tmpfs/ramfs). Disk-backed or unknown `XDG_RUNTIME_DIR` and fallback filesystems still fail closed for every timeout, including `never`, with actionable guidance. Trusted system symlinks such as `/var` are resolved before validation instead of rejecting macOS runtime paths. A new explicit `senv session start --insecure-cache` escape hatch stores the key unencrypted at 0600 under `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json` for headless macOS/CI use and prints a prominent warning.
+- Session caches use a Unix filesystem store: a verified tmpfs/ramfs when the OS can prove it. Disk-backed or unknown `XDG_RUNTIME_DIR` still fails closed on Linux. Trusted system symlinks such as `/var` are resolved before validation. `senv session start --insecure-cache` stores the key unencrypted at 0600 under `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json` (Darwin without tmpfs uses this path by default).
 - Rekey is recoverable. Vault access automatically rolls back or completes a safely identifiable interrupted transaction. Ambiguous or failed recovery preserves `.senv-rekey-*` materials, blocks normal access, and reports `unfinished rekey requires recovery` with `senv doctor` guidance.
 - MCP authorization is checked on every request against the vault, not a session instance. The fingerprint is `keyHash + saltHash + dataPathHash` (the session ID is audit metadata only), so a running MCP server keeps working after a same-vault `senv session start`; only expiry, `session clear`, or a salt change (`passwd` / rekey) revoke it.
 
@@ -22,12 +29,12 @@ Re-authentication is now demanded only when it is actually required. Invalidatio
 Behavior changes:
 
 - `duration` sessions are no longer invalidated by boot ID changes; only `restart` sessions are. A `duration` session lives until `expires_at` (memory-backed stores still do not survive a reboot).
-- Caches are per vault: one slot per normalized data path (`Abs` + `Clean` + symlink resolution of the longest existing prefix), so equivalent `--path` spellings share a session and different vaults never overwrite each other. macOS keychain accounts are now `senv.v1.<slot>`.
-- Legacy single-slot caches (`session-<uid>`, `~/.cache/senv/session.json`, keychain `senv.v1`) are adopted when their `dataPathHash` matches the current vault; otherwise they are preserved with a one-time `senv session clear --all` hint. Legacy `timeout_type: "never"` is adopted as `restart`.
+- Caches are per vault: one slot per normalized data path (`Abs` + `Clean` + symlink resolution of the longest existing prefix), so equivalent `--path` spellings share a session and different vaults never overwrite each other.
+- Legacy single-slot caches (`session-<uid>`, `~/.cache/senv/session.json`) are adopted when their `dataPathHash` matches the current vault; otherwise they are preserved with a one-time `senv session clear --all` hint. Legacy `timeout_type: "never"` is adopted as `restart`. Keychain leftovers from older Darwin builds are left unread.
 - `duration` sessions slide their expiry on every business command that reuses the cached key, capped at `created_at + max(max_lifetime, timeout)` with `session.max_lifetime` defaulting to `24h`. Read-only commands (`session status`, `doctor`) do not renew.
 - New `senv session refresh` extends a valid session without ever prompting for a password; on an expired/invalidated/unverifiable session it reports the reason and next step without creating a session or deleting the cache. `senv session start` on a valid session also renews without a password and preserves the existing timeout policy.
 - `senv session clear` now clears only the current vault; `--all` clears every slot plus legacy residue.
-- Cross-process auto-rebuild is opt-in via `session.auto_start` (default `false`): a one-off password prompt still leaves no session behind. The existing `--insecure-cache` escape hatch remains explicit and prints a warning.
+- Cross-process auto-rebuild is opt-in via `session.auto_start` (default `false`): a one-off password prompt still leaves no session behind. `--insecure-cache` remains the Linux/CI explicit hatch and prints a warning; Darwin without tmpfs already uses that disk path by default.
 - Audit events `session_expire`, `session_invalidated`, and `session_unverifiable` now record the reason (session ID, timeout type, and reason text only — never keys, salts, or plaintext).
 
 ### Breaking plaintext-export default

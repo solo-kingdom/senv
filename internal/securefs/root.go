@@ -23,9 +23,15 @@ type TrustedRoot interface {
 }
 
 // DirEntry is a validated regular file or directory below a trusted root.
+// Size/ModSec/ModNsec fingerprint a regular file from the same fstatat that
+// classified it, so callers can detect changes without reading content.
+// Directories leave those fields zero.
 type DirEntry struct {
-	Name  string
-	IsDir bool
+	Name    string
+	IsDir   bool
+	Size    int64
+	ModSec  int64
+	ModNsec int64
 }
 
 // Root anchors operations to an opened directory descriptor. Renaming or

@@ -19,10 +19,10 @@ func diskCacheFileName(slot string) string {
 	return fmt.Sprintf("session-%s.json", slot)
 }
 
-// diskCacheStore is the explicit opt-in escape hatch for environments without
-// a platform secure store (headless macOS, CI). It keeps the historical file
-// hardening — 0700 directory, 0600 atomic no-follow writes, boot ID validation
-// at the manager layer — but the key is stored unencrypted on disk.
+// diskCacheStore is the disk escape hatch: explicit --insecure-cache on Linux/CI,
+// and the Darwin default write target when no tmpfs/ramfs can be proven. It keeps
+// 0700 directory, 0600 atomic no-follow writes, and boot ID validation at the
+// manager layer, but the key is stored unencrypted on disk.
 type diskCacheStore struct{}
 
 func diskCacheBase() (string, error) {

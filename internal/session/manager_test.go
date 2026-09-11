@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -444,6 +445,45 @@ func TestDurationSessionSurvivesReboot(t *testing.T) {
 	}
 }
 
+func TestDurationSessionOnDiskHatchSurvivesReboot(t *testing.T) {
+	forceDarwinDiskHatch(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("8h")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if loaded, err := (diskCacheStore{}).Load(vaultSlotFor(dataPath)); err != nil || loaded == nil {
+		t.Fatalf("expected disk hatch session, got (%v, %v)", loaded, err)
+	}
+
+	original := systemBootID
+	systemBootID = func() (string, error) { return "boot-changed", nil }
+	t.Cleanup(func() { systemBootID = original })
+
+	if _, err := sm.GetCachedKey(); err != nil {
+		t.Fatalf("duration disk-hatch session must survive a reboot: %v", err)
+	}
+}
+
+func TestRestartSessionOnDiskHatchInvalidatesAfterReboot(t *testing.T) {
+	forceDarwinDiskHatch(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	timeout, _ := ParseTimeout("restart")
+	if err := sm.StartSession("correct-secret", timeout); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	original := systemBootID
+	systemBootID = func() (string, error) { return "boot-changed", nil }
+	t.Cleanup(func() { systemBootID = original })
+
+	if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionInvalidated) {
+		t.Fatalf("restart disk-hatch session must invalidate after reboot, got %v", err)
+	}
+}
+
 func TestSessionsArePerVault(t *testing.T) {
 	isolateSessionCache(t)
 	cfgA, dataA := setupProject(t, "secret-a")
@@ -565,5 +605,123 @@ func TestLegacyCacheWithoutTimeoutIsNotRenewed(t *testing.T) {
 	after, _ := sm.LoadCache()
 	if !after.ExpiresAt.Equal(legacy.ExpiresAt) {
 		t.Fatalf("legacy cache expiry changed: %s -> %s", legacy.ExpiresAt, after.ExpiresAt)
+	}
+}
+
+// TestGetCachedKeyPreservesOnInvalidated covers the tightened clearing boundary
+// (ADR-0017): a "restart" session that meets a changed boot ID, and a cache
+// bound to a different vault, must report ErrSessionInvalidated while leaving
+// the cache on disk. Only ReasonExpired may auto-clear.
+func TestGetCachedKeyPreservesOnInvalidated(t *testing.T) {
+	t.Run("reboot keeps restart cache", func(t *testing.T) {
+		isolateSessionCache(t)
+		configPath, dataPath := setupProject(t, "correct-secret")
+		sm := sessionManagerForTest(t, configPath, dataPath)
+		defer sm.Close()
+
+		timeout, _ := ParseTimeout("restart")
+		if err := sm.StartSession("correct-secret", timeout); err != nil {
+			t.Fatalf("start session: %v", err)
+		}
+
+		original := systemBootID
+		systemBootID = func() (string, error) { return "boot-changed", nil }
+		t.Cleanup(func() { systemBootID = original })
+
+		if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionInvalidated) {
+			t.Fatalf("expected ErrSessionInvalidated, got %v", err)
+		}
+		if cache, err := sm.LoadCache(); err != nil || cache == nil {
+			t.Fatalf("invalidated cache must be preserved: cache=%v err=%v", cache, err)
+		}
+	})
+
+	t.Run("vault mismatch keeps cache", func(t *testing.T) {
+		isolateSessionCache(t)
+		configPath, dataPath := setupProject(t, "correct-secret")
+		otherData := t.TempDir()
+		sm := sessionManagerForTest(t, configPath, dataPath)
+		defer sm.Close()
+
+		timeout, _ := ParseTimeout("restart")
+		if err := sm.StartSession("correct-secret", timeout); err != nil {
+			t.Fatalf("start session: %v", err)
+		}
+
+		// Rebind the same cache to a different vault slot.
+		cache, err := sm.LoadCache()
+		if err != nil || cache == nil {
+			t.Fatalf("load cache: cache=%v err=%v", cache, err)
+		}
+		moved := *cache
+		moved.DataPathHash = vaultSlotFor(otherData)
+		if err := saveCache(vaultSlotFor(dataPath), &moved); err != nil {
+			t.Fatalf("save moved cache: %v", err)
+		}
+
+		if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionInvalidated) {
+			t.Fatalf("expected ErrSessionInvalidated, got %v", err)
+		}
+		if cache, err := sm.LoadCache(); err != nil || cache == nil {
+			t.Fatalf("vault-mismatched cache must be preserved: cache=%v err=%v", cache, err)
+		}
+	})
+
+	t.Run("expired still clears", func(t *testing.T) {
+		isolateSessionCache(t)
+		configPath, dataPath := setupProject(t, "correct-secret")
+		sm := sessionManagerForTest(t, configPath, dataPath)
+		defer sm.Close()
+
+		timeout, _ := ParseTimeout("8h")
+		if err := sm.StartSession("correct-secret", timeout); err != nil {
+			t.Fatalf("start session: %v", err)
+		}
+		cache, err := sm.LoadCache()
+		if err != nil || cache == nil {
+			t.Fatalf("load cache: cache=%v err=%v", cache, err)
+		}
+		expired := *cache
+		expired.ExpiresAt = time.Now().Add(-time.Minute)
+		if err := saveCache(vaultSlotFor(dataPath), &expired); err != nil {
+			t.Fatalf("save expired cache: %v", err)
+		}
+
+		if _, err := sm.GetCachedKey(); !errors.Is(err, ErrSessionExpired) {
+			t.Fatalf("expected ErrSessionExpired, got %v", err)
+		}
+		if _, err := sm.LoadCache(); err != nil {
+			t.Fatalf("load after expiry: %v", err)
+		} else if _, cache, _ := sm.PeekCachedKey(); cache != nil {
+			t.Fatalf("expired cache must be cleared, got %v", cache)
+		}
+	})
+}
+
+// TestClassifyAuthCause locks the shared vocabulary: every "re-enter password"
+// condition maps to exactly one AuthRootCause, and a data-desync diagnosis maps
+// to none (it must be reported, not papered over with a prompt).
+func TestClassifyAuthCause(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want AuthRootCause
+		ok   bool
+	}{
+		{"expired", ErrSessionExpired, AuthCauseExpired, true},
+		{"restarted", fmt.Errorf("%w: restarted", ErrSessionInvalidated), AuthCauseRestarted, true},
+		{"vault changed", fmt.Errorf("%w: %w", ErrSessionInvalidated, ErrSessionVaultChanged), AuthCauseVaultChanged, true},
+		{"multiple cache", errMultipleSessionCaches, AuthCauseMultipleCache, true},
+		{"unreadable", fmt.Errorf("%w: boom", ErrSessionUnverifiable), AuthCauseUnreadable, true},
+		{"metadata replaced", ErrSessionStaleMetadata, AuthCauseMetadataReplaced, true},
+		{"none", ErrNoSession, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ClassifyAuthCause(tc.err)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("ClassifyAuthCause(%v) = (%q, %v), want (%q, %v)", tc.err, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }

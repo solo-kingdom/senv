@@ -14,4 +14,4 @@
 
 - [x] 3.1 TUI 全屏下零 stderr 输出验证；`senv env list` 实测 `perf.log` 产出符合 spec 场景
 - [x] 3.2 同步 `.agents/skills/senv-cli/SKILL.md`：perf.log 位置与 `SENV_PERF*` 环境变量；`go run . --help` 语法验证
-- [ ] 3.3 `openspec validate --strict --type change tui-perf-log` 通过，全量 make check 通过
+- [x] 3.3 `openspec validate --strict --type change tui-perf-log` 通过，全量 make check 通过

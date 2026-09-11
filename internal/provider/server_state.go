@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wii/senv/internal/perflog"
@@ -73,6 +74,12 @@ func hashBytes(data []byte) string {
 
 type providerRootOpener func(string) (securefs.TrustedRoot, error)
 
+type fileIdent struct {
+	size int64
+	sec  int64
+	nsec int64
+}
+
 type localCache struct {
 	configPath string
 	dataPath   string
@@ -80,6 +87,10 @@ type localCache struct {
 	binding *vaultBinding
 	// openRoot is a package-private fault seam. Production caches leave it nil.
 	openRoot providerRootOpener
+
+	collectMu    sync.Mutex
+	collectSnap  map[string]Entry
+	collectIdent map[string]fileIdent
 }
 
 func (c *localCache) rootOpener() providerRootOpener {
@@ -165,91 +176,135 @@ func validateRemoteEntries(entries []Entry) error {
 
 // collect enumerates the cache through trusted roots. Invalid historical names,
 // symlinks, and special files fail closed rather than being followed or skipped.
+// Unchanged files (stat mtime+size) reuse the previous ciphertext without Read.
 func (c *localCache) collect() (map[string]Entry, error) {
 	st := perflog.Start("sync.collect")
-	entries, err := c.collectEntries()
-	st.With("items", len(entries)).EndErr(err)
+	entries, reads, err := c.collectCached()
+	st.With("items", len(entries), "reads", reads).EndErr(err)
 	return entries, err
 }
 
+func (c *localCache) resetCollectCache() {
+	c.collectMu.Lock()
+	c.collectSnap = nil
+	c.collectIdent = nil
+	c.collectMu.Unlock()
+}
+
+func (c *localCache) collectCached() (map[string]Entry, int, error) {
+	c.collectMu.Lock()
+	prevSnap := c.collectSnap
+	prevIdent := c.collectIdent
+	c.collectMu.Unlock()
+
+	entries, ident, reads, err := c.collectEntriesDiff(prevSnap, prevIdent)
+	if err != nil {
+		return nil, reads, err
+	}
+	c.collectMu.Lock()
+	c.collectSnap = entries
+	c.collectIdent = ident
+	c.collectMu.Unlock()
+	return entries, reads, nil
+}
+
 func (c *localCache) collectEntries() (map[string]Entry, error) {
+	entries, _, err := c.collectCached()
+	return entries, err
+}
+
+func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map[string]fileIdent) (map[string]Entry, map[string]fileIdent, int, error) {
 	entries := make(map[string]Entry)
+	identOut := make(map[string]fileIdent)
+	reads := 0
+
 	dataRoot, err := c.openExistingRoot(c.dataPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	defer dataRoot.Close()
 
-	add := func(kind, grp, key string, root securefs.TrustedRoot, segments ...string) error {
+	add := func(kind, grp, key string, ident fileIdent, root securefs.TrustedRoot, segments ...string) error {
 		if err := syncschema.ValidateIdentity(kind, grp, key); err != nil {
 			return fmt.Errorf("local sync entry identity rejected: %w", err)
+		}
+		id := entryID(kind, grp, key)
+		identOut[id] = ident
+		if prev, ok := prevIdent[id]; ok && prev == ident {
+			if e, ok := prevSnap[id]; ok {
+				entries[id] = e
+				return nil
+			}
 		}
 		data, err := root.Read(segments...)
 		if err != nil {
 			return err
 		}
-		entries[entryID(kind, grp, key)] = Entry{Kind: kind, Grp: grp, Key: key, Ciphertext: data}
+		reads++
+		entries[id] = Entry{Kind: kind, Grp: grp, Key: key, Ciphertext: data}
 		return nil
 	}
 
 	if groups, err := dataRoot.ReadDir(storage.EnvDirName); err == nil {
 		for _, group := range groups {
 			if !group.IsDir {
-				return nil, fmt.Errorf("invalid env cache entry type")
+				return nil, nil, reads, fmt.Errorf("invalid env cache entry type")
 			}
 			files, err := dataRoot.ReadDir(storage.EnvDirName, group.Name)
 			if err != nil {
-				return nil, err
+				return nil, nil, reads, err
 			}
 			for _, file := range files {
 				if file.IsDir {
-					return nil, fmt.Errorf("invalid env cache entry type")
+					return nil, nil, reads, fmt.Errorf("invalid env cache entry type")
 				}
+				ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
 				switch {
 				case file.Name == storage.EnvMetaFileName:
-					if err := add(KindEnvMeta, group.Name, "", dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
-						return nil, err
+					if err := add(KindEnvMeta, group.Name, "", ident, dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
 					}
 				case strings.HasSuffix(file.Name, storage.EnvVarSuffix):
 					key := strings.TrimSuffix(file.Name, storage.EnvVarSuffix)
-					if err := add(KindEnv, group.Name, key, dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
-						return nil, err
+					if err := add(KindEnv, group.Name, key, ident, dataRoot, storage.EnvDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
 					}
 				}
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, nil, reads, err
 	}
 
 	if groups, err := dataRoot.ReadDir(storage.TextDirName); err == nil {
 		for _, group := range groups {
 			if !group.IsDir {
-				return nil, fmt.Errorf("invalid text cache entry type")
+				return nil, nil, reads, fmt.Errorf("invalid text cache entry type")
 			}
 			files, err := dataRoot.ReadDir(storage.TextDirName, group.Name)
 			if err != nil {
-				return nil, err
+				return nil, nil, reads, err
 			}
 			for _, file := range files {
 				if file.IsDir {
-					return nil, fmt.Errorf("invalid text cache entry type")
+					return nil, nil, reads, fmt.Errorf("invalid text cache entry type")
 				}
 				if strings.HasSuffix(file.Name, storage.TextFileSuffix) {
 					key := strings.TrimSuffix(file.Name, storage.TextFileSuffix)
-					if err := add(KindText, group.Name, key, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
-						return nil, err
+					ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+					if err := add(KindText, group.Name, key, ident, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
 					}
 				}
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		return nil, nil, reads, err
 	}
 
 	files, err := dataRoot.ReadDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, reads, err
 	}
 	for _, file := range files {
 		name := file.Name
@@ -259,25 +314,32 @@ func (c *localCache) collectEntries() (map[string]Entry, error) {
 		}
 		if strings.HasSuffix(name, storage.ConfigFileSuffix) {
 			key := strings.TrimSuffix(name, storage.ConfigFileSuffix)
-			if err := add(KindConfig, "", key, dataRoot, name); err != nil {
-				return nil, err
+			ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+			if err := add(KindConfig, "", key, ident, dataRoot, name); err != nil {
+				return nil, nil, reads, err
 			}
 		}
 	}
 
 	configRoot, err := c.openExistingRoot(c.configPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, reads, err
 	}
 	defer configRoot.Close()
-	if _, err := configRoot.Read(storage.ConfigIndexFile); err == nil {
-		if err := add(KindConfigIndex, "", "", configRoot, storage.ConfigIndexFile); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	indexFiles, err := configRoot.ReadDir()
+	if err != nil {
+		return nil, nil, reads, err
 	}
-	return entries, nil
+	for _, file := range indexFiles {
+		if file.IsDir || file.Name != storage.ConfigIndexFile {
+			continue
+		}
+		ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+		if err := add(KindConfigIndex, "", "", ident, configRoot, storage.ConfigIndexFile); err != nil {
+			return nil, nil, reads, err
+		}
+	}
+	return entries, identOut, reads, nil
 }
 
 type cacheSnapshot struct {

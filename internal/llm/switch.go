@@ -447,8 +447,10 @@ func kimiAdapter() AgentAdapter {
 					if meta.OutputLimit > 0 {
 						entry["max_output_size"] = meta.OutputLimit
 					}
+					if caps := kimiCapabilities(meta); len(caps) > 0 {
+						entry["capabilities"] = caps
+					}
 					if modelSupportsReasoning(meta) {
-						entry["capabilities"] = []string{"thinking"}
 						entry["support_efforts"] = append([]string(nil), meta.ReasoningEfforts...)
 					}
 					setTOMLPath(root, []string{"models", id + "/" + model}, entry)
@@ -502,6 +504,22 @@ func modelSupportsReasoning(meta ModelMetadata) bool {
 	return len(meta.ReasoningEfforts) > 0
 }
 
+func kimiCapabilities(meta ModelMetadata) []string {
+	var caps []string
+	if modelSupportsReasoning(meta) {
+		caps = append(caps, "thinking")
+	}
+	for _, mod := range meta.InputModalities {
+		switch strings.ToLower(mod) {
+		case "image":
+			caps = append(caps, "image_in")
+		case "video":
+			caps = append(caps, "video_in")
+		}
+	}
+	return caps
+}
+
 // piAdapter：~/.pi/agent/models.json 写 provider 定义（含 apiKey），
 // ~/.pi/agent/settings.json 写 defaultProvider/defaultModel。两份文件属于
 // 同一事务，第二份失败时第一份由 SwitchManager 统一回滚。
@@ -545,6 +563,9 @@ func piAdapter() AgentAdapter {
 					}
 					if modelSupportsReasoning(meta) {
 						entry["reasoning"] = true
+					}
+					if len(meta.InputModalities) > 0 {
+						entry["input"] = append([]string(nil), meta.InputModalities...)
 					}
 					models = append(models, entry)
 				}
@@ -662,6 +683,11 @@ func opencodeAdapter() AgentAdapter {
 					}
 					if modelSupportsReasoning(meta) {
 						entry["reasoning"] = true
+					}
+					if len(meta.InputModalities) > 0 {
+						entry["modalities"] = map[string]any{
+							"input": append([]string(nil), meta.InputModalities...),
+						}
 					}
 					models[model] = entry
 				}
@@ -826,6 +852,7 @@ type SwitchOutput struct {
 	BaseURL       string
 	ConfigPath    string
 	CredentialEnv string // 非空表示凭据需经该环境变量暴露
+	Warnings      []string
 }
 
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
@@ -970,7 +997,24 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	if adapter.Credential == CredentialEnvVar {
 		out.CredentialEnv = credential
 	}
+	out.Warnings = metadataDeclarationWarnings(agentModels, req.ModelMetadata)
 	return out, nil
+}
+
+func metadataDeclarationWarnings(models []string, meta map[string]ModelMetadata) []string {
+	var missingDefault []string
+	for _, id := range models {
+		m := meta[id]
+		if len(m.ReasoningEfforts) > 0 && strings.TrimSpace(m.DefaultReasoning) == "" {
+			missingDefault = append(missingDefault, id)
+		}
+	}
+	if len(missingDefault) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"模型 %s 未声明默认推理档，切换已使用 agent 模板；可用 senv ai provider edit 补全",
+		strings.Join(missingDefault, ", "))}
 }
 
 // StatusRow 是 status 输出的一行。

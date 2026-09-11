@@ -16,6 +16,7 @@ const (
 	typeConfig = "Cfg"
 	typeSSH    = "SSH"
 	typeAI     = "AI"
+	typeMCP    = "MCP"
 )
 
 // searchTab is the global cross-type search overlay. It gathers all keys/names
@@ -97,15 +98,11 @@ func (s *searchTab) gather() tea.Cmd {
 		var all []searchResult
 		// Env: iterate groups, collect keys.
 		if mgr.Env != nil {
-			if gis, err := mgr.Env.ListGroups(); err == nil {
-				for _, g := range gis {
-					vars, err := mgr.Env.List(g.Name)
-					if err != nil {
-						continue
-					}
-					for k := range vars[g.Name] {
+			if vars, _, err := envSnapshot(mgr); err == nil {
+				for g, keys := range vars {
+					for k := range keys {
 						all = append(all, searchResult{
-							resultType: typeEnv, group: g.Name, key: k, preview: "***",
+							resultType: typeEnv, group: g, key: k, preview: "***",
 						})
 					}
 				}
@@ -159,6 +156,17 @@ func (s *searchTab) gather() tea.Cmd {
 					all = append(all, searchResult{
 						resultType: typeAI, key: p.Alias,
 						preview: fmt.Sprintf("%d models", len(p.Models)),
+					})
+				}
+			}
+		}
+		// MCP: 档案 alias 与 command 是标识；List 只带 env 键名，值不进库存。
+		if mgr.MCP != nil {
+			if servers, err := mgr.MCP.List(); err == nil {
+				for _, s := range servers {
+					all = append(all, searchResult{
+						resultType: typeMCP, key: s.Alias, extra: s.Command,
+						preview: s.Command,
 					})
 				}
 			}

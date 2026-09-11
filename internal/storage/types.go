@@ -138,6 +138,8 @@ type LLMModelInfo struct {
 	ContextWindow    int      `json:"context_window,omitempty"`
 	OutputLimit      int      `json:"output_limit,omitempty"`
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	DefaultReasoning string   `json:"default_reasoning,omitempty"`
+	InputModalities  []string `json:"input_modalities,omitempty"`
 }
 
 // MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up

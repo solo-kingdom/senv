@@ -532,16 +532,20 @@ func loadCache(slot string) (*SessionCache, error) {
 	hatch, hatchErr := (diskCacheStore{}).Load(slot)
 
 	if primaryErr == nil && hatchErr == nil {
-		if primary != nil && hatch != nil {
-			return nil, errMultipleSessionCaches
-		}
-		if primary != nil {
+		switch {
+		case primary != nil && hatch != nil:
+			// Deterministic selection instead of "multiple caches" hard-fail
+			// (ADR-0017): prefer the newer cache so an upgrade or an explicit
+			// escape hatch does not strand the user. Both entries stay on disk
+			// and whichever one is picked must still pass full validation.
+			return selectNewerCache(slot, primary, hatch)
+		case primary != nil:
 			return primary, nil
-		}
-		if hatch != nil {
+		case hatch != nil:
 			return hatch, nil
+		default:
+			return adoptLegacyCache(slot)
 		}
-		return adoptLegacyCache(slot)
 	}
 	if primaryErr != nil {
 		// A locked/unavailable platform store must not strand a usable
@@ -555,6 +559,21 @@ func loadCache(slot string) (*SessionCache, error) {
 		return primary, nil
 	}
 	return nil, hatchErr
+}
+
+// selectNewerCache resolves two readable caches for one slot. The newer
+// created_at wins; an exact tie is ambiguous and reported as an actionable
+// error. Neither cache is deleted here: the ignored one may be the only
+// recovery key for another vault slot.
+func selectNewerCache(slot string, primary, hatch *SessionCache) (*SessionCache, error) {
+	switch {
+	case primary.CreatedAt.After(hatch.CreatedAt):
+		return primary, nil
+	case hatch.CreatedAt.After(primary.CreatedAt):
+		return hatch, nil
+	default:
+		return nil, errMultipleSessionCaches
+	}
 }
 
 // adoptLegacyCache promotes a pre-slot single cache whose data path hash

@@ -215,6 +215,67 @@ func TestSwitchUsesStoredModelMetadata(t *testing.T) {
 	}
 }
 
+func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
+	pm, _, _ := newTestProviderManager(t)
+	res, err := pm.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"m1"}, ModelContexts: map[string]int{"m1": 128000},
+		RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	entry := res.Entry
+	info := entry.ModelInfo["m1"]
+	info.ReasoningEfforts = []string{"low", "high"}
+	entry.ModelInfo["m1"] = info
+	if err := pm.storage.SaveLLMProvider("main", entry, "test-password"); err != nil {
+		t.Fatalf("seed legacy efforts: %v", err)
+	}
+	before, err := json.Marshal(entry.ModelInfo)
+	if err != nil {
+		t.Fatalf("marshal before: %v", err)
+	}
+
+	home := t.TempDir()
+	sm := NewSwitchManager(pm, "", home)
+	out, err := sm.Switch("codex", "main", nil, "")
+	if err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	if len(out.Warnings) == 0 || !strings.Contains(out.Warnings[0], "edit") {
+		t.Fatalf("warnings = %v, want edit hint", out.Warnings)
+	}
+
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	got := catalog.Models[0]
+	if got.DefaultReasoningLevel != "none" || len(got.SupportedReasoningLevels) != 1 || got.SupportedReasoningLevels[0].Effort != "none" {
+		t.Fatalf("catalog = %+v, want none template", got)
+	}
+
+	reloaded, err := pm.GetProvider("main")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	after, err := json.Marshal(reloaded.ModelInfo)
+	if err != nil {
+		t.Fatalf("marshal after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("profile rewritten:\nbefore %s\nafter %s", before, after)
+	}
+}
+
 func TestCodexAdapterNoSecretOnDisk(t *testing.T) {
 	out, path := applyAdapter(t, codexAdapter(), senvEnvKeyName("main"))
 	var cfg map[string]any

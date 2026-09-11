@@ -56,9 +56,25 @@ _Avoid_: 过期
 环境故障导致无法确证持久会话有效或失效；缓存保留，既不按到期也不按失效处理。
 _Avoid_: 过期、失效
 
+**重认证（Re-authentication）**:
+持久会话不可复用后，用户重新输入口令以恢复访问的动作；区别于首次临时认证。是本地体验指标的核心：每一次都应有确定的根因与下一步。
+_Avoid_: 重新登录、登录、重新解锁
+
+**重认证根因（Re-auth Root Cause）**:
+触发重认证的可判定原因，取值与判定三层一致（到期 / 重启 / vault 不符 / 多缓存 / 环境不可判定 / metadata 失步）；`session status` 与命令错误必须给出同一根因。
+_Avoid_: 过期原因（只覆盖到期时）、错误信息
+
+**自动清理（Automatic Clearing）**:
+系统在没有用户显式指令时删除持久会话缓存的动作；只允许发生在到期。失效与不可判定一律保留：缓存可能是另一个 vault 的唯一恢复钥匙。
+_Avoid_: 清缓存（泛指时）、失效清理
+
 **安全存储（Secure Store）**:
-持久会话的落盘位置：macOS 登录钥匙串，或经校验的内存文件系统；只有显式选择磁盘逃生舱才落持久磁盘。
-_Avoid_: 缓存文件（泛指时）、Keychain（泛指平台存储时）
+持久会话缓存的驻留位置：经操作系统确认的内存文件系统。操作系统钥匙串（含 macOS 登录钥匙串）不是安全存储，也不作为可选后端。
+_Avoid_: 缓存文件（泛指时）、Keychain、钥匙串、密钥串
+
+**磁盘逃生舱（Disk Escape Hatch）**:
+安全存储不可用时，持久会话缓存落到用户磁盘：派生钥明文、仅本用户可读。它不是安全存储。由用户显式选择，或因平台无法提供经确认的内存文件系统而成为默认写目标。
+_Avoid_: 不安全缓存（正式行文）、insecure-cache（指旗标时除外）
 
 **工作副本（Working Copy）**:
 client 本地目录中的加密数据文件，是唯一的编辑现场；同步通道只做 push/pull。
@@ -130,7 +146,7 @@ models.dev 提供的 provider 与 model 公开数据；senv 缓存后用于填�
 _Avoid_: 模型列表（泛指时）
 
 **模型元数据**:
-随 LLM Provider 档案保存的 per-model 信息，至少包含 context window；切换写入 Coding Agent 配置时优先使用它，再进行 agent 专属投影。增改模型集时缺失 context window 会拒绝写入；既有旧档案可不补全并继续读取。
+随 LLM Provider 档案保存的 per-model 声明值，至少包含 context window；该模型若声明了推理档位，还必须有默认推理档。来源是显式提供或模型目录，senv 不按模型名或档位列表推断。切换写入 Coding Agent 配置时优先使用它，再进行 agent 专属投影。增改模型集时缺失必填项会拒绝写入；既有旧档案可不补全并继续读取。
 _Avoid_: 模型配置（易与 agent 配置混淆）、模型能力（范围过宽）
 
 **Coding Agent**:
@@ -143,7 +159,15 @@ _Avoid_: 模型列表（泛指时）、可用模型（指 provider 侧时）
 
 **默认模型**:
 切换后 Coding Agent 起始使用的那个模型；默认沿用 provider 档案的默认模型，可被单次切换覆盖且不回写档案。
-_Avoid_: 首选模型、主模型
+_Avoid_: 首选模型、主模型、默认推理档
+
+**默认推理档**:
+某个模型未在会话里另选时使用的推理努力级别；是该模型的模型元数据声明值，必须属于其推理档位，不是默认模型，也不是从档位列表推导出的属性。仅当该模型声明了推理档位时才必填。
+_Avoid_: 默认模型（指选哪个模型）、默认档（歧义）、启发式（推断意味）、reasoning level（行文用中文；落盘字段名可保留原文）
+
+**输入模态**:
+模型接受的输入类型集合（如 text、image）。有则写入模型元数据，缺席表示未知，不等于纯文本。
+_Avoid_: 多模态（过宽）、视觉（只覆盖 image）、capabilities（实现旗标）
 
 **切换**:
 把某个 Coding Agent 指向指定 LLM Provider，并为其选定 Agent 模型集与默认模型的动作；senv 是唯一事实源，改写 agent 配置后即时生效。
@@ -166,6 +190,14 @@ _Avoid_: MCP 配置（指 agent 配置文件里的落盘结果时）、服务（
 **导出（Export）**:
 把 MCP Server 档案合并写入目标 Coding Agent 全局配置的动作；agent 配置文件是派生产物，不由 senv 回读为事实源。
 _Avoid_: 安装（指 senv 自身的 MCP server 时）、同步（指 vault 同步时）
+
+**撤回（Unexport）**:
+按本机台账，从 Coding Agent 全局配置中移除由 senv 导出的条目；不删除 vault 中的 MCP Server 档案。
+_Avoid_: 卸载（指 config uninstall 或 MCP 安装的反操作时）、删除（指删档案时）
+
+**导出状态**:
+某个 Coding Agent 上，一份 MCP Server 档案的本机导出结果：未导出 / 已导出 / 漂移。属于本机状态，不随 vault 同步，对标 LLM 的当前指向。
+_Avoid_: 安装状态、同步状态、MCP 配置（指文件内容时）
 
 **MCP 安装（Install）**:
 把 senv 自身的 MCP server（`senv mcp serve`）写入某个 Coding Agent 配置的动作，与「导出」区分：安装写的是 senv 这个 server，导出写的是用户的 MCP Server 档案。

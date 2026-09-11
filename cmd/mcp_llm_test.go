@@ -78,6 +78,50 @@ func TestMCPLLMProviderListEmpty(t *testing.T) {
 	}
 }
 
+func TestMCPLLMProviderModelInfoNewFields(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddModelReason = []string{"m1=low;high"}
+		providerAddModelDefaultReason = []string{"m1=high"}
+		providerAddModelModalities = []string{"m1=text,image"}
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	llmManager, err := getAIProviderManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestManagers := &managers{llm: llmManager, autoPull: func() {}}
+	res, _, err := requestManagers.llmProviderList(context.Background(), nil, struct{}{})
+	if err != nil || res.IsError {
+		t.Fatalf("llm_provider_list = %v, %v", res, err)
+	}
+	var providers []map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, res)), &providers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	info, ok := providers[0]["model_info"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_info missing: %v", providers[0])
+	}
+	m1 := info["m1"].(map[string]any)
+	if m1["default_reasoning"] != "high" {
+		t.Fatalf("default_reasoning = %v", m1["default_reasoning"])
+	}
+	mods := m1["input_modalities"].([]any)
+	if len(mods) != 2 || mods[0] != "text" || mods[1] != "image" {
+		t.Fatalf("input_modalities = %v", mods)
+	}
+	if strings.Contains(textOf(t, res), "sk-secret-value") {
+		t.Fatal("MCP response leaked credential plaintext")
+	}
+}
+
 func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
 	requestManagers := setupLLMMCPTest(t)
 	// 先经 CLI 切换 claude-code，制造已切换状态。

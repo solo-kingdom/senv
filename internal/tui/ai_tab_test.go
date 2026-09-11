@@ -340,16 +340,18 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 		t.Fatal("create form must expose the alias field")
 	}
 	tab = submitAIForm(t, tab, map[string]string{
-		"alias":           "second",
-		"base_url":        "https://second.example.com",
-		"api_shape":       string(llm.APIShapeAnthropic),
-		"models":          "s1, s2",
-		"model_contexts":  "s1=128000, s2=200000",
-		"model_outputs":   "s1=32000",
-		"model_reasoning": "s1=low;high",
-		"default_model":   "s2",
-		"credential":      aiNewCredential,
-		"api_key":         "sk-second-secret",
+		"alias":                   "second",
+		"base_url":                "https://second.example.com",
+		"api_shape":               string(llm.APIShapeAnthropic),
+		"models":                  "s1, s2",
+		"model_contexts":          "s1=128000, s2=200000",
+		"model_outputs":           "s1=32000",
+		"model_reasoning":         "s1=low;high",
+		"model_default_reasoning": "s1=high",
+		"model_modalities":        "s1=text,image",
+		"default_model":           "s2",
+		"credential":              aiNewCredential,
+		"api_key":                 "sk-second-secret",
 	})
 	if tab.form != nil {
 		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)
@@ -363,6 +365,9 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 	}
 	if got := p.ModelInfo["s1"]; got.OutputLimit != 32000 || strings.Join(got.ReasoningEfforts, ";") != "low;high" {
 		t.Fatalf("s1 model info = %+v, want output/reasoning from form", got)
+	}
+	if got := p.ModelInfo["s1"]; got.DefaultReasoning != "high" || strings.Join(got.InputModalities, ",") != "text,image" {
+		t.Fatalf("s1 default/modalities = %+v", got)
 	}
 	if p.BaseURL != "https://second.example.com/v1" {
 		t.Fatalf("BaseURL = %q", p.BaseURL)
@@ -402,6 +407,61 @@ func TestAITabCreateFormRequiresCredential(t *testing.T) {
 	}
 	if tab.providerByAlias("second") != nil {
 		t.Fatal("invalid form wrote a provider")
+	}
+}
+
+func TestAITabCreateFormRequiresDefaultReasoning(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias": "second", "base_url": "https://second.example.com",
+		"models": "s1", "model_contexts": "s1=128000",
+		"model_reasoning": "s1=low;high",
+		"credential":      aiNewCredential, "api_key": "sk-second",
+	})
+	if tab.form == nil {
+		t.Fatal("missing default reasoning must keep the form open")
+	}
+	index := tab.form.fieldIndex("model_default_reasoning")
+	if index < 0 || !strings.Contains(strings.ToLower(tab.form.errs[index]), "default reasoning") {
+		t.Fatalf("inline error missing: %#v", tab.form.errs)
+	}
+	if tab.providerByAlias("second") != nil {
+		t.Fatal("invalid form wrote a provider")
+	}
+}
+
+func TestAITabDetailShowsDefaultReasoningAndModalities(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias": "vision", "base_url": "https://vision.example.com",
+		"models": "s1", "model_contexts": "s1=128000",
+		"model_reasoning":         "s1=low;high",
+		"model_default_reasoning": "s1=high",
+		"model_modalities":        "s1=text,image",
+		"credential":              aiNewCredential, "api_key": "sk-vision",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close: %#v", tab.form.errs)
+	}
+	for i, p := range tab.providers {
+		if p.Alias == "vision" {
+			tab.providerIndex = i
+			break
+		}
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	detail := tab.View()
+	for _, want := range []string{"default_reasoning=high", "modalities=text,image"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail missing %q:\n%s", want, detail)
+		}
 	}
 }
 

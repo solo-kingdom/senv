@@ -27,12 +27,13 @@ Session timeout can be configured as:
 
 Security considerations:
   - Only the derived key is cached, not your password
-  - The cache lives in a platform-verified secure store: the macOS Keychain on
-    Darwin, or a verified memory-backed filesystem (tmpfs/ramfs) elsewhere
-  - XDG_RUNTIME_DIR is preferred on Linux; fallback is allowed only on another
+  - The cache lives in a verified memory-backed filesystem (tmpfs/ramfs) when
+    the OS can prove that backing; otherwise Darwin writes the disk escape hatch
+    and Linux fails closed unless --insecure-cache is set
+  - XDG_RUNTIME_DIR is preferred; fallback is allowed only on another
     verified memory-backed filesystem, in a random 0700 directory
-  - The cache is 0600 and never written to persistent storage unless you
-    explicitly opt in with --insecure-cache for headless/CI environments
+  - The disk escape hatch is 0600. Darwin uses it by default when no tmpfs is
+    available; Linux/CI must pass --insecure-cache explicitly
   - Cache includes a hash of your data path for validation
   - Use 'session clear' to clear this vault's cache, or 'session clear --all'
     to clear every vault's cache and legacy residue`,
@@ -81,10 +82,9 @@ var sessionStartCmd = &cobra.Command{
 If no timeout is specified, uses the default from settings (8h). When a valid
 session already exists for this vault, the command extends it directly from the
 cached key and does NOT prompt for a password; otherwise it prompts once and
-writes a fresh session. All timeout modes require a platform-verified secure
-store (macOS Keychain, or a verified memory-backed filesystem on Linux);
-otherwise the command fails without writing the derived key unless
---insecure-cache is explicitly set.
+writes a fresh session. All timeout modes prefer a verified memory-backed
+filesystem (tmpfs/ramfs). Darwin without one writes the disk escape hatch and
+prints a warning; Linux fails closed unless --insecure-cache is explicitly set.
 
 Examples:
   # Start session with default timeout
@@ -217,15 +217,22 @@ Examples:
 		status := sessionManager.DescribeCache()
 		switch status.State {
 		case session.StateNoSession:
-			return fmt.Errorf("no active session for this vault; run: senv session start")
+			return fmt.Errorf("no active session for this vault; next: senv session start")
 		case session.StateActive:
 			// continue
 		case session.StateUnverifiable:
-			return fmt.Errorf("cannot refresh: session is unverifiable (%s); cache retained. %s",
-				sessionReasonText(status.Reason), status.Detail)
+			// Unverifiable is the one state a password cannot fix, so it never
+			// falls through to a prompt; report the cause and the exit.
+			return fmt.Errorf("cannot refresh: session is unverifiable (%s); cache retained; next: %s. %s",
+				sessionReasonText(status.Reason), statusNextAction(status), status.Detail)
+		case session.StateExpired, session.StateInvalidated:
+			// refresh never prompts and never deletes: name the cause and give
+			// exactly one next action so the user is not left guessing.
+			return fmt.Errorf("cannot refresh: session %s (%s); cache retained; next: %s",
+				status.State, sessionReasonText(status.Reason), statusNextAction(status))
 		default:
-			return fmt.Errorf("cannot refresh: session %s (%s); run: senv session start",
-				status.State, sessionReasonText(status.Reason))
+			return fmt.Errorf("cannot refresh: session %s (%s); cache retained; next: %s",
+				status.State, sessionReasonText(status.Reason), statusNextAction(status))
 		}
 
 		timeout, err := timeoutForRenewal(status.Cache, timeoutStr, configPath, dataPath)
@@ -271,9 +278,14 @@ var sessionStatusCmd = &cobra.Command{
 					cache.ExpiresAt.Format("2006-01-02 15:04:05"),
 					remaining.Round(time.Minute))
 				if cache.TimeoutSeconds > 0 {
-					fmt.Printf("Sliding window: %s, session cap: %s\n",
-						(time.Duration(cache.TimeoutSeconds) * time.Second).String(),
-						(cache.CreatedAt.Add(session.DefaultMaxLifetime)).Format("2006-01-02 15:04:05"))
+					// The absolute cap is why a continuously-used session still
+					// expires: surface it up front so the prompt is never a
+					// surprise (ADR-0017).
+					cap := cache.CreatedAt.Add(session.DefaultMaxLifetime)
+					fmt.Printf("Sliding window: %s\n", (time.Duration(cache.TimeoutSeconds) * time.Second).String())
+					fmt.Printf("Session cap: %s (in %s)\n",
+						cap.Format("2006-01-02 15:04:05"),
+						time.Until(cap).Round(time.Minute))
 				}
 			case string(session.TimeoutRestart):
 				fmt.Println("Timeout: until system restart")
@@ -291,8 +303,8 @@ var sessionStatusCmd = &cobra.Command{
 			fmt.Println("Session: Invalidated")
 			printSessionIdentity(cache)
 			fmt.Printf("Reason: %s\n", sessionReasonText(status.Reason))
-			fmt.Println("Cache: will be cleared on next use")
-			fmt.Println("Next: senv session start")
+			fmt.Println("Cache: retained")
+			fmt.Printf("Next: %s\n", statusNextAction(status))
 			return nil
 		default:
 			fmt.Println("Session: Unverifiable")
@@ -302,7 +314,7 @@ var sessionStatusCmd = &cobra.Command{
 				fmt.Printf("Detail: %s\n", status.Detail)
 			}
 			fmt.Println("Cache: retained (not deleted)")
-			fmt.Println("Next: resolve the cause above, then retry; `senv session clear --all` discards it")
+			fmt.Printf("Next: %s\n", statusNextAction(status))
 			return nil
 		}
 	},
@@ -380,7 +392,7 @@ func init() {
 	sessionStartCmd.Flags().StringP("timeout", "t", "",
 		"Session timeout (e.g., 30m, 8h, 1d, 1y, restart)")
 	sessionStartCmd.Flags().Bool("insecure-cache", false,
-		"store the session key on disk (0600) for headless/CI use; insecure")
+		"store the session key on disk (0600); required on Linux/CI without tmpfs; Darwin already defaults to this when no tmpfs is available")
 	addRefreshFlag(sessionStartCmd)
 
 	sessionRefreshCmd.Flags().StringP("timeout", "t", "",
@@ -397,4 +409,25 @@ func init() {
 
 	// Add to root
 	rootCmd.AddCommand(sessionCmd)
+}
+
+// statusNextAction renders exactly one deterministic next step for a
+// non-reusable session state, so `senv session status` and command errors agree.
+func statusNextAction(status session.CacheStatus) string {
+	switch status.State {
+	case session.StateExpired:
+		return "senv session start"
+	case session.StateInvalidated:
+		if status.Reason == session.ReasonVaultChanged {
+			return "senv session clear --all, then senv session start"
+		}
+		return "senv session start"
+	case session.StateUnverifiable:
+		if status.Reason == session.ReasonUnreadable {
+			return "resolve the environment issue above, then retry (`senv session clear --all` discards the cache)"
+		}
+		return "senv session clear --all"
+	default:
+		return "senv session start"
+	}
 }

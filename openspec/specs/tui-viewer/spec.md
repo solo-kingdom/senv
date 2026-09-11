@@ -3,10 +3,9 @@
 ## Purpose
 TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 ## Requirements
-
 ### Requirement: TUI 启动命令
 
-系统 SHALL 提供 `senv tui` 命令，启动全屏 TUI 界面浏览 env/text/config 数据。启动时 MUST 优先复用有效 session cache（derived key）；仅当无有效 session 时 MUST 提示密码。功能内密码认证 MUST NOT 写入或刷新 session cache。自动同步可用时，启动 MUST NOT 等待网络：界面 SHALL 先以本地工作副本（本地缓存数据）渲染，server 拉取在后台完成；后台拉取应用了远端变更时 SHALL 提示并更新界面数据。
+系统 SHALL 提供 `senv tui` 命令，启动全屏 TUI 界面浏览 env/text/config 数据。启动时 MUST 优先复用有效 session cache（derived key）；仅当无有效 session 时 MUST 提示密码。功能内密码认证 MUST NOT 写入或刷新 session cache。自动同步可用时，启动 MUST NOT 等待网络：界面 SHALL 先以本地工作副本（本地缓存数据）渲染，server 拉取在后台完成；后台拉取应用了远端变更时 SHALL 提示并以 stale-while-revalidate 更新界面：旧数据保持可见可操作，受影响 Tab 在后台完成单趟重载后静默替换，MUST NOT 清空为加载占位。
 
 #### Scenario: 项目已初始化且 session 有效
 
@@ -36,7 +35,7 @@ TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 #### Scenario: 后台拉取应用变更后更新展示
 
 - **WHEN** 启动后的后台拉取从 server 应用了 N 条远端变更
-- **THEN** 界面提示「已从 server 更新 N 条」，各标签数据随后更新为拉取后的本地工作副本
+- **THEN** 界面提示「已从 server 更新 N 条」；旧列表保持可见可操作，重载完成后条目静默更新，光标与过滤条件不丢失
 
 #### Scenario: `--refresh` 绕过节流但不阻塞
 
@@ -45,15 +44,15 @@ TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 
 ### Requirement: Tab 切换
 
-TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、AI、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
+TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、AI、MCP、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
 
 #### Scenario: 切换标签
 - **WHEN** 用户在 Env Tab 按下 `Tab` 键或 `2` 键
 - **THEN** 界面切换到 Text Tab，显示 text 分组与文本块列表
 
 #### Scenario: 数字键直达全部 Tab
-- **WHEN** 7 个 Tab 均已注册，用户按 `6`
-- **THEN** 界面切换到 History Tab
+- **WHEN** 8 个 Tab 均已注册，用户按 `6`
+- **THEN** 界面切换到 MCP Tab
 
 #### Scenario: 越界数字不生效
 - **WHEN** 仅注册 3 个 Tab（git 模式），用户按 `7`
@@ -213,7 +212,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: 全局跨类型搜索
 
-TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias），绝不匹配值、私钥内容或凭据。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI 结果跳转到对应 Tab 并定位光标）。
+TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI/MCP 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI/MCP 结果跳转到对应 Tab 并定位光标）。
 
 #### Scenario: 触发全局搜索
 - **WHEN** 用户按 `S` 键
@@ -227,12 +226,16 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SS
 - **WHEN** 用户输入某 host alias 或 provider alias 的前缀
 - **THEN** 结果显示对应 SSH host 或 LLM provider 条目，`enter` 后跳转到对应 Tab 并选中该条目
 
+#### Scenario: MCP 档案结果
+- **WHEN** 用户输入某 MCP Server 档案 alias 或 command 的前缀
+- **THEN** 结果显示对应 MCP 条目，`enter` 后跳转到 MCP Tab 并选中该档案
+
 #### Scenario: 搜索不匹配值
 - **WHEN** 用户输入某个仅出现在值中而不在任何 key/name 中的字符串
 - **THEN** 结果列表为空（显示"无匹配"），不返回任何值匹配
 
 #### Scenario: 搜索不返回秘密
-- **WHEN** 用户输入某个仅出现在 SSH 私钥内容或 LLM 凭据中的字符串
+- **WHEN** 用户输入某个仅出现在 SSH 私钥内容、LLM 凭据或 MCP env 值中的字符串
 - **THEN** 结果列表为空（显示"无匹配"）
 
 #### Scenario: 跳转定位
@@ -348,7 +351,7 @@ TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与�
 
 ### Requirement: 同步状态可见性
 
-当自动同步可用（server provider 且未关闭 auto_sync）时，TUI SHALL 在底部常驻显示待推送条数与最近一次同步结果；写操作完成后 SHALL 异步触发 push（沿用 2 秒预算）。启动时 SHALL 在后台异步触发一次拉取（沿用 2 秒预算；`--refresh` 绕过节流窗口）：应用了远端变更（条目或 metadata）时 SHALL 给出成功提示并重载各标签的本地数据；无变更或零网络跳过（节流/锁忙）时 MUST NOT 出现成功提示，仅更新状态条。拉取失败（含 client 被屏蔽）SHALL 在界面内提示原因且 MUST NOT 退出进程。退出 TUI 前若仍有待推送条目，TUI SHALL 在界面内给出一次提示。自动同步不可用时 MUST NOT 显示该状态，也不得触发拉取或阻止任何操作。
+当自动同步可用（server provider 且未关闭 auto_sync）时，TUI SHALL 在底部常驻显示待推送条数与最近一次同步结果；写操作完成后 SHALL 异步触发 push（沿用 2 秒预算）。启动时 SHALL 在后台异步触发一次拉取（沿用 2 秒预算；`--refresh` 绕过节流窗口）：应用了远端变更（条目或 metadata）时 SHALL 给出成功提示并以 stale-while-revalidate 更新各标签（旧数据保持可见可操作，MUST NOT 清空为加载占位）；无变更或零网络跳过（节流/锁忙）时 MUST NOT 出现成功提示，仅更新状态条。拉取失败（含 client 被屏蔽）SHALL 在界面内提示原因且 MUST NOT 退出进程。退出 TUI 前若仍有待推送条目，TUI SHALL 在界面内给出一次提示。自动同步不可用时 MUST NOT 显示该状态，也不得触发拉取或阻止任何操作。
 
 #### Scenario: 显示待推送状态
 
@@ -373,10 +376,43 @@ TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与�
 #### Scenario: 后台拉取无变更不出提示
 
 - **WHEN** 启动后台拉取时远端无新变更，或处于节流窗口/同步锁忙而零网络跳过
-- **THEN** 不出现成功提示，底部状态条仅反映最近同步时间
+- **THEN** 不出现成功提示，底部状态条仅反映最近同步时间，各 Tab 不重载
 
 #### Scenario: 拉取失败不退出
 
 - **WHEN** 启动后台拉取失败（网络错误或 client 被屏蔽）
 - **THEN** 错误栏显示原因（被屏蔽含重新注册指引），TUI 保持可用，本地数据不受影响
+
+#### Scenario: 拉取应用变更不清空列表
+
+- **WHEN** 用户正浏览 env 列表时后台 pull 应用了 3 条远端变更
+- **THEN** 列表保持可见可操作，重载完成后条目静默更新，光标与过滤条件不丢失
+
+### Requirement: History Tab 延迟加载
+
+TUI 启动 SHALL NOT 发起 History 查询；History 数据 SHALL 在用户首次激活 History Tab 时查询并缓存。激活后的刷新语义保持既有行为（server 模式提供、手动刷新可用；git 模式或 server 不可用时优雅降级为无数据/空态）。
+
+#### Scenario: 启动不查 History
+
+- **WHEN** server 模式下启动 TUI 且用户停留在 env Tab
+- **THEN** 进程未发起任何 History 请求，其余 Tab 行为不变
+
+#### Scenario: 首次激活 History Tab
+
+- **WHEN** 用户首次切换到 History Tab
+- **THEN** 发起一次查询并在加载完成后展示；再次激活时复用缓存，手动刷新才重新查询
+
+### Requirement: env 数据单趟加载与共享快照
+
+TUI 对 vault 数据的全量消费 SHALL 通过单趟加载构建的内存快照完成：一次遍历读取每个条目的密文文件至多一次。env Tab 列表、全局搜索、AI Tab 凭据引用收集等消费方 SHALL 复用同一份快照，MUST NOT 各自重复全量遍历。写操作成功后快照 SHALL 失效并在后台单趟重建；单条读写路径（如 `senv env get`）行为不变。
+
+#### Scenario: 启动只读每个条目一次
+
+- **WHEN** server 模式暖启动 TUI 且远端无变更
+- **THEN** env/text 等 vault 条目文件在启动装载过程中各被读取一次（以耗时日志的条目数/次数维度可验证），列表可用
+
+#### Scenario: 写操作后快照单趟重建
+
+- **WHEN** 用户在 TUI 内修改一个环境变量
+- **THEN** 快照失效并单趟重建，期间 UI 不清空、其余条目不再重复读取
 

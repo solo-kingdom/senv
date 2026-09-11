@@ -137,8 +137,8 @@ func (t *envTab) load() tea.Cmd {
 			st.End(false)
 			return envLoadedMsg{err: fmt.Errorf("env manager unavailable")}
 		}
-		// 单趟快照：分组列表与全部变量一次批量装载（tui-perf-load）
-		allVars, gis, err := mgr.Snapshot()
+		// 单趟快照：分组列表与全部变量一次批量装载，并与搜索/deref/AI 共享。
+		allVars, gis, err := envSnapshot(t.mgr)
 		if err != nil {
 			st.End(false)
 			return envLoadedMsg{err: err}

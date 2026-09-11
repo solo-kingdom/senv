@@ -17,7 +17,7 @@ import (
 // efforts）、只有 name、完全未知。
 func projectionMeta() map[string]ModelMetadata {
 	return map[string]ModelMetadata{
-		"m1": {Name: "Model One", Description: "first model", ContextLimit: 300000, OutputLimit: 32000, ReasoningEfforts: []string{"low", "high"}},
+		"m1": {Name: "Model One", Description: "first model", ContextLimit: 300000, OutputLimit: 32000, ReasoningEfforts: []string{"low", "high"}, DefaultReasoning: "high"},
 		"m2": {Name: "Model Two"},
 		"m3": {},
 	}
@@ -132,7 +132,8 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 			SupportedReasoningLevels []struct {
 				Effort string `json:"effort"`
 			} `json:"supported_reasoning_levels"`
-			ContextWindow int `json:"context_window"`
+			ContextWindow   int      `json:"context_window"`
+			InputModalities []string `json:"input_modalities"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(mustRead(t, catalogPath), &catalog); err != nil {
@@ -148,8 +149,8 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if len(first.SupportedReasoningLevels) != 2 || first.SupportedReasoningLevels[0].Effort != "low" {
 		t.Fatalf("catalog[0] reasoning levels = %+v", first.SupportedReasoningLevels)
 	}
-	if first.DefaultReasoningLevel != "low" {
-		t.Fatalf("catalog[0] default_reasoning_level = %q, want first supported effort", first.DefaultReasoningLevel)
+	if first.DefaultReasoningLevel != "high" {
+		t.Fatalf("catalog[0] default_reasoning_level = %q, want declared high (not first effort)", first.DefaultReasoningLevel)
 	}
 	if first.ContextWindow != 300000 {
 		t.Fatalf("catalog[0] context_window = %d", first.ContextWindow)
@@ -163,6 +164,9 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	}
 	if unknown.DefaultReasoningLevel != "none" || len(unknown.SupportedReasoningLevels) != 1 || unknown.SupportedReasoningLevels[0].Effort != "none" {
 		t.Fatalf("catalog[2] should fall back to a single none reasoning level: %+v", unknown)
+	}
+	if !slices.Equal(unknown.InputModalities, []string{"text"}) {
+		t.Fatalf("catalog[2] input_modalities = %v, want text template", unknown.InputModalities)
 	}
 }
 
@@ -624,5 +628,112 @@ func TestSwitchToleratesMissingStaleArtifacts(t *testing.T) {
 	}
 	if _, err := sm.Switch("codex", "alt", nil, ""); err != nil {
 		t.Fatalf("Switch(alt) with missing stale artifact error = %v", err)
+	}
+}
+
+func TestCodexUsesDeclaredDefaultNotFirstEffort(t *testing.T) {
+	home := t.TempDir()
+	a := codexAdapter()
+	req := projectionRequest(t, a, home, []string{"m1"}, "m1")
+	req.ModelMetadata = map[string]ModelMetadata{
+		"m1": {ReasoningEfforts: []string{"low", "high"}, DefaultReasoning: "high", InputModalities: []string{"text", "image"}},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string   `json:"default_reasoning_level"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	got := catalog.Models[0]
+	if got.DefaultReasoningLevel != "high" {
+		t.Fatalf("default = %q, want declared high", got.DefaultReasoningLevel)
+	}
+	if len(got.SupportedReasoningLevels) != 2 || got.SupportedReasoningLevels[0].Effort != "low" {
+		t.Fatalf("levels = %+v", got.SupportedReasoningLevels)
+	}
+	if !slices.Equal(got.InputModalities, []string{"text", "image"}) {
+		t.Fatalf("input_modalities = %v", got.InputModalities)
+	}
+}
+
+func TestCodexMissingDefaultUsesNoneTemplate(t *testing.T) {
+	home := t.TempDir()
+	a := codexAdapter()
+	req := projectionRequest(t, a, home, []string{"m1"}, "m1")
+	req.ModelMetadata = map[string]ModelMetadata{
+		"m1": {ReasoningEfforts: []string{"low", "high"}},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string   `json:"default_reasoning_level"`
+			InputModalities          []string `json:"input_modalities"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	got := catalog.Models[0]
+	if got.DefaultReasoningLevel != "none" || len(got.SupportedReasoningLevels) != 1 || got.SupportedReasoningLevels[0].Effort != "none" {
+		t.Fatalf("missing default should use none template: %+v", got)
+	}
+	if !slices.Equal(got.InputModalities, []string{"text"}) {
+		t.Fatalf("missing modalities = %v, want text template", got.InputModalities)
+	}
+}
+
+func TestProjectionInputModalities(t *testing.T) {
+	home := t.TempDir()
+	meta := map[string]ModelMetadata{
+		"m1": {Name: "M1", ContextLimit: 1000, ReasoningEfforts: []string{"high"}, DefaultReasoning: "high", InputModalities: []string{"text", "image", "video"}},
+	}
+
+	kimi := kimiAdapter()
+	req := projectionRequest(t, kimi, home, []string{"m1"}, "m1")
+	req.ModelMetadata = meta
+	if err := kimi.Apply(req); err != nil {
+		t.Fatalf("kimi Apply() error = %v", err)
+	}
+	kimiM1 := readTOMLFile(t, kimi.ConfigPath(home))["models"].(map[string]any)["senv-main/m1"].(map[string]any)
+	caps := anySlice(kimiM1["capabilities"])
+	if !slices.Equal(caps, []string{"thinking", "image_in", "video_in"}) {
+		t.Fatalf("kimi capabilities = %v", caps)
+	}
+
+	pi := piAdapter()
+	preq := projectionRequest(t, pi, home, []string{"m1"}, "m1")
+	preq.ModelMetadata = meta
+	if err := pi.Apply(preq); err != nil {
+		t.Fatalf("pi Apply() error = %v", err)
+	}
+	piM1 := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)[0].(map[string]any)
+	if got := anySlice(piM1["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
+		t.Fatalf("pi input = %v", piM1["input"])
+	}
+
+	opencode := opencodeAdapter()
+	oreq := projectionRequest(t, opencode, home, []string{"m1"}, "m1")
+	oreq.ModelMetadata = meta
+	if err := opencode.Apply(oreq); err != nil {
+		t.Fatalf("opencode Apply() error = %v", err)
+	}
+	ocM1 := readJSONFile(t, opencode.ConfigPath(home))["provider"].(map[string]any)["senv-main"].(map[string]any)["models"].(map[string]any)["m1"].(map[string]any)
+	mods := ocM1["modalities"].(map[string]any)
+	if got := anySlice(mods["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
+		t.Fatalf("opencode modalities.input = %v", mods["input"])
 	}
 }

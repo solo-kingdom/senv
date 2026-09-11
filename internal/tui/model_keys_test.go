@@ -9,13 +9,14 @@ import (
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
+	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 )
 
-// newFullManagers registers every optional tab (SSH / AI / History / Audit) so
-// number-key and overlay tests exercise the 7-tab layout.
+// newFullManagers registers every optional tab (SSH / AI / MCP / History /
+// Audit) so number-key and overlay tests exercise the 8-tab layout.
 func newFullManagers(t *testing.T) Managers {
 	t.Helper()
 	dir := t.TempDir()
@@ -23,23 +24,27 @@ func newFullManagers(t *testing.T) Managers {
 	if err := sm.Initialize("pw"); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
+	home := t.TempDir()
 	return Managers{
-		Env:     env.NewManager(sm, "pw"),
-		Text:    text.NewManager(sm, "pw"),
-		Config:  config.NewManager(sm, "pw"),
-		SSH:     ssh.NewManager(sm, "pw"),
-		LLM:     llm.NewProviderManager(sm, "pw"),
-		History: &fakeHistorySource{},
-		Audit:   &fakeAuditSource{},
+		Env:       env.NewManager(sm, "pw"),
+		Text:      text.NewManager(sm, "pw"),
+		Config:    config.NewManager(sm, "pw"),
+		SSH:       ssh.NewManager(sm, "pw"),
+		LLM:       llm.NewProviderManager(sm, "pw"),
+		MCP:       mcp.NewManager(sm, "pw"),
+		MCPHome:   home,
+		MCPLedger: filepath.Join(home, "mcp-exports.json"),
+		History:   &fakeHistorySource{},
+		Audit:     &fakeAuditSource{},
 	}
 }
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 7 {
-		t.Fatalf("tabs = %d, want 7", len(m.tabs))
+	if len(m.tabs) != 8 {
+		t.Fatalf("tabs = %d, want 8", len(m.tabs))
 	}
-	for i := 1; i <= 7; i++ {
+	for i := 1; i <= 8; i++ {
 		key := string(rune('0' + i))
 		out, _ := m.Update(runeKey(key))
 		m = out.(Model)

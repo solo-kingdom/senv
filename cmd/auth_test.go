@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -162,6 +165,9 @@ func TestExportIfSession_NoSessionSilent(t *testing.T) {
 }
 
 func TestAuthMemo_PreservesPlatformSessionStoreFailure(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("Darwin defaults to the disk hatch when tmpfs is unproven")
+	}
 	isolateSessionCache(t)
 	dir := t.TempDir()
 	cfg, data := newInitializedProject(t, dir, "correct-secret")
@@ -175,8 +181,7 @@ func TestAuthMemo_PreservesPlatformSessionStoreFailure(t *testing.T) {
 	}
 
 	// After a session exists, make the platform runtime store unreadable.
-	// On macOS this corresponds to Keychain unavailable/locked; on Linux the
-	// hardened tmpfs store reports the same ErrNoSecureSessionStore.
+	// On Linux the hardened tmpfs store reports ErrNoSecureSessionStore.
 	diskRuntime, err := os.MkdirTemp(".", "senv-disk-runtime-")
 	if err != nil {
 		t.Fatalf("create disk runtime: %v", err)
@@ -370,5 +375,71 @@ func TestResolveAuthAutoStartOptInPersistsSession(t *testing.T) {
 	cache, err := session.NewManager(cfg, data).LoadCache()
 	if err != nil || cache == nil {
 		t.Fatalf("auto_start must persist a session: cache=%v err=%v", cache, err)
+	}
+}
+
+// TestResolveAuthRootCauseMessages locks the shared re-auth vocabulary: each
+// cause renders a root cause plus exactly one deterministic next action, and an
+// interactive prompt is never offered for causes a password cannot fix.
+func TestResolveAuthRootCauseMessages(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantCause  session.AuthRootCause
+		wantAction string
+		promptable bool
+	}{
+		{"expired prompts", session.ErrSessionExpired, session.AuthCauseExpired, "senv session start", true},
+		{"restarted prompts", session.ErrSessionInvalidated, session.AuthCauseRestarted, "senv session start", true},
+		{
+			"vault changed prompts",
+			fmt.Errorf("%w: %w", session.ErrSessionInvalidated, session.ErrSessionVaultChanged),
+			session.AuthCauseVaultChanged,
+			"senv session clear --all, then senv session start",
+			true,
+		},
+		{"multiple cache not promptable", session.ErrSessionUnverifiable, session.AuthCauseUnreadable, "resolve the environment issue above, then retry", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped := wrapAuthCause(tc.err)
+			got, ok := session.ClassifyAuthCause(wrapped)
+			if !ok || got != tc.wantCause {
+				t.Fatalf("classify = (%q, %v), want (%q, true)", got, ok, tc.wantCause)
+			}
+			msg := wrapped.Error()
+			if !strings.Contains(msg, string(tc.wantCause)) {
+				t.Fatalf("message %q missing cause %q", msg, tc.wantCause)
+			}
+			if !strings.Contains(msg, tc.wantAction) {
+				t.Fatalf("message %q missing action %q", msg, tc.wantAction)
+			}
+		})
+	}
+}
+
+// TestAuthErrorNoSecretLeak asserts no rendered cause message carries key, salt,
+// or password material.
+func TestAuthErrorNoSecretLeak(t *testing.T) {
+	secretKey := base64.StdEncoding.EncodeToString([]byte("super-secret-derived-key-material"))
+	secretSalt := base64.StdEncoding.EncodeToString([]byte("super-secret-salt-material"))
+	secrets := []string{secretKey, secretSalt, "correct-secret"}
+
+	inputs := []error{
+		session.ErrSessionExpired,
+		session.ErrSessionInvalidated,
+		fmt.Errorf("%w: %w", session.ErrSessionInvalidated, session.ErrSessionVaultChanged),
+		session.ErrSessionUnverifiable,
+		session.ErrSessionStaleMetadata,
+		session.ErrSessionStaleKey,
+	}
+	for _, in := range inputs {
+		msg := wrapAuthCause(in).Error()
+		for _, secret := range secrets {
+			if strings.Contains(msg, secret) {
+				t.Fatalf("cause message %q leaked secret %q", msg, secret)
+			}
+		}
 	}
 }

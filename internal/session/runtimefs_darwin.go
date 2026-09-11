@@ -2,8 +2,15 @@
 
 package session
 
-func platformRuntimeFilesystemProbe(string) (runtimeFilesystemKind, error) {
-	// Darwin has no implementation in this release that can positively prove
-	// the candidate is memory-backed. Unknown media must fail closed.
+import "golang.org/x/sys/unix"
+
+func platformRuntimeFilesystemProbe(path string) (runtimeFilesystemKind, error) {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return runtimeFilesystemUnknown, err
+	}
+	if isMemoryBackedFSType(unix.ByteSliceToString(stat.Fstypename[:])) {
+		return runtimeFilesystemMemory, nil
+	}
 	return runtimeFilesystemUnknown, nil
 }

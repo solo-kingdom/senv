@@ -12,7 +12,8 @@ const metaCatalogPayload = `{
 	"p1": {"id":"p1","name":"P1","models":{
 		"m1": {"id":"m1","name":"Model One","description":"first model",
 			"limit":{"context":300000,"output":8192},
-			"reasoning_options":[{"type":"effort","values":["low","high"]},{"type":"budget_tokens","values":["1"]}]},
+			"modalities":{"input":["text","image"]},
+			"reasoning_options":[{"type":"effort","values":["low","high"],"default":"high"},{"type":"budget_tokens","values":["1"]}]},
 		"m2": {"id":"m2"}
 	}}
 }`
@@ -57,7 +58,14 @@ func TestLoadModelMetadataReadsKnownFields(t *testing.T) {
 	if !slices.Equal(m1.ReasoningEfforts, []string{"low", "high"}) {
 		t.Fatalf("m1 efforts = %v", m1.ReasoningEfforts)
 	}
-	if m2, ok := got["m2"]; !ok || m2.Name != "" || m2.ContextLimit != 0 || len(m2.ReasoningEfforts) != 0 {
+	if m1.DefaultReasoning != "high" {
+		t.Fatalf("m1 default reasoning = %q, want catalog default", m1.DefaultReasoning)
+	}
+	if !slices.Equal(m1.InputModalities, []string{"text", "image"}) {
+		t.Fatalf("m1 modalities = %v", m1.InputModalities)
+	}
+	if m2, ok := got["m2"]; !ok || m2.Name != "" || m2.ContextLimit != 0 || len(m2.ReasoningEfforts) != 0 ||
+		m2.DefaultReasoning != "" || len(m2.InputModalities) != 0 {
 		t.Fatalf("m2 = %+v (ok=%v), want zero-value entry", m2, ok)
 	}
 	if _, ok := got["m3"]; ok {

@@ -56,6 +56,7 @@ type codexModelEntry struct {
 	ExperimentalSupportedTools []string              `json:"experimental_supported_tools"`
 	ContextWindow              int                   `json:"context_window,omitempty"`
 	MaxContextWindow           int                   `json:"max_context_window,omitempty"`
+	InputModalities            []string              `json:"input_modalities"`
 }
 
 // codexCatalogPath 返回某 provider alias 对应的 catalog 文件路径（senv 自有
@@ -81,7 +82,7 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 		if displayName == "" {
 			displayName = model
 		}
-		levels, defaultLevel := codexReasoningLevels(meta.ReasoningEfforts)
+		levels, defaultLevel := codexReasoningLevels(meta)
 		entry := codexModelEntry{
 			Slug:                       model,
 			DisplayName:                displayName,
@@ -97,6 +98,7 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 			TruncationPolicy:           codexTruncationPolicy{Mode: codexTruncationMode, Limit: codexTruncationLimit},
 			SupportsParallelToolCalls:  true,
 			ExperimentalSupportedTools: []string{},
+			InputModalities:            codexInputModalities(meta.InputModalities),
 		}
 		if meta.ContextLimit > 0 {
 			entry.ContextWindow = meta.ContextLimit
@@ -117,23 +119,36 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// codexReasoningLevels 把档案/目录里的推理档位投影成 catalog 条目。没有可用
-// 档位时写入单档 none：空数组能被 codex 解析，但 TUI 选择器无法关闭。
-func codexReasoningLevels(efforts []string) ([]codexReasoningLevel, string) {
-	levels := make([]codexReasoningLevel, 0, len(efforts))
-	for _, effort := range efforts {
+// codexReasoningLevels 把档案声明的推理档位投影成 catalog 条目。无档位或旧
+// 档案缺默认推理档时写入单档 none：这是 agent 模板，不是从列表首项推断。
+func codexReasoningLevels(meta ModelMetadata) ([]codexReasoningLevel, string) {
+	if len(meta.ReasoningEfforts) == 0 || strings.TrimSpace(meta.DefaultReasoning) == "" {
+		return []codexReasoningLevel{{
+			Effort:      codexFallbackReasoning,
+			Description: codexFallbackReasoningDesc,
+		}}, codexFallbackReasoning
+	}
+	levels := make([]codexReasoningLevel, 0, len(meta.ReasoningEfforts))
+	for _, effort := range meta.ReasoningEfforts {
 		if strings.TrimSpace(effort) == "" {
 			continue
 		}
 		levels = append(levels, codexReasoningLevel{Effort: effort, Description: codexReasoningLevelDesc})
 	}
 	if len(levels) == 0 {
-		levels = []codexReasoningLevel{{
+		return []codexReasoningLevel{{
 			Effort:      codexFallbackReasoning,
 			Description: codexFallbackReasoningDesc,
-		}}
+		}}, codexFallbackReasoning
 	}
-	return levels, levels[0].Effort
+	return levels, meta.DefaultReasoning
+}
+
+func codexInputModalities(mods []string) []string {
+	if len(mods) == 0 {
+		return []string{"text"}
+	}
+	return append([]string(nil), mods...)
 }
 
 // validateCodexCatalog 校验 codex 解析 catalog 时必须存在的字段；任一缺失或

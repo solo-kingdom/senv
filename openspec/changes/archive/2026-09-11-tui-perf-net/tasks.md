@@ -12,4 +12,4 @@
 
 - [x] 3.1 HTTP 层新建连接计数回填耗时日志 `conns_new`；pull/push/History 阶段计时接入
 - [x] 3.2 验收回测：`senv env list` 与 TUI 暖启动 `conns_new ≤ 1`，复用请求耗时约 0.1s 量级（对比 grill 基线）
-- [ ] 3.3 `openspec validate --strict --type change tui-perf-net` 通过，全量 `make check` 通过
+- [x] 3.3 `openspec validate --strict --type change tui-perf-net` 通过，全量 `make check` 通过

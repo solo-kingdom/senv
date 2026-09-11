@@ -1,13 +1,13 @@
 # tui-forms Specification
 
 ## Purpose
-为 TUI 的多字段编辑提供统一的结构化表单：按字段顺序渲染、内联校验、遮蔽与引用选择等字段类型，并复用既有编辑器闭环处理长文本，使 SSH host、LLM provider、config 元信息与分组重命名等编辑界面共享同一契约。
+为 TUI 的多字段编辑提供统一的结构化表单：按字段顺序渲染、内联校验、遮蔽与引用选择等字段类型，并复用既有编辑器闭环处理长文本，使 SSH host、LLM provider、MCP Server 档案、config 元信息与分组重命名等编辑界面共享同一契约。
 
 ## Requirements
 
 ### Requirement: 结构化表单契约
 
-TUI SHALL 提供可复用的结构化表单，用于多字段编辑（SSH host、LLM provider、config 元信息、分组重命名等）。表单 SHALL 按字段顺序渲染，支持 `tab`/`shift+tab` 与上下方向键在字段间移动、`enter` 提交、`esc` 取消。提交前 SHALL 逐字段校验并在字段旁内联展示错误，校验失败时 MUST 保持表单打开且不丢失已填内容；取消 MUST 不产生任何写入副作用。表单打开期间全局快捷键（数字、`q`、`?`、`S`）MUST NOT 生效。
+TUI SHALL 提供可复用的结构化表单，用于多字段编辑（SSH host、LLM provider、MCP Server 档案、config 元信息、分组重命名等）。表单 SHALL 按字段顺序渲染，支持 `tab`/`shift+tab` 与上下方向键在字段间移动、`enter` 提交、`esc` 取消。提交前 SHALL 逐字段校验并在字段旁内联展示错误，校验失败时 MUST 保持表单打开且不丢失已填内容；取消 MUST 不产生任何写入副作用。表单打开期间全局快捷键（数字、`q`、`?`、`S`）MUST NOT 生效。
 
 #### Scenario: 字段遍历与提交
 - **WHEN** 用户打开一个含多个字段的表单并依次按 `tab` 移动到末字段后按 `enter`
@@ -39,8 +39,12 @@ TUI SHALL 提供可复用的结构化表单，用于多字段编辑（SSH host�
 
 ### Requirement: 长文本走编辑器闭环
 
-对多行内容与自由属性（SSH host 的 `extra`），表单 SHALL 提供跳转到 `$EDITOR` 的入口，复用既有「临时文件 600 → 编辑 → 读回 → 清理」闭环，MUST NOT 新增加密或临时文件路径。
+对多行内容与自由属性（SSH host 的 `extra`、MCP Server 档案的 `args` 与 `env`），表单 SHALL 提供跳转到 `$EDITOR` 的入口，复用既有「临时文件 600 → 编辑 → 读回 → 清理」闭环，MUST NOT 新增加密或临时文件路径。
 
 #### Scenario: 自由属性编辑
 - **WHEN** 用户在 host 表单中对 `extra` 字段触发编辑器
+- **THEN** TUI 挂起并打开 `$EDITOR`，退出后读回内容填入该字段，临时文件被删除
+
+#### Scenario: MCP args 与 env 走编辑器
+- **WHEN** 用户在 MCP 档案表单中对 args 或 env 字段触发编辑器
 - **THEN** TUI 挂起并打开 `$EDITOR`，退出后读回内容填入该字段，临时文件被删除

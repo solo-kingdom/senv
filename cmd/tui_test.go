@@ -11,9 +11,11 @@ import (
 	"testing"
 
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
+	"github.com/wii/senv/internal/tui"
 )
 
 // stubPrompter returns a fixed password, ignoring the prompt text.
@@ -143,6 +145,30 @@ func TestTuiStartupReusesSessionWithoutPrompt(t *testing.T) {
 	if envMgr == nil || textMgr == nil || configMgr == nil {
 		t.Fatal("managers must not be nil")
 	}
+}
+
+func TestTUIAssemblesMCPManager(t *testing.T) {
+	isolateSessionCache(t)
+	dir := t.TempDir()
+	cfg, data := newInitializedProject(t, dir, "correct-secret")
+	withTestPaths(t, cfg, data)
+	authPrompt = stubPrompter("correct-secret")
+
+	mgrs, auditMgr, err := loadTUIManagers(false)
+	if err != nil {
+		t.Fatalf("loadTUIManagers: %v", err)
+	}
+	t.Cleanup(func() { auditMgr.Close() })
+	if mgrs.MCP == nil {
+		t.Fatal("MCP manager must be injected after unlock")
+	}
+	if mgrs.MCPHome == "" {
+		t.Fatal("MCPHome must be set so exports do not fall back to a surprise directory")
+	}
+	if mgrs.MCPLedger != mcp.LedgerPathForConfigDir(cfg) {
+		t.Fatalf("MCPLedger = %q, want config-dir ledger", mgrs.MCPLedger)
+	}
+	_ = tui.New(mgrs)
 }
 
 func TestTuiStartupPasswordDoesNotWriteSession(t *testing.T) {
