@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/wii/senv/internal/perflog"
@@ -14,7 +15,8 @@ type AuditSource interface {
 	LoadAuditEvents() ([]session.AuditEntry, int, error)
 }
 
-// auditFilterPreset 是 'f' 键循环的过滤预设
+// auditFilterPreset 是 'f' 键循环的过滤预设。match 为 nil 的预设是"动态
+// 谓词"，由 auditTab 依据注入的 SyncSource 现算（见 sincePullMatch）。
 var auditFilterPresets = []struct {
 	label string
 	match func(session.AuditEntry) bool
@@ -22,6 +24,7 @@ var auditFilterPresets = []struct {
 	{"all", func(session.AuditEntry) bool { return true }},
 	{"ops", func(e session.AuditEntry) bool { return strings.HasPrefix(string(e.EventType), "op_") }},
 	{"sessions", func(e session.AuditEntry) bool { return !strings.HasPrefix(string(e.EventType), "op_") }},
+	{"since pull", nil},
 }
 
 // auditTab 渲染本机审计事件时间线（含日期时间、操作、目标、结果）
@@ -29,6 +32,13 @@ type auditTab struct {
 	source        AuditSource
 	width, height int
 	loaded        bool
+
+	// sync 提供"自上次 pull"过滤视图的时间来源；nil（git 模式 / 未开
+	// auto_sync）时该预设表现为明确的空态。
+	sync SyncSource
+	// lastPull 缓存最近一次成功 pull 的时间：load/Reload 时刷新（后台
+	// pull 完成会 Reload），渲染路径零额外开销。
+	lastPull time.Time
 
 	rows      []session.AuditEntry
 	skipped   int
@@ -47,8 +57,8 @@ type auditLoadedMsg struct {
 	err     error
 }
 
-func newAuditTab(source AuditSource) *auditTab {
-	return &auditTab{source: source}
+func newAuditTab(source AuditSource, sync SyncSource) *auditTab {
+	return &auditTab{source: source, sync: sync}
 }
 
 func (t *auditTab) Title() string { return "Audit" }
@@ -88,6 +98,9 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case auditLoadedMsg:
 		t.loaded = true
 		t.loadErr = ""
+		if t.sync != nil {
+			t.lastPull = t.sync.Status().LastPull
+		}
 		if msg.err != nil {
 			t.loadErr = msg.err.Error()
 			return t, nil
@@ -148,8 +161,19 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	return t, nil
 }
 
+// sincePullMatch 是"自上次 pull"预设的动态谓词：仅保留上次成功 pull 之后
+// 发生的事件（pull 引入/覆盖档案的同步与写操作事件自然落在窗口内）。
+// 从未 pull 过时一律不匹配，由空态提示说明原因。
+func (t *auditTab) sincePullMatch(e session.AuditEntry) bool {
+	return !t.lastPull.IsZero() && e.Timestamp.After(t.lastPull)
+}
+
 func (t *auditTab) filtered() []session.AuditEntry {
-	match := auditFilterPresets[t.filterIdx].match
+	preset := auditFilterPresets[t.filterIdx]
+	match := preset.match
+	if match == nil {
+		match = t.sincePullMatch
+	}
 	needle := strings.ToLower(strings.TrimSpace(t.filterBox.Term()))
 	out := make([]session.AuditEntry, 0, len(t.rows))
 	for _, e := range t.rows {
@@ -197,6 +221,9 @@ func (t *auditTab) View() string {
 	if len(rows) == 0 {
 		if t.filterBox.Term() != "" {
 			return t.plainPane("(no events matching /" + t.filterBox.Term() + ")")
+		}
+		if auditFilterPresets[t.filterIdx].match == nil && t.lastPull.IsZero() {
+			return t.plainPane("(no pull yet: this vault has never been pulled on this machine)")
 		}
 		return t.plainPane("(no audit events yet)")
 	}

@@ -10,11 +10,14 @@ import (
 )
 
 // SyncState 是 TUI 底部常驻同步状态条的快照。Err 非空表示最近一次同步
-// 失败；Last 是最近一次成功 pull/push 的时间（零值表示未知）。
+// 失败；Last 是最近一次成功 pull/push 的时间（零值表示未知）；LastPull
+// 只反映最近一次成功 pull（audit 面板"自上次 pull"过滤视图用，零值表示
+// 从未 pull 过）。
 type SyncState struct {
-	Dirty int
-	Last  time.Time
-	Err   error
+	Dirty    int
+	Last     time.Time
+	LastPull time.Time
+	Err      error
 }
 
 // PullOutcome 汇总一次后台拉取。零值表示没有网络动作（节流/锁忙跳过）或

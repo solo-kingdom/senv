@@ -153,6 +153,7 @@ func (s *tuiSyncSource) Status() tui.SyncState {
 	st := tui.SyncState{Dirty: dirty, Err: err}
 	if !lastPull.IsZero() {
 		st.Last = lastPull
+		st.LastPull = lastPull
 	}
 	s.mu.Lock()
 	lastPush := s.lastPush

@@ -137,7 +137,7 @@ func New(mgr Managers) Model {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
 	}
 	if mgr.Audit != nil {
-		m.tabs = append(m.tabs, newAuditTab(mgr.Audit))
+		m.tabs = append(m.tabs, newAuditTab(mgr.Audit, mgr.Sync))
 	}
 	return m
 }
