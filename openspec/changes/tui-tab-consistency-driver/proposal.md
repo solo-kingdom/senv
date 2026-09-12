@@ -22,7 +22,7 @@ grill 已收敛（见 `grill.md`）：根因是 AI/MCP/SSH 的 View 缺 `!t.load
 - [x] History/Audit 面板撑满内容区（contentW×contentH），resize 时跟随重排，与双栏 Tab 外框一致
 - [x] History/Audit 列表走共享 `windowedPane`（窗口化标题 + 防溢出 clip），加载/空/错误三态内嵌面板
 - [x] 新增/调整的渲染有测试覆盖（加载态、空态、几何、resize）
-- [ ] 全部子 change `validate --strict` 通过并归档
+- [x] 全部子 change `validate --strict` 通过并归档
 
 ## Driver 协议
 - 本 change 无 spec 增量（`.openspec.yaml` 已设 `skip_specs: true`）
