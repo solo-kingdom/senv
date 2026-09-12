@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/mcp"
@@ -750,5 +751,33 @@ func TestMCPFormEditSwitchesTransportCleanly(t *testing.T) {
 	}
 	if entry.CreatedAt.IsZero() {
 		t.Fatal("switched entry lost CreatedAt")
+	}
+}
+
+// TestMCPTabLoadingStateBeforeLoad 校验加载态范式：装载完成前渲染常驻双栏几何
+// 并内嵌加载提示，不得误显带操作指引的空态文案（tui-tab-consistency-render）。
+func TestMCPTabLoadingStateBeforeLoad(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	if tab.loaded {
+		t.Fatal("fresh tab should not be loaded")
+	}
+	out := tab.View()
+	if !strings.Contains(out, "loading MCP profiles…") {
+		t.Fatalf("loading hint missing before load: %q", clipRunesT(out, 120))
+	}
+	if strings.Contains(out, "no MCP server profiles yet") {
+		t.Fatal("empty-state guidance shown while loading")
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 120 || h != 26 {
+		t.Fatalf("loading view size = %dx%d, want 120x26 (persistent two-pane geometry)", w, h)
+	}
+
+	tab = loadMCPTab(t, tab)
+	out = tab.View()
+	if strings.Contains(out, "loading MCP profiles…") {
+		t.Fatal("loading hint still shown after load")
+	}
+	if !strings.Contains(out, "no MCP server profiles yet") {
+		t.Fatalf("empty state missing after empty load: %q", clipRunesT(out, 120))
 	}
 }

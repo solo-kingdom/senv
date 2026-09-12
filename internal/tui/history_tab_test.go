@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/provider"
 )
 
@@ -148,4 +149,107 @@ func TestHistoryTabRestoreErrorReported(t *testing.T) {
 	}
 	tab, _ = tab.Update(msg)
 	// 错误通过 errMsg 冒泡到顶层错误栏；此处不 panic 即可
+}
+
+// TestHistoryTabPaneFillsContentArea 校验面板几何：加载/空/列表三态均撑满内容
+// 区，与其他 Tab 外框一致（tui-tab-consistency-render）。
+func TestHistoryTabPaneFillsContentArea(t *testing.T) {
+	newTab := func() *historyTab {
+		tab := newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows()})
+		tab.SetSize(78, 17)
+		tab.visited = true
+		return tab
+	}
+
+	// 加载态：不再是裸文本，面板撑满 80x19（Width+2/Height+2）
+	tab := newTab()
+	out := tab.View()
+	if !strings.Contains(out, "loading history…") {
+		t.Fatalf("loading hint missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("loading pane size = %dx%d, want 80x19", w, h)
+	}
+
+	// 空态：同样撑满
+	empty := newHistoryTab(&fakeHistorySource{})
+	empty.SetSize(78, 17)
+	empty.visited = true
+	empty.Update(drainCmd(t, empty.Init()))
+	out = empty.View()
+	if !strings.Contains(out, "(no history versions:") {
+		t.Fatalf("empty hint missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("empty pane size = %dx%d, want 80x19", w, h)
+	}
+
+	// 列表态：撑满，且列表多于可视行数时标题带可见区间提示
+	many := make([]provider.HistoryVersion, 0, 30)
+	base := time.Date(2026, 9, 6, 10, 30, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		many = append(many, provider.HistoryVersion{
+			Kind: "env", Grp: "deploy", Key: "KEY",
+			Ciphertext: []byte(fmt.Sprintf("v%d", i)), Revision: int64(i + 1),
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	full := newHistoryTab(&fakeHistorySource{rows: many})
+	full.SetSize(78, 17)
+	full.visited = true
+	full.Update(drainCmd(t, full.Init()))
+	out = full.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("list pane size = %dx%d, want 80x19", w, h)
+	}
+	if !strings.Contains(out, " 1–") {
+		t.Fatalf("windowed range hint missing in title: %q", clipRunesT(out, 80))
+	}
+
+	// 最小终端冒烟：内容区高度为 0 时不得外溢
+	full.SetSize(28, 0)
+	if out = full.View(); out != "" {
+		t.Fatalf("zero-height content area should render nothing, got %q", clipRunesT(out, 60))
+	}
+
+	// resize 跟随：新尺寸后面板宽度跟随内容区
+	full.SetSize(60, 12)
+	out = full.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 62 || h != 14 {
+		t.Fatalf("after resize pane size = %dx%d, want 62x14", w, h)
+	}
+}
+
+// TestHistoryTabDetailStaysInsidePane 校验 detail/confirm 附加行渲染在面板内部
+// 且面板总高不超出内容区（tui-tab-consistency-render）。
+func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
+	var tab Tab = newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows()})
+	tab.SetSize(78, 17)
+	tab.(*historyTab).visited = true
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // recent → entry
+	out := tab.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("entry pane size = %dx%d, want 80x19", w, h)
+	}
+
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail
+	out = tab.View()
+	if !strings.Contains(out, "value-of-rev-") {
+		t.Fatalf("detail content missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("detail pane size = %dx%d, want 80x19 (extras clipped inside pane)", w, h)
+	}
+
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEscape}) // detail → entry
+	tab, _ = tab.Update(runeKey("R"))                    // entry → confirm
+	out = tab.View()
+	if !strings.Contains(out, "[y/N]") {
+		t.Fatalf("confirm prompt missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("confirm pane size = %dx%d, want 80x19", w, h)
+	}
 }

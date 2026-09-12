@@ -1114,7 +1114,7 @@ func (t *mcpTab) View() string {
 	if t.mode == mcpModePlan || t.mode == mcpModeChangedConfirm {
 		return clipLines(t.renderPlan(), paneBudget(t.height))
 	}
-	if len(t.servers) == 0 && t.mode == mcpModeNormal && t.form == nil {
+	if t.loaded && len(t.servers) == 0 && t.mode == mcpModeNormal && t.form == nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("MCP"),
 			emptyStateStyle.Render("no MCP server profiles yet; press n to create one"))
@@ -1146,6 +1146,19 @@ func (t *mcpTab) viewBaseAt(height int) string {
 	rightW := t.width - leftW - 5
 	if rightW < 4 {
 		rightW = 4
+	}
+	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
+	if !t.loaded {
+		left := emptyStateStyle.Render("loading MCP profiles…")
+		right := emptyStateStyle.Render("loading MCP profiles…")
+		if t.focusLeft {
+			left = activePaneStyle.Width(leftW).Height(height).Render(left)
+			right = paneStyle.Width(rightW).Height(height).Render(right)
+		} else {
+			left = paneStyle.Width(leftW).Height(height).Render(left)
+			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
 	leftTitle := fmt.Sprintf("profiles (%d)", len(t.visibleServers()))
 	if t.filterBox.Active() {

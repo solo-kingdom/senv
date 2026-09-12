@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/session"
 )
 
@@ -132,5 +133,54 @@ func TestAuditTabFreeTextFilterNoMatch(t *testing.T) {
 	}
 	if view := tab.View(); !strings.Contains(view, "no events matching") {
 		t.Errorf("view should show a no-match state, got %q", view)
+	}
+}
+
+// TestAuditTabPaneFillsContentArea 校验面板几何：加载/错误/空/列表四态均撑满
+// 内容区，resize 跟随重排（tui-tab-consistency-render）。
+func TestAuditTabPaneFillsContentArea(t *testing.T) {
+	// 加载态：不再是裸文本
+	loading := newAuditTab(&fakeAuditSource{})
+	loading.SetSize(78, 17)
+	out := loading.View()
+	if !strings.Contains(out, "loading audit log…") {
+		t.Fatalf("loading hint missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("loading pane size = %dx%d, want 80x19", w, h)
+	}
+
+	// 错误态：内嵌面板、撑满
+	errTab := newAuditTab(&fakeAuditSource{err: fmt.Errorf("permission denied")})
+	errTab.SetSize(78, 17)
+	errTab.Update(drainCmd(t, errTab.Init()))
+	out = errTab.View()
+	if !strings.Contains(out, "permission denied") {
+		t.Fatalf("error text missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("error pane size = %dx%d, want 80x19", w, h)
+	}
+
+	// 空态与列表态：撑满；resize 跟随
+	src := &fakeAuditSource{rows: sampleAuditRows()}
+	var tab Tab = newAuditTab(src)
+	tab.SetSize(78, 17)
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+	out = tab.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
+		t.Fatalf("list pane size = %dx%d, want 80x19", w, h)
+	}
+
+	// 最小终端冒烟：内容区高度为 0 时不得外溢
+	tab.SetSize(28, 0)
+	if out = tab.View(); out != "" {
+		t.Fatalf("zero-height content area should render nothing, got %q", clipRunesT(out, 60))
+	}
+
+	tab.SetSize(60, 12)
+	out = tab.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 62 || h != 14 {
+		t.Fatalf("after resize pane size = %dx%d, want 62x14", w, h)
 	}
 }

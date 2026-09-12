@@ -968,3 +968,31 @@ func TestAITabEditProviderClearsMetadataFields(t *testing.T) {
 		t.Fatalf("reasoning prefill lost: %#v", values)
 	}
 }
+
+// TestAITabLoadingStateBeforeLoad 校验加载态范式：装载完成前渲染常驻双栏几何
+// 并内嵌加载提示，不得误显带操作指引的空态文案（tui-tab-consistency-render）。
+func TestAITabLoadingStateBeforeLoad(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	if tab.loaded {
+		t.Fatal("fresh tab should not be loaded")
+	}
+	out := tab.View()
+	if !strings.Contains(out, "loading providers…") {
+		t.Fatalf("loading hint missing before load: %q", clipRunesT(out, 120))
+	}
+	if strings.Contains(out, "no LLM provider profiles yet") {
+		t.Fatal("empty-state guidance shown while loading")
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 100 || h != 26 {
+		t.Fatalf("loading view size = %dx%d, want 100x26 (persistent two-pane geometry)", w, h)
+	}
+
+	runAITabLoad(t, tab)
+	out = tab.View()
+	if strings.Contains(out, "loading providers…") {
+		t.Fatal("loading hint still shown after load")
+	}
+	if !strings.Contains(out, "Providers (1)") {
+		t.Fatalf("provider list missing after load: %q", clipRunesT(out, 120))
+	}
+}

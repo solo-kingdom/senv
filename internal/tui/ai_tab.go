@@ -1326,7 +1326,7 @@ func (t *aiTab) View() string {
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if len(t.providers) == 0 {
+	if t.loaded && len(t.providers) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("AI"),
 			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then r to refresh"))
@@ -1360,6 +1360,20 @@ func (t *aiTab) viewBaseAt(height int) string {
 	rightW := t.width - leftW - 5
 	if rightW < 4 {
 		rightW = 4
+	}
+
+	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
+	if !t.loaded {
+		left := emptyStateStyle.Render("loading providers…")
+		right := emptyStateStyle.Render("loading providers…")
+		if t.focusLeft {
+			left = activePaneStyle.Width(leftW).Height(height).Render(left)
+			right = paneStyle.Width(rightW).Height(height).Render(right)
+		} else {
+			left = paneStyle.Width(leftW).Height(height).Render(left)
+			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
 
 	providerLines := t.providerLines(max(leftW-4, 8))

@@ -18,10 +18,10 @@ grill 已收敛（见 `grill.md`）：根因是 AI/MCP/SSH 的 View 缺 `!t.load
 | . | 必须 | 会修改，实施前切任务分支 |
 
 ## 验收标准
-- [ ] AI/MCP/SSH Tab 数据装载期间显示加载态（env 范式：常驻面板几何 + 框内「加载中…」），空态文案仅在装载完成后出现
-- [ ] History/Audit 面板撑满内容区（contentW×contentH），resize 时跟随重排，与双栏 Tab 外框一致
-- [ ] History/Audit 列表走共享 `windowedPane`（窗口化标题 + 防溢出 clip），加载/空/错误三态内嵌面板
-- [ ] 新增/调整的渲染有测试覆盖（加载态、空态、几何、resize）
+- [x] AI/MCP/SSH Tab 数据装载期间显示加载态（env 范式：常驻面板几何 + 框内「加载中…」），空态文案仅在装载完成后出现
+- [x] History/Audit 面板撑满内容区（contentW×contentH），resize 时跟随重排，与双栏 Tab 外框一致
+- [x] History/Audit 列表走共享 `windowedPane`（窗口化标题 + 防溢出 clip），加载/空/错误三态内嵌面板
+- [x] 新增/调整的渲染有测试覆盖（加载态、空态、几何、resize）
 - [ ] 全部子 change `validate --strict` 通过并归档
 
 ## Driver 协议
@@ -33,3 +33,5 @@ grill 已收敛（见 `grill.md`）：根因是 AI/MCP/SSH 的 View 缺 `!t.load
 - 结束时逐条列出未勾项与原因，不按 change 汇总
 
 ## 验证记录
+- 2026-09-12（分支 tui-tab-consistency）：1.1 keymap 重构（24a7729）与 openspec 规划（888b733）分两笔提交后自 tui-ux 开切任务分支；2.1 子 change `tui-tab-consistency-render` 全部 checkbox 勾选且 `validate --strict` 通过；3.1 全仓 `make check`（fmt/vet/lint/test-race）全绿，internal/tui 131.3s。
+- 未勾项：无。

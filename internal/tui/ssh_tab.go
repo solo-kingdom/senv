@@ -1315,7 +1315,7 @@ func (t *sshTab) View() string {
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if len(t.hosts) == 0 && len(t.keyPairs) == 0 {
+	if t.loaded && len(t.hosts) == 0 && len(t.keyPairs) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("SSH"),
 			emptyStateStyle.Render("no SSH assets yet; press n to create a host or import a keypair, then Ctrl+R to refresh"))
@@ -1346,6 +1346,20 @@ func (t *sshTab) viewBaseAt(height int) string {
 	rightW := t.width - leftW - 5
 	if rightW < 4 {
 		rightW = 4
+	}
+
+	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
+	if !t.loaded {
+		left := emptyStateStyle.Render("loading SSH assets…")
+		right := emptyStateStyle.Render("loading SSH assets…")
+		if t.focusLeft {
+			left = activePaneStyle.Width(leftW).Height(height).Render(left)
+			right = paneStyle.Width(rightW).Height(height).Render(right)
+		} else {
+			left = paneStyle.Width(leftW).Height(height).Render(left)
+			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
 
 	hostLines := t.hostListLines(max(leftW-4, 8))

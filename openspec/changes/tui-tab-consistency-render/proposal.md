@@ -30,3 +30,5 @@ TUI 8 个 Tab 的加载行为与面板几何三种形态并存：AI/MCP/SSH 数�
 - 按键语义与数据装载路径变更（懒加载门控、单趟快照语义不变）
 
 ## 验证记录
+- 2026-09-12（分支 tui-tab-consistency）：1.1–1.3 AI/MCP/SSH 加载守卫落地（`viewBaseAt` 层、`View` 空态分支加 `t.loaded` 前置），新增 Test{AI,MCP,SSH}TabLoadingStateBeforeLoad；2.1–2.2 history/audit 改为 `windowedPane`+附加行+`clipLines`+固定几何，确认提示可操作部分（`[y/N]`）前置避免截断丢失，新增 TestHistoryTabPaneFillsContentArea、TestHistoryTabDetailStaysInsidePane、TestAuditTabPaneFillsContentArea；2.3 resize（60×12）与 30×7 下限（零内容区高度不渲染）冒烟并入上述用例；3.1 `make check` 全绿（fmt/vet/lint/test-race，internal/tui 131s），SKILL.md 无加载态/几何描述免改；3.2 `openspec validate --strict` 通过。
+- 备注：提案/设计中的加载文案原写简体中文；实施时发现 keymap `Group` 重构已将 TUI 界面语言整体切为英文（SKILL.md 同步声明），文案改为对齐既有 `loading groups…` 的英文（"loading providers…" 等），spec 场景同步引用实际字符串；既有「错误处理与空状态」需求的简体中文条款与英文界面现实的漂移属该重构遗留，不在本批处理。

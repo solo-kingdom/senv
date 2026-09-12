@@ -176,35 +176,40 @@ func (t *auditTab) clampCursor() {
 
 func (t *auditTab) SetSize(width, height int) {
 	t.width, t.height = width, height
-	// 6 行 chrome：表头行 + 空行 + 提示行 + 边距（原 pageSize 公式）。
-	t.list.SetHeight(height - 6)
+	// 4 行 chrome：面板标题 1 行 + 提示/过滤附加行预留 + 边距。
+	// 仅作翻页步长预算；渲染窗口按 View 内实际附加行高度精算。
+	t.list.SetHeight(height - 4)
 }
 
 func (t *auditTab) View() string {
+	// 最小终端（30×7）下内容区高度恰为 0：不渲染，避免任何溢出。
+	if t.height <= 0 || t.width <= 0 {
+		return ""
+	}
+	// 加载/错误/空态与列表同用固定面板几何（撑满内容区），切换无布局跳动。
 	if t.loadErr != "" {
-		return paneStyle.Render("failed to load audit log: " + t.loadErr)
+		return t.plainPane("failed to load audit log: " + t.loadErr)
 	}
 	if !t.loaded {
-		return "loading audit log…"
+		return t.plainPane("loading audit log…")
 	}
 	rows := t.filtered()
 	if len(rows) == 0 {
 		if t.filterBox.Term() != "" {
-			return paneStyle.Render(emptyStateStyle.Render("(no events matching /" + t.filterBox.Term() + ")"))
+			return t.plainPane("(no events matching /" + t.filterBox.Term() + ")")
 		}
-		return paneStyle.Render(emptyStateStyle.Render("(no audit events yet)"))
+		return t.plainPane("(no audit events yet)")
 	}
 
-	var b strings.Builder
+	innerW := max(t.width-4, 8)
 	filterLabel := auditFilterPresets[t.filterIdx].label
 	if t.filterBox.Term() != "" {
 		filterLabel += " + /" + t.filterBox.Term()
 	}
-	b.WriteString(fmt.Sprintf("local audit events (filter: %s, %d total, newest first)\n\n",
-		filterLabel, len(rows)))
-	start, end := t.list.VisibleRange(len(rows))
-	for i := start; i < end; i++ {
-		e := rows[i]
+	title := truncateWidth(fmt.Sprintf("local audit events (filter: %s, %d total, newest first)",
+		filterLabel, len(rows)), innerW)
+	lines := make([]string, 0, len(rows))
+	for i, e := range rows {
 		outcome := "✓"
 		if !e.Success {
 			outcome = "✗"
@@ -212,18 +217,43 @@ func (t *auditTab) View() string {
 		line := fmt.Sprintf("%s  %-18s %-8s %s",
 			e.Timestamp.Local().Format("2006-01-02 15:04:05"),
 			string(e.EventType), outcome, e.Target)
-		prefix := "  "
 		if i == t.list.Cursor() {
-			prefix = "> "
-			line = selectedLineStyle.Render(line)
+			line = selectedLineStyle.Render("> " + line)
+		} else {
+			line = "  " + line
 		}
-		b.WriteString(prefix + line + "\n")
+		lines = append(lines, truncateWidth(line, innerW))
 	}
+
+	// 附加行渲染在面板内部（skipped/过滤输入），空行分隔计入高度预算。
+	var extraRows []string
 	if t.skipped > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠ skipped %d unparseable records\n", t.skipped))
+		extraRows = append(extraRows, "", truncateWidth(
+			fmt.Sprintf("⚠ skipped %d unparseable records", t.skipped), innerW))
 	}
 	if t.filterBox.Active() {
-		b.WriteString("\n" + t.filterBox.Prompt() + "(enter confirm · esc clear)\n")
+		extraRows = append(extraRows, "", truncateWidth(
+			t.filterBox.Prompt()+"(enter confirm · esc clear)", innerW))
 	}
-	return paneStyle.Render(b.String())
+
+	listH := t.height - len(extraRows)
+	if listH < 1 {
+		listH = 1
+	}
+	out := windowedPane(title, lines, t.list.Cursor(), listH, t.width)
+	if len(extraRows) > 0 {
+		out = out + "\n" + strings.Join(extraRows, "\n")
+	}
+	out = clipLines(out, t.height)
+	return paneStyle.Width(t.width).Height(t.height).Render(out)
+}
+
+// plainPane 把单段提示文本渲染进撑满内容区的固定面板。
+func (t *auditTab) plainPane(text string) string {
+	lines := strings.Split(text, "\n")
+	innerW := max(t.width-8, 8)
+	for i, l := range lines {
+		lines[i] = truncateWidth(l, innerW)
+	}
+	return paneStyle.Width(t.width).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
 }

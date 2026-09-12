@@ -260,57 +260,85 @@ func (t *historyTab) doRestore(v provider.HistoryVersion) tea.Cmd {
 
 func (t *historyTab) SetSize(width, height int) {
 	t.width, t.height = width, height
-	// 4 行 chrome：表头 + 边距 + flash 行（原 visibleRows 公式）。
+	// 4 行 chrome：面板标题 1 行 + 附加行（detail/confirm/flash）预留 + 边距。
+	// 仅作翻页步长预算；渲染窗口按 View 内实际附加行高度精算。
 	t.list.SetHeight(height - 4)
 }
 
 func (t *historyTab) View() string {
+	// 最小终端（30×7）下内容区高度恰为 0：不渲染，避免任何溢出。
+	if t.height <= 0 || t.width <= 0 {
+		return ""
+	}
+	// 加载/空态与列表同用固定面板几何（撑满内容区），切换无布局跳动。
 	if !t.loaded {
-		return "loading history…"
+		return t.plainPane("loading history…")
 	}
 	if len(t.rows) == 0 {
 		title := "vault recent history"
 		if t.entryID != "" {
 			title = "entry " + t.entryID
 		}
-		return paneStyle.Render(fmt.Sprintf("%s\n\n(no history versions: the entry was never modified, or the server has history retention disabled)", title))
+		return t.plainPane(title + "\n\n(no history versions: the entry was never modified, or the server has history retention disabled)")
 	}
 
-	var b strings.Builder
-	if t.entryID == "" {
-		b.WriteString("vault recent history (enter to view one entry)\n\n")
-	} else {
-		b.WriteString(fmt.Sprintf("version timeline for %s\n\n", t.entryID))
+	innerW := max(t.width-4, 8)
+	title := "vault recent history (enter to view one entry)"
+	if t.entryID != "" {
+		title = fmt.Sprintf("version timeline for %s", t.entryID)
 	}
-	start, end := t.list.VisibleRange(len(t.rows))
-	for i := start; i < end; i++ {
-		row := t.rows[i]
-		idx := i
-		prefix := "  "
+	lines := make([]string, 0, len(t.rows))
+	for i, row := range t.rows {
 		line := fmt.Sprintf("%-20s %-18s rev %-4d %s",
 			row.CreatedAt.Local().Format("2006-01-02 15:04:05"),
 			truncateRunes(entryIDOf(row), 18), row.Revision,
 			truncateRunes(t.previewOf(row), 30))
-		if idx == t.list.Cursor() && t.mode != historyModeDetail {
-			prefix = "> "
-			line = selectedLineStyle.Render(line)
+		if i == t.list.Cursor() && t.mode != historyModeDetail {
+			line = selectedLineStyle.Render("> " + line)
+		} else {
+			line = "  " + line
 		}
-		b.WriteString(prefix + line + "\n")
+		lines = append(lines, truncateWidth(line, innerW))
 	}
+
+	// 附加行渲染在面板内部（确认/详情/flash），空行分隔计入高度预算。
+	var extraRows []string
 	if t.mode == historyModeDetail {
-		b.WriteString("\n" + t.detailView())
+		extraRows = append(extraRows, "")
+		extraRows = append(extraRows, fitLines(strings.Split(t.detailView(), "\n"), innerW)...)
 	}
 	if t.mode == historyModeConfirm {
-		row := t.current()
-		if row != nil {
-			b.WriteString("\nrestore to revision " + fmt.Sprint(row.Revision) +
-				"? (writes back the historical value and pushes, creating a new revision) [y/N] ")
+		if row := t.current(); row != nil {
+			// 可操作部分前置：窄终端截断后 [y/N] 仍可见。
+			extraRows = append(extraRows, "", truncateWidth(fmt.Sprintf(
+				"restore to revision %d? [y/N] — writes back the historical value and pushes (creates a new revision)",
+				row.Revision), innerW))
 		}
 	}
 	if t.flash != "" {
-		b.WriteString("\n" + historyFlashStyle.Render(t.flash))
+		extraRows = append(extraRows, "", historyFlashStyle.Render(t.flash))
 	}
-	return paneStyle.Render(b.String())
+
+	listH := t.height - len(extraRows)
+	if listH < 1 {
+		listH = 1
+	}
+	out := windowedPane(title, lines, t.list.Cursor(), listH, t.width)
+	if len(extraRows) > 0 {
+		out = out + "\n" + strings.Join(extraRows, "\n")
+	}
+	out = clipLines(out, t.height)
+	return paneStyle.Width(t.width).Height(t.height).Render(out)
+}
+
+// plainPane 把单段提示文本渲染进撑满内容区的固定面板。
+func (t *historyTab) plainPane(text string) string {
+	lines := strings.Split(text, "\n")
+	innerW := max(t.width-8, 8)
+	for i, l := range lines {
+		lines[i] = truncateWidth(l, innerW)
+	}
+	return paneStyle.Width(t.width).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
 }
 
 func (t *historyTab) previewOf(row provider.HistoryVersion) string {

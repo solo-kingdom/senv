@@ -14,7 +14,7 @@
 
 ## Decisions
 
-- **AI/MCP/SSH 加载守卫放 `viewBaseAt` 层而非 `View` 顶层**：`View` 顶层早退会让常驻几何失效（布局跳动、表单/向导 overlay 依赖 base 渲染）；在 base 渲染里对 `!t.loaded` 返回「标题行（paneTitleStyle，保留 Tab 名与过滤提示结构）+ 两栏各自 `emptyStateStyle.Render("加载…中…")`」再套既有 Width/Height 几何，与 env「框内嵌提示」同构。SSH 双栏（hosts/keypairs）同法。文案：AI/MCP/SSH 统一「加载档案中…」？——按对象区分：AI「加载 provider 中…」、MCP「加载 MCP 档案中…」、SSH「加载 SSH 资产中…」，对齐 env「加载分组中…」粒度。
+- **AI/MCP/SSH 加载守卫放 `viewBaseAt` 层而非 `View` 顶层**：`View` 顶层早退会让常驻几何失效（布局跳动、表单/向导 overlay 依赖 base 渲染）；在 base 渲染里对 `!t.loaded` 返回两栏各自 `emptyStateStyle` 加载文本再套既有 Width/Height 几何，与 env「框内嵌提示」同构；`View` 的空态分支同步加 `t.loaded` 前置条件。SSH 双栏（hosts/keypairs）同法。文案随 keymap 重构后的英文界面语言（对齐既有 `loading groups…` 粒度）：AI "loading providers…"、MCP "loading MCP profiles…"、SSH "loading SSH assets…"；history/audit 既有 "loading history…"/"loading audit log…" 移入面板。
 - **history/audit 几何收口**：`View` 统一为「`windowedPane(标题, 行, cursor, 行预算, width)` + 底部附加行（history: detail/confirm/flash；audit: skipped/filter 提示）」→ `clipLines(总预算)` → `paneStyle.Width(t.width).Height(t.height)`；附加行存在时行预算按 `stackWithOverlay` 同法压缩（`lipgloss.Height` 计量）。`SetSize` 预算重算为「标题 1 行 + 附加行预留」随新结构核对。面板保持 `paneStyle`（不引入 `activePaneStyle`：单面板 Tab 无失焦形态，不扩语义）。
 - **history 模式切换**：recent/entry 列表行已是 `[]string` 化渲染，接入 `windowedPane` 后删手写 `VisibleRange` 循环与区间提示缺失；detail/confirm/flash 沿用现有模式状态机，仅渲染位置收进面板。
 - **spec delta 全 ADDED**（两条新需求落 `tui-viewer`），零 MODIFIED：既有「错误处理与空状态」「History Tab 延迟加载」「面板内容截断与详情」语义不受影响，无需改写。
@@ -28,6 +28,7 @@
 - [受影响测试断言旧空态文案/旧几何] → 子 change 任务含逐 Tab 断言更新；以 `make check` 全绿为准
 - [chrome 预算重算偏差致小终端溢出] → 复用 `stackWithOverlay`/`clipLines` 收口；补一条小终端渲染回归断言
 - [与进行中的 keymap `Group` 重构同文件冲突] → apply 准备段核验工作树，dirty 且路径不在本 task change 内时停下确认
+- [keymap 重构已把 TUI 界面语言切为英文（spec「错误处理与空状态」的简体中文条款与现实漂移）] → 本批新 spec 不硬编码语言、引实际字符串；既有需求的语言条款漂移属该批遗留，另行处理
 
 ## Open Questions
 
