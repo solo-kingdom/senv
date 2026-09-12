@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/storage"
 )
 
 // newMCPExportProject prepares an isolated vault plus a redirected HOME, so
@@ -135,5 +139,78 @@ func TestMCPExportAndUnexportRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(claudeConfig), "github") {
 		t.Fatalf("unexport left the claude entry behind:\n%s", claudeConfig)
+	}
+}
+
+func TestPrintExportPlanMarksUnresolvedRefs(t *testing.T) {
+	plan := &mcp.ExportPlan{Items: []mcp.ExportItem{
+		{Agent: "pi", Alias: "github", Action: mcp.ActionCreate, Path: "/x/config.toml", Plaintext: true,
+			Warnings: []string{`MCP server "github" env TOKEN: unresolved reference {{env:secrets:MISSING}}`}},
+		{Agent: "pi", Alias: "clean", Action: mcp.ActionUpdate, Path: "/x/config.toml"},
+	}}
+	var out bytes.Buffer
+	printExportPlanTo(&out, plan)
+	if !strings.Contains(out.String(), "[未解析引用]") || strings.Count(out.String(), "[未解析引用]") != 1 {
+		t.Errorf("plan should mark exactly one unresolved item:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "[明文]") {
+		t.Errorf("plaintext marker missing:\n%s", out.String())
+	}
+
+	var errOut bytes.Buffer
+	printExportItemWarnings(&errOut, plan)
+	got := errOut.String()
+	if !strings.Contains(got, "⚠ pi/github") || !strings.Contains(got, "env:secrets:MISSING") {
+		t.Errorf("stderr warnings missing detail:\n%s", got)
+	}
+	if strings.Contains(got, "clean") {
+		t.Errorf("fully resolved item must not warn:\n%s", got)
+	}
+}
+
+// TestMCPExportLooseWritesLiteralAndWarns：引用缺失的档案宽松导出——文件写入
+// 模板原文、stderr 列出缺失引用、退出成功；与 spec "引用解析失败" 场景一致。
+func TestMCPExportLooseWritesLiteralAndWarns(t *testing.T) {
+	dir := newMCPExportProject(t)
+	mgr, err := getMCPManager()
+	if err != nil {
+		t.Fatalf("getMCPManager: %v", err)
+	}
+	if err := mgr.Add(&storage.MCPServerEntry{
+		Alias:     "needs-cred",
+		Transport: storage.MCPTransportStdio,
+		Command:   "npx",
+		Env:       map[string]string{"TOKEN": "{{env:secrets:MISSING}}", "PLAIN": "plain-value"},
+	}); err != nil {
+		t.Fatalf("add profile: %v", err)
+	}
+
+	mcpExportAll = true
+	mcpExportYes = true
+	mcpExportDryRun, mcpExportPrint, mcpExportForce = false, false, false
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+		})
+	})
+	if !strings.Contains(stdout, "[未解析引用]") {
+		t.Errorf("plan missing unresolved-ref marker:\n%s", stdout)
+	}
+	for _, want := range []string{"env:secrets:MISSING", "needs-cred"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr warning missing %q:\n%s", want, stderr)
+		}
+	}
+	cfgPath := filepath.Join(dir, ".codex", "config.toml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("codex config not written: %v", err)
+	}
+	if !strings.Contains(string(data), "{{env:secrets:MISSING}}") {
+		t.Errorf("template literal not preserved:\n%s", data)
+	}
+	if !strings.Contains(string(data), "plain-value") {
+		t.Errorf("plain env value not written:\n%s", data)
 	}
 }

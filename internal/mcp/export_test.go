@@ -744,3 +744,112 @@ func TestUnexportRemoteEntry(t *testing.T) {
 		t.Fatal("sibling entry was dropped by unexport")
 	}
 }
+
+// TestExportLooseResolvesUnresolvedReferences：宽松模式下引用缺失保留模板
+// 原文写入并出 warning，不终止写入；补齐凭据后重跑按漂移语义处理。
+func TestExportLooseResolvesUnresolvedReferences(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", map[string]string{
+		"TOKEN": "{{env:secrets:MISSING}}",
+		"OKVAR": "plain",
+	})
+	target := targetFor(t, "pi")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+
+	resolved := 0
+	resolveLoose := func(value string) (string, []string, error) {
+		if value == "{{env:secrets:MISSING}}" {
+			resolved++
+			return value, []string{"unresolved reference {{env:secrets:MISSING}}: env group 'secrets' key 'MISSING' not found"}, nil
+		}
+		resolved++
+		return value, nil, nil
+	}
+	exporter := testExporter(t, mgr, dir, ExporterOptions{ResolveLoose: resolveLoose})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Items[0].Action != ActionCreate {
+		t.Fatalf("loose mode should still create: %+v", plan.Items[0])
+	}
+	if len(plan.Items[0].Warnings) != 1 || !strings.Contains(plan.Items[0].Warnings[0], "env:secrets:MISSING") {
+		t.Fatalf("warnings = %+v", plan.Items[0].Warnings)
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if report.Failures != 0 {
+		t.Fatalf("loose mode must not fail: %+v", report)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("target file missing: %v", err)
+	}
+	if !strings.Contains(string(data), "{{env:secrets:MISSING}}") {
+		t.Errorf("template literal not preserved:\n%s", data)
+	}
+	if !strings.Contains(string(data), "plain") {
+		t.Errorf("resolvable value not written:\n%s", data)
+	}
+	if resolved < 2 {
+		t.Errorf("resolver invoked %d times, want >= 2", resolved)
+	}
+}
+
+// TestExportLooseHardErrorStillPoisonsTarget：宽松模式只放宽"引用缺失"；
+// 解析器自身错误（如引用环）仍是 plan 级错误，目标不动。
+func TestExportLooseHardErrorStillPoisonsTarget(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", map[string]string{"TOKEN": "{{env:secrets:MISSING}}"})
+	target := targetFor(t, "pi")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+
+	resolveLoose := func(string) (string, []string, error) {
+		return "", nil, fmt.Errorf("reference cycle detected")
+	}
+	exporter := testExporter(t, mgr, dir, ExporterOptions{ResolveLoose: resolveLoose})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Items[0].Action != ActionError {
+		t.Fatalf("hard resolve error must stay an error: %+v", plan.Items[0])
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if report.Failures != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Fatalf("target file was created despite a hard resolve failure: %v", err)
+	}
+}
+
+// TestExportLooseFullyResolvedNoWarnings：引用齐全时宽松路径与严格路径结果一致（无 warning）。
+func TestExportLooseFullyResolvedNoWarnings(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", map[string]string{"TOKEN": "static"})
+	target := targetFor(t, "pi")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+
+	resolveLoose := func(value string) (string, []string, error) { return value, nil, nil }
+	exporter := testExporter(t, mgr, dir, ExporterOptions{ResolveLoose: resolveLoose})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Items[0].Warnings) != 0 {
+		t.Fatalf("warnings = %+v, want empty", plan.Items[0].Warnings)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil || !strings.Contains(string(data), "static") {
+		t.Fatalf("resolved write missing: %v\n%s", err, data)
+	}
+}

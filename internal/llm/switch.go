@@ -817,7 +817,9 @@ func (sm *SwitchManager) resolvePaths() (string, string, error) {
 }
 
 // resolveCredential 解密档案凭据引用：text: 经 text manager，env: 经 env
-// manager。不支持其他前缀（档案写入时已校验，此处兜底）。
+// manager。不支持其他前缀（档案写入时已校验，此处兜底）。档案本体跨机同步
+// 后（凭据本体不出机），引用指向的条目可能尚未在本机——缺失时错误需指明
+// 完整引用名与修复指引，而不是笼统的解密失败。
 func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (string, error) {
 	kind, rest, _ := strings.Cut(entry.CredentialRef, ":")
 	group, key, _ := strings.Cut(rest, "/")
@@ -826,6 +828,10 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 		tm := pm.textManager()
 		value, err := tm.Get(group, key)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("凭据引用 %s 在本机 vault 中不存在：先 `senv text add %s %s`（或从已有该凭据的机器同步）再切换",
+					entry.CredentialRef, group, key)
+			}
 			return "", fmt.Errorf("decrypt credential %s: %w", entry.CredentialRef, err)
 		}
 		return value, nil
@@ -833,6 +839,10 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 		em := pm.envManager()
 		value, err := em.Get(group, key)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("凭据引用 %s 在本机 vault 中不存在：先 `senv env set %s %s <value>`（或从已有该凭据的机器同步）再切换",
+					entry.CredentialRef, group, key)
+			}
 			return "", fmt.Errorf("decrypt credential %s: %w", entry.CredentialRef, err)
 		}
 		return value, nil
