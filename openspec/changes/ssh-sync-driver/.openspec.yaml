@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-13
+skip_specs: true
+goal: hosts、keypairs 也进行数据同步：按已定稿的 ADR-0020 把 ssh_host/ssh_keypair 接入同步通道（白名单扩到九
+  kind、身份=别名、档案 blob 含私钥、host export 缺失引用逐条 warning、冲突报告仅元数据渲染）

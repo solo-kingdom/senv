@@ -207,7 +207,12 @@ func writeSyncConflictReport(w io.Writer, conflict *provider.SyncConflictError) 
 // isConfigSourceKind 报告 kind 是否为人工添加、跨机分发的配置源档案；
 // 这类条目的冲突更可能是有意义的双端修改，报告需额外提示人工核对。
 func isConfigSourceKind(kind string) bool {
-	return kind == provider.KindLLMProvider || kind == provider.KindMCPServer
+	switch kind {
+	case provider.KindLLMProvider, provider.KindMCPServer,
+		provider.KindSSHHost, provider.KindSSHKeypair:
+		return true
+	}
+	return false
 }
 
 // formatSyncConflictAuditMessage 生成审计用的冲突摘要；含配置源冲突时显式标注数量。

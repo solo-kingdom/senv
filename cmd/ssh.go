@@ -376,9 +376,12 @@ var hostExportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		config, err := mgr.Export(hostExportAlias)
+		config, warnings, err := mgr.Export(hostExportAlias)
 		if err != nil {
 			return err
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
 		}
 		if hostExportOut == "" {
 			fmt.Print(config)

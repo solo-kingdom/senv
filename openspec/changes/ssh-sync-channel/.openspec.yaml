@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-13
+goal: ssh_host/ssh_keypair 接入同步通道：syncschema 九 kind、collect/land 覆盖
+  hosts/keypairs、冲突元数据渲染与配置源对照提示、server store 校验对齐

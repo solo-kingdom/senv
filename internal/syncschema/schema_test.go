@@ -103,6 +103,8 @@ func TestValidateIdentityAcceptsConfigSourceKinds(t *testing.T) {
 	}{
 		{KindLLMProvider, "", "anthropic"},
 		{KindMCPServer, "", "github-mcp"},
+		{KindSSHHost, "", "web-prod"},
+		{KindSSHKeypair, "", "deploy-key"},
 	}
 	for _, tt := range tests {
 		if err := ValidateIdentity(tt.kind, tt.grp, tt.key); err != nil {
@@ -122,6 +124,10 @@ func TestValidateIdentityRejectsConfigSourceFieldMatrix(t *testing.T) {
 		{"llm provider missing key", KindLLMProvider, "", ""},
 		{"mcp server extra grp", KindMCPServer, "group", "alias"},
 		{"mcp server missing key", KindMCPServer, "", ""},
+		{"ssh host extra grp", KindSSHHost, "group", "web"},
+		{"ssh host missing key", KindSSHHost, "", ""},
+		{"ssh keypair extra grp", KindSSHKeypair, "group", "deploy-key"},
+		{"ssh keypair missing key", KindSSHKeypair, "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,6 +152,8 @@ func TestValidateIdentityRejectsConfigSourcePathAttacks(t *testing.T) {
 			}{
 				{KindLLMProvider, attack},
 				{KindMCPServer, attack},
+				{KindSSHHost, attack},
+				{KindSSHKeypair, attack},
 			} {
 				err := ValidateIdentity(identity.kind, "", identity.key)
 				if !errors.Is(err, ErrInvalidIdentity) {

@@ -1,0 +1,387 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 11 finding(s) across 11 selected item(s).",
+  "summary": {
+    "files_reviewed": 11,
+    "comments": 11,
+    "total_tokens": 7124013,
+    "input_tokens": 7023494,
+    "output_tokens": 100519,
+    "cache_read_tokens": 6415992,
+    "elapsed": "12m44s"
+  },
+  "tool_calls": {
+    "total": 211,
+    "by_tool": {
+      "code_comment": 4,
+      "code_search": 97,
+      "file_find": 1,
+      "file_read": 101,
+      "file_read_diff": 8
+    },
+    "failure": 2,
+    "failure_by_tool": {
+      "file_read": 2
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 7,
+        "tool_name": "file_read",
+        "file_path": "internal/provider/server_state.go",
+        "arguments": "{\"end_line\": 250, \"file_path\": \"internal/provider/server_state.go\", \"start_line\": 500}",
+        "error": "invalid line range: start_line 500 is greater than end_line 250"
+      },
+      {
+        "tool_call_number": 164,
+        "tool_name": "file_read",
+        "file_path": "internal/ssh/host.go",
+        "arguments": "{\"end_line\":100,\"file_path\":\"internal/ssh/manager.go\",\"start_line\":362}",
+        "error": "invalid line range: start_line 362 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The new keypair lookup calls `m.storage.ListKeyPairs()` directly, bypassing the existing `m.listKeyPairs()` helper (manager.go:364-375) that the rest of `internal/ssh/host.go` patterns through (cf. `listHostsEntries` at line 49). The storage path still acquires `withVaultRead` correctly via `listSSHEntries` (storage/ssh.go:227), so this is functionally safe but breaks the manager/storage abstraction. The existing helper also documents the `mutationLocked` branch. For consistency, route through `m.listKeyPairs()` (or a new public `ListKeyPairNames()` if the helper stays private) and add `perflog.Start(\"ssh.list-keypair-names\")` to match the `ListHosts`/`ListKeyPairs` telemetry shape.\n\nSuggested refactor:\n\n```go\nkeypairNames := make(map[string]bool)\nif err := m.collectKeyPairNames(keypairNames); err != nil {\n    return \"\", nil, err\n}\n```\n\nwhere `collectKeyPairNames` wraps `perflog` and either delegates to `m.listKeyPairs()` or takes the storage read-lock directly.",
+      "existing_code": "// keypair 名单来自目录列表，不逐 host 解密 keypair。\n\tkeypairNames := make(map[string]bool)\n\tif names, err := m.storage.ListKeyPairs(); err != nil {\n\t\treturn \"\", nil, err\n\t} else {\n\t\tfor _, name := range names {\n\t\t\tkeypairNames[name] = true\n\t\t}\n\t}",
+      "start_line": 171,
+      "end_line": 179,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The new doc comment on `Export` is mixed Chinese/English (\"返回的 warnings 逐条指出 IdentityKey 引用...\"). The Go doc convention across this repo is English-only for exported API, and prior reviews (e.g. `docs/reviews/2026-09-11/senv-tui-perf/review.md` issue #1057) flagged mixed-language exported comments as a blocker for grep audits and translation tooling. The Chinese warning string emitted to stderr is spec-mandated and stays; the godoc above the signature should be English.\n\nSuggested rewrite:\n\n```go\n// Export renders an OpenSSH config fragment in a deterministic alias order.\n// The returned warnings list each IdentityKey reference whose target keypair\n// is not present in the local vault (e.g. blob has not synced to this machine\n// per ADR-0020 D4); dangling references do not abort the export.\n```\n\nThe inline `// keypair 名单来自目录列表...` comment is fine as internal commentary.",
+      "existing_code": "// Export renders an OpenSSH config fragment in a deterministic alias order.\n// 返回的 warnings 逐条指出 IdentityKey 引用、但不在本机 vault 的 keypair\n// （如档案尚未同步到本机，ADR-0020 D4）；悬空引用不阻断导出。\nfunc (m *Manager) Export(alias string) (string, []string, error) {",
+      "start_line": 152,
+      "end_line": 155,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The `if/else` chain around `m.storage.ListKeyPairs()` is awkward Go style — declaring `err` in the `if` initializer and then assigning into an already-declared `names` from the same scope is unusual and reads as a typo. A plain early-return reads cleaner:\n\n```go\nnames, err := m.listKeyPairNames()\nif err != nil {\n    return \"\", nil, err\n}\nfor _, name := range names {\n    keypairNames[name] = true\n}\n```\n\nThis also gives you a single chokepoint to add `perflog` and to route through the manager abstraction in one place.",
+      "existing_code": "if names, err := m.storage.ListKeyPairs(); err != nil {\n\t\treturn \"\", nil, err\n\t} else {\n\t\tfor _, name := range names {\n\t\t\tkeypairNames[name] = true\n\t\t}\n\t}",
+      "start_line": 173,
+      "end_line": 179,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/tui/help.go",
+      "content": "Regression: the pre-diff code had `if cols < 1 { cols = 1 }` to force a single column when the terminal was too narrow for the multi-column target. That guard was dropped here, so for any terminal where `contentW+helpColDividerW < helpColTarget` (i.e. contentW ≤ 32, roughly h.width ≤ 42 after subtracting overlay cols + margins), `(contentW+helpColDividerW)/helpColTarget` is 0, `minInt(0, 2)` is 0, the second guard only fires when `maxCols > len(items)` so `maxCols` stays 0, and the `for c := 1; c <= maxCols` loop never executes — leaving `rows = nil`. The overlay renders an empty body and `maxScroll()` returns 0, so on a narrow terminal the user sees a blank help box with only the \"Global\" heading missing. The pre-diff layout still drew the bindings in a single column on the same width. Fix: force `maxCols` to at least 1 when there are items, e.g. `if maxCols < 1 && len(items) > 0 { maxCols = 1 }` after the existing length clamp.",
+      "suggestion_code": "maxCols := minInt((contentW+helpColDividerW)/helpColTarget, 2)\n\tif maxCols > len(items) {\n\t\tmaxCols = len(items)\n\t}\n\tif maxCols < 1 && len(items) > 0 {\n\t\tmaxCols = 1\n\t}\n\tvisible := h.visibleRows()\n\tfor c := 1; c <= maxCols; c++ {",
+      "existing_code": "maxCols := minInt((contentW+helpColDividerW)/helpColTarget, 2)\n\tif maxCols > len(items) {\n\t\tmaxCols = len(items)\n\t}\n\tvisible := h.visibleRows()\n\tfor c := 1; c <= maxCols; c++ {",
+      "start_line": 141,
+      "end_line": 146,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P1",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/tui/help.go",
+      "content": "First-line overflow when `colW < indent`. `wrapCell` builds the first wrapped line as `padRight(string(rs[:indent])+chunks[0], colW)`; `padRight` only right-pads and never truncates (verified at line 337), so when `colW < indent` the resulting line is `indent + len(chunks[0])` columns wide while the column slot is `colW` columns. The single-column branch in `layout` clamps `colW` to `maxInt(colW, 8)` but not to `indent`, and `indent` reaches 18 once `keyWidth()` returns the new cap of 15 (binding format is `\"  %-*s %s\"` so `indent = kw+3`). The two-column branch bails out at `colW < 14` for c=2, but the single-column branch unconditionally proceeds. Concrete trigger: a terminal wide enough that `contentW` reaches its 10-column floor (h.width ≈ 20) combined with any binding whose key is the new 15-wide maximum — the first wrapped row visibly exceeds the column budget and the `│` gutter separator no longer aligns with the column boundary. Either truncate the prefix when it does not fit (`if colW < indent { return []string{padRight(text, colW)} }`), or document that `helpTab` requires `h.width ≥ overlayCols+2+helpMarginX+keyWidth()+3` (≈ 31 cols) and refuse to open on narrower terminals.",
+      "suggestion_code": "rs := []rune(text)\n\tif len(rs) <= indent || colW <= indent {\n\t\treturn []string{padRight(text, colW)}\n\t}\n\twidth := colW - indent\n\tif width < 4 {\n\t\twidth = 4\n\t}",
+      "existing_code": "rs := []rune(text)\n\tif len(rs) <= indent {\n\t\treturn []string{padRight(text, colW)}\n\t}\n\twidth := colW - indent\n\tif width < 4 {\n\t\twidth = 4\n\t}",
+      "start_line": 288,
+      "end_line": 295,
+      "category": "bug",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "record-only"
+    },
+    {
+      "path": "internal/tui/help.go",
+      "content": "Width accounting in `wrapWords` uses byte length, not display columns. The greedy pack test `if len(cur)+1+len(w) <= width` is `len(string)`, which equals byte count for ASCII but under-counts runes for any non-ASCII word — packing will overrun `width` whenever a word contains multi-byte characters. The pre-existing comment \"键位描述均为 ASCII\" plus `KeyAction.Desc`'s docstring \"英文说明\" make this safe today, but `wrapWords` has no defensive rune-length comparison and `bindingCell`/`wrapCell` only re-measure via `lipgloss.Width` after the fact, so a CJK description would silently push the rendered row past `colW` and break column alignment the same way as the `colW < indent` overflow above. If you want to harden this, switch the pack test to `lipgloss.Width(cur)+1+lipgloss.Width(w) <= width` (and the hard-cut in `flush` to rune-width chunks); if you want to keep the ASCII fast path, add an explicit guard at the top of `wrapWords` (`if !isASCII(s) { ... }`) so a future non-ASCII binding surfaces a deterministic misrender instead of an alignment glitch.",
+      "suggestion_code": "for _, w := range strings.Fields(s) {\n\t\tif cur == \"\" {\n\t\t\tcur = w\n\t\t\tcontinue\n\t\t}\n\t\tif lipgloss.Width(cur)+1+lipgloss.Width(w) <= width {\n\t\t\tcur += \" \" + w\n\t\t\tcontinue\n\t\t}\n\t\tflush()\n\t\tcur = w\n\t}",
+      "existing_code": "for _, w := range strings.Fields(s) {\n\t\tif cur == \"\" {\n\t\t\tcur = w\n\t\t\tcontinue\n\t\t}\n\t\tif len(cur)+1+len(w) <= width {\n\t\t\tcur += \" \" + w\n\t\t\tcontinue\n\t\t}\n\t\tflush()\n\t\tcur = w\n\t}",
+      "start_line": 320,
+      "end_line": 331,
+      "category": "bug",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "record-only"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The doc comment mixes English and Chinese, breaking the English-only exported-doc convention used elsewhere in this repo (see prior review at `docs/reviews/2026-09-11/senv-tui-perf/review.md` issue #1057). Reword in English and drop the ADR reference (the body code is self-explanatory):\n\n```go\n// Export renders an OpenSSH config fragment in a deterministic alias order.\n// The returned warnings list IdentityKey references whose target keypair is\n// not present in the local vault (per ADR-0020 D4, when sync has not yet\n// delivered the keypair); dangling references do not abort the export.\n```",
+      "suggestion_code": "// Export renders an OpenSSH config fragment in a deterministic alias order.\n// The returned warnings list IdentityKey references whose target keypair is\n// not present in the local vault (per ADR-0020 D4, when sync has not yet\n// delivered the keypair); dangling references do not abort the export.",
+      "existing_code": "// Export renders an OpenSSH config fragment in a deterministic alias order.\n// 返回的 warnings 逐条指出 IdentityKey 引用、但不在本机 vault 的 keypair\n// （如档案尚未同步到本机，ADR-0020 D4）；悬空引用不阻断导出。",
+      "start_line": 152,
+      "end_line": 154,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The new keypair listing calls `m.storage.ListKeyPairs()` directly, while the surrounding code in `host.go` (e.g. `listHostsEntries` at line 49) routes through the manager helper layer. The existing `m.listKeyPairs()` helper at `manager.go:364-375` already implements the same lock acquisition pattern (`WithVaultMutation` for the read), so the behavior is functionally equivalent — but going through the helper keeps the abstraction layer consistent with the rest of the file and ensures future changes to the manager-side lock contract (e.g. adding a `perflog` boundary, switching to `withVaultRead`) propagate automatically. Use the helper:\n\n```go\nnames, err := m.listKeyPairs()\nif err != nil {\n    return \"\", nil, err\n}\nkeypairNames := make(map[string]bool, len(names))\nfor _, name := range names {\n    keypairNames[name] = true\n}\n```\n\nNote: this is a style/consistency issue, not a correctness defect — the direct call still acquires the vault mutation lock via `listSSHEntries → withVaultRead`.",
+      "suggestion_code": "\t// keypair 名单来自目录列表，不逐 host 解密 keypair。\n\tnames, err := m.listKeyPairs()\n\tif err != nil {\n\t\treturn \"\", nil, err\n\t}\n\tkeypairNames := make(map[string]bool, len(names))\n\tfor _, name := range names {\n\t\tkeypairNames[name] = true\n\t}",
+      "existing_code": "\t// keypair 名单来自目录列表，不逐 host 解密 keypair。\n\tkeypairNames := make(map[string]bool)\n\tif names, err := m.storage.ListKeyPairs(); err != nil {\n\t\treturn \"\", nil, err\n\t} else {\n\t\tfor _, name := range names {\n\t\t\tkeypairNames[name] = true\n\t\t}\n\t}",
+      "start_line": 171,
+      "end_line": 179,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The `if/else` chain around `m.storage.ListKeyPairs()` is awkward Go style — declaring `err` in the `if` initializer and then assigning into a pre-declared `names` from the same scope reads as a typo, and `if { return } else { ... }` for what is just an early-return on error is non-idiomatic. A plain early-return is cleaner; see the combined suggested fix in the previous comment.",
+      "suggestion_code": "\tnames, err := m.listKeyPairs()\n\tif err != nil {\n\t\treturn \"\", nil, err\n\t}\n\tkeypairNames := make(map[string]bool, len(names))\n\tfor _, name := range names {\n\t\tkeypairNames[name] = true\n\t}",
+      "existing_code": "\tif names, err := m.storage.ListKeyPairs(); err != nil {\n\t\treturn \"\", nil, err\n\t} else {\n\t\tfor _, name := range names {\n\t\t\tkeypairNames[name] = true\n\t\t}\n\t}",
+      "start_line": 173,
+      "end_line": 179,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/ssh/host.go",
+      "content": "The new code path treats a failure of `ListKeyPairs()` (e.g. corrupt keypair directory, lock contention during rekey) as a hard export error rather than degrading to \"warn and continue\". That contradicts the loose-mode spirit of this change (ADR-0020 D4, mirrored on `mcp export`) — a sync mid-flight could legitimately leave the keypair listing in a transient bad state, and the user's intent is \"show what we can render\". Either:\n\n1. Wrap the listing in a `best-effort` block and add a synthetic warning like `could not list keypairs in local vault: <err>` so the caller still gets a partial fragment, or\n2. Document explicitly (in the `Export` doc comment) that storage-level failures of the keypair listing still abort the export, distinct from missing references.\n\nThis is a design decision rather than a defect — flagging because it diverges from the \"宽松写入\" framing in `openspec/changes/ssh-sync-export-warning/design.md` D1 without an explicit exception.",
+      "existing_code": "\t// keypair 名单来自目录列表，不逐 host 解密 keypair。\n\tkeypairNames := make(map[string]bool)\n\tif names, err := m.storage.ListKeyPairs(); err != nil {\n\t\treturn \"\", nil, err\n\t} else {",
+      "start_line": 171,
+      "end_line": 175,
+      "category": "other",
+      "severity": "low",
+      "priority": "P3",
+      "disposition": "fix"
+    },
+    {
+      "path": "internal/tui/help.go",
+      "content": "Continuation-line overflow (parallel to the first-line issue flagged above). `wrapWords(string(rs[indent:]), width)` returns chunks whose length is at most `width = max(colW-indent, 4)`, so `len(c) <= 4` when the width floor kicks in. The continuation `padRight(strings.Repeat(\" \", indent)+c, colW)` is therefore `indent + len(c)` columns wide — up to `indent + 4` — but `padRight` only right-pads and never truncates. When `colW < indent + 4` the line spills past the column budget (e.g., `indent=18, width=4, colW=18` → 22 cols rendered into an 18-col column), the row joins the gutter and the rendered help box exceeds the pane width. The same root cause as the first-line overflow: either drop the `if width < 4 { width = 4 }` floor (use `max(width, 1)`) or truncate the chunk before padding so each line is clamped to `colW`.",
+      "existing_code": "\twidth := colW - indent\n\tif width < 4 {\n\t\twidth = 4\n\t}\n\tchunks := wrapWords(string(rs[indent:]), width)\n\tlines := make([]string, 0, len(chunks))\n\tlines = append(lines, padRight(string(rs[:indent])+chunks[0], colW))\n\tfor _, c := range chunks[1:] {\n\t\tlines = append(lines, padRight(strings.Repeat(\" \", indent)+c, colW))\n\t}",
+      "start_line": 292,
+      "end_line": 301,
+      "category": "bug",
+      "severity": "high",
+      "priority": "P3",
+      "disposition": "record-only"
+    }
+  ],
+  "groups": [
+    {
+      "label": "cmd/ssh.go",
+      "files": [
+        "cmd/ssh.go"
+      ]
+    },
+    {
+      "label": "cmd/sync.go",
+      "files": [
+        "cmd/sync.go"
+      ]
+    },
+    {
+      "label": "internal/conflict/render.go",
+      "files": [
+        "internal/conflict/render.go"
+      ]
+    },
+    {
+      "label": "internal/provider/server_state.go",
+      "files": [
+        "internal/provider/server_state.go"
+      ]
+    },
+    {
+      "label": "internal/ssh/host.go",
+      "files": [
+        "internal/ssh/host.go"
+      ]
+    },
+    {
+      "label": "internal/syncschema/schema.go",
+      "files": [
+        "internal/syncschema/schema.go"
+      ]
+    },
+    {
+      "label": "internal/tui/help.go",
+      "files": [
+        "internal/tui/help.go"
+      ]
+    },
+    {
+      "label": "internal/tui/ssh_tab.go",
+      "files": [
+        "internal/tui/ssh_tab.go"
+      ]
+    },
+    {
+      "label": "openspec/changes/ssh-sync-channel/.openspec.yaml",
+      "files": [
+        "openspec/changes/ssh-sync-channel/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/ssh-sync-driver/.openspec.yaml",
+      "files": [
+        "openspec/changes/ssh-sync-driver/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/ssh-sync-export-warning/.openspec.yaml",
+      "files": [
+        "openspec/changes/ssh-sync-export-warning/.openspec.yaml"
+      ]
+    }
+  ],
+  "session_id": "8de2d411-d4fc-44bc-aa48-f8180b7fd7ca",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "8de2d411-d4fc-44bc-aa48-f8180b7fd7ca",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "07a859200c4b5d605cba559ce7b75e3026174610f1d6c54da48ae384a2624fc0"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "8d43658997e10b5ea4e230ddb988b2d8d26f9526",
+      "source_artifact_sha256": "18abfba3bff0c3fb50116368371ef532c9b440d85d152000043c14d87b888c83"
+    },
+    "execution": {
+      "ocr_version": "v1.12.0",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "e85d22baeb3a9d3f35b254ea1df9f9644e5523ffdc5302939267695650e429c0",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "086c1d6584d31edb5108654b0d605133fc75e8831b568485f6346aef6d9e3a46",
+          "path": "openspec/changes/ssh-sync-driver/.openspec.yaml",
+          "fingerprint": "1bf3b578a97fd503df1110847f9dd232dfb0ba1f84faadb37ca01b536f3b157e"
+        },
+        {
+          "item_id": "17e4fbb7063f2b2efb44d6ed585946d71bd88f4e6a0f90140032ad933c6f385d",
+          "path": "openspec/changes/ssh-sync-channel/.openspec.yaml",
+          "fingerprint": "6bf6a19941232922d9f7bb60831ee327149c5ede7897c21ae92be96e1492c43a"
+        },
+        {
+          "item_id": "25a2ca518d671e18babbd01c240d9f104f40eabbacb163ee107282658eb0232c",
+          "path": "cmd/sync.go",
+          "fingerprint": "83fa278c0491d467d6fcf5bf5530dea77da29e1b3229f07b973ee4d266abbb14"
+        },
+        {
+          "item_id": "5fb9206c4fbdd578f21e55d2ec9a05e776ba22518ad7b9e7c27529ba9343ba09",
+          "path": "internal/provider/server_state.go",
+          "fingerprint": "a7363053c1d59f5479324acd1c15ef33a87d4dcdd481ef86c37a519d798e388a"
+        },
+        {
+          "item_id": "6b5a266db92739dcc0d418f15f1b37fcc2927e6e22bd0cdb2e43b417632f7317",
+          "path": "cmd/ssh.go",
+          "fingerprint": "663112d9ee2ff55687471b354723e7f428ef707df7e0e6d3c8f5cc1f8e39948c"
+        },
+        {
+          "item_id": "75818322db3559fbe6eeb17d1f11bc08c2d1c0f9046202b2a582b67141351268",
+          "path": "internal/tui/ssh_tab.go",
+          "fingerprint": "0756a631c58ace75ea3140a6781a2a5a596497355dd2da280bd22917d35070d9"
+        },
+        {
+          "item_id": "8b1458c4a5b5e7f218b50dea75d16d6bb208e8d6c91f5fda42f3836f9578703b",
+          "path": "internal/conflict/render.go",
+          "fingerprint": "888cee8c3570ada0e911fb15e49272eb31c663b0842f82f1825a31fbe4c915de"
+        },
+        {
+          "item_id": "ce24b068f07e96ffc44181b0f7924febcc9c2cff793e170c751d363c7d0bf348",
+          "path": "internal/syncschema/schema.go",
+          "fingerprint": "733f07ef7b0a85f7c52ea13aeef112465ab9d06954b71d71fce4f9ce76fb559a"
+        },
+        {
+          "item_id": "e49baf737f58e1096fb09f130e5479b50293df1504447506ccd559d8cf8ec310",
+          "path": "internal/ssh/host.go",
+          "fingerprint": "80f494381b8c770cf66839cf669621742885a81118e85265339eeb1e2dbec458"
+        },
+        {
+          "item_id": "e971df857221a5be1968c251e09ef01dd8ca9c68cecc9ece75d0257442661357",
+          "path": "internal/tui/help.go",
+          "fingerprint": "ee7059ad0d0e45bb5baa60c01e993771d15f12e7a8c1ac333d1303ca29b156ec"
+        },
+        {
+          "item_id": "ec079d3e5c1b41e11c77cb964222700fc3c1a8e7008bab1c53e85fd51d0ac842",
+          "path": "openspec/changes/ssh-sync-export-warning/.openspec.yaml",
+          "fingerprint": "4178ea2c6d59a886df6bc5ea9ece5bdf626f91dc1bd3ad09cc3fb97cf4f704b9"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "086c1d6584d31edb5108654b0d605133fc75e8831b568485f6346aef6d9e3a46",
+          "path": "openspec/changes/ssh-sync-driver/.openspec.yaml",
+          "fingerprint": "1bf3b578a97fd503df1110847f9dd232dfb0ba1f84faadb37ca01b536f3b157e"
+        },
+        {
+          "item_id": "17e4fbb7063f2b2efb44d6ed585946d71bd88f4e6a0f90140032ad933c6f385d",
+          "path": "openspec/changes/ssh-sync-channel/.openspec.yaml",
+          "fingerprint": "6bf6a19941232922d9f7bb60831ee327149c5ede7897c21ae92be96e1492c43a"
+        },
+        {
+          "item_id": "25a2ca518d671e18babbd01c240d9f104f40eabbacb163ee107282658eb0232c",
+          "path": "cmd/sync.go",
+          "fingerprint": "83fa278c0491d467d6fcf5bf5530dea77da29e1b3229f07b973ee4d266abbb14"
+        },
+        {
+          "item_id": "5fb9206c4fbdd578f21e55d2ec9a05e776ba22518ad7b9e7c27529ba9343ba09",
+          "path": "internal/provider/server_state.go",
+          "fingerprint": "a7363053c1d59f5479324acd1c15ef33a87d4dcdd481ef86c37a519d798e388a"
+        },
+        {
+          "item_id": "6b5a266db92739dcc0d418f15f1b37fcc2927e6e22bd0cdb2e43b417632f7317",
+          "path": "cmd/ssh.go",
+          "fingerprint": "663112d9ee2ff55687471b354723e7f428ef707df7e0e6d3c8f5cc1f8e39948c"
+        },
+        {
+          "item_id": "75818322db3559fbe6eeb17d1f11bc08c2d1c0f9046202b2a582b67141351268",
+          "path": "internal/tui/ssh_tab.go",
+          "fingerprint": "0756a631c58ace75ea3140a6781a2a5a596497355dd2da280bd22917d35070d9"
+        },
+        {
+          "item_id": "8b1458c4a5b5e7f218b50dea75d16d6bb208e8d6c91f5fda42f3836f9578703b",
+          "path": "internal/conflict/render.go",
+          "fingerprint": "888cee8c3570ada0e911fb15e49272eb31c663b0842f82f1825a31fbe4c915de"
+        },
+        {
+          "item_id": "ce24b068f07e96ffc44181b0f7924febcc9c2cff793e170c751d363c7d0bf348",
+          "path": "internal/syncschema/schema.go",
+          "fingerprint": "733f07ef7b0a85f7c52ea13aeef112465ab9d06954b71d71fce4f9ce76fb559a"
+        },
+        {
+          "item_id": "e49baf737f58e1096fb09f130e5479b50293df1504447506ccd559d8cf8ec310",
+          "path": "internal/ssh/host.go",
+          "fingerprint": "80f494381b8c770cf66839cf669621742885a81118e85265339eeb1e2dbec458"
+        },
+        {
+          "item_id": "e971df857221a5be1968c251e09ef01dd8ca9c68cecc9ece75d0257442661357",
+          "path": "internal/tui/help.go",
+          "fingerprint": "ee7059ad0d0e45bb5baa60c01e993771d15f12e7a8c1ac333d1303ca29b156ec"
+        },
+        {
+          "item_id": "ec079d3e5c1b41e11c77cb964222700fc3c1a8e7008bab1c53e85fd51d0ac842",
+          "path": "openspec/changes/ssh-sync-export-warning/.openspec.yaml",
+          "fingerprint": "4178ea2c6d59a886df6bc5ea9ece5bdf626f91dc1bd3ad09cc3fb97cf4f704b9"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 764367
+  }
+}

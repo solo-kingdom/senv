@@ -103,7 +103,7 @@ func TestHostExportGolden(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := mgr.Export("")
+	got, _, err := mgr.Export("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ Host web
 	if got != want {
 		t.Fatalf("export mismatch:\n got:\n%s\nwant:\n%s", got, want)
 	}
-	single, err := mgr.Export("web")
+	single, _, err := mgr.Export("web")
 	if err != nil || !strings.HasPrefix(single, "Host web\n") || strings.Contains(single, "Host jump\n") {
 		t.Fatalf("single export = %q, %v", single, err)
 	}
@@ -136,7 +136,53 @@ func TestExportDanglingProxyFails(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mgr.Export(""); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, _, err := mgr.Export(""); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Fatalf("dangling export error = %v", err)
+	}
+}
+
+func TestExportWarnsOnMissingIdentityKeypair(t *testing.T) {
+	mgr, store := newTestSSHManager(t)
+	t.Setenv("HOME", "/home/test-user")
+	path := writePrivateKey(t, t.TempDir(), ed25519Private(t), "present@test", "")
+	if _, err := mgr.ImportKeyPair("present-key", path, false); err != nil {
+		t.Fatal(err)
+	}
+	// 绕过 Manager 层引用校验，构造「host 档案先同步到、keypair 未到」的
+	// 跨机悬空（ADR-0020 D4）。
+	if err := store.WithVaultMutation(func(locked *storage.Manager) error {
+		return locked.SaveHost("dangling", &storage.HostEntry{
+			Alias: "dangling", Hostname: "d.example", IdentityKey: "absent-key",
+		}, "test-password")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.AddHost(&storage.HostEntry{
+		Alias: "ok", Hostname: "ok.example", IdentityKey: "present-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, warnings, err := mgr.Export("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "host dangling 引用的 keypair absent-key 不在本机 vault") {
+		t.Fatalf("warnings = %v, want one dangling warning", warnings)
+	}
+	if !strings.Contains(got, "IdentityFile /home/test-user/.ssh/senv/absent-key") {
+		t.Fatalf("dangling host block missing IdentityFile:\n%s", got)
+	}
+	if !strings.Contains(got, "Host ok") {
+		t.Fatalf("other hosts must still be exported:\n%s", got)
+	}
+
+	// 过滤到无悬空的 host：不应产生 warning
+	single, warnings, err := mgr.Export("ok")
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("ok export warnings = %v, err = %v, want none", warnings, err)
+	}
+	if !strings.Contains(single, "Host ok") {
+		t.Fatalf("single export = %q", single)
 	}
 }
