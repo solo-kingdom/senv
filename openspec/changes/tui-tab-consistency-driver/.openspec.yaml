@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-12
+goal: 和 tab 页功能、样式不一致：1. AI MCP 没有加载提示；2. history & audit 边框宽、高和其他不一致（含 resize
+  不跟随；SSH 同根因一并纳入）
+skip_specs: true
