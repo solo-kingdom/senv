@@ -101,10 +101,10 @@ func TestHistoryTabBrowseAndRestore(t *testing.T) {
 		t.Fatalf("after enter: mode %d entryID %q", ht.mode, ht.entryID)
 	}
 
-	// r → 确认模式 → enter 执行恢复
-	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	// R → 确认模式 → enter 执行恢复（r 已统一为重命名语义）
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	if ht.mode != historyModeConfirm {
-		t.Fatalf("after r: mode %d", ht.mode)
+		t.Fatalf("after R: mode %d", ht.mode)
 	}
 	tab, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if msg := drainCmd(t, cmd); msg != nil {
@@ -140,7 +140,7 @@ func TestHistoryTabRestoreErrorReported(t *testing.T) {
 	tab.(*historyTab).visited = true // 模拟用户已激活（延迟加载语义）
 	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
 	_ = cmd
-	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
 	tab, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	msg := drainCmd(t, cmd)
 	if _, ok := msg.(historyRestoredMsg); !ok {

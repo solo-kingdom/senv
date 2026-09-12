@@ -29,3 +29,6 @@
 ## Non-goals
 
 - AI 向导多选保持自有实现不动（grill D2）；不加 visual mode；scope 快捷键 `I`/`U`/`X`/`U` 保留共存，不退役
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：`List` 组件增加多选集（Toggle/SelectVisible/IsSelected/SelectionCount/SelectedIn/ClearSelection/SelectionHint），以稳定标识为键；env/text/ssh/config/mcp 五类列表接入 `space`（bubbletea 空格键为 `" "`）与 `a` 全选可见集；批量动词：env/text/ssh `d`（一次确认列全部目标，逐条删除单条失败不中止）、text `x`（目录表单，逐块写 `<dir>/<key>.txt`）、ssh `x`（目录表单，逐 host 写 `<dir>/<alias>.conf`，沿用 WriteSensitiveFile 0700/0600）、config `i`/`u`（按选择集逐条 Plan 合并为一份计划，changed 逐条确认沿用）、MCP `x`/`u`/`X`/`U`（exporter.Plan/PlanUnexport 直接收别名列表，范围=选择集×agent(s)）；空集回落游标单条；`e`/`r`/`m` 多选时提示需单选；提交即清空选择集；面板标题提示「已选 N（M 被过滤）」；新增 4 个多选测试（env 批量删除真删、过滤全选与持久、单实体限制、MCP 批量导出计划）；SKILL.md 补多选段；`make check` 全部通过。

@@ -28,8 +28,10 @@ type historyTab struct {
 	// 用户首次激活本 Tab 时由顶层置位后才装载。
 	visited bool
 
-	rows    []provider.HistoryVersion
-	cursor  int
+	rows []provider.HistoryVersion
+	// list 承载游标与窗口（共享列表组件），替代手写 visibleRows 居中窗口；
+	// 窗口语义由「光标居中」统一为「跟随光标」，可见内容集合不变。
+	list    List
 	entryID string // entry 模式的条目标识（kind:grp:key），空 = recent 模式
 	flash   string
 	mode    historyMode
@@ -58,16 +60,18 @@ func newHistoryTab(source HistorySource) *historyTab {
 
 func (t *historyTab) Title() string { return "History" }
 
-func (t *historyTab) Help() string {
+func (t *historyTab) Bindings() []KeyAction {
 	switch t.mode {
 	case historyModeEntry:
-		return "↑↓/jk 移动 · enter 查看 · r 恢复 · esc 返回"
+		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
+			{[]string{"enter"}, "查看版本"}, {[]string{"R"}, "恢复"}, actEsc}
 	case historyModeDetail:
-		return "r 恢复 · esc 返回"
+		return []KeyAction{{[]string{"R"}, "恢复"}, actEsc}
 	case historyModeConfirm:
-		return "enter/y 确认恢复 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "确认恢复"}, {[]string{"esc/n"}, "取消"}}
 	default:
-		return "↑↓/jk 移动 · enter 单条目历史 · r 恢复"
+		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
+			{[]string{"enter"}, "单条目历史"}, {[]string{"R"}, "恢复"}}
 	}
 }
 
@@ -131,7 +135,7 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		t.rows = msg.rows
 		t.entryID = msg.id
-		t.cursor = 0
+		t.list.Home()
 		if t.mode == historyModeConfirm || t.mode == historyModeDetail {
 			t.mode = historyModeEntry
 		}
@@ -156,16 +160,12 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		switch key.String() {
 		case "up", "k":
 			if t.mode == historyModeRecent || t.mode == historyModeEntry {
-				if t.cursor > 0 {
-					t.cursor--
-				}
+				t.list.Move(-1, len(t.rows))
 				return t, nil
 			}
 		case "down", "j":
 			if t.mode == historyModeRecent || t.mode == historyModeEntry {
-				if t.cursor < len(t.rows)-1 {
-					t.cursor++
-				}
+				t.list.Move(1, len(t.rows))
 				return t, nil
 			}
 		case "enter":
@@ -191,12 +191,29 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 					return t, t.load(id)
 				}
 			}
-		case "r":
+		case "R":
+			// R=恢复（r 已统一为重命名语义；grill D7）
 			if t.mode == historyModeRecent || t.mode == historyModeEntry || t.mode == historyModeDetail {
 				if row := t.current(); row != nil && !row.Deleted {
 					t.mode = historyModeConfirm
 					return t, nil
 				}
+			}
+		case "g":
+			if t.mode == historyModeRecent || t.mode == historyModeEntry {
+				t.list.Home()
+			}
+		case "G":
+			if t.mode == historyModeRecent || t.mode == historyModeEntry {
+				t.list.End(len(t.rows))
+			}
+		case "pgup":
+			if t.mode == historyModeRecent || t.mode == historyModeEntry {
+				t.list.Page(-1, len(t.rows))
+			}
+		case "pgdown":
+			if t.mode == historyModeRecent || t.mode == historyModeEntry {
+				t.list.Page(1, len(t.rows))
 			}
 		case "esc":
 			switch t.mode {
@@ -218,22 +235,20 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				t.mode = historyModeEntry
 				return t, nil
 			}
-		case "q":
-			// q 在顶层处理（退出程序）；确认模式下 InputMode=true 会把 q 转发到这里
-			if t.mode != historyModeConfirm {
-				return t, tea.Quit
-			}
-			return t, nil
 		}
+		// q 不在本 Tab 处理：非确认模式由顶层 dirty-quit 守卫统一接管
+		//（有待推送先提示再退）；确认模式下 InputMode 转发进来的 q 落到
+		// 默认分支视为无操作。Tab 层 MUST NOT 直接 tea.Quit。
 	}
 	return t, nil
 }
 
 func (t *historyTab) current() *provider.HistoryVersion {
-	if t.cursor < 0 || t.cursor >= len(t.rows) {
+	idx := t.list.Cursor()
+	if idx < 0 || idx >= len(t.rows) {
 		return nil
 	}
-	return &t.rows[t.cursor]
+	return &t.rows[idx]
 }
 
 func (t *historyTab) doRestore(v provider.HistoryVersion) tea.Cmd {
@@ -243,26 +258,10 @@ func (t *historyTab) doRestore(v provider.HistoryVersion) tea.Cmd {
 	}
 }
 
-func (t *historyTab) SetSize(width, height int) { t.width, t.height = width, height }
-
-// visibleRows 简单窗口化：光标尽量居中，列表不超过可用行数
-func (t *historyTab) visibleRows() ([]provider.HistoryVersion, int) {
-	h := t.height - 4 // 表头 + 边距 + flash 行
-	if h < 1 {
-		h = 1
-	}
-	top := t.cursor - h/2
-	if top > len(t.rows)-h {
-		top = len(t.rows) - h
-	}
-	if top < 0 {
-		top = 0
-	}
-	end := top + h
-	if end > len(t.rows) {
-		end = len(t.rows)
-	}
-	return t.rows[top:end], top
+func (t *historyTab) SetSize(width, height int) {
+	t.width, t.height = width, height
+	// 4 行 chrome：表头 + 边距 + flash 行（原 visibleRows 公式）。
+	t.list.SetHeight(height - 4)
 }
 
 func (t *historyTab) View() string {
@@ -277,21 +276,22 @@ func (t *historyTab) View() string {
 		return paneStyle.Render(fmt.Sprintf("%s\n\n（无历史版本：条目未被修改过，或 server 未开启历史留存）", title))
 	}
 
-	rows, top := t.visibleRows()
 	var b strings.Builder
 	if t.entryID == "" {
 		b.WriteString("vault 最近历史变更（enter 查看单条目）\n\n")
 	} else {
 		b.WriteString(fmt.Sprintf("条目 %s 的版本时间线\n\n", t.entryID))
 	}
-	for i, row := range rows {
-		idx := top + i
+	start, end := t.list.VisibleRange(len(t.rows))
+	for i := start; i < end; i++ {
+		row := t.rows[i]
+		idx := i
 		prefix := "  "
 		line := fmt.Sprintf("%-20s %-18s rev %-4d %s",
 			row.CreatedAt.Local().Format("2006-01-02 15:04:05"),
 			truncateRunes(entryIDOf(row), 18), row.Revision,
 			truncateRunes(t.previewOf(row), 30))
-		if idx == t.cursor && t.mode != historyModeDetail {
+		if idx == t.list.Cursor() && t.mode != historyModeDetail {
 			prefix = "> "
 			line = selectedLineStyle.Render(line)
 		}

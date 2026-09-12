@@ -273,8 +273,8 @@ func TestAITabModelOnlyChange(t *testing.T) {
 		t.Fatalf("pointer not set:\n%s", tab.View())
 	}
 
-	// m：仅换模型到 m2。
-	msg := driveAISwitch(t, tab, 0, 1, "m")
+	// M：仅换模型到 m2（grill D7：model-only 键 m→M）。
+	msg := driveAISwitch(t, tab, 0, 1, "M")
 	result := msg.(aiSwitchResultMsg)
 	if result.err != nil {
 		t.Fatalf("model-only change error: %v", result.err)
@@ -295,7 +295,7 @@ func TestAITabModelOnlyRequiresPointer(t *testing.T) {
 	runAITabLoad(t, tab)
 	tab.focusLeft = false
 	tab.agentIndex = 0
-	_, cmd := tab.Update(runeKey("m"))
+	_, cmd := tab.Update(runeKey("M"))
 	if tab.flow != aiFlowNone {
 		t.Fatal("m without a pointer must not start a flow")
 	}
@@ -807,7 +807,7 @@ func TestAITabModelOnlyCandidatesLimitedToPointer(t *testing.T) {
 	tab.focusLeft = false
 	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
 
-	tab.Update(runeKey("m"))
+	tab.Update(runeKey("M"))
 	if tab.flow != aiFlowSelectDefault {
 		t.Fatalf("flow = %v, want selectDefault directly", tab.flow)
 	}
@@ -857,19 +857,31 @@ func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
 	}
 }
 
-// TestAITabSwitchHelpDocumentsMultiSelect 覆盖任务 1.3 的 Help 文案。
+// TestAITabSwitchHelpDocumentsMultiSelect 覆盖 keymap 注册表的流内键位。
 func TestAITabSwitchHelpDocumentsMultiSelect(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	tab.focusLeft = false
 	tab.Update(runeKey("s"))
-	if help := tab.Help(); !strings.Contains(help, "space 勾选") {
-		t.Fatalf("multi-select help = %q", help)
+	if !bindingsContain(tab.Bindings(), "space", "勾选") {
+		t.Fatalf("multi-select bindings missing space: %v", tab.Bindings())
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if help := tab.Help(); !strings.Contains(help, "默认模型") {
-		t.Fatalf("default-model help = %q", help)
+	if !bindingsContain(tab.Bindings(), "enter", "下一步") {
+		t.Fatalf("default-model bindings missing enter: %v", tab.Bindings())
 	}
+}
+
+// bindingsContain 报告键位列表里是否存在指定键与说明的条目。
+func bindingsContain(bs []KeyAction, key, descPart string) bool {
+	for _, b := range bs {
+		for _, k := range b.Keys {
+			if k == key && strings.Contains(b.Desc, descPart) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestAITabReloadKeepsDataVisibleAndReloads 验证 stale-while-revalidate：

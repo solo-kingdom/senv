@@ -32,6 +32,8 @@ type mcpTab struct {
 	serverIndex int
 	agentIndex  int
 	focusLeft   bool
+	filterBox   Filter // `/` 过滤左栏主列表（alias/command 标识）
+	sel         List   // 仅承载档案多选集（alias 为稳定标识）
 	pendingJump string
 	detail      *detailOverlay
 
@@ -92,23 +94,76 @@ func newMCPTab(mgr Managers) *mcpTab {
 
 func (t *mcpTab) Title() string { return "MCP" }
 
-func (t *mcpTab) Help() string {
+func (t *mcpTab) Bindings() []KeyAction {
 	if t.form != nil {
-		return "tab/↑↓ 切换字段 · e 编辑多行 · enter 提交 · esc 取消"
+		return []KeyAction{
+			{[]string{"tab/↑↓"}, "切换字段"},
+			{[]string{"e"}, "编辑多行"},
+			{[]string{"enter"}, "提交"},
+			{[]string{"esc"}, "取消"},
+		}
 	}
 	switch t.mode {
 	case mcpModeDelete:
-		return "enter/y 确认 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "确认"}, {[]string{"esc/n"}, "取消"}}
 	case mcpModePlan:
-		return "enter/y 确认 · F 覆盖漂移 · esc/n 取消"
+		return []KeyAction{
+			{[]string{"enter/y"}, "确认"},
+			{[]string{"F"}, "覆盖漂移"},
+			{[]string{"esc/n"}, "取消"},
+		}
 	case mcpModeChangedConfirm:
-		return "y 删除该条 · n 跳过 · esc 取消"
+		return []KeyAction{
+			{[]string{"y"}, "删除该条"},
+			{[]string{"n"}, "跳过"},
+			{[]string{"esc"}, "取消整个撤回"},
+		}
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · x/X 导出 · u/U 撤回"
+	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
+		actTop, actBottom, actPageUp, actPageDn, actFilter},
+		KeyAction{[]string{"n"}, "新建档案"},
+		KeyAction{[]string{"e"}, "编辑档案"},
+		KeyAction{[]string{"d"}, "删除档案"},
+		KeyAction{[]string{"x/X"}, "导出（当前/全部 agent）"},
+		KeyAction{[]string{"u/U"}, "撤回（当前/全部 agent）"},
+		KeyAction{[]string{"ctrl+r"}, "刷新"},
+	)
 }
 
 func (t *mcpTab) InputMode() bool {
-	return t.form != nil || t.mode != mcpModeNormal
+	return t.form != nil || t.mode != mcpModeNormal || t.filterBox.Active()
+}
+
+// visibleServers 返回过滤后的左栏可见列表（空词 = 全量）。
+func (t *mcpTab) visibleServers() []mcp.Server {
+	if t.filterBox.Term() == "" {
+		return t.servers
+	}
+	out := make([]mcp.Server, 0, len(t.servers))
+	for _, s := range t.servers {
+		if t.filterBox.Matches(s.Alias + " " + s.Command) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// visibleServerAliases 返回可见档案的别名（计数提示用）。
+func (t *mcpTab) visibleServerAliases() []string {
+	servers := t.visibleServers()
+	out := make([]string, 0, len(servers))
+	for _, s := range servers {
+		out = append(out, s.Alias)
+	}
+	return out
+}
+
+// clampLeft 把左栏游标收回可见范围。
+func (t *mcpTab) clampLeft() {
+	n := len(t.visibleServers())
+	if t.serverIndex >= n {
+		t.serverIndex = max(n-1, 0)
+	}
 }
 
 func (t *mcpTab) SetSize(width, height int) {
@@ -217,6 +272,26 @@ func (t *mcpTab) exporter(force bool) (*mcp.Exporter, error) {
 }
 
 func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && t.filterBox.Active() && t.form == nil && t.mode == mcpModeNormal {
+		switch key.String() {
+		case "esc":
+			t.filterBox.Clear()
+			t.clampLeft()
+			return t, nil
+		case "enter":
+			t.filterBox.Confirm()
+			return t, nil
+		case "backspace":
+			t.filterBox.Backspace()
+			t.clampLeft()
+			return t, nil
+		}
+		if isPrintable(key) {
+			t.filterBox.Append(key.String())
+			t.clampLeft()
+			return t, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case formSubmitMsg:
 		submit := t.formSubmit
@@ -299,7 +374,7 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.agentIndex--
 		}
 	case "down", "j":
-		if t.focusLeft && t.serverIndex < len(t.servers)-1 {
+		if t.focusLeft && t.serverIndex < len(t.visibleServers())-1 {
 			t.serverIndex++
 			t.syncStatus()
 		} else if !t.focusLeft && t.agentIndex < len(t.agents)-1 {
@@ -309,11 +384,18 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.focusLeft = true
 	case "right", "l":
 		t.focusLeft = false
+	case "/":
+		t.focusLeft = true
+		t.filterBox.EnterFresh()
+		return t, nil
 	case "enter":
 		return t, t.openDetail()
 	case "n":
 		return t.enterForm(nil)
 	case "e":
+		if t.sel.SelectionCount() > 1 {
+			return t, warnToast("已多选档案：编辑需先缩小到单选")
+		}
 		srv := t.currentServer()
 		if srv == nil {
 			return t, warnToast("没有选中的档案")
@@ -323,7 +405,24 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t, func() tea.Msg { return errMsg{err: err} }
 		}
 		return t.enterForm(entry)
+	case " ", "space":
+		if t.focusLeft {
+			if srv := t.currentServer(); srv != nil {
+				t.sel.Toggle(srv.Alias)
+			}
+		}
+	case "a":
+		if t.focusLeft {
+			keys := make([]string, 0, len(t.visibleServers()))
+			for _, s := range t.visibleServers() {
+				keys = append(keys, s.Alias)
+			}
+			t.sel.SelectVisible(keys)
+		}
 	case "d":
+		if t.sel.SelectionCount() > 1 {
+			return t, warnToast("已多选档案：删除需先缩小到单选")
+		}
 		return t.enterDelete()
 	case "x":
 		return t.startExport(false)
@@ -333,8 +432,45 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t.startUnexport(false)
 	case "U":
 		return t.startUnexport(true)
+	case "g":
+		t.jumpFocus(0)
+	case "G":
+		t.jumpFocus(t.focusListLen() - 1)
+	case "pgup":
+		t.jumpFocus(t.cursorForFocus() - pageStep(t.height))
+	case "pgdown":
+		t.jumpFocus(t.cursorForFocus() + pageStep(t.height))
 	}
 	return t, nil
+}
+
+// cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
+func (t *mcpTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.serverIndex
+	}
+	return t.agentIndex
+}
+
+func (t *mcpTab) focusListLen() int {
+	if t.focusLeft {
+		return len(t.visibleServers())
+	}
+	return len(t.agents)
+}
+
+func (t *mcpTab) jumpFocus(idx int) {
+	n := t.focusListLen()
+	if n == 0 || idx < 0 {
+		idx = 0
+	} else if idx > n-1 {
+		idx = n - 1
+	}
+	if t.focusLeft {
+		t.serverIndex = idx
+	} else {
+		t.agentIndex = idx
+	}
 }
 
 func (t *mcpTab) syncStatus() {
@@ -350,8 +486,11 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.cancelMode()
 			return t, t.doDelete(alias)
 		}
-		t.cancelMode()
-		return t, warnToast("已取消")
+		if key == "esc" || key == "n" {
+			t.cancelMode()
+			return t, warnToast("已取消")
+		}
+		// 其余按键忽略（grill D7：确认页收紧）
 	case mcpModeChangedConfirm:
 		// 帮助文案承诺 esc 取消整个撤回：这里必须整体退出，已答 y 的
 		// 条目同样不生效，不得把 esc 当作「跳过本条」继续执行。
@@ -384,10 +523,11 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 				return t, nil
 			}
 			return t.confirmPlan()
-		default:
+		case "esc", "n":
 			t.cancelMode()
 			return t, warnToast("已取消")
 		}
+		// 其余按键忽略：计划确认页不把未知键解释为取消或放行（grill D7）
 	}
 	return t, nil
 }
@@ -405,10 +545,11 @@ func (t *mcpTab) cancelMode() {
 }
 
 func (t *mcpTab) currentServer() *mcp.Server {
-	if t.serverIndex < 0 || t.serverIndex >= len(t.servers) {
+	servers := t.visibleServers()
+	if t.serverIndex < 0 || t.serverIndex >= len(servers) {
 		return nil
 	}
-	return &t.servers[t.serverIndex]
+	return &servers[t.serverIndex]
 }
 
 func (t *mcpTab) currentAgent() agentcfg.Target {
@@ -442,6 +583,7 @@ func (t *mcpTab) applyPendingJump() {
 	if t.pendingJump == "" {
 		return
 	}
+	t.filterBox.Clear() // 跳转前清过滤，保证目标可见
 	for i, srv := range t.servers {
 		if srv.Alias == t.pendingJump {
 			t.serverIndex = i
@@ -704,8 +846,8 @@ func (t *mcpTab) doDelete(alias string) tea.Cmd {
 }
 
 func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
-	srv := t.currentServer()
-	if srv == nil {
+	aliases := t.planAliases()
+	if len(aliases) == 0 {
 		return t, warnToast("没有可导出的档案")
 	}
 	targets := t.exportTargets(allAgents)
@@ -716,7 +858,7 @@ func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
-	plan, err := exporter.Plan(targets, []string{srv.Alias})
+	plan, err := exporter.Plan(targets, aliases)
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
@@ -724,13 +866,16 @@ func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
 	t.planKind = "export"
 	t.exportPlan = plan
 	t.planForce = false
-	t.pendingAlias = srv.Alias
+	t.pendingAlias = aliases[0]
+	if len(aliases) > 1 {
+		t.pendingAlias = "" // 多档案：完成后整表刷新
+	}
 	return t, nil
 }
 
 func (t *mcpTab) startUnexport(allAgents bool) (Tab, tea.Cmd) {
-	srv := t.currentServer()
-	if srv == nil {
+	aliases := t.planAliases()
+	if len(aliases) == 0 {
 		return t, warnToast("没有可撤回的档案")
 	}
 	targets := t.exportTargets(allAgents)
@@ -741,7 +886,7 @@ func (t *mcpTab) startUnexport(allAgents bool) (Tab, tea.Cmd) {
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
-	plan, err := exporter.PlanUnexport(targets, []string{srv.Alias})
+	plan, err := exporter.PlanUnexport(targets, aliases)
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
@@ -749,8 +894,30 @@ func (t *mcpTab) startUnexport(allAgents bool) (Tab, tea.Cmd) {
 	t.planKind = "unexport"
 	t.unexportPlan = plan
 	t.planForce = false
-	t.pendingAlias = srv.Alias
+	t.pendingAlias = aliases[0]
+	if len(aliases) > 1 {
+		t.pendingAlias = ""
+	}
 	return t, nil
+}
+
+// planAliases 多选集非空时返回选择集别名，否则返回当前选中档案。
+func (t *mcpTab) planAliases() []string {
+	if t.sel.SelectionCount() > 0 {
+		var out []string
+		for _, s := range t.visibleServers() {
+			if t.sel.IsSelected(s.Alias) {
+				out = append(out, s.Alias)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if srv := t.currentServer(); srv != nil {
+		return []string{srv.Alias}
+	}
+	return nil
 }
 
 func (t *mcpTab) exportTargets(all bool) []agentcfg.Target {
@@ -800,6 +967,7 @@ func (t *mcpTab) confirmPlan() (Tab, tea.Cmd) {
 	alias := t.pendingAlias
 	allowed := t.changedAllowed
 	t.cancelMode()
+	t.sel.ClearSelection() // 批量操作提交后清空多选集（grill D9）
 	if kind == "unexport" {
 		return t, t.executeUnexport(unexportPlan, force, alias, allowed)
 	}
@@ -979,7 +1147,12 @@ func (t *mcpTab) viewBaseAt(height int) string {
 	if rightW < 4 {
 		rightW = 4
 	}
-	left := windowedPane(fmt.Sprintf("档案 (%d)", len(t.servers)), t.serverLines(max(leftW-4, 8)), t.serverIndex, height, leftW)
+	leftTitle := fmt.Sprintf("档案 (%d)", len(t.visibleServers()))
+	if t.filterBox.Active() {
+		leftTitle += "  " + t.filterBox.Prompt()
+	}
+	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleServerAliases()))
+	left := windowedPane(leftTitle, t.serverLines(max(leftW-4, 8)), t.serverIndex, height, leftW)
 	right := windowedPane("Agents · 导出状态", t.agentLines(max(rightW-4, 8)), t.agentIndex, height, rightW)
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
@@ -992,9 +1165,14 @@ func (t *mcpTab) viewBaseAt(height int) string {
 }
 
 func (t *mcpTab) serverLines(width int) []string {
-	lines := make([]string, 0, len(t.servers))
-	for i, srv := range t.servers {
-		line := fmt.Sprintf("%s · %s · %d env", srv.Alias, srv.Target(), len(srv.EnvKeys))
+	servers := t.visibleServers()
+	lines := make([]string, 0, len(servers))
+	for i, srv := range servers {
+		aliasLabel := srv.Alias
+		if t.sel.IsSelected(srv.Alias) {
+			aliasLabel = "[x] " + aliasLabel
+		}
+		line := fmt.Sprintf("%s · %s · %d env", aliasLabel, srv.Target(), len(srv.EnvKeys))
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.serverIndex))
 	}
 	return lines
@@ -1058,7 +1236,8 @@ func (t *mcpTab) renderPlan() string {
 			b.WriteByte('\n')
 		}
 	}
-	return modalBox(title, strings.TrimRight(b.String(), "\n"), t.Help())
+	return modalBox(title, strings.TrimRight(b.String(), "\n"),
+		"enter/y 确认 · F 覆盖漂移 · esc/n 取消")
 }
 
 func requiredAlias(v string) error {

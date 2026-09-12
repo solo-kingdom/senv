@@ -28,3 +28,6 @@ tui-viewer spec 要求「每个 Tab SHALL 支持 `/` 过滤」，但 SSH/AI/MCP 
 
 - 不做 fuzzy、不扩大匹配范围到 value、不改全局 `S`（grill D4）
 - 不动 config 侧栏计数行为、不引入多选（⑤）
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：`Filter` 状态机落地 `filter.go`（Enter/EnterFresh/Append/Backspace/Confirm/Clear/Matches/Prompt），匹配统一走 matchKey；env/text/config 三处手写过滤迁移到组件（保留各自 `/` 清词进入语义），audit 自由文本迁状态机、匹配谓词保留 auditEntryMatches；SSH/AI/MCP 接入 `/`（过滤左栏主列表，右栏联动，focusJump 前清过滤保证目标可见），左栏标题显示过滤提示；新增单测（状态机 + 三 Tab 集成）并同步既有测试；SKILL.md 补 SSH/AI/MCP `/` 说明；`make check` 全部通过。

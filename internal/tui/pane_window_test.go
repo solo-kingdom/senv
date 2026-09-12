@@ -124,7 +124,7 @@ func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
 	const innerH = 8
 	tab.SetSize(80, innerH)
 	tab.mode = envModeFilter
-	tab.filter = "KEY"
+	tab.filterBox = Filter{term: "KEY"}
 
 	view := tab.View()
 	if h := lipgloss.Height(view); h > paneBudget(innerH) {

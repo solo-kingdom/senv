@@ -249,10 +249,10 @@ func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 	tab.keyIndex = 0
 	assertHostKey(t, tab, "web", "web-key")
 
-	out, _ = tab.Update(runeKey("R"))
+	out, _ = tab.Update(runeKey("r"))
 	tab = out.(*sshTab)
 	if tab.form == nil {
-		t.Fatal("R should open the keypair rename form")
+		t.Fatal("r should open the keypair rename form")
 	}
 	tab = submitSSHForm(t, tab, map[string]string{"name": "prod-key"})
 	if tab.form != nil {

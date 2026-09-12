@@ -28,3 +28,6 @@
 
 - 不改任何按键语义（keymap 子 change 处理）
 - 不动其它 Tab 的列表实现（list/filter 子 change 处理）
+
+## 验证记录
+- 2026-09-11（分支 tui-ux）：1.1 搜索结果窗口化落地（`visibleRange`/`listPageSize`/`truncateWidth`，预算=终端-外框5行-overlay4行）；1.2 `history_tab` 移除 `q→tea.Quit` 分支，退出统一走顶层 dirty-quit 守卫；1.3 核验通过：`enterSidebarPlan` All→`Scope{All:true}`→`PlanInstall/Uninstall` 全量计划，代码无禁令残留；2.1 SKILL.md 无 All/伪组描述，无需同步；2.2 `make check` 全部通过（internal/tui 125.6s 全绿）。
