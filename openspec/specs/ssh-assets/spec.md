@@ -1,9 +1,7 @@
 ## Purpose
 
 提供 SSH host 与 keypair 的一等加密管理：结构化字段与自由扩展、host→keypair 引用一致性、ssh config 导出与私钥落地，并集成 TUI 浏览与 MCP 只读查询。
-
 ## Requirements
-
 ### Requirement: KeyPair 导入与存储
 系统 SHALL 提供 `senv keypair` 命令组（`import`、`list`、`materialize`、`delete`）。`import` SHALL 从指定私钥文件读取内容并整体加密存储，name 全局唯一。
 
@@ -92,7 +90,7 @@
 - **THEN** keypair 被删除，引用它的 host `identityKey` 被清空且列表刷新
 
 ### Requirement: 导出 OpenSSH config 片段
-`senv host export` SHALL 生成 OpenSSH config 片段：默认全部 host，`--host <alias>` 可过滤；核心字段映射为 `Host`/`HostName`/`User`/`Port`/`ProxyJump`，额外 KV 直传为 OpenSSH 关键字，`IdentityFile` 统一指向 `~/.ssh/senv/<keypair name>`。`proxyJump` 引用缺失时 MUST 报错。
+`senv host export` SHALL 生成 OpenSSH config 片段：默认全部 host，`--host <alias>` 可过滤；核心字段映射为 `Host`/`HostName`/`User`/`Port`/`ProxyJump`，额外 KV 直传为 OpenSSH 关键字，`IdentityFile` 统一指向 `~/.ssh/senv/<keypair name>`。`proxyJump` 引用缺失时 MUST 报错。`IdentityFile` 引用的 keypair 不在本机 vault 时，export SHALL 逐条输出 warning（指明 host 别名与缺失的 keypair 名）并照常生成片段——悬空引用由后续 materialize 或同步补齐收敛，不阻断导出。
 
 #### Scenario: Export all hosts
 - **WHEN** 执行 `senv host export`
@@ -105,6 +103,14 @@
 #### Scenario: Export with dangling proxyJump
 - **WHEN** 某 host 的 `proxyJump` 指向已不存在的 alias
 - **THEN** `export` SHALL 报错并指出该 host
+
+#### Scenario: IdentityFile 引用的 keypair 本机缺失
+- **WHEN** 某 host 的 `identityKey` 指向本机 vault 不存在的 keypair（如档案尚未同步到本机）
+- **THEN** `export` SHALL 输出逐条 warning 指明该 host 别名与缺失 keypair 名，片段照常生成且该 host 块仍含 `IdentityFile` 路径
+
+#### Scenario: keypair 全部在位时无新增输出
+- **WHEN** 所有被引用 keypair 均在本机 vault
+- **THEN** `export` 输出 SHALL 与既有行为一致，不产生 warning
 
 ### Requirement: keypair materialize 落盘
 `senv keypair materialize <name>` SHALL 将私钥解密写入 `~/.ssh/senv/<name>`（目录 0700、文件 0600）；目标已存在时默认 SHALL 拒绝覆盖。
@@ -150,11 +156,18 @@ TUI SHALL 提供 host/keypair 的完整编辑板块：浏览、新建、编辑�
 - **THEN** 先展示将写入的内容预览，确认后写目标文件；存在悬空 `proxyJump` 时按既有规则报错
 
 ### Requirement: 加密与同步不变性
-host/keypair 数据 SHALL 以密文进入 vault，并复用现有 git/server 同步通道（零知识，仅见密文）。
+
+host/keypair 数据 SHALL 以密文进入 vault，并复用现有 git/server 同步通道（零知识，仅见密文）。server 模式下 host/keypair 以 `ssh_host` / `ssh_keypair` kind 经 syncschema 白名单双向分发，密文落回本机 `hosts/`、`keypairs/` 收集目录；git 模式随 vault 目录整体分发，不经白名单。client 与 server 的白名单来自同一 syncschema 包：新 client 对旧 server push 携带 SSH 条目的批次时，server 事务前整批校验 SHALL 拒绝（发布顺序约束见 ADR-0020）。
 
 #### Scenario: Sync contains ciphertext only
+
 - **WHEN** 执行 push/pull（git 或 server 模式）
 - **THEN** 同步载体中 SHALL 只包含加密后的 host/keypair 数据
+
+#### Scenario: server 模式白名单双向分发
+
+- **WHEN** 已升级的 client 与 server 之间执行增量同步
+- **THEN** 本机 `hosts/`、`keypairs/` 的档案密文进入待推送集合，远端 SSH 条目 pull 后落回原目录，`senv ssh host list` / `senv keypair list` 可见
 
 ### Requirement: KeyPair 重命名
 
@@ -171,3 +184,4 @@ host/keypair 数据 SHALL 以密文进入 vault，并复用现有 git/server 同
 #### Scenario: TUI 内重命名
 - **WHEN** 用户在 TUI 对选中 keypair 触发重命名并输入可用新名称
 - **THEN** 重命名生效，host 列表立即反映新的关联名称
+
