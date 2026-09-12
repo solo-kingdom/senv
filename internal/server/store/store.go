@@ -97,24 +97,71 @@ type Entry struct {
 	UpdatedAt    time.Time `json:"updated_at,omitempty"` // server 端最近写入时间
 }
 
-// Store 封装连接池与全部 SQL 操作
-type Store struct {
+// Store 是 senv-server 存储层的抽象：handler 与后台任务面向该接口工作，
+// 具体实现为 pgStore（PostgreSQL）；缓存等 decorator 在该接缝上包装 inner。
+// 除 Pool() 外全部方法可由任何实现安全提供。
+type Store interface {
+	// 生命周期
+	Close()
+	// Pool 返回底层连接池；仅 serve 启动预检等启动期入口使用，
+	// 请求路径禁止绕过接口直接触碰连接池。
+	Pool() *pgxpool.Pool
+
+	// 用户与 token
+	CreateUser(ctx context.Context, name string) (string, error)
+	RevokeToken(ctx context.Context, token string) error
+	Authenticate(ctx context.Context, token string) (int64, error)
+	AuthenticateWithClient(ctx context.Context, token string) (AuthResult, error)
+
+	// vault metadata
+	GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error)
+	PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error
+
+	// 同步
+	PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error)
+	PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error)
+
+	// client 设备
+	CreateRegistrationCode(ctx context.Context, userID int64, ttl time.Duration) (string, error)
+	RegisterClient(ctx context.Context, code, name string) (string, *Client, error)
+	SetClientStatus(ctx context.Context, userID int64, name, status string) error
+	ListClients(ctx context.Context, userID int64) ([]Client, error)
+	UserIDByName(ctx context.Context, name string) (int64, error)
+	TouchClient(ctx context.Context, clientID int64)
+
+	// 访问日志
+	RecordAccess(ctx context.Context, e AccessEvent) error
+	ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]AccessEventRow, error)
+	PruneAccessLogs(ctx context.Context, before time.Time) (int64, error)
+
+	// 条目历史
+	SetHistoryRetain(n int)
+	ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error)
+}
+
+// pgStore 是 Store 的 PostgreSQL 实现，封装连接池与全部 SQL 访问
+type pgStore struct {
 	pool          *pgxpool.Pool
 	historyRetain int
 }
 
-// New 创建 Store（条目历史默认保留 DefaultHistoryRetain 版）
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, historyRetain: DefaultHistoryRetain}
+// NewSQL 创建 pgStore（条目历史默认保留 DefaultHistoryRetain 版）
+func NewSQL(pool *pgxpool.Pool) *pgStore {
+	return &pgStore{pool: pool, historyRetain: DefaultHistoryRetain}
+}
+
+// New 是返回接口的兼容构造入口，等价于 NewSQL
+func New(pool *pgxpool.Pool) Store {
+	return NewSQL(pool)
 }
 
 // Close 关闭连接池
-func (s *Store) Close() {
+func (s *pgStore) Close() {
 	s.pool.Close()
 }
 
 // Pool 返回底层连接池（admin/migrate 入口使用）
-func (s *Store) Pool() *pgxpool.Pool {
+func (s *pgStore) Pool() *pgxpool.Pool {
 	return s.pool
 }
 
@@ -136,7 +183,7 @@ func hashToken(token string) []byte {
 }
 
 // CreateUser 创建用户并签发 token，返回一次性明文 token
-func (s *Store) CreateUser(ctx context.Context, name string) (string, error) {
+func (s *pgStore) CreateUser(ctx context.Context, name string) (string, error) {
 	token, err := GenerateToken()
 	if err != nil {
 		return "", err
@@ -162,7 +209,7 @@ func (s *Store) CreateUser(ctx context.Context, name string) (string, error) {
 }
 
 // RevokeToken 吊销指定 token（按哈希匹配），不影响同用户其他 token
-func (s *Store) RevokeToken(ctx context.Context, token string) error {
+func (s *pgStore) RevokeToken(ctx context.Context, token string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE tokens SET revoked_at = $1 WHERE token_hash = $2 AND revoked_at IS NULL`,
 		time.Now(), hashToken(token))
 	if err != nil {
@@ -171,11 +218,14 @@ func (s *Store) RevokeToken(ctx context.Context, token string) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("token 不存在或已吊销")
 	}
+	// 吊销生效依赖认证缓存同步失效：admin 进程与 serve 进程隔离，
+	// 经 pg_notify 广播（best-effort，丢失由消费端 TTL 兜底）
+	s.notifyCacheInvalidation(ctx)
 	return nil
 }
 
 // Authenticate 用 token 换取 user_id；无效或已吊销返回 ErrNotFound（不泄露存在性）
-func (s *Store) Authenticate(ctx context.Context, token string) (int64, error) {
+func (s *pgStore) Authenticate(ctx context.Context, token string) (int64, error) {
 	var userID int64
 	err := s.pool.QueryRow(ctx,
 		`SELECT user_id FROM tokens WHERE token_hash = $1 AND revoked_at IS NULL`, hashToken(token)).Scan(&userID)
@@ -216,7 +266,7 @@ func lookupVault(ctx context.Context, db interface {
 }
 
 // GetMetadata 读取 vault metadata blob（原样透传，不解析）
-func (s *Store) GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error) {
+func (s *pgStore) GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, err
 	}
@@ -236,7 +286,7 @@ func (s *Store) GetMetadata(ctx context.Context, userID int64, vault string) ([]
 }
 
 // PutMetadata 写入 vault metadata blob（vault 不存在时自动创建）
-func (s *Store) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
+func (s *pgStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
 	if err := validateVaultName(vault); err != nil {
 		return err
 	}
@@ -299,7 +349,7 @@ func validateEntry(e Entry) *ValidationError {
 }
 
 // PushEntries 乐观锁批量推送：整批一个事务，任一冲突则整批拒绝
-func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
+func (s *pgStore) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, 0, err
 	}
@@ -406,7 +456,7 @@ func (s *Store) PushEntries(ctx context.Context, userID int64, vault string, ent
 
 // PullEntries 增量拉取：返回 revision > since 的全部条目（含删除标记）与最新 revision。
 // 空增量返回空列表与当前最新 revision，不报错。
-func (s *Store) PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error) {
+func (s *pgStore) PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, 0, err
 	}

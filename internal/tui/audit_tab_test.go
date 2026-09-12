@@ -30,7 +30,7 @@ func sampleAuditRows() []session.AuditEntry {
 }
 
 func TestAuditTabRendersDatesAndOutcomes(t *testing.T) {
-	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows()})
+	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows()}, nil)
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	view := tab.View()
@@ -41,7 +41,7 @@ func TestAuditTabRendersDatesAndOutcomes(t *testing.T) {
 
 func TestAuditTabFilterCycles(t *testing.T) {
 	src := &fakeAuditSource{rows: sampleAuditRows()}
-	var tab Tab = newAuditTab(src)
+	var tab Tab = newAuditTab(src, nil)
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 
@@ -55,6 +55,11 @@ func TestAuditTabFilterCycles(t *testing.T) {
 	if view := tab.View(); strings.Contains(view, "op_env") || !strings.Contains(view, "auth_failure") {
 		t.Errorf("session filter should hide op events, got %q", view)
 	}
+	// 新增的「自上次 pull」预设：sync 为 nil（从未 pull）时给出明确空态
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if view := tab.View(); !strings.Contains(view, "no pull yet") {
+		t.Errorf("since-pull filter without a pull should show the never-pulled empty state, got %q", view)
+	}
 	// 再按回到全部
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
 	if view := tab.View(); !strings.Contains(view, "op_env") || !strings.Contains(view, "auth_failure") {
@@ -63,14 +68,14 @@ func TestAuditTabFilterCycles(t *testing.T) {
 }
 
 func TestAuditTabSkippedLinesAndError(t *testing.T) {
-	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows(), skipped: 2})
+	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows(), skipped: 2}, nil)
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	if view := tab.View(); !strings.Contains(view, "skipped 2 unparseable records") {
 		t.Errorf("view should report skipped lines, got %q", view)
 	}
 
-	var errTab Tab = newAuditTab(&fakeAuditSource{err: fmt.Errorf("boom")})
+	var errTab Tab = newAuditTab(&fakeAuditSource{err: fmt.Errorf("boom")}, nil)
 	errTab.SetSize(80, 20)
 	errTab, _ = errTab.Update(drainCmd(t, errTab.Init()))
 	if view := errTab.View(); !strings.Contains(view, "failed to load audit log") {
@@ -89,7 +94,7 @@ func TestAuditTabRegisteredOnlyWithSource(t *testing.T) {
 
 func TestAuditTabFreeTextFilter(t *testing.T) {
 	src := &fakeAuditSource{rows: sampleAuditRows()}
-	var tab Tab = newAuditTab(src)
+	var tab Tab = newAuditTab(src, nil)
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 
@@ -124,7 +129,7 @@ func TestAuditTabFreeTextFilter(t *testing.T) {
 }
 
 func TestAuditTabFreeTextFilterNoMatch(t *testing.T) {
-	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows()})
+	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows()}, nil)
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
@@ -140,7 +145,7 @@ func TestAuditTabFreeTextFilterNoMatch(t *testing.T) {
 // 内容区，resize 跟随重排（tui-tab-consistency-render）。
 func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	// 加载态：不再是裸文本
-	loading := newAuditTab(&fakeAuditSource{})
+	loading := newAuditTab(&fakeAuditSource{}, nil)
 	loading.SetSize(78, 17)
 	out := loading.View()
 	if !strings.Contains(out, "loading audit log…") {
@@ -151,7 +156,7 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	}
 
 	// 错误态：内嵌面板、撑满
-	errTab := newAuditTab(&fakeAuditSource{err: fmt.Errorf("permission denied")})
+	errTab := newAuditTab(&fakeAuditSource{err: fmt.Errorf("permission denied")}, nil)
 	errTab.SetSize(78, 17)
 	errTab.Update(drainCmd(t, errTab.Init()))
 	out = errTab.View()
@@ -164,7 +169,7 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 
 	// 空态与列表态：撑满；resize 跟随
 	src := &fakeAuditSource{rows: sampleAuditRows()}
-	var tab Tab = newAuditTab(src)
+	var tab Tab = newAuditTab(src, nil)
 	tab.SetSize(78, 17)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	out = tab.View()
@@ -182,5 +187,48 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	out = tab.View()
 	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 60 || h != 14 {
 		t.Fatalf("after resize pane size = %dx%d, want 60x14", w, h)
+	}
+}
+
+// TestAuditTabSincePullFilter：自上次 pull 预设只保留 pull 之后的事件；
+// 后台 pull 完成（Reload）后 lastPull 刷新、pull 事件进入视图；从未 pull
+// 时为明确的空态。
+func TestAuditTabSincePullFilter(t *testing.T) {
+	pullAt := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	src := &fakeAuditSource{rows: []session.AuditEntry{
+		{Timestamp: pullAt.Add(-time.Hour), EventType: session.AuditOpSync, Target: "vault:main", Success: true, Message: "old"},
+		{Timestamp: pullAt.Add(time.Minute), EventType: session.AuditOpSync, Target: "vault:main", Success: true, Message: "pull 3 条"},
+		{Timestamp: pullAt.Add(2 * time.Minute), EventType: session.AuditOpLLMSwitch, Target: "agent:codex", Success: true, Message: "switch"},
+	}}
+	sync := &fakeSyncSource{state: SyncState{LastPull: pullAt, Last: pullAt}}
+	var tab Tab = newAuditTab(src, sync)
+	tab.SetSize(80, 20)
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+
+	// 循环到 "since pull" 预设（all → ops → sessions → since pull）
+	for i := 0; i < 3; i++ {
+		tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	}
+	view := tab.View()
+	if !strings.Contains(view, "since pull") || !strings.Contains(view, "agent:codex") || !strings.Contains(view, "10:02:00") {
+		t.Errorf("since-pull view should contain post-pull events only, got %q", view)
+	}
+	if strings.Contains(view, "10:00:00") {
+		t.Errorf("since-pull view must hide pre-pull events, got %q", view)
+	}
+
+	// 后台 pull 落地：sync 上报新的 LastPull，Reload 后旧事件被排除
+	newPull := pullAt.Add(time.Hour)
+	sync.state = SyncState{LastPull: newPull, Last: newPull}
+	src.rows = append(src.rows, session.AuditEntry{
+		Timestamp: newPull.Add(time.Minute), EventType: session.AuditOpSync, Target: "vault:main", Success: true, Message: "fresh pull",
+	})
+	tab, _ = tab.Update(drainCmd(t, tab.Reload()))
+	view = tab.View()
+	if !strings.Contains(view, "11:01:00") {
+		t.Errorf("reloaded view should contain the fresh pull event, got %q", view)
+	}
+	if strings.Contains(view, "10:02:00") || strings.Contains(view, "agent:codex") {
+		t.Errorf("reloaded view should exclude events before the new pull, got %q", view)
 	}
 }

@@ -26,6 +26,8 @@ const (
 	KindText        = syncschema.KindText
 	KindConfig      = syncschema.KindConfig
 	KindConfigIndex = syncschema.KindConfigIndex
+	KindLLMProvider = syncschema.KindLLMProvider
+	KindMCPServer   = syncschema.KindMCPServer
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -146,6 +148,12 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{key + storage.ConfigFileSuffix}}, nil
 	case KindConfigIndex:
 		return cacheLocation{root: cacheConfigRoot, segments: []string{storage.ConfigIndexFile}}, nil
+	case KindLLMProvider, KindMCPServer:
+		dir := storage.LLMProviderDirName
+		if kind == KindMCPServer {
+			dir = storage.MCPServerDirName
+		}
+		return cacheLocation{root: cacheDataRoot, segments: []string{dir, key + storage.ConfigFileSuffix}}, nil
 	default:
 		panic("syncschema accepted unknown kind")
 	}
@@ -316,6 +324,34 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 			key := strings.TrimSuffix(name, storage.ConfigFileSuffix)
 			ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
 			if err := add(KindConfig, "", key, ident, dataRoot, name); err != nil {
+				return nil, nil, reads, err
+			}
+		}
+	}
+
+	// 人工添加的配置源档案目录（LLM Provider / MCP Server），与 env/text 同为
+	// SSH-style 加密 blob；目录不存在（vault 从未添加过该类档案）时静默跳过。
+	for _, collection := range []struct {
+		dir  string
+		kind string
+	}{
+		{storage.LLMProviderDirName, KindLLMProvider},
+		{storage.MCPServerDirName, KindMCPServer},
+	} {
+		profileFiles, err := dataRoot.ReadDir(collection.dir)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, nil, reads, err
+			}
+			continue
+		}
+		for _, file := range profileFiles {
+			if file.IsDir || !strings.HasSuffix(file.Name, storage.ConfigFileSuffix) {
+				continue
+			}
+			key := strings.TrimSuffix(file.Name, storage.ConfigFileSuffix)
+			ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+			if err := add(collection.kind, "", key, ident, dataRoot, collection.dir, file.Name); err != nil {
 				return nil, nil, reads, err
 			}
 		}

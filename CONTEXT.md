@@ -28,6 +28,10 @@ _Avoid_: 登录/登出（会话含义）
 
 ### 本地状态
 
+**配置源（Config Source）**:
+人工添加进 vault、可随 vault 跨机分发的数据：env/text/config 条目与 LLM Provider、MCP Server 档案（SSH-style 加密 blob）。与它相对的是**本机状态（同步边界语境）**——仅在单一机器上有意义、刻意不随 vault 同步的派生状态（当前指向、导出状态、agent 配置文件）。"配置源同步、本机状态不同步"是同步通道的边界。
+_Avoid_: 配置项（泛指 env 时）、同步数据（指协议载荷时）
+
 **解锁缓存（Session Cache）**:
 client 本地保存的口令派生密钥缓存，用于免重复输口令；与 server 无关。client 检测到被屏蔽时清除它，本地加密工作副本保留。
 _Avoid_: 会话（server 会话含义）、session（歧义场合）
@@ -174,7 +178,7 @@ _Avoid_: 多模态（过宽）、视觉（只覆盖 image）、capabilities（�
 _Avoid_: 激活（指 env 分组时）
 
 **当前指向**:
-单个 Coding Agent 最近一次被切换后的 LLM Provider、Agent 模型集与默认模型记录；属于本机状态，不随 vault 同步。
+单个 Coding Agent 最近一次被切换后的 LLM Provider、Agent 模型集与默认模型记录；属于本机状态（同步边界语境），不随 vault 同步——它是切换动作的本机结果，不是配置源。
 _Avoid_: 指针（实现意味）、profile（多预设含义，未采用）
 
 **漂移（Drift）**:
@@ -196,7 +200,7 @@ _Avoid_: 安装（指 senv 自身的 MCP server 时）、同步（指 vault 同�
 _Avoid_: 卸载（指 config uninstall 或 MCP 安装的反操作时）、删除（指删档案时）
 
 **导出状态**:
-某个 Coding Agent 上，一份 MCP Server 档案的本机导出结果：未导出 / 已导出 / 漂移。属于本机状态，不随 vault 同步，对标 LLM 的当前指向。
+某个 Coding Agent 上，一份 MCP Server 档案的本机导出结果：未导出 / 已导出 / 漂移。属于本机状态（同步边界语境），不随 vault 同步，对标 LLM 的当前指向；档案本体才是配置源。
 _Avoid_: 安装状态、同步状态、MCP 配置（指文件内容时）
 
 **MCP 安装（Install）**:

@@ -378,7 +378,7 @@ func (m *Manager) loadEnvGroupWithRoot(root securefs.TrustedRoot, group string, 
 	if !errors.Is(legacyErr, os.ErrNotExist) {
 		return nil, legacyErr
 	}
-	return nil, fmt.Errorf("group %s not found", group)
+	return nil, fmt.Errorf("group %s not found: %w", group, os.ErrNotExist)
 }
 
 func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group string, key []byte) (*EnvGroup, error) {

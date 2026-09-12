@@ -13,7 +13,9 @@
 | D7 | 凭据引用跨机解析失败 | `senv ai switch` fail-closed + 诊断"缺失 text:llm-keys/<alias>"；`senv mcp export` 仍写入字面量（保持向后兼容）+ 把缺失 env/text 名列入 warning | fail-closed 防绕过 A 机对凭据来源的意图；MCP 维度沿用既有 export 行为，只多打 warning | settled |
 | D8 | TUI 审计面 | 复用现有 audit 面板加 "since last pull" 子视图，不开新面板 | 现有 audit 面板已就位（提交 4ddbabf / 6f17d92），加一类字段即可并入 | settled |
 | D9 | ssh_host / ssh_keypair 范围 | 本 change 不纳入；ADR 显式记入"已识别但延后"项 | 用户原命题只点了 AI + MCP；纳入会让本 change 体积翻倍、review 难度上升 | settled |
-| D10 | driver 归属与产出 | 新建 driver `cross-machine-ai-mcp-sync-driver`；决策进 driver/grill.md，ADR 候选 `sync-ai-mcp-source-of-truth` 由 propose 阶段晋升进 `docs/adr/0018`；`CONTEXT.md` 在 apply 阶段同步更新 | 决策树已长成具体子任务（syncschema / entryLocation / CLI / TUI / ADR / 文档），需 OpenSpec 跟踪 | settled |
+| D10 | driver 归属与产出 | 新建 driver `cross-machine-ai-mcp-sync-driver`；决策进 driver/grill.md，ADR 候选 `sync-ai-mcp-source-of-truth` 由 propose 阶段晋升进 `docs/adr/`（编号落地时取下一空位）；`CONTEXT.md` 在 apply 阶段同步更新 | 决策树已长成具体子任务（syncschema / entryLocation / CLI / TUI / ADR / 文档），需 OpenSpec 跟踪 | settled |
+| D11 | ADR 编号 | 不写死编号，改"落地时 `docs/adr/` 扫描取下一空位"措辞（2026-09-12 复核为 0019） | 0018 已被 server-cache-out-of-band-invalidation 占用；硬编号已过期一次，且仓内 0001 已有双文件先例 | settled |
+| D12 | `.openspec.yaml` 补建 | 按 taskflow 模板补 `skip_specs: true` 脚手架 | taskflow-new 第 3 步被跳过、文件从未存在；不补则 propose 会搭 spec 增量骨架 | settled |
 
 ## 术语表
 
@@ -28,8 +30,12 @@
 
 <!-- 仅记录满足"难逆转 + 后人费解 + 真实取舍"三门槛的；由 design.md 吸收或随 change 归档晋升 -->
 
-- [ ] adr-sync-ai-mcp-source-of-truth: syncschema 增补 `llm_provider` / `mcp_server`，与 env/text 走同一通道；本机派生态（Coding Agent 切换指针 / MCP export ledger / agent 配置文件）仍不同步（出处：D1/D2/D3/D4/D5/D9）→ 待 propose 阶段晋升为 `docs/adr/0018-sync-ai-mcp-source-of-truth.md`（proposed）
+- [ ] adr-sync-ai-mcp-source-of-truth: syncschema 增补 `llm_provider` / `mcp_server`，与 env/text 走同一通道；本机派生态（Coding Agent 切换指针 / MCP export ledger / agent 配置文件）仍不同步（出处：D1/D2/D3/D4/D5/D9）→ 待 propose 阶段晋升进 `docs/adr/`（编号按落地时扫描取下一空位，2026-09-12 复核为 0019）
 
 ## 未决问题
 
 无
+
+## 验证记录
+
+- 2026-09-12 grill 第二轮：环境复核发现 ADR 0018 撞号与 `.openspec.yaml` 缺失，D11/D12 settled；frontier 清空，grill 收敛，进入 openspec-propose。

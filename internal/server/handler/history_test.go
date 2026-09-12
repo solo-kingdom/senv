@@ -13,7 +13,7 @@ import (
 
 // historyFixture 返回 server、alice 的 client token，并造出 deploy:KEY 的
 // 三次推送（两次修改 → 两条历史）。
-func historyFixture(t *testing.T) (*store.Store, *Server, string) {
+func historyFixture(t *testing.T) (store.Store, *Server, string) {
 	t.Helper()
 	pool := testdb.New(t)
 	st := store.New(pool)

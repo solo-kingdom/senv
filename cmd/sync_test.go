@@ -89,3 +89,68 @@ func TestWriteSyncConflictReport(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteSyncConflictReportConfigSourceWarning(t *testing.T) {
+	conflict := &provider.SyncConflictError{
+		Conflicts: []provider.Conflict{
+			{Kind: provider.KindLLMProvider, CurrentRevision: 12},
+			{Kind: provider.KindEnv, Grp: "default", Key: "A", CurrentRevision: 13},
+		},
+		Details: []provider.ConflictDetail{
+			{
+				Kind:   provider.KindLLMProvider,
+				Key:    "anthropic",
+				Local:  provider.ConflictSide{Revision: 10, Hash: "llmlocal00000000"},
+				Remote: provider.ConflictSide{Revision: 12, Hash: "llmremote00000000"},
+			},
+			{
+				Kind:   provider.KindEnv,
+				Grp:    "default",
+				Key:    "A",
+				Local:  provider.ConflictSide{Revision: 11, Hash: "envlocal000000000"},
+				Remote: provider.ConflictSide{Revision: 13, Hash: "envremote00000000"},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	writeSyncConflictReport(&out, conflict)
+	got := out.String()
+	for _, want := range []string{
+		"⚠ 配置源 llm_provider anthropic 双端均有修改：local rev 10 / remote rev 12",
+		"llm_provider/-/anthropic",
+		"env/default/A",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q:\n%s", want, got)
+		}
+	}
+	// env 冲突不应带配置源对照行
+	if strings.Count(got, "双端均有修改") != 1 {
+		t.Errorf("config-source warning count = %d, want 1:\n%s", strings.Count(got, "双端均有修改"), got)
+	}
+}
+
+func TestFormatSyncConflictAuditMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		conflict *provider.SyncConflictError
+		want     string
+	}{
+		{"plain only", &provider.SyncConflictError{Conflicts: []provider.Conflict{
+			{Kind: provider.KindEnv},
+			{Kind: provider.KindText},
+		}}, "同步冲突 2 项"},
+		{"with config source", &provider.SyncConflictError{Conflicts: []provider.Conflict{
+			{Kind: provider.KindEnv},
+			{Kind: provider.KindMCPServer},
+			{Kind: provider.KindLLMProvider},
+		}}, "同步冲突 3 项（含配置源 2 项）"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatSyncConflictAuditMessage(tc.conflict); got != tc.want {
+				t.Fatalf("message = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -12,7 +12,7 @@ import (
 )
 
 // listEvents 读取全部访问日志
-func listEvents(t *testing.T, st *store.Store) []store.AccessEventRow {
+func listEvents(t *testing.T, st store.Store) []store.AccessEventRow {
 	t.Helper()
 	events, err := st.ListAccessLogs(context.Background(), store.AccessLogFilter{Limit: 100})
 	if err != nil {

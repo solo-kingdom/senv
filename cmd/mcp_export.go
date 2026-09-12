@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -10,6 +12,7 @@ import (
 
 	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/session"
 )
 
@@ -60,7 +63,9 @@ func resolveMCPTargets(all bool, agentList string) ([]agentcfg.Target, error) {
 }
 
 // mcpExporter builds an exporter that resolves {{env:...}} references through
-// the already-authenticated env and text managers.
+// the already-authenticated env and text managers. 档案跨机同步后引用目标可能
+// 尚未在本机，因此走宽松模式：未解析引用保留模板原文写入并逐条 warning，
+// 不再终止该 agent 的写入（严格语义仅保留给解析器自身错误，如引用环）。
 func mcpExporter(scope string) (*mcp.Exporter, error) {
 	mgr, err := getMCPManager()
 	if err != nil {
@@ -74,14 +79,15 @@ func mcpExporter(scope string) (*mcp.Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolve := func(value string) (string, error) {
-		return resolveValueWith(value, false, "", envMgr, textMgr)
+	getter := newRefGetter(envMgr, textMgr)
+	resolveLoose := func(value string) (string, []string, error) {
+		return ref.ResolveWithWarnings(value, getter, ref.ResolveOptions{Loose: true})
 	}
 	return mgr.NewExporter(mcp.ExporterOptions{
-		Scope:      scope,
-		Force:      mcpExportForce,
-		Resolve:    resolve,
-		LedgerPath: mcp.LedgerPathForConfigDir(getConfigPath()),
+		Scope:        scope,
+		Force:        mcpExportForce,
+		ResolveLoose: resolveLoose,
+		LedgerPath:   mcp.LedgerPathForConfigDir(getConfigPath()),
 	})
 }
 
@@ -116,6 +122,7 @@ Examples:
 			return err
 		}
 		printExportPlan(plan)
+		printExportItemWarnings(cmd.ErrOrStderr(), plan)
 		if mcpExportPrint {
 			printExportSnippets(plan)
 			return nil
@@ -219,16 +226,40 @@ func printLedgerWarnings(ledger *mcp.Ledger) {
 }
 
 func printExportPlan(plan *mcp.ExportPlan) {
-	fmt.Println("Export plan:")
+	printExportPlanTo(os.Stdout, plan)
+}
+
+func printExportPlanTo(w io.Writer, plan *mcp.ExportPlan) {
+	fmt.Fprintln(w, "Export plan:")
 	for _, item := range plan.Items {
 		line := fmt.Sprintf("  %-16s %-20s %-8s %s", item.Agent, item.Alias, item.Action, item.Path)
 		if item.Plaintext && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
 			line += "  [明文]"
 		}
+		if len(item.Warnings) > 0 {
+			line += "  [未解析引用]"
+		}
 		if item.Reason != "" {
 			line += "  — " + item.Reason
 		}
-		fmt.Println(line)
+		fmt.Fprintln(w, line)
+	}
+}
+
+// printExportItemWarnings 把宽松模式下未解析引用的 warning 写到 stderr：
+// 档案已写入但引用目标缺失，用户需补齐后重跑导出。同一 alias 的解析
+// 结果与 target 无关（ResolveLoose 确定性），重复文本只打一次，避免
+// --all 多目标时同一警告刷屏。
+func printExportItemWarnings(w io.Writer, plan *mcp.ExportPlan) {
+	seen := map[string]bool{}
+	for _, item := range plan.Items {
+		for _, warning := range item.Warnings {
+			if seen[warning] {
+				continue
+			}
+			seen[warning] = true
+			fmt.Fprintf(w, "⚠ %s/%s %s\n", item.Agent, item.Alias, warning)
+		}
 	}
 }
 
@@ -243,6 +274,9 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 			continue
 		}
 		fmt.Printf("\n# %s — add to %s\n", item.AgentName, item.Path)
+		for _, warning := range item.Warnings {
+			fmt.Printf("# ⚠ %s\n", warning)
+		}
 		switch target.Format {
 		case agentcfg.FormatJSON:
 			entry, err := json.MarshalIndent(map[string]any{

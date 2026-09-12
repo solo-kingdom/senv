@@ -1,0 +1,724 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 9 finding(s) across 17 selected item(s).",
+  "summary": {
+    "files_reviewed": 17,
+    "comments": 9,
+    "total_tokens": 10051357,
+    "input_tokens": 9930604,
+    "output_tokens": 120753,
+    "cache_read_tokens": 8728931,
+    "elapsed": "5m42s"
+  },
+  "tool_calls": {
+    "total": 393,
+    "by_tool": {
+      "code_comment": 6,
+      "code_search": 199,
+      "file_find": 17,
+      "file_read": 162,
+      "file_read_diff": 9
+    },
+    "failure": 5,
+    "failure_by_tool": {
+      "file_read": 5
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 44,
+        "tool_name": "file_read",
+        "file_path": "cmd/tui.go",
+        "arguments": "{\"end_line\": 50, \"file_path\": \"cmd/tui.go\", \"start_line\": 140}",
+        "error": "invalid line range: start_line 140 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 66,
+        "tool_name": "file_read",
+        "file_path": "internal/provider/server_state.go",
+        "arguments": "{\"end_line\":300,\"file_path\":\"internal/storage/manager.go\",\"start_line\":500}",
+        "error": "invalid line range: start_line 500 is greater than end_line 300"
+      },
+      {
+        "tool_call_number": 144,
+        "tool_name": "file_read",
+        "file_path": "internal/tui/audit_tab.go",
+        "arguments": "{\"end_line\":100,\"file_path\":\"internal/provider/server.go\",\"start_line\":340}",
+        "error": "invalid line range: start_line 340 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 200,
+        "tool_name": "file_read",
+        "file_path": "internal/env/manager.go",
+        "arguments": "{\"end_line\":300,\"file_path\":\"cmd/mcp.go\",\"start_line\":500}",
+        "error": "invalid line range: start_line 500 is greater than end_line 300"
+      },
+      {
+        "tool_call_number": 327,
+        "tool_name": "file_read",
+        "file_path": "cmd/mcp_export.go",
+        "arguments": "{\"end_line\":100,\"file_path\":\"cmd/text.go\",\"start_line\":336}",
+        "error": "invalid line range: start_line 336 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "internal/syncschema/schema_test.go",
+      "content": "With the addition of KindLLMProvider and KindMCPServer, the legacy TestValidateIdentityAcceptsFiveKinds test name now understates the count (it covers 5; the two new kinds are covered by TestValidateIdentityAcceptsConfigSourceKinds). Consider renaming to TestValidateIdentityAcceptsLegacyFiveKinds or merging all accepted-kind cases so the test list stays authoritative — non-blocking, current behavior is correct.",
+      "existing_code": "func TestValidateIdentityAcceptsFiveKinds(t *testing.T) {",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "style",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/env/manager.go",
+      "content": "The `errors.Is(err, os.ErrNotExist)` contract added here is only meaningful if `Delete` and `RenameKey` (and the in-memory \"not found\" path at manager.go:204 and manager.go:513) apply the same wrapping. Right now they still return `fmt.Errorf(\"variable %s not found in group %s\", key, group)` without `%w`, so callers cannot rely on `errors.Is(err, os.ErrNotExist)` uniformly across the Manager API — only `Get` exposes it. Consider extending the wrapping to all \"not found\" sites in this file for consistency, or document the asymmetry in the package comment.",
+      "suggestion_code": "// 保留哨兵错误（%w），调用方可用 errors.Is(err, os.ErrNotExist) 判定\"条目缺失\"\nreturn \"\", fmt.Errorf(\"variable %s not found in group %s: %w\", key, group, err)",
+      "existing_code": "// 保留哨兵错误（%w），调用方可用 errors.Is 判定\"条目缺失\"\nreturn \"\", fmt.Errorf(\"variable %s not found in group %s: %w\", key, group, err)",
+      "start_line": 120,
+      "end_line": 121,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/mcp/export.go",
+      "content": "executeTarget re-resolves entries (lines 295, 329) and discards the freshly-generated warnings, so the final `item.Warnings` only reflects Plan-time state. For env-template resolution this is currently benign (deterministic), but it creates a silent invariant: if `ResolveLoose` ever becomes stateful or the stored entry changes between Plan and executeTarget, the user-visible warnings would not match what was actually written. Consider either reusing the Plan-time resolved server (e.g., attach it to the item or stash it on a shared map) or updating `item.Warnings` from the second resolve call.",
+      "existing_code": "\t\tserver, _, err := e.resolveEntry(entry)\n\t\tif err != nil {\n\t\t\titem.Action = ActionError\n\t\t\titem.Reason = err.Error()\n\t\t\tcontinue\n\t\t}\n\t\tfile.set(item.Alias, server)",
+      "start_line": 295,
+      "end_line": 301,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P2"
+    },
+    {
+      "path": "internal/mcp/export.go",
+      "content": "When `ResolveLoose` returns multiple unresolved references for a single field, the current `fmt.Sprintf(\"...: %s\", warn)` formats the `[]string` with Go's default `[a b]` slice syntax, e.g. `MCP server \"x\" env FOO: [missing env BAR missing env BAZ]`. Emit one warning per unresolved reference (or join with `, `) so each entry is independently readable and greppable.",
+      "existing_code": "\t\t\tif len(warn) > 0 {\n\t\t\t\twarnings = append(warnings, fmt.Sprintf(\"MCP server %q %s: %s\", entry.Alias, field, warn))\n\t\t\t}",
+      "start_line": 362,
+      "end_line": 364,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/mcp/export.go",
+      "content": "The `ResolveLoose` contract doc says it returns a warning instead of an error for unresolvable references, and the Plan comment hints at \"reference cycles etc.\" for hard errors, but the actual boundary (any non-nil `err` from `ResolveLoose` becomes a hard error that poisons the target) is not spelled out. Document the contract on `ResolveLoose` explicitly — e.g., \"the callback must return a non-nil error only for unresolvable *structural* conditions (cycles, malformed templates); missing env/text values must come back as `(raw, [warning], nil)`\" — so future implementers don't silently turn loose warnings into hard failures.",
+      "existing_code": "// ResolveLoose, when set, takes precedence: an unresolvable reference keeps\n// its template literal in the written value and returns a warning instead of\n// an error (profiles sync across machines before their credentials do).",
+      "start_line": 59,
+      "end_line": 61,
+      "category": "documentation",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/mcp_export.go",
+      "content": "The `combinedGetter` instantiation pattern is now duplicated between `cmd/text.go:351-352` and the new code in `mcpExporter` (this file). Since both call sites use the identical construction and pass it to `ref.ResolveWithWarnings`, consider exposing a thin helper (e.g., `resolveValueWithLoose(value, envMgr, textMgr)`) in `cmd/text.go` to consolidate. Not blocking.\n\nSource pattern in `cmd/text.go:351`:\n```go\ngetter := &combinedGetter{envManager: envMgr, textManager: textMgr}\nopts := ref.ResolveOptions{Loose: loose, CurrentGroup: currentGroup}\nresult, warnings, err := ref.ResolveWithWarnings(value, getter, opts)\n```",
+      "suggestion_code": "resolveLoose := func(value string) (string, []string, error) {\n\t\treturn resolveValueWith(value, true, \"\", envMgr, textMgr)\n\t}",
+      "existing_code": "getter := &combinedGetter{envManager: envMgr, textManager: textMgr}\n\tresolveLoose := func(value string) (string, []string, error) {\n\t\treturn ref.ResolveWithWarnings(value, getter, ref.ResolveOptions{Loose: true})\n\t}",
+      "start_line": 82,
+      "end_line": 85,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "cmd/mcp_export.go",
+      "content": "Minor UX consistency: between `printExportPlan` (which surfaces `[未解析引用]` markers) and `printExportSnippets` (the `--print` path), the snippets don't carry any visual marker for items that still contain template literals. Users reading only the snippet output might miss the unresolved-ref status. The stderr warning already covers this, but consider adding a comment line for affected items so the snippet is self-describing.\n\nThe `# %s — add to %s` header is the natural place; e.g. `# warning: ...` lines before each affected snippet.",
+      "suggestion_code": "func printExportSnippets(plan *mcp.ExportPlan) {\n\tfor _, item := range plan.Items {\n\t\tserver := item.Server()\n\t\tif item.Action != mcp.ActionCreate && item.Action != mcp.ActionUpdate {\n\t\t\tcontinue\n\t\t}\n\t\ttarget, ok := agentcfg.Find(item.Agent)\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\t\tfmt.Printf(\"\\n# %s — add to %s\\n\", item.AgentName, item.Path)\n\t\tfor _, warning := range item.Warnings {\n\t\t\tfmt.Printf(\"# ⚠ %s\\n\", warning)\n\t\t}",
+      "existing_code": "func printExportSnippets(plan *mcp.ExportPlan) {\n\tfor _, item := range plan.Items {\n\t\tserver := item.Server()\n\t\tif item.Action != mcp.ActionCreate && item.Action != mcp.ActionUpdate {\n\t\t\tcontinue\n\t\t}\n\t\ttarget, ok := agentcfg.Find(item.Agent)\n\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n\t\tfmt.Printf(\"\\n# %s — add to %s\\n\", item.AgentName, item.Path)",
+      "start_line": 259,
+      "end_line": 269,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P3"
+    },
+    {
+      "path": "internal/mcp/export.go",
+      "content": "Warnings are aggregated once per alias (line 124-137) and then the same slice reference is assigned to every (target, alias) item on line 150. When the plan contains multiple targets (e.g. `--all`), `printExportItemWarnings` (cmd/mcp_export.go:251) prints the same warning once per target even though `ResolveLoose` is deterministic and the warning text already carries the alias (\"MCP server %q ...\"). For 5 targets and 2 unresolved fields the user gets 10 identical lines. Consider either (a) computing `resolveWarn` per alias and emitting it once outside the target loop, or (b) deduplicating in the printer (e.g. group by warning text and suffix the list of affected agents).",
+      "existing_code": "\tresolveWarn := make(map[string][]string, len(names))\n\tfor _, alias := range names {\n\t\tentry, err := e.mgr.Get(alias)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tserver, warnings, err := e.resolveEntry(entry)\n\t\tif err != nil {\n\t\t\tresolveErr[alias] = err\n\t\t\tcontinue\n\t\t}\n\t\tdesired[alias] = server\n\t\tresolveWarn[alias] = warnings\n\t}",
+      "start_line": 124,
+      "end_line": 137,
+      "category": "maintainability",
+      "severity": "medium",
+      "priority": "P1"
+    },
+    {
+      "path": "internal/env/manager.go",
+      "content": "Line 121 wraps the raw `securefs.PathError` (with `Path: \"env/<group>/<key>.enc\"`), so the user-visible error becomes `variable <KEY> not found in group <GROUP>: securefs read \"env/<group>/<key>.enc\": no such file or directory`. This leaks the internal storage layout convention in the user-facing message and is inconsistent with the cleaner `os.ErrNotExist` wrap at line 130. For parity and a less noisy user message, mirror line 130 and wrap `os.ErrNotExist` directly here — the `errors.Is(err, os.ErrNotExist)` contract is satisfied by either form, since `securefs.PathError` unwraps to `syscall.ENOENT` which implements `Is(os.ErrNotExist)`.",
+      "suggestion_code": "if os.IsNotExist(err) {\n\t\t\treturn \"\", fmt.Errorf(\"variable %s not found in group %s: %w\", key, group, os.ErrNotExist)\n\t\t}",
+      "existing_code": "if os.IsNotExist(err) {\n\t\t\t// 保留哨兵错误（%w），调用方可用 errors.Is 判定\"条目缺失\"\n\t\t\treturn \"\", fmt.Errorf(\"variable %s not found in group %s: %w\", key, group, err)\n\t\t}",
+      "start_line": 119,
+      "end_line": 122,
+      "category": "maintainability",
+      "severity": "low",
+      "priority": "P2"
+    }
+  ],
+  "groups": [
+    {
+      "label": "cmd/mcp_export.go",
+      "files": [
+        "cmd/mcp_export.go"
+      ]
+    },
+    {
+      "label": "cmd/sync.go",
+      "files": [
+        "cmd/sync.go"
+      ]
+    },
+    {
+      "label": "cmd/tui.go",
+      "files": [
+        "cmd/tui.go"
+      ]
+    },
+    {
+      "label": "internal/env/manager.go",
+      "files": [
+        "internal/env/manager.go"
+      ]
+    },
+    {
+      "label": "internal/llm/switch.go",
+      "files": [
+        "internal/llm/switch.go"
+      ]
+    },
+    {
+      "label": "internal/mcp/export.go",
+      "files": [
+        "internal/mcp/export.go"
+      ]
+    },
+    {
+      "label": "internal/provider/server_state.go",
+      "files": [
+        "internal/provider/server_state.go"
+      ]
+    },
+    {
+      "label": "internal/storage/manager.go",
+      "files": [
+        "internal/storage/manager.go"
+      ]
+    },
+    {
+      "label": "internal/syncschema/schema.go",
+      "files": [
+        "internal/syncschema/schema.go"
+      ]
+    },
+    {
+      "label": "internal/tui/audit_tab.go",
+      "files": [
+        "internal/tui/audit_tab.go"
+      ]
+    },
+    {
+      "label": "internal/tui/model.go",
+      "files": [
+        "internal/tui/model.go"
+      ]
+    },
+    {
+      "label": "internal/tui/sync.go",
+      "files": [
+        "internal/tui/sync.go"
+      ]
+    },
+    {
+      "label": "openspec/changes/cross-machine-ai-mcp-sync-channel/.openspec.yaml",
+      "files": [
+        "openspec/changes/cross-machine-ai-mcp-sync-channel/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/cross-machine-ai-mcp-sync-cli/.openspec.yaml",
+      "files": [
+        "openspec/changes/cross-machine-ai-mcp-sync-cli/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/cross-machine-ai-mcp-sync-docs/.openspec.yaml",
+      "files": [
+        "openspec/changes/cross-machine-ai-mcp-sync-docs/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/cross-machine-ai-mcp-sync-driver/.openspec.yaml",
+      "files": [
+        "openspec/changes/cross-machine-ai-mcp-sync-driver/.openspec.yaml"
+      ]
+    },
+    {
+      "label": "openspec/changes/cross-machine-ai-mcp-sync-tui/.openspec.yaml",
+      "files": [
+        "openspec/changes/cross-machine-ai-mcp-sync-tui/.openspec.yaml"
+      ]
+    }
+  ],
+  "session_id": "3af11677-18f8-4643-ba32-3f26c41d3160",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "3af11677-18f8-4643-ba32-3f26c41d3160",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "07a859200c4b5d605cba559ce7b75e3026174610f1d6c54da48ae384a2624fc0"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "origin/main",
+      "requested_head": "HEAD",
+      "resolved_base": "18bda26618b8542629fca3925c2a14c707c38262",
+      "resolved_head": "dbd5fbd7a9421f802da78074d298ec23460ebe77",
+      "exact_range": "18bda26618b8542629fca3925c2a14c707c38262..dbd5fbd7a9421f802da78074d298ec23460ebe77",
+      "source_artifact_sha256": "ce9cc024f6bca62b134e60f69c22da120c6b1b16a7fc90df2302717b0a85e750"
+    },
+    "execution": {
+      "ocr_version": "v1.12.0",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "e85d22baeb3a9d3f35b254ea1df9f9644e5523ffdc5302939267695650e429c0",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "47b8c43286a002977475d823d9b06d561917bb3e4e8efb4b59f3c50b60805e2b",
+          "path": "internal/syncschema/schema.go",
+          "fingerprint": "2b3ad0c7dc26b8dec07993ce8ebf1184631a74c93964efcd429feee6a409252d"
+        },
+        {
+          "item_id": "49c7f6b808cce3a6c78460bb200c7768724e23445b909501343b44f54fa75936",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-cli/.openspec.yaml",
+          "fingerprint": "dab2cd711810baf774bc90a66e7dd7d23118c55add51c60c4c7aa289ae8a87f0"
+        },
+        {
+          "item_id": "562b693fcbec84e544d7837d4778771e581c713785a66f2a8cc768bfd2a5e0f5",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-channel/.openspec.yaml",
+          "fingerprint": "eade45547109ab9bed99b697a2807a2e1df15b2b73768b32dbc0a4d2ed48f668"
+        },
+        {
+          "item_id": "6ab94e508cf511a11991e14e74b39b57964e0a84565464feeb2c7b848210585c",
+          "path": "internal/env/manager.go",
+          "fingerprint": "664bfef5859d3a4df5fb8511ea7b9a981cd5005e3c41fb9def94869b705a5796"
+        },
+        {
+          "item_id": "8461005dcfb7cb373a99e8456f2e89bad267d157fcc52cae918199b54fd4ccc1",
+          "path": "internal/tui/sync.go",
+          "fingerprint": "a790b59c5635350c24d04ff2c639269f9fbb1afaedac82707fba40ca8fd73448"
+        },
+        {
+          "item_id": "93a0c0e89c34329dffd03bff7de7465c87c21347589087637e009f03d3cb39ed",
+          "path": "internal/llm/switch.go",
+          "fingerprint": "df258c469fae92de6c49ab12df866349917c1cdaa4220440d50faf9910e2a2ac"
+        },
+        {
+          "item_id": "9d237caa5a64ae7712d8573f5493089fd2dd0d4513c34270b74e3317d9806e72",
+          "path": "internal/mcp/export.go",
+          "fingerprint": "aaabed51bc5b75fd0cbb01ccecb385b514b887471734924eb08f64fb50ab5809"
+        },
+        {
+          "item_id": "a3db3732a09522e98dadd0b87e78c2d8a358b117eb8f3c6a8219933c4bb49cf0",
+          "path": "internal/tui/model.go",
+          "fingerprint": "40a78e9cea536177428148a7e1ca459befc4c140015a138cad0738c27b18d5a7"
+        },
+        {
+          "item_id": "a71f8d15174dd15eb4ec13591c90e1cacf5ea3ef59ae5b7c94610609f4097acb",
+          "path": "internal/tui/audit_tab.go",
+          "fingerprint": "134cea57593b12e6e27597dc377c60048748bb2a9d171231b94265206debb3e9"
+        },
+        {
+          "item_id": "ac77bb94d39114296761e4659f450efb76ff80db5b934dc5cb981a5ad3ac7198",
+          "path": "cmd/tui.go",
+          "fingerprint": "5e0807a77877584dcb8b9850e5caf71dfb1abeda074e056147200c87ce3b4f7b"
+        },
+        {
+          "item_id": "be07c0dc82fa94de00bc9984d312957867da0475558ea55aea0d221bd2959bfb",
+          "path": "cmd/sync.go",
+          "fingerprint": "e08545797189d1762a4d692bcca781d2f7674878263ec5f29838923de837cf93"
+        },
+        {
+          "item_id": "c773d9f32876f8e22d57a12eccb0541dd8b5d128bbca45fd2dc81cc812e0fcee",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-driver/.openspec.yaml",
+          "fingerprint": "119e28fc2884a71c224934983c28776f2230109ca526cd1178f27854bced120d"
+        },
+        {
+          "item_id": "d454eb7ef7e3415065e7fd60890c7f708d4f7600ac82e310f5f3b096912805ae",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-tui/.openspec.yaml",
+          "fingerprint": "6c3c2c5797d4dc333a79cbc54e842e18c9e555faf9a763bd1b52ed183c33e65e"
+        },
+        {
+          "item_id": "dfcdd38cfe1975871f549ff634ce0ce1491f49cc392ed60de19f8d0755a314b5",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-docs/.openspec.yaml",
+          "fingerprint": "1802994d8779b449a4c9454e7bc3bd95fd25810d0673d7d412d7aff876a6ebdb"
+        },
+        {
+          "item_id": "f00295c98abff9fbcee7a4880e6ea5785632223e67bf111e41da3220529e04c4",
+          "path": "internal/storage/manager.go",
+          "fingerprint": "ff76a113a8b95894f7cfb483173020c357eb91c1ff6b4ae49a9cd29f402c197b"
+        },
+        {
+          "item_id": "f72366b2396ce468ba012821465d622af85e156e00117ab8b30609e6ccae532f",
+          "path": "cmd/mcp_export.go",
+          "fingerprint": "24caf3a4fb99da557e156fa1307f368c9b3709893838a22a5392c32d4f8d24c3"
+        },
+        {
+          "item_id": "ff08c89f058e1dc5de8ad1d49696a5a981da7c39faa70ecb36d8a1a99f74aacb",
+          "path": "internal/provider/server_state.go",
+          "fingerprint": "02b79ef87cea881341871ef38ab6e20bc760fbe317c51f6736914918cbfe560d"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "47b8c43286a002977475d823d9b06d561917bb3e4e8efb4b59f3c50b60805e2b",
+          "path": "internal/syncschema/schema.go",
+          "fingerprint": "2b3ad0c7dc26b8dec07993ce8ebf1184631a74c93964efcd429feee6a409252d"
+        },
+        {
+          "item_id": "49c7f6b808cce3a6c78460bb200c7768724e23445b909501343b44f54fa75936",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-cli/.openspec.yaml",
+          "fingerprint": "dab2cd711810baf774bc90a66e7dd7d23118c55add51c60c4c7aa289ae8a87f0"
+        },
+        {
+          "item_id": "562b693fcbec84e544d7837d4778771e581c713785a66f2a8cc768bfd2a5e0f5",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-channel/.openspec.yaml",
+          "fingerprint": "eade45547109ab9bed99b697a2807a2e1df15b2b73768b32dbc0a4d2ed48f668"
+        },
+        {
+          "item_id": "6ab94e508cf511a11991e14e74b39b57964e0a84565464feeb2c7b848210585c",
+          "path": "internal/env/manager.go",
+          "fingerprint": "664bfef5859d3a4df5fb8511ea7b9a981cd5005e3c41fb9def94869b705a5796"
+        },
+        {
+          "item_id": "8461005dcfb7cb373a99e8456f2e89bad267d157fcc52cae918199b54fd4ccc1",
+          "path": "internal/tui/sync.go",
+          "fingerprint": "a790b59c5635350c24d04ff2c639269f9fbb1afaedac82707fba40ca8fd73448"
+        },
+        {
+          "item_id": "93a0c0e89c34329dffd03bff7de7465c87c21347589087637e009f03d3cb39ed",
+          "path": "internal/llm/switch.go",
+          "fingerprint": "df258c469fae92de6c49ab12df866349917c1cdaa4220440d50faf9910e2a2ac"
+        },
+        {
+          "item_id": "9d237caa5a64ae7712d8573f5493089fd2dd0d4513c34270b74e3317d9806e72",
+          "path": "internal/mcp/export.go",
+          "fingerprint": "aaabed51bc5b75fd0cbb01ccecb385b514b887471734924eb08f64fb50ab5809"
+        },
+        {
+          "item_id": "a3db3732a09522e98dadd0b87e78c2d8a358b117eb8f3c6a8219933c4bb49cf0",
+          "path": "internal/tui/model.go",
+          "fingerprint": "40a78e9cea536177428148a7e1ca459befc4c140015a138cad0738c27b18d5a7"
+        },
+        {
+          "item_id": "a71f8d15174dd15eb4ec13591c90e1cacf5ea3ef59ae5b7c94610609f4097acb",
+          "path": "internal/tui/audit_tab.go",
+          "fingerprint": "134cea57593b12e6e27597dc377c60048748bb2a9d171231b94265206debb3e9"
+        },
+        {
+          "item_id": "ac77bb94d39114296761e4659f450efb76ff80db5b934dc5cb981a5ad3ac7198",
+          "path": "cmd/tui.go",
+          "fingerprint": "5e0807a77877584dcb8b9850e5caf71dfb1abeda074e056147200c87ce3b4f7b"
+        },
+        {
+          "item_id": "be07c0dc82fa94de00bc9984d312957867da0475558ea55aea0d221bd2959bfb",
+          "path": "cmd/sync.go",
+          "fingerprint": "e08545797189d1762a4d692bcca781d2f7674878263ec5f29838923de837cf93"
+        },
+        {
+          "item_id": "c773d9f32876f8e22d57a12eccb0541dd8b5d128bbca45fd2dc81cc812e0fcee",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-driver/.openspec.yaml",
+          "fingerprint": "119e28fc2884a71c224934983c28776f2230109ca526cd1178f27854bced120d"
+        },
+        {
+          "item_id": "d454eb7ef7e3415065e7fd60890c7f708d4f7600ac82e310f5f3b096912805ae",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-tui/.openspec.yaml",
+          "fingerprint": "6c3c2c5797d4dc333a79cbc54e842e18c9e555faf9a763bd1b52ed183c33e65e"
+        },
+        {
+          "item_id": "dfcdd38cfe1975871f549ff634ce0ce1491f49cc392ed60de19f8d0755a314b5",
+          "path": "openspec/changes/cross-machine-ai-mcp-sync-docs/.openspec.yaml",
+          "fingerprint": "1802994d8779b449a4c9454e7bc3bd95fd25810d0673d7d412d7aff876a6ebdb"
+        },
+        {
+          "item_id": "f00295c98abff9fbcee7a4880e6ea5785632223e67bf111e41da3220529e04c4",
+          "path": "internal/storage/manager.go",
+          "fingerprint": "ff76a113a8b95894f7cfb483173020c357eb91c1ff6b4ae49a9cd29f402c197b"
+        },
+        {
+          "item_id": "f72366b2396ce468ba012821465d622af85e156e00117ab8b30609e6ccae532f",
+          "path": "cmd/mcp_export.go",
+          "fingerprint": "24caf3a4fb99da557e156fa1307f368c9b3709893838a22a5392c32d4f8d24c3"
+        },
+        {
+          "item_id": "ff08c89f058e1dc5de8ad1d49696a5a981da7c39faa70ecb36d8a1a99f74aacb",
+          "path": "internal/provider/server_state.go",
+          "fingerprint": "02b79ef87cea881341871ef38ab6e20bc760fbe317c51f6736914918cbfe560d"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 341618
+  },
+  "retry_report": {
+    "schema_version": "ocr.llm-retry-report/v1",
+    "total_requests": 330,
+    "retried_requests": 5,
+    "total_retries": 17,
+    "recovered_requests": 5,
+    "failed_requests": 0,
+    "cancelled_requests": 0,
+    "requests": [
+      {
+        "logical_request_id": "937f6573014c23ebfe69172868f8e7685fcf1821effa677722691763d87df4a4",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "internal/tui/sync.go",
+        "task_type": "main_task",
+        "request_no": 4,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "duration_to_headers_ms": 65
+          },
+          {
+            "attempt": 2,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 412,
+            "duration_to_headers_ms": 103
+          },
+          {
+            "attempt": 3,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 802,
+            "duration_to_headers_ms": 53
+          },
+          {
+            "attempt": 4,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 1624,
+            "duration_to_headers_ms": 54
+          },
+          {
+            "attempt": 5,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 3918,
+            "duration_to_headers_ms": 1129
+          }
+        ]
+      },
+      {
+        "logical_request_id": "943bf7e9881627ac87fd5531eb0fe91310a729578e4e6e997574029d5bccef0f",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "internal/tui/audit_tab.go",
+        "task_type": "main_task",
+        "request_no": 12,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "duration_to_headers_ms": 176
+          },
+          {
+            "attempt": 2,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 401,
+            "duration_to_headers_ms": 210
+          },
+          {
+            "attempt": 3,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 867,
+            "duration_to_headers_ms": 7941
+          }
+        ]
+      },
+      {
+        "logical_request_id": "9fac455551ee632d9a4e91e3f561e394895907826b39c7f0cd806e8bd610097e",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "cmd/mcp_export.go",
+        "task_type": "main_task",
+        "request_no": 24,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "duration_to_headers_ms": 81
+          },
+          {
+            "attempt": 2,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 379,
+            "duration_to_headers_ms": 61
+          },
+          {
+            "attempt": 3,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 872,
+            "duration_to_headers_ms": 68
+          },
+          {
+            "attempt": 4,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 1527,
+            "duration_to_headers_ms": 126
+          },
+          {
+            "attempt": 5,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 3837,
+            "duration_to_headers_ms": 2900
+          }
+        ]
+      },
+      {
+        "logical_request_id": "deb6f1641f07cf9b69f3c889a6dd579893c0e75c76da51148708c17d7e2c6ee4",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "internal/llm/switch.go",
+        "task_type": "main_task",
+        "request_no": 31,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "duration_to_headers_ms": 115
+          },
+          {
+            "attempt": 2,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 383,
+            "duration_to_headers_ms": 254
+          },
+          {
+            "attempt": 3,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 910,
+            "duration_to_headers_ms": 186
+          },
+          {
+            "attempt": 4,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 1761,
+            "duration_to_headers_ms": 2815
+          }
+        ]
+      },
+      {
+        "logical_request_id": "e25c5a3290e502709dcac75953df1546e122e4e39cdc423049b61857d05ea8d6",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "cmd/sync.go",
+        "task_type": "main_task",
+        "request_no": 15,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "duration_to_headers_ms": 59
+          },
+          {
+            "attempt": 2,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 496,
+            "duration_to_headers_ms": 69
+          },
+          {
+            "attempt": 3,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 809,
+            "duration_to_headers_ms": 68
+          },
+          {
+            "attempt": 4,
+            "outcome": "error",
+            "error_class": "rate_limited",
+            "failure_phase": "http",
+            "status_code": 429,
+            "observed_backoff_ms": 1583,
+            "duration_to_headers_ms": 111
+          },
+          {
+            "attempt": 5,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 3775,
+            "duration_to_headers_ms": 5385
+          }
+        ]
+      }
+    ]
+  }
+}

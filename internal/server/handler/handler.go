@@ -46,9 +46,11 @@ func (o Options) withDefaults() Options {
 
 // contextKey 与键定义见 context.go（userID / clientID / accessReason）
 
-// Server 聚合依赖，实现 http.Handler
+// Server 聚合依赖，实现 http.Handler。store 面向 store.Store 接口，
+// 便于以内存假实现做 HTTP 层测试（事务/冲突等 SQL 语义仍由 store 包
+// 集成测试守住）。
 type Server struct {
-	store             *store.Store
+	store             store.Store
 	mux               *http.ServeMux
 	limiter           *authRateLimiter
 	maxBody           int64
@@ -57,7 +59,7 @@ type Server struct {
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
 // 可选传入一个 Options 覆盖默认运行参数。
-func New(st *store.Store, opts ...Options) *Server {
+func New(st store.Store, opts ...Options) *Server {
 	o := Options{}
 	if len(opts) > 0 {
 		o = opts[0]

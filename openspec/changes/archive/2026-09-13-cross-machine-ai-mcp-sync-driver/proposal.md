@@ -12,7 +12,7 @@
 - 凭据引用跨机解析失败：`senv ai switch` 与 `senv mcp export` 都 fail-closed + 给诊断；MCP export 时把缺失的 env/text 名列入 warning 但仍写入字面量（与 ADR-0008 的明文落盘事实并存）
 - TUI audit 面板增"since last pull"子视图，复用现有面板与 sync state 元数据，不开新面板
 - `CONTEXT.md` 在 driver apply 阶段同步更新：明示"人工添加的配置源"为可同步、"本机状态"为不同步；不触动既有 ADR-0003 / 0007 / 0012 的边界
-- ADR 候选 `sync-ai-mcp-source-of-truth` 转正为 `docs/adr/0018-sync-ai-mcp-source-of-truth.md`
+- ADR 候选 `sync-ai-mcp-source-of-truth` 转正进 `docs/adr/`（编号按落地时 `docs/adr/` 扫描取下一空位；2026-09-12 复核为 0019，0018 已被 server-cache-out-of-band-invalidation 占用）
 
 ## Non-goals
 
@@ -33,16 +33,16 @@
 
 ## 验收标准
 
-- [ ] `internal/syncschema` 增补 `KindLLMProvider` / `KindMCPServer` 常量与 `ValidateIdentity` 分支；既有 5 kind 行为不变
-- [ ] `internal/provider/server_state.go` 的 `entryLocation` 与 `collectEntriesDiff` 增列 `LLMProviderDirName` / `MCPServerDirName`；既有 env/text/config/config_index 扫描行为不变
-- [ ] `llm_provider` / `mcp_server` 冲突时 stderr / TUI 输出诊断，含"本地 vs 远端"的 alias / revision 对照；LWW 主体行为与 env/text 一致
-- [ ] 新机器首次 sync 后本地出现来自远端的所有 `llm_providers/<alias>.enc` 与 `mcp_servers/<alias>.enc`；`senv ai provider list` / `senv mcp list` 可见
-- [ ] `senv ai switch` 在本机缺 `credential_ref` 指向的 text 时 fail-closed，错误诊断指明缺失的 `text:llm-keys/<alias>`
-- [ ] `senv mcp export` 在本机缺模板引用时仍写入（保持向后兼容），但把缺失 env/text 名列入 warning
-- [ ] TUI audit 面板新增"since last pull"子视图，能列出上一轮 sync 引入/覆盖的 ai_provider / mcp_server 清单
-- [ ] `CONTEXT.md` 在同步通道边界处显式声明"人工添加的配置源同步、本机状态不同步"；既有"当前指向" / "导出状态"等本机状态条目不动
-- [ ] `docs/adr/0018-sync-ai-mcp-source-of-truth.md`（proposed）落地；其 Considered Options / Consequences 段覆盖 ssh 延后项
-- [ ] `.agents/skills/senv-cli/SKILL.md` 同步更新；`make check` 通过
+- [x] `internal/syncschema` 增补 `KindLLMProvider` / `KindMCPServer` 常量与 `ValidateIdentity` 分支；既有 5 kind 行为不变
+- [x] `internal/provider/server_state.go` 的 `entryLocation` 与 `collectEntriesDiff` 增列 `LLMProviderDirName` / `MCPServerDirName`；既有 env/text/config/config_index 扫描行为不变
+- [x] `llm_provider` / `mcp_server` 冲突时 stderr / TUI 输出诊断，含"本地 vs 远端"的 alias / revision 对照；LWW 主体行为与 env/text 一致
+- [x] 新机器首次 sync 后本地出现来自远端的所有 `llm_providers/<alias>.enc` 与 `mcp_servers/<alias>.enc`；`senv ai provider list` / `senv mcp list` 可见
+- [x] `senv ai switch` 在本机缺 `credential_ref` 指向的 text 时 fail-closed，错误诊断指明缺失的 `text:llm-keys/<alias>`
+- [x] `senv mcp export` 在本机缺模板引用时仍写入（保持向后兼容），但把缺失 env/text 名列入 warning
+- [x] TUI audit 面板新增"since last pull"子视图，能列出上一轮 sync 引入/覆盖的 ai_provider / mcp_server 清单
+- [x] `CONTEXT.md` 在同步通道边界处显式声明"人工添加的配置源同步、本机状态不同步"；既有"当前指向" / "导出状态"等本机状态条目不动
+- [x] `docs/adr/` 落地 `sync-ai-mcp-source-of-truth`（proposed；编号按落地时扫描取下一空位，2026-09-12 复核为 0019）；其 Considered Options / Consequences 段覆盖 ssh 延后项
+- [x] `.agents/skills/senv-cli/SKILL.md` 同步更新；`make check` 通过
 
 ## Driver 协议
 
@@ -55,4 +55,8 @@
 
 ## 验证记录
 
-- 2026-09-12 grill：10 项决策 settled（见 `grill.md`），1 项 ADR 候选 `sync-ai-mcp-source-of-truth` 待 propose 阶段晋升为 `docs/adr/0018`。
+- 2026-09-12 grill：10 项决策 settled（见 `grill.md`），1 项 ADR 候选 `sync-ai-mcp-source-of-truth` 待 propose 阶段晋升进 `docs/adr/`（编号落地时取下一空位）。
+- 2026-09-12 grill 第二轮：ADR 撞号与 `.openspec.yaml` 缺失两处修正 settled（D11/D12），grill 收敛。
+- 2026-09-12 propose：拆 4 个子 change（channel/cli/tui/docs），validate --strict 全过。
+- 2026-09-12 apply：4 个子 change tasks 全勾；`make check` 全绿（含 race 与 testcontainers e2e）；ADR 落盘为 `docs/adr/0019-sync-ai-mcp-source-of-truth.md`（proposed）。
+- 2026-09-12 实测记录：grill D5 的"LWW"措辞与现状不符（实际为 revision 乐观锁 + 冲突解决器），提案按真实机制书写；D7 的"向后兼容"前提不准（export 既有行为是严格报错终止，宽松写入是行为变更），spec delta 以 Modified requirement 如实落地，决策结论本身不变。

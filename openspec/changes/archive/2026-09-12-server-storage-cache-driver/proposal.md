@@ -40,15 +40,15 @@ senv-server 的 DB 访问没有统一出口：`handler` 依赖具体类型 `*sto
 
 ## 验收标准
 
-- [ ] `store` 包定义 `Store` 接口；`handler.New` 改吃接口；handler 测试可用假 Store 覆盖 auth/metadata/pull/push 路径，不再强制 testcontainers
-- [ ] 生命周期收拢：serve 进程单一 store 实例（prune goroutine 复用同一实例）；admin 子命令统一构造路径；`runServe` schema 预检行为不变；纯重构切片现有 store/handler 测试全绿且不改断言（允许改构造方式）
-- [ ] auth 缓存命中时该请求零 auth DB 查询；`RegisterClient` 新 token 首次认证走 DB 后可命中
-- [ ] NOTIFY 失效链路：admin revoke/block 后 serve 进程 auth 缓存清空，已缓存 token 的下一个请求回库并被拒（测试覆盖 revoke 后 ≤1 请求内失效）
-- [ ] 监听连接断开自动重连；重连时全清缓存；短 TTL 注入测试验证兜底生效
-- [ ] vault/seq 缓存：客户端已最新时 pull 命中缓存；push 后同进程 seq 即时更新，不产生假「已最新」
-- [ ] TouchClient 内存节流：last_seen 至多 1 分钟 flush 一次，停机 best-effort flush；admin list-clients 显示值延迟 ≤1 分钟
-- [ ] benchmark：auth+pull 热路径 before/after 数字记入 driver 验证记录（testcontainers PG）
-- [ ] ADR 落盘 + `docs/senv-server.md` 单实例姿态补句；`.agents/skills/senv-cli/SKILL.md` 如有用户可见变化则同步；`make check` 通过
+- [x] `store` 包定义 `Store` 接口；`handler.New` 改吃接口；handler 测试可用假 Store 覆盖 auth/metadata/pull/push 路径，不再强制 testcontainers
+- [x] 生命周期收拢：serve 进程单一 store 实例（prune goroutine 复用同一实例）；admin 子命令统一构造路径；`runServe` schema 预检行为不变；纯重构切片现有 store/handler 测试全绿且不改断言（允许改构造方式）
+- [x] auth 缓存命中时该请求零 auth DB 查询；`RegisterClient` 新 token 首次认证走 DB 后可命中
+- [x] NOTIFY 失效链路：admin revoke/block 后 serve 进程 auth 缓存清空，已缓存 token 的下一个请求回库并被拒（测试覆盖 revoke 后 ≤1 请求内失效）
+- [x] 监听连接断开自动重连；重连时全清缓存；短 TTL 注入测试验证兜底生效
+- [x] vault/seq 缓存：客户端已最新时 pull 命中缓存；push 后同进程 seq 即时更新，不产生假「已最新」
+- [x] TouchClient 内存节流：last_seen 至多 1 分钟 flush 一次，停机 best-effort flush；admin list-clients 显示值延迟 ≤1 分钟
+- [x] benchmark：auth+pull 热路径 before/after 数字记入 driver 验证记录（testcontainers PG）
+- [x] ADR 落盘 + `docs/senv-server.md` 单实例姿态补句；`.agents/skills/senv-cli/SKILL.md` 如有用户可见变化则同步；`make check` 通过
 
 ## Driver 协议
 
@@ -62,3 +62,6 @@ senv-server 的 DB 访问没有统一出口：`handler` 依赖具体类型 `*sto
 ## 验证记录
 
 - 2026-09-12 grill：13 项决策 settled（D3 在第二轮因「admin 进程外执行」新事实重开并修正为 D8，见 `grill.md`），1 项 ADR 候选 `server-cache-out-of-band-invalidation` 待 propose 阶段晋升。
+- 2026-09-12 子 change `server-storage-cache-unify` 落地：tasks 8/8 勾选、`validate --strict` 通过。`Store` 接口 + `pgStore`/`NewSQL` 落地，handler 面向接口并新增 `fakestore_test.go`（9 个 fake 测试，无 docker 可跑），serve 进程单一 store 实例、admin 统一 `NewSQL`；`make check` 全绿，store/handler testcontainers 集成测试在真 Postgres 上通过，测试 diff 仅签名/构造改动、零断言修改。
+- 2026-09-12 子 change `server-storage-cache-auth` 落地：tasks 9/9 勾选、`validate --strict` 通过。decorator 缓存 + pg_notify 广播失效 + 专用连接 LISTEN 监听（断线重连全清）落地；集成测试复刻双进程拓扑（revoke→401、block→403、unblock→恢复、pg_terminate_backend 断连后重连全清）。基准（本机 docker PG，`-benchmem`）：auth 未命中 37,909 ns/op、17 allocs → 命中 119.6 ns/op、1 alloc（≈317×）；已最新 pull 未缓存 103,314 ns/op、27 allocs → 快捷判定 45.3 ns/op、0 alloc（≈2,281×）。设计修正：grill D2 的「vault 查找缓存」在 decorator 接缝不可实现（接口不暴露 vaultID），收敛为 seq 快捷判定（auth design 决策 8）；`make check` 全绿。
+- 2026-09-12 子 change `server-storage-cache-touch` 落地：tasks 6/6 勾选、`validate --strict` 通过。TouchClient 内存节流（decorator 内 set 缓冲 + 1min 周期 flusher + 停机 5s best-effort flush，SQL 谓词保留为写侧双保险）、ADR-0018 落盘、`docs/senv-server.md` 单实例约束补句。无用户可见 CLI 变化，`senv-cli/SKILL.md` 无需更新；`make check` 全绿。driver 验收标准 10/10 勾选。

@@ -17,6 +17,8 @@ const (
 	KindText        = "text"
 	KindConfig      = "config"
 	KindConfigIndex = "config_index"
+	KindLLMProvider = "llm_provider"
+	KindMCPServer   = "mcp_server"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -88,6 +90,13 @@ func ValidateIdentity(kind, grp, key string) error {
 	case KindConfigIndex:
 		if grp != "" || key != "" {
 			return invalid("config_index requires empty grp and key")
+		}
+	case KindLLMProvider, KindMCPServer:
+		if grp != "" || key == "" {
+			return invalid("kind requires empty grp and key (alias)")
+		}
+		if err := securefs.ValidateSegment(key); err != nil {
+			return invalid("invalid key")
 		}
 	default:
 		return invalid("unknown kind")

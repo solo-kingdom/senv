@@ -14,7 +14,7 @@ import (
 )
 
 // newClientFixture 创建用户、注册一个 client，返回 (store, clientToken, client)
-func newClientFixture(t *testing.T, userName, clientName string) (*store.Store, string, *store.Client) {
+func newClientFixture(t *testing.T, userName, clientName string) (store.Store, string, *store.Client) {
 	t.Helper()
 	pool := testdb.New(t)
 	st := store.New(pool)
@@ -32,7 +32,7 @@ func newClientFixture(t *testing.T, userName, clientName string) (*store.Store, 
 }
 
 // createUser 建用户并回查 id（handler 测试无法复用 store 包内的测试 helper）
-func createUser(t *testing.T, st *store.Store, pool interface {
+func createUser(t *testing.T, st store.Store, pool interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }, name string) int64 {
 	t.Helper()

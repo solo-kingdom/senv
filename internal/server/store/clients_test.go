@@ -10,7 +10,7 @@ import (
 )
 
 // newTestUser 创建测试用户并返回 (userID, userToken)
-func newTestUser(t *testing.T, s *Store, name string) (int64, string) {
+func newTestUser(t *testing.T, s *pgStore, name string) (int64, string) {
 	t.Helper()
 	token, err := s.CreateUser(context.Background(), name)
 	if err != nil {
@@ -24,7 +24,7 @@ func newTestUser(t *testing.T, s *Store, name string) (int64, string) {
 }
 
 func TestRegisterClientSuccess(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -56,7 +56,7 @@ func TestRegisterClientSuccess(t *testing.T) {
 }
 
 func TestRegisterClientInvalidCodes(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -77,7 +77,7 @@ func TestRegisterClientInvalidCodes(t *testing.T) {
 }
 
 func TestRegisterClientNameConflictKeepsCode(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -103,7 +103,7 @@ func TestRegisterClientNameConflictKeepsCode(t *testing.T) {
 }
 
 func TestSetClientStatusAndAuth(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 	_, legacyToken := newTestUser(t, s, "bob")
@@ -151,7 +151,7 @@ func TestSetClientStatusAndAuth(t *testing.T) {
 }
 
 func TestListClients(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 	otherID, _ := newTestUser(t, s, "bob")
@@ -184,7 +184,7 @@ func TestListClients(t *testing.T) {
 }
 
 func TestTouchClientThrottled(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 

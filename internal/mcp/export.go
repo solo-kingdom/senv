@@ -31,6 +31,9 @@ type ExportItem struct {
 	// Plaintext marks items whose resolved env values will be written to the
 	// target file in clear text.
 	Plaintext bool
+	// Warnings lists unresolved {{env:...}} / {{text:...}} references that were
+	// written as template literals (loose mode); empty for fully resolved items.
+	Warnings []string
 	// server is the resolved definition this item would write, kept so callers
 	// can render snippets with --print.
 	server agentcfg.Server
@@ -53,12 +56,19 @@ func (p *ExportPlan) NeedsWrite() bool {
 
 // ExporterOptions configures an Exporter. Resolve dereferences {{env:...}} /
 // {{text:...}} templates in env values; nil means "no references to resolve".
+// ResolveLoose, when set, takes precedence: an unresolvable reference keeps
+// its template literal in the written value and comes back as a warning
+// instead of an error (profiles sync across machines before their credentials
+// do). The callback must only return a non-nil error for hard failures that
+// should poison the whole target (e.g. reference cycles) — any error does
+// exactly that. Unresolved references are reported as (literal, warning, nil).
 type ExporterOptions struct {
-	Home       string
-	Scope      string
-	Force      bool
-	Resolve    func(string) (string, error)
-	LedgerPath string
+	Home         string
+	Scope        string
+	Force        bool
+	Resolve      func(string) (string, error)
+	ResolveLoose func(string) (string, []string, error)
+	LedgerPath   string
 }
 
 // Exporter writes stored profiles into agent configs and maintains the local
@@ -114,17 +124,19 @@ func (e *Exporter) Plan(targets []agentcfg.Target, aliases []string) (*ExportPla
 
 	desired := make(map[string]agentcfg.Server, len(names))
 	resolveErr := make(map[string]error, len(names))
+	resolveWarn := make(map[string][]string, len(names))
 	for _, alias := range names {
 		entry, err := e.mgr.Get(alias)
 		if err != nil {
 			return nil, err
 		}
-		server, err := e.resolveEntry(entry)
+		server, warnings, err := e.resolveEntry(entry)
 		if err != nil {
 			resolveErr[alias] = err
 			continue
 		}
 		desired[alias] = server
+		resolveWarn[alias] = warnings
 	}
 
 	plan := &ExportPlan{}
@@ -138,15 +150,17 @@ func (e *Exporter) Plan(targets []agentcfg.Target, aliases []string) (*ExportPla
 				AgentName: target.Name,
 				Path:      path,
 				Alias:     alias,
+				Warnings:  resolveWarn[alias],
 			}
 			switch {
 			case loadErr != nil:
 				item.Action = ActionError
 				item.Reason = loadErr.Error()
 			case resolveErr[alias] != nil:
-				// A profile that cannot be resolved poisons its whole target:
-				// writing the remaining entries would silently diverge from
-				// the vault.
+				// A profile with a hard resolve error (reference cycles etc.)
+				// poisons its whole target: writing the remaining entries
+				// would silently diverge from the vault. Unresolved refs in
+				// loose mode are warnings on the item, not errors.
 				item.Action = ActionError
 				item.Reason = resolveErr[alias].Error()
 			default:
@@ -281,11 +295,14 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 			item.Reason = err.Error()
 			continue
 		}
-		server, err := e.resolveEntry(entry)
+		server, warn, err := e.resolveEntry(entry)
 		if err != nil {
 			item.Action = ActionError
 			item.Reason = err.Error()
 			continue
+		}
+		if len(warn) > 0 {
+			item.Warnings = warn
 		}
 		file.set(item.Alias, server)
 		e.ledger.Set(agentID, item.Alias, server.Fingerprint())
@@ -315,7 +332,7 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 	for i := range items {
 		if items[i].Action == ActionSkip {
 			if entry, err := e.mgr.Get(items[i].Alias); err == nil {
-				if server, err := e.resolveEntry(entry); err == nil {
+				if server, _, err := e.resolveEntry(entry); err == nil {
 					e.ledger.Set(agentID, items[i].Alias, server.Fingerprint())
 				}
 			}
@@ -336,40 +353,56 @@ func failItems(items []ExportItem, reason string) []ExportItem {
 
 // resolveEntry converts a stored profile into the cross-agent write shape,
 // resolving env templates for stdio entries and url/header templates for
-// remote entries in the process.
-func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server, error) {
+// remote entries in the process. With ResolveLoose configured, unresolvable
+// references keep their template literal and come back as warnings instead of
+// failing the profile.
+func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server, []string, error) {
 	server := agentcfg.Server{Transport: entry.Transport}
+	var warnings []string
+	resolveOne := func(field, raw string) (string, error) {
+		if e.opts.ResolveLoose != nil {
+			resolved, warn, err := e.opts.ResolveLoose(raw)
+			if err != nil {
+				return "", err
+			}
+			for _, w := range warn {
+				warnings = append(warnings, fmt.Sprintf("MCP server %q %s: %s", entry.Alias, field, w))
+			}
+			return resolved, nil
+		}
+		return e.opts.Resolve(raw)
+	}
 	if entry.Transport == storage.MCPTransportHTTP || entry.Transport == storage.MCPTransportSSE {
-		resolved, err := e.opts.Resolve(entry.URL)
+		resolved, err := resolveOne("url", entry.URL)
 		if err != nil {
-			return agentcfg.Server{}, fmt.Errorf("MCP server %q url: %w", entry.Alias, err)
+			return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q url: %w", entry.Alias, err)
 		}
 		server.URL = resolved
 		if len(entry.Headers) > 0 {
 			server.Headers = make(map[string]string, len(entry.Headers))
 			for key, raw := range entry.Headers {
-				resolved, err := e.opts.Resolve(raw)
+				resolved, err := resolveOne(fmt.Sprintf("header %s", key), raw)
 				if err != nil {
-					return agentcfg.Server{}, fmt.Errorf("MCP server %q header %s: %w", entry.Alias, key, err)
+					return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q header %s: %w", entry.Alias, key, err)
 				}
 				server.Headers[key] = resolved
 			}
 		}
-		return server, nil
+		return server, warnings, nil
 	}
 	server.Command = entry.Command
 	server.Args = entry.Args
 	if len(entry.Env) > 0 {
 		server.Env = make(map[string]string, len(entry.Env))
 		for key, raw := range entry.Env {
-			resolved, err := e.opts.Resolve(raw)
+			resolved, err := resolveOne(fmt.Sprintf("env %s", key), raw)
 			if err != nil {
-				return agentcfg.Server{}, fmt.Errorf("MCP server %q env %s: %w", entry.Alias, key, err)
+				return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q env %s: %w", entry.Alias, key, err)
 			}
 			server.Env[key] = resolved
 		}
 	}
-	return server, nil
+	return server, warnings, nil
 }
 
 // agentFile is one agent config file held in memory: JSON roots stay generic

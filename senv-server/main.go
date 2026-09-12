@@ -134,7 +134,9 @@ func runServe(args []string) {
 	}
 	defer pool.Close()
 
-	st := store.New(pool)
+	// 认证结果与 vault seq 走进程内缓存（decorator），对外仍是同一个
+	// store.Store；失效广播监听在下方启动
+	st := store.WithCache(store.NewSQL(pool))
 	st.SetHistoryRetain(*historyRetain)
 
 	srv := handler.New(st, handler.Options{
@@ -143,10 +145,24 @@ func runServe(args []string) {
 		TrustProxyHeaders: *trustProxy,
 	})
 
-	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试
+	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。
+	// 复用 handler 的同一 store 实例，不在进程内自建第二个。
 	if *logsRetainDays > 0 {
-		go pruneAccessLogsPeriodically(pool, time.Duration(*logsRetainDays)*24*time.Hour)
+		go pruneAccessLogsPeriodically(st, time.Duration(*logsRetainDays)*24*time.Hour)
 	}
+
+	// 认证缓存跨进程失效：admin 一次性进程 revoke/block/unblock 后经
+	// pg_notify 广播，本进程监听收到即清空缓存；断线重连先全清，广播
+	// 丢失由缓存 TTL 兜底（server-auth spec「认证结果缓存」）。
+	listenerCtx, stopListener := context.WithCancel(context.Background())
+	defer stopListener()
+	go store.StartInvalidationListener(listenerCtx, *dsn, st.ClearAuth, time.Second)
+
+	// last_seen 内存节流的周期落库：与既有 SQL 节流粒度（1 分钟）对齐；
+	// 停机时在优雅停机后另有一次 best-effort flush
+	touchCtx, stopTouchFlush := context.WithCancel(context.Background())
+	defer stopTouchFlush()
+	go st.StartTouchFlusher(touchCtx, time.Minute)
 
 	// 显式超时：慢连接（不完整的请求头/请求体）在超时后被回收，
 	// 而不是无限占用连接与内存。64MB 批量推送在慢链路上可能耗时较长，
@@ -171,6 +187,10 @@ func runServe(args []string) {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "优雅停机失败: %v\n", err)
 		}
+		// last_seen 内存缓冲停机前落库（best-effort，5s 上限；崩溃丢弃无实害）
+		touchCtx, touchCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer touchCancel()
+		st.FlushTouches(touchCtx)
 	}()
 
 	fmt.Printf("senv-server listening on %s\n", *addr)
@@ -181,9 +201,9 @@ func runServe(args []string) {
 }
 
 // pruneAccessLogsPeriodically 周期清理超过保留期的访问日志（复用分批删除）。
-// best-effort：失败只记服务端日志，等下个周期重试。
-func pruneAccessLogsPeriodically(pool *pgxpool.Pool, retain time.Duration) {
-	st := store.New(pool)
+// best-effort：失败只记服务端日志，等下个周期重试。复用 serve 进程唯一的
+// store 实例，不再自建。
+func pruneAccessLogsPeriodically(st store.Store, retain time.Duration) {
 	prune := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -259,7 +279,7 @@ func runAdmin(args []string) {
 			fmt.Fprintf(os.Stderr, "错误: --expires %q 不是正的有效时长\n", *expires)
 			os.Exit(1)
 		}
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			userID, err := st.UserIDByName(context.Background(), fs.Arg(0))
 			if err != nil {
 				return fmt.Errorf("用户 %q 不存在", fs.Arg(0))
@@ -274,7 +294,7 @@ func runAdmin(args []string) {
 			return nil
 		})
 	case "list-clients":
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			var userID int64 = -1
 			if *userFilter != "" {
 				id, err := st.UserIDByName(context.Background(), *userFilter)
@@ -314,7 +334,7 @@ func runAdmin(args []string) {
 			fmt.Fprintf(os.Stderr, "用法: senv-server admin %s --client <设备名> [--user <用户名>] [--dsn ...]\n", sub)
 			os.Exit(1)
 		}
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			var userID int64 = -1
 			if *userFilter != "" {
 				id, err := st.UserIDByName(context.Background(), *userFilter)
@@ -334,7 +354,7 @@ func runAdmin(args []string) {
 		})
 	case "logs":
 		requireDSN(*dsn)
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			f := store.AccessLogFilter{Outcome: *outcome, Limit: *logsLimit}
 			if *userFilter != "" {
 				id, err := st.UserIDByName(context.Background(), *userFilter)
@@ -396,7 +416,7 @@ func runAdmin(args []string) {
 			fmt.Fprintf(os.Stderr, "错误: --before %q: %v\n", *logsBefore, err)
 			os.Exit(1)
 		}
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			n, err := st.PruneAccessLogs(context.Background(), before)
 			if err != nil {
 				return err
@@ -410,7 +430,7 @@ func runAdmin(args []string) {
 			os.Exit(1)
 		}
 		requireDSN(*dsn)
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			token, err := st.CreateUser(context.Background(), fs.Arg(0))
 			if err != nil {
 				return err
@@ -440,7 +460,7 @@ func runAdmin(args []string) {
 				os.Exit(1)
 			}
 		}
-		withStore(*dsn, func(st *store.Store) error {
+		withStore(*dsn, func(st store.Store) error {
 			if err := st.RevokeToken(context.Background(), tokenArg); err != nil {
 				return err
 			}
@@ -453,14 +473,14 @@ func runAdmin(args []string) {
 	}
 }
 
-func withStore(dsn string, fn func(*store.Store) error) {
+func withStore(dsn string, fn func(store.Store) error) {
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "连接数据库失败: %v\n", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
-	if err := fn(store.New(pool)); err != nil {
+	if err := fn(store.NewSQL(pool)); err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)
 	}
@@ -474,7 +494,7 @@ func envOr(key, fallback string) string {
 }
 
 // resolveClientID 按设备名解析 client id；同名跨用户时要求显式 --user
-func resolveClientID(st *store.Store, name, userName string) (int64, error) {
+func resolveClientID(st store.Store, name, userName string) (int64, error) {
 	var userID int64 = -1
 	if userName != "" {
 		id, err := st.UserIDByName(context.Background(), userName)
