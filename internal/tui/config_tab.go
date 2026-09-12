@@ -1337,9 +1337,9 @@ func (t *configTab) renderPlan() string {
 	if t.mode == configModeChangedConfirm {
 		item := t.plan.uninstallPlan.Items[t.plan.changedIdx]
 		prompt := fmt.Sprintf("target file was modified locally, delete %s? y delete · n keep", item.TargetPath)
-		return modalBox(title, body+"\n\n"+prompt, "")
+		return modalBox(t.width, t.height, title, body+"\n\n"+prompt, "")
 	}
-	return modalBox(title, body, "y confirm · esc cancel")
+	return modalBox(t.width, t.height, title, body, "y confirm · esc cancel")
 }
 
 // formatPlanLine aligns action / name / path / reason so multi-file plans
@@ -1380,7 +1380,7 @@ func (t *configTab) renderDetail() string {
 	body := fmt.Sprintf(
 		"name:     %s\ngroup:    %s\ndesc:     %s\ntarget:   %s\ncreated:  %s\nupdated:  %s",
 		d.name, d.group, d.description, d.targetPath, d.createdAt, d.updatedAt)
-	box := modalBox("config detail", body, "any key to close")
+	box := modalBox(t.width, t.height, "config detail", body, "any key to close")
 	return box
 }
 
@@ -1388,11 +1388,11 @@ func (t *configTab) renderModal() string {
 	switch t.mode {
 	case configModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("delete "+it.name+"?", "", "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "delete "+it.name+"?", "", "enter/y confirm · esc/n cancel")
 	case configModeExportPath:
-		return modalBox("export to file", t.input.View(), "enter export · esc cancel")
+		return modalBox(t.width, t.height, "export to file", t.input.View(), "enter export · esc cancel")
 	case configModeFilter:
-		return modalBox("filter names (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
+		return modalBox(t.width, t.height, "filter names (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

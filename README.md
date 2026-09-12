@@ -134,7 +134,7 @@ echo 'eval "$(senv env export --if-session)"' >> ~/.zshrc
 
 会话按 vault 分槽：每个 data path 一份缓存，切换项目不再覆盖上一个 vault 的会话。`duration` 会话在业务命令复用 key 时滑动续期，但不超过 `session.max_lifetime`（默认 24h）；已有有效会话时可直接 `senv session start`（保留原 timeout）或 `senv session refresh` 免密延长，二者都不会弹密码。`senv session status` 会区分 `Active` / `Expired` / `Invalidated` / `Unverifiable`，并给出原因与下一步；不可判定的缓存默认保留、不静默删除。清除默认只影响当前 vault，`senv session clear --all` 才清所有槽位与旧单槽残留。
 
-Session cache 按 Unix 文件系统选型：能证明 tmpfs/ramfs 则写入安全存储；否则 Linux `session start` fail closed，stock Darwin 默认写入磁盘逃生舱并警告（远程 SSH 无需点击）。Linux/CI 无 tmpfs 时显式 `senv session start --insecure-cache`（密钥以 0600 明文落盘）。旧版写入登录钥匙串的条目不再读取或删除，需重新 `session start`。memory-backed 存储本身不跨重启，而磁盘逃生舱上的 `duration` 会话到期只由 `expires_at` 决定。
+Session cache 按 Unix 文件系统选型：能证明 tmpfs/ramfs 则写入安全存储；否则 Linux `session start` fail closed，stock Darwin 默认写入磁盘逃生舱并在写入时警告一次，后续命令读取/续期静默（远程 SSH 无需点击）。Linux/CI 无 tmpfs 时显式 `senv session start --insecure-cache`（密钥以 0600 明文落盘）。旧版写入登录钥匙串的条目不再读取或删除，需重新 `session start`。memory-backed 存储本身不跨重启，而磁盘逃生舱上的 `duration` 会话到期只由 `expires_at` 决定。
 
 **注意**：`default` 分组默认激活，无需手动激活。
 

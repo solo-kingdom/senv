@@ -35,6 +35,8 @@ func forceDarwinDiskHatch(t *testing.T) {
 	t.Cleanup(func() { insecureCacheEnabled = originalInsecure })
 }
 
+// TestSaveCacheDarwinFallsBackToDisk pins the initialization path: session
+// start storing a newly derived key warns before the implicit Darwin fallback.
 func TestSaveCacheDarwinFallsBackToDisk(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
@@ -113,6 +115,25 @@ func TestSaveCacheLinuxUnprovenFailsClosed(t *testing.T) {
 	}
 	if loaded, err := (diskCacheStore{}).Load(testSlot); err != nil || loaded != nil {
 		t.Fatalf("linux fail-closed wrote disk: loaded=%v err=%v", loaded, err)
+	}
+}
+
+// TestSaveCacheQuietDarwinFallbackIsSilent pins the renewal/migration path:
+// re-storing an already-stored key via the implicit Darwin fallback writes the
+// disk hatch without the initialization warning.
+func TestSaveCacheQuietDarwinFallbackIsSilent(t *testing.T) {
+	forceDarwinDiskHatch(t)
+
+	stderr := captureStderr(t)
+	if err := saveCacheQuiet(testSlot, &SessionCache{SessionID: "darwin-quiet"}); err != nil {
+		t.Fatalf("saveCacheQuiet() darwin fallback: %v", err)
+	}
+	if strings.Contains(stderr(), "unencrypted on disk") {
+		t.Fatal("saveCacheQuiet must not print the disk-hatch warning")
+	}
+	loaded, err := (diskCacheStore{}).Load(testSlot)
+	if err != nil || loaded == nil || loaded.SessionID != "darwin-quiet" {
+		t.Fatalf("disk hatch = (%v, %v), want darwin-quiet", loaded, err)
 	}
 }
 

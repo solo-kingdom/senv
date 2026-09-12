@@ -566,8 +566,10 @@ func loadCache(slot string) (*SessionCache, error) {
 // created_at wins; an exact tie is ambiguous and reported as an actionable
 // error. Neither cache is deleted here: the ignored one may be the only
 // recovery key for another vault slot. Preferring the less secure disk hatch
-// over a readable primary is a downgrade, so it is not silent: the first
-// occurrence warns on stderr and leaves an audit-visible flag.
+// over a readable primary is a downgrade, so it is not silent in the audit
+// sense: the selection leaves the audit-visible hatch flag (HatchCacheSelected)
+// but does not re-warn on stderr — the unencrypted-on-disk warning belongs to
+// initialization (session start / explicit --insecure-cache).
 func selectNewerCache(slot string, primary, hatch *SessionCache) (*SessionCache, error) {
 	switch {
 	case primary.CreatedAt.After(hatch.CreatedAt):
@@ -603,7 +605,7 @@ func adoptLegacyEntry(store SessionStore, slot string, legacy *SessionCache) (*S
 		notifyLegacyCacheOnce()
 		return nil, nil
 	}
-	if err := saveCache(slot, legacy); err != nil {
+	if err := saveCacheQuiet(slot, legacy); err != nil {
 		return nil, err
 	}
 	_ = store.ClearLegacy()

@@ -190,7 +190,7 @@ func (m *Manager) renewOnUse(cache *SessionCache) {
 	}
 	updated := *cache
 	updated.ExpiresAt = expiry
-	_ = saveCache(m.slot(), &updated)
+	_ = saveCacheQuiet(m.slot(), &updated)
 }
 
 // renewalExpiry slides expiry to now+timeout without ever crossing the
@@ -413,7 +413,7 @@ func (m *Manager) RenewSession(timeout *SessionTimeout) error {
 	default:
 		return fmt.Errorf("unknown timeout type: %s", timeout.Type)
 	}
-	if err := saveCache(m.slot(), &updated); err != nil {
+	if err := saveCacheQuiet(m.slot(), &updated); err != nil {
 		return fmt.Errorf("failed to save session cache: %w", err)
 	}
 	if m.auditLogger != nil {

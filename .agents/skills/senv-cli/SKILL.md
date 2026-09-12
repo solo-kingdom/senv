@@ -29,7 +29,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - senv 解密需要密码，提示走 TTY。**管道/脚本环境里任何可能触发密码提示的命令都会卡住**——执行前先 `senv session status` 确认有活跃会话（它同时给出状态、原因与下一步）；没有会话就停下来让用户 `senv session start`。会话只是临近到期而非失效时，可用 `senv session refresh` 免密延长（见「会话（session）」）；agent 不要尝试替用户输密码。
 - 需要 env 注入 shell 时用 `eval "$(senv env export --if-session)"`：无会话时静默退出 0，不会卡。
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
-- Linux 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱并警告，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
+- Linux 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
 - `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 

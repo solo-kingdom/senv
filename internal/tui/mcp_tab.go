@@ -1270,7 +1270,7 @@ func (t *mcpTab) renderDelete() string {
 	if len(t.pendingAgents) > 0 {
 		body += "\nexported to:" + strings.Join(t.pendingAgents, ", ") + "\npress u to unexport."
 	}
-	return modalBox("delete "+t.pendingAlias+"?", body, "enter/y confirm · esc/n cancel")
+	return modalBox(t.width, t.height, "delete "+t.pendingAlias+"?", body, "enter/y confirm · esc/n cancel")
 }
 
 func (t *mcpTab) renderPlan() string {
@@ -1278,7 +1278,7 @@ func (t *mcpTab) renderPlan() string {
 		items := t.changedItems()
 		if t.changedIdx >= 0 && t.changedIdx < len(items) {
 			item := items[t.changedIdx]
-			return modalBox("entry was modified locally",
+			return modalBox(t.width, t.height, "entry was modified locally",
 				fmt.Sprintf("%s / %s\n%s", item.Agent, item.Alias, item.Path),
 				"y delete · n skip · esc cancel")
 		}
@@ -1311,7 +1311,7 @@ func (t *mcpTab) renderPlan() string {
 			b.WriteByte('\n')
 		}
 	}
-	return modalBox(title, strings.TrimRight(b.String(), "\n"),
+	return modalBox(t.width, t.height, title, strings.TrimRight(b.String(), "\n"),
 		"enter/y confirm · F overwrite drift · esc/n cancel")
 }
 

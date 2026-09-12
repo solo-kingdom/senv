@@ -54,7 +54,11 @@ var errMultipleSessionCaches = errors.New("multiple session caches with identica
 // CLI. It only redirects writes; reads always inspect both stores.
 var insecureCacheEnabled bool
 
-// InsecureCacheWarning is printed to stderr before the escape hatch is used.
+// InsecureCacheWarning is printed to stderr when a session key is stored via
+// the disk escape hatch. It belongs to initialization only: session start
+// storing a newly derived key and the explicit --insecure-cache opt-in (the
+// CLI prints it before EnableInsecureCache). Reads and renewals of an
+// already-stored key stay silent and leave only the audit flag.
 const InsecureCacheWarning = "WARNING: storing the derived session key unencrypted on disk (0600). " +
 	"Any process running as your user, backups, and sync tools may read it. " +
 	"On Darwin this is the default when no verified tmpfs/ramfs is available; " +
@@ -67,17 +71,16 @@ func EnableInsecureCache() {
 }
 
 // hatchCacheSelectedFlag records that a read path resolved to the disk escape
-// hatch cache; the first occurrence also warns on stderr (once per process).
+// hatch cache.
 var hatchCacheSelectedFlag atomic.Bool
 
 // markHatchCacheSelected is called when a read picks the disk escape hatch —
 // either because it is newer than a readable secure-store cache or because the
-// secure store failed. The warning prints at most once per process.
+// secure store failed. It only records the audit-visible flag; the
+// unencrypted-on-disk stderr warning is printed at initialization time (see
+// InsecureCacheWarning), not on every read.
 func markHatchCacheSelected() {
-	if hatchCacheSelectedFlag.Swap(true) {
-		return
-	}
-	fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+	hatchCacheSelectedFlag.Store(true)
 }
 
 // HatchCacheSelected reports whether any read in this process used the disk
@@ -91,13 +94,28 @@ func HatchCacheSelected() bool {
 var activeSessionStoreFor func(slot string) SessionStore = defaultSessionStoreFor
 
 func saveCache(slot string, cache *SessionCache) error {
+	return saveCacheNotifyHatch(slot, cache, true)
+}
+
+// saveCacheQuiet is saveCache without the disk-hatch stderr warning. Use it
+// for writes that re-store an already-stored key — sliding renewal on use,
+// explicit session renew, legacy adoption: the warning belongs to
+// initialization (session start storing a new key) and the explicit
+// --insecure-cache opt-in, so per-command reads stay quiet.
+func saveCacheQuiet(slot string, cache *SessionCache) error {
+	return saveCacheNotifyHatch(slot, cache, false)
+}
+
+func saveCacheNotifyHatch(slot string, cache *SessionCache, warn bool) error {
 	var err error
 	if insecureCacheEnabled {
 		err = (diskCacheStore{}).Save(slot, cache)
 	} else {
 		err = activeSessionStoreFor(slot).Save(slot, cache)
 		if shouldFallbackToDiskHatch(err) {
-			fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+			if warn {
+				fmt.Fprintln(os.Stderr, InsecureCacheWarning)
+			}
 			err = (diskCacheStore{}).Save(slot, cache)
 		}
 	}

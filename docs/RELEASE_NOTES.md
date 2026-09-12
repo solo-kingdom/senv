@@ -4,7 +4,7 @@
 
 **BREAKING (Darwin):** session cache no longer uses the macOS Keychain. Existing Keychain items are not read or deleted; run `senv session start` again. Remote/SSH use no longer needs a GUI click.
 
-- All platforms share one Unix store policy: a verified tmpfs/ramfs is the secure store. Linux still fails closed without one unless `--insecure-cache` is set. Stock Darwin defaults to the 0600 disk hatch (`${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`) and prints a warning. A user-provided Darwin tmpfs still uses the secure store.
+- All platforms share one Unix store policy: a verified tmpfs/ramfs is the secure store. Linux still fails closed without one unless `--insecure-cache` is set. Stock Darwin defaults to the 0600 disk hatch (`${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`) and prints the unencrypted-on-disk warning once at initialization (`session start` or explicit `--insecure-cache`); later reads, sliding renewals, `session renew`, and legacy adoption stay silent, while audit-capable commands keep recording `cache-source=disk-hatch`. A user-provided Darwin tmpfs still uses the secure store.
 - Duration/restart expiry is unchanged (ADR-0009): duration follows `expires_at` even across reboot on disk; restart follows boot ID.
 
 ## Unreleased: security and reliability hardening

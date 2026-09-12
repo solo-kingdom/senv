@@ -96,6 +96,8 @@ type form struct {
 	index  int
 	errs   []string
 	input  textinput.Model
+	width  int
+	height int
 
 	// editExternal is supplied by the tab when the form has editor fields: it
 	// opens $EDITOR on the current value and returns a command that yields
@@ -114,6 +116,7 @@ func newForm(title string, fields ...formField) *form {
 
 // SetSize gives the form the available content area.
 func (f *form) SetSize(width, height int) {
+	f.width, f.height = width, height
 	f.input.Width = width - 8
 	if f.input.Width < 8 {
 		f.input.Width = 8
@@ -343,7 +346,7 @@ func (f *form) View() string {
 		// options one keystroke at a time.
 		lines = append(lines, f.enumPreview(i)...)
 	}
-	return modalBox(f.title, strings.Join(lines, "\n"), f.help())
+	return modalBox(f.width, f.height, f.title, strings.Join(lines, "\n"), f.help())
 }
 
 // enumPreviewLines is how many candidate rows a focused enum/ref shows.

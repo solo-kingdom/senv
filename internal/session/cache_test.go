@@ -365,13 +365,13 @@ func resetHatchSelectionForTest(t *testing.T) {
 	t.Cleanup(func() { hatchCacheSelectedFlag.Store(prev) })
 }
 
-func TestLoadCacheHatchSelectionWarnsAndFlags(t *testing.T) {
+func TestLoadCacheHatchSelectionFlagsWithoutWarning(t *testing.T) {
 	isolateSessionCache(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	slot := testSlot
 	past := time.Now().Add(-2 * time.Hour)
 
-	t.Run("hatch win warns once and sets flag", func(t *testing.T) {
+	t.Run("hatch win sets flag without warning", func(t *testing.T) {
 		resetHatchSelectionForTest(t)
 		plantBothStores(t, slot, baseCache(slot, past), baseCache(slot, past.Add(time.Hour)))
 		stderr := captureStderr(t)
@@ -385,20 +385,12 @@ func TestLoadCacheHatchSelectionWarnsAndFlags(t *testing.T) {
 		if !HatchCacheSelected() {
 			t.Fatal("hatch selection flag not set")
 		}
-		if !strings.Contains(stderr(), "unencrypted on disk") {
-			t.Fatal("hatch win did not warn on stderr")
-		}
-		// 同进程内第二次选中不重复警告。
-		stderr = captureStderr(t)
-		if _, err := loadCache(slot); err != nil {
-			t.Fatalf("second loadCache: %v", err)
-		}
 		if strings.Contains(stderr(), "unencrypted on disk") {
-			t.Fatal("hatch warning must print at most once per process")
+			t.Fatal("hatch win must not warn on stderr; the warning belongs to session start")
 		}
 	})
 
-	t.Run("secure store failure fallback warns", func(t *testing.T) {
+	t.Run("secure store failure fallback flags without warning", func(t *testing.T) {
 		resetHatchSelectionForTest(t)
 		setActiveSessionStore(t, &fakeSessionStore{err: errors.New("keychain locked")})
 		if err := (diskCacheStore{}).Save(slot, baseCache(slot, past)); err != nil {
@@ -412,8 +404,8 @@ func TestLoadCacheHatchSelectionWarnsAndFlags(t *testing.T) {
 		if !HatchCacheSelected() {
 			t.Fatal("fallback flag not set")
 		}
-		if !strings.Contains(stderr(), "unencrypted on disk") {
-			t.Fatal("fallback to hatch did not warn")
+		if strings.Contains(stderr(), "unencrypted on disk") {
+			t.Fatal("fallback to hatch must not warn on stderr; the warning belongs to session start")
 		}
 	})
 

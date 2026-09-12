@@ -58,12 +58,15 @@ func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
 	return d, nil
 }
 
-// pageSize is the number of content rows that fit in the overlay body.
+// pageSize is the number of content rows that fit in the overlay body. The
+// overlay box owns the tab's whole pane slot (d.height+2 rows incl. borders,
+// 4 of them overlay chrome), and the body chrome (title, two blanks, status
+// bar) takes another 4.
 func (d *detailOverlay) pageSize() int {
-	if d.height <= 4 {
-		return len(d.lines)
+	if d.height <= 8 {
+		return 1
 	}
-	return d.height - 4
+	return d.height - 8
 }
 
 func (d *detailOverlay) View() string {
@@ -82,13 +85,14 @@ func (d *detailOverlay) View() string {
 		body = strings.Join(d.lines[start:end], "\n")
 	}
 	box := searchOverlayStyle
-	if d.width > 8 {
+	if d.width > 14 {
 		// Bound the box so long values wrap inside it instead of pushing the
-		// frame wider; clipLines keeps the total height inside the content area.
-		box = box.Width(d.width - 4)
+		// frame wider: overlay chrome is 6 cols, so Width(d.width-6) makes the
+		// rendered box exactly d.width (the pane slot's width).
+		box = box.Width(d.width - 6)
 	}
 	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.NewStyle().Bold(true).Render(title), "", body, "",
 		statusBarStyle.Render("↑↓/PgUp/PgDn scroll · esc close")))
-	return clipLines(out, d.height)
+	return clipLines(out, maxInt(d.height+2, 2))
 }

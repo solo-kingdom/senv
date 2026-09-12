@@ -1449,7 +1449,7 @@ func (t *aiTab) agentLines(width int) []string {
 func (t *aiTab) renderModal() string {
 	switch t.mode {
 	case aiModeDeleteProvider:
-		return modalBox("delete provider "+t.pendingProvider+"?",
+		return modalBox(t.width, t.height, "delete provider "+t.pendingProvider+"?",
 			"own credential is deleted too; external references are kept.", "enter/y confirm · esc/n cancel")
 	}
 	return ""
@@ -1474,7 +1474,7 @@ func (t *aiTab) renderFlow() string {
 		if t.flowOnlyModel {
 			action = "default model only"
 		}
-		return modalBox("confirm"+action,
+		return modalBox(t.width, t.height, "confirm"+action,
 			fmt.Sprintf("%s → %s / %s (%d models)", agent, t.flowProvider, model, len(models)),
 			"enter/y confirm · esc/n cancel")
 	case aiFlowSelectDefault:
@@ -1485,7 +1485,7 @@ func (t *aiTab) renderFlow() string {
 			lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(models)-1)))
 		}
 		title := fmt.Sprintf("choose default model (%d models) — %s → %s", len(models), agent, t.flowProvider)
-		return modalBox(title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
 	}
 	lines := make([]string, 0, len(t.flowCandidates))
 	for i, m := range t.flowCandidates {
@@ -1498,5 +1498,5 @@ func (t *aiTab) renderFlow() string {
 	}
 	title := fmt.Sprintf("choose agent model set (selected %d/%d) — %s → %s",
 		len(t.flowSelectedModels()), len(t.flowCandidates), agent, t.flowProvider)
-	return modalBox(title, strings.Join(lines, "\n"), "space toggle · ↑↓/jk move · enter next · esc cancel")
+	return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "space toggle · ↑↓/jk move · enter next · esc cancel")
 }

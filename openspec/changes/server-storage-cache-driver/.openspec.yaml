@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-12
+skip_specs: true
+goal: 统一 senv-server 存储层（Store 接口化 + 生命周期收拢），并以内存缓存优化每请求固定 DB 开销

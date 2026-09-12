@@ -1177,17 +1177,17 @@ func (t *envTab) renderItems(width, height int) string {
 func (t *envTab) renderModal() string {
 	switch t.mode {
 	case envModeEditValue:
-		return modalBox("edit "+t.currentItemKeyLabel(), t.input.View(), "enter save · esc cancel")
+		return modalBox(t.width, t.height, "edit "+t.currentItemKeyLabel(), t.input.View(), "enter save · esc cancel")
 	case envModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
 	case envModeBatchDeleteConfirm:
 		targets := t.selectedTargets()
 		var b strings.Builder
 		for _, tgt := range targets {
 			fmt.Fprintf(&b, "%s/%s\n", tgt[0], tgt[1])
 		}
-		return modalBox(fmt.Sprintf("delete %d variables?", len(targets)),
+		return modalBox(t.width, t.height, fmt.Sprintf("delete %d variables?", len(targets)),
 			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
 	case envModeDeleteGroupConfirm:
 		row, _ := t.currentGroupRow()
@@ -1196,11 +1196,11 @@ func (t *envTab) renderModal() string {
 		if row.isActive {
 			body += "\nthis group is currently active; its variables will no longer appear in exports after deletion."
 		}
-		return modalBox("delete group "+row.name+"?", body, hint)
+		return modalBox(t.width, t.height, "delete group "+row.name+"?", body, hint)
 	case envModeAddGroup:
-		return modalBox("new group", t.input.View(), "enter create · esc cancel")
+		return modalBox(t.width, t.height, "new group", t.input.View(), "enter create · esc cancel")
 	case envModeFilter:
-		return modalBox("filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
+		return modalBox(t.width, t.height, "filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

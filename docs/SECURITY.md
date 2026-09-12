@@ -93,7 +93,7 @@ Salt 与 KDF 参数存储在 `metadata.json` 中：
 1. **保护原始密码是核心**：数据目录可以安全地跨机器迁移，只要密码不泄露即可
 2. **密码无法从加密数据中恢复**：如果忘记密码，数据将无法解密
 3. **建议使用强密码**：结合高迭代次数，可以有效抵御暴力破解攻击
-4. **派生密钥优先进安全存储**：session 缓存写入经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法证明时 Linux fail closed；stock Darwin 默认走磁盘逃生舱（0600 明文 + 醒目警告）。Linux/CI 无 tmpfs 须显式 `--insecure-cache`。不使用操作系统钥匙串。`duration` 到期只看 `expires_at`；`restart` 看 boot ID
+4. **派生密钥优先进安全存储**：session 缓存写入经操作系统确认的 memory-backed 文件系统（tmpfs/ramfs）。无法证明时 Linux fail closed；stock Darwin 默认走磁盘逃生舱（0600 明文，写入时警告一次）。Linux/CI 无 tmpfs 须显式 `--insecure-cache`。不使用操作系统钥匙串。`duration` 到期只看 `expires_at`；`restart` 看 boot ID
 5. **敏感文件强制 0600/0700**：metadata、settings.json（含 server token）、各 `.enc` 在每次写入时都会检查并收紧权限，老版本创建的宽松权限文件会被自动收敛
 
 ---
@@ -114,7 +114,7 @@ Salt 与 KDF 参数存储在 `metadata.json` 中：
 - `session start` 全平台同一套选型：证明 tmpfs/ramfs 则写安全存储；否则 Linux fail closed，Darwin 默认磁盘逃生舱并警告。验证的是实际 backing filesystem，不是路径名。不调用登录钥匙串；遗留 Keychain item 不读不删（可在钥匙串访问中手动删除）
 - macOS 上系统自带的符号链接（如 `/var` → `/private/var`）会先解析再校验，不再误拒；解析后的最终目录仍必须是真实目录且写入走 no-follow 锚定
 - Linux 无法确认安全存储时命令非零退出，derived key 不写盘，错误信息包含 `--insecure-cache` 行动指引；无安全 runtime 时仍可在交互式命令中输入一次密码（不创建 session cache），或将 `XDG_RUNTIME_DIR` 指向可信内存挂载
-- 磁盘逃生舱：密钥以 0600 明文写入 `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`（目录 0700、原子写、boot ID 校验照旧）。Darwin 无 tmpfs 时这是默认写目标；Linux/CI 须 `--insecure-cache`。同用户进程、备份与同步工具均可读取
+- 磁盘逃生舱：密钥以 0600 明文写入 `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`（目录 0700、原子写、boot ID 校验照旧）。Darwin 无 tmpfs 时这是默认写目标；Linux/CI 须 `--insecure-cache`。同用户进程、备份与同步工具均可读取。未加密警告只在初始化时输出（`session start` 写入新密钥或显式 `--insecure-cache`，每进程至多一次）；后续读取、滑动续期、`session renew` 与遗留收养静默，但支持审计的命令会留下「缓存来自磁盘逃生舱」记录
 - MCP 只保留非秘密授权指纹，并在每个工具请求前重新校验 session；expiry、`session clear`、session 替换、boot 变化或 rekey 都会撤销旧 MCP 进程
 
 ## Rekey 恢复

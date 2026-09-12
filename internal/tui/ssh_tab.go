@@ -1452,17 +1452,17 @@ func (t *sshTab) renderModal() string {
 		for _, alias := range t.pendingBatchHosts {
 			b.WriteString(alias + "\n")
 		}
-		return modalBox(fmt.Sprintf("delete %d hosts?", len(t.pendingBatchHosts)),
+		return modalBox(t.width, t.height, fmt.Sprintf("delete %d hosts?", len(t.pendingBatchHosts)),
 			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
 	case sshModeDeleteHost:
 		body := "cannot be undone after deletion."
 		if host, ok := t.hostByAlias(t.pendingHost); ok {
 			body = "hostname: " + orDash(host.Hostname) + "\ncannot be undone after deletion."
 		}
-		return modalBox("delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
 	case sshModeDeleteKey:
 		if len(t.keyRefs) == 0 {
-			return modalBox("delete keypair "+t.pendingKey+"?", "the private key cannot be recovered after deletion.", "enter/y confirm · esc/n cancel")
+			return modalBox(t.width, t.height, "delete keypair "+t.pendingKey+"?", "the private key cannot be recovered after deletion.", "enter/y confirm · esc/n cancel")
 		}
 		var b strings.Builder
 		b.WriteString("these hosts still reference the keypair:\n")
@@ -1470,15 +1470,15 @@ func (t *sshTab) renderModal() string {
 			b.WriteString("  · " + alias + "\n")
 		}
 		b.WriteString("\ndeletion is refused by default. press F to force delete and clear identityKey on these hosts.")
-		return modalBox("keypair "+t.pendingKey+" still referenced", b.String(), "F force delete · esc cancel")
+		return modalBox(t.width, t.height, "keypair "+t.pendingKey+" still referenced", b.String(), "F force delete · esc cancel")
 	case sshModeMaterialize:
 		body := "will write the private key in plaintext to:\n" + t.materializePath + " (0600)."
 		if t.pendingForce {
 			body += "\n⚠ target file exists and will be overwritten."
 		}
-		return modalBox("materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
 	case sshModeExportPreview:
-		return modalBox("export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
+		return modalBox(t.width, t.height, "export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
 	}
 	return ""
 }

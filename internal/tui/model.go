@@ -513,9 +513,10 @@ func (m Model) View() string {
 			tabParts = append(tabParts, tabStyle.Render(label))
 		}
 	}
-	tabStrip := tabStripStyle.Width(contentW).Render(
-		lipgloss.JoinHorizontal(lipgloss.Top, tabParts...),
-	)
+	// tabStripStyle 的 Padding(0,1) 占 2 列：预算内放不下的尾部 tab 以 "…"
+	// 收尾，否则宽标签会在 strip 内折行、把整个布局撑高。
+	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, contentW-2)
+	tabStrip := tabStripStyle.Width(contentW).Render(strip)
 
 	// Active tab content. Overlays take over the content area while open.
 	var content string
@@ -554,6 +555,38 @@ func (m Model) View() string {
 	// the frame's total rendered size exactly m.width x m.height.
 	inner := lipgloss.JoinVertical(lipgloss.Left, tabStrip, content, bottom)
 	return frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
+}
+
+// fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部
+// 以 muted "…" 示意（数字键/Tab 仍可到达被收起的 tab）。若连激活 tab 都放
+// 不下（接近最小宽度），退化为只渲染激活 tab（标签截断到预算内）。
+func fitTabStrip(parts []string, activeTitle string, active, budget int) string {
+	if budget < 4 {
+		budget = 4
+	}
+	var out []string
+	used := 0
+	cut := -1
+	for i, p := range parts {
+		w := lipgloss.Width(p)
+		if used+w > budget {
+			cut = i
+			break
+		}
+		out = append(out, p)
+		used += w
+	}
+	if cut < 0 {
+		return lipgloss.JoinHorizontal(lipgloss.Top, out...)
+	}
+	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
+	if 2*active >= cut {
+		return activeTabStyle.Render(truncateWidth(activeTitle, maxInt(budget-2, 1)))
+	}
+	if used+1 <= budget {
+		out = append(out, mutedStyle().Render("…"))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 // truncateRunes truncates s to at most max runes, appending "…" if shortened.

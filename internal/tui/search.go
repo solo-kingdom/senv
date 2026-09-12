@@ -259,7 +259,8 @@ func (s *searchTab) View() string {
 	if innerH < 1 {
 		innerH = 1
 	}
-	innerW := s.width - overlayCols
+	// 外框边框还占 2 列（overlay 边框/内边距 6 列之外），漏算会在 frame 内折行。
+	innerW := s.width - overlayCols - 2
 	if innerW < 10 {
 		innerW = 10
 	}
@@ -267,8 +268,9 @@ func (s *searchTab) View() string {
 	title := "Search"
 	var lines []string
 	if len(s.results) == 0 {
+		// emptyStateStyle 自带 Padding(1,2)：文本先截断到 innerW-4 再套样式。
 		lines = append(lines, emptyStateStyle.Render(
-			"no matches"+emptyHint(s.input)))
+			truncateWidth("no matches"+emptyHint(s.input), innerW-4)))
 	} else {
 		// 1-line header + windowed results, cursor kept visible (same
 		// primitives as windowedPane).

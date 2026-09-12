@@ -1165,25 +1165,25 @@ func (t *textTab) renderModal() string {
 		for _, tgt := range targets {
 			fmt.Fprintf(&b, "%s/%s\n", tgt[0], tgt[1])
 		}
-		return modalBox(fmt.Sprintf("delete %d text blocks?", len(targets)),
+		return modalBox(t.width, t.height, fmt.Sprintf("delete %d text blocks?", len(targets)),
 			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
 	case textModeBatchExportPath:
-		return modalBox("batch export to directory", t.input.View(), "enter export · esc cancel")
+		return modalBox(t.width, t.height, "batch export to directory", t.input.View(), "enter export · esc cancel")
 	case textModeDeleteGroupConfirm:
 		group := t.currentGroup()
 		body := fmt.Sprintf("group %s and all its text blocks will be deleted.", group)
-		return modalBox("delete group "+group+"?", body, "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "delete group "+group+"?", body, "enter/y confirm · esc/n cancel")
 	case textModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
 	case textModeExportPath:
-		return modalBox("export to file", t.input.View(), "enter export · esc cancel")
+		return modalBox(t.width, t.height, "export to file", t.input.View(), "enter export · esc cancel")
 	case textModeNewKey:
-		return modalBox("new text block — key or group:key", t.input.View(), "enter open vim · esc cancel")
+		return modalBox(t.width, t.height, "new text block — key or group:key", t.input.View(), "enter open vim · esc cancel")
 	case textModeAddGroup:
-		return modalBox("new group", t.input.View(), "enter create · esc cancel")
+		return modalBox(t.width, t.height, "new group", t.input.View(), "enter create · esc cancel")
 	case textModeFilter:
-		return modalBox("filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
+		return modalBox(t.width, t.height, "filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

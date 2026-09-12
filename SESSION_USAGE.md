@@ -36,7 +36,7 @@ senv session status
 
 **只有 `Expired` 会被自动清理。** `Invalidated` 与 `Unverifiable` 的缓存一律保留，因为它们可能是另一个 vault 的唯一恢复钥匙；需要丢弃时显式执行 `senv session clear` / `--all`。
 
-同一 vault 槽位若同时存在平台安全存储与磁盘逃生舱两份缓存，系统按 `created_at` **新者优先**完成校验并复用，保留另一份；只有两份时间戳完全相同时才报错并提示 `senv session clear --all`。被选中的缓存仍须通过 salt 与 key 校验，不会被跳过。
+同一 vault 槽位若同时存在平台安全存储与磁盘逃生舱两份缓存，系统按 `created_at` **新者优先**完成校验并复用，保留另一份；只有两份时间戳完全相同时才报错并提示 `senv session clear --all`。被选中的缓存仍须通过 salt 与 key 校验，不会被跳过。读取选中磁盘逃生舱缓存不输出警告（警告只在 `session start` 写入时出现），但支持审计的命令会留下「缓存来自磁盘逃生舱」记录。
 
 需要重新输入口令时，命令错误会给出**根因 + 一条确定的下一步动作**（`expired` / `restarted` / `vault-changed` / `multiple-cache` / `unreadable` / `metadata-replaced`）。
 
@@ -291,7 +291,7 @@ ls -la ~/.log/senv/
 - **duration / restart**（能证明 tmpfs 时写 runtime；否则 Darwin 默认磁盘逃生舱。槽名是 data path 规范化后的 hash）:
   - `$XDG_RUNTIME_DIR/senv/session-<uid>-<slot>`（优先，须经确认的 tmpfs/ramfs）
   - 后备: `$TMPDIR/` 下随机命名的 `senv-<uid>-<slot>-<rand>` 0700 目录（同样须 memory-backed）
-- **磁盘逃生舱** (`--insecure-cache`；stock Darwin 无 tmpfs 时的默认写目标): `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`
+- **磁盘逃生舱** (`--insecure-cache`；stock Darwin 无 tmpfs 时的默认写目标): `${XDG_CACHE_HOME:-~/.cache}/senv/session-<slot>.json`。未加密警告只在写入时输出一次（`session start` 或显式 `--insecure-cache`），后续读取与续期静默
 - 旧版登录钥匙串条目（`senv.session.<uid>` / `senv.v1*`）不再读取或删除；需要时可在钥匙串访问中手动删除
 
 ### 缓存文件结构

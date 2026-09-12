@@ -10,7 +10,12 @@ import (
 // 本文件收拢跨 Tab 复用的小工具（tui-ux-list 1.2 自各 Tab 搬入）。
 
 // modalBox 渲染模态弹层：标题 + 正文 + 底部按键提示。
-func modalBox(title, body, hint string) string {
+// modalBox renders a titled modal inside the tab's content area. w/h are the
+// tab's SetSize dimensions: the box border draws outside Width, so Width is
+// w-2; long lines wrap inside the box and clipLines caps the total at h+2
+// (the pane slot's height, borders included) so a modal can never push the
+// frame off-screen.
+func modalBox(w, h int, title, body, hint string) string {
 	head := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Render("» " + title)
 	parts := []string{head}
 	if body != "" {
@@ -23,8 +28,10 @@ func modalBox(title, body, hint string) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(colorAccent)).
 		Padding(0, 1).
+		Width(maxInt(w-2, 8)).
+		Height(maxInt(h, 2)).
 		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	return box
+	return clipLines(box, maxInt(h+2, 2))
 }
 
 // isPrintable 报告按键是否为单个可打印字符输入（用于过滤/输入框回显）。
@@ -46,6 +53,14 @@ func clamp(v, lo, hi int) int {
 // max 返回较大值。
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+// minInt 返回较小值。
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
