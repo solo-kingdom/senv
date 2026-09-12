@@ -22,11 +22,12 @@ var globalKeys = []KeyAction{
 
 // helpTab is the keybinding overview overlay (triggered by `?`).
 //
-// It renders in place of the tab content, like the search overlay: while open
-// it captures every key, and `?`/`esc` close it. Rows are truncated to the
-// overlay's inner width, laid out in multiple columns when the terminal is
-// wide enough (binding lists are sparse, one-per-line wastes most of the
-// screen), and scrollable when the laid-out rows still exceed the box height.
+// Unlike the search overlay it renders as a floating window on top of the
+// active tab's content: while open it captures every key, and `?`/`esc` close
+// it. Rows are truncated to the overlay's inner width, laid out in multiple
+// columns when the terminal is wide enough (binding lists are sparse,
+// one-per-line wastes most of the screen), with a visible divider between
+// columns, and scrollable when the laid-out rows still exceed the box height.
 type helpTab struct {
 	title    string
 	bindings []KeyAction
@@ -77,11 +78,15 @@ func (h *helpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	return h, nil
 }
 
-// helpColTarget 是单列的目标宽度（含间隔），用于按终端宽度决定列数：
-// 内容区每 ~37 列放一列，窄终端自然退化为单列。
+// helpColTarget 是单列的目标宽度（含列间隔），用于按终端宽度决定列数：
+// 内容区每 ~34 列放一列，窄终端自然退化为单列。helpColDividerW 是列间隔
+// 线 " │ " 的显示宽度；helpMarginX/Y 是浮窗相对外框内容区的留白（左右各
+// 1 列、上下各 1 行），让底层 Tab 内容在四周露出。
 const (
-	helpColTarget = 37
-	helpColGutter = 2
+	helpColTarget   = 34
+	helpColDividerW = 3
+	helpMarginX     = 2
+	helpMarginY     = 2
 )
 
 // helpCell 是布局网格里的一个单元：一段纯文本加渲染样式。text 在入格前
@@ -101,12 +106,15 @@ func (h *helpTab) View() string {
 	}
 	body := append(rows[start:end], footer)
 	box := searchOverlayStyle.Render(strings.Join(body, "\n"))
-	return clipLines(box, h.height-frameRows)
+	// 底栏恒占一行（见 visibleRows 的 -1），正常情况恰好不触发截断；这里
+	// 的 clipLines 只是超小终端下的兜底。
+	return clipLines(box, maxInt(h.height-frameRows-helpMarginY, 1))
 }
 
-// visibleRows 是 overlay 框内的内容行数（框总高上限减边框/内边距）。
+// visibleRows 是浮窗框内的键位行数：框总高上限（外框 5 行 + 上下留白）
+// 减去边框/内边距，再恒减 1 行底栏。
 func (h *helpTab) visibleRows() int {
-	v := h.height - frameRows - overlayRows
+	v := h.height - frameRows - helpMarginY - overlayRows - 1
 	return maxInt(v, 1)
 }
 
@@ -119,16 +127,16 @@ func (h *helpTab) maxScroll() int {
 // layout 生成全部内容行（多列网格拼好的整行）与底栏。View 与 Update
 // 共用同一份计算，保证滚动窗口与实际渲染一致。
 func (h *helpTab) layout() (rows []string, footer string) {
-	// 框内文本区：外框 2 列 + overlay 边框/内边距 6 列。
-	contentW := maxInt(h.width-overlayCols-2, 10)
+	// 框内文本区：外框 2 列 + 浮窗左右留白 + overlay 边框/内边距 6 列。
+	contentW := maxInt(h.width-overlayCols-2-helpMarginX, 10)
 	items := h.items()
 
-	// 列数：内容区能放下几列 37 列宽的格子；剩余宽度均摊到各列。
-	cols := (contentW + helpColGutter) / helpColTarget
+	// 列数：内容区能放下几列 34 列宽的格子；剩余宽度均摊到各列。
+	cols := (contentW + helpColDividerW) / helpColTarget
 	if cols < 1 {
 		cols = 1
 	}
-	colW := (contentW - (cols-1)*helpColGutter) / cols
+	colW := (contentW - (cols-1)*helpColDividerW) / cols
 	if colW < 14 {
 		cols = 1
 		colW = contentW
@@ -200,9 +208,10 @@ func bindingCell(b KeyAction, kw int) helpCell {
 }
 
 // gridRows 把单元按行优先填入 cols 列网格：普通单元占一格并左对齐补齐到
-// 列宽；超过列宽的单元独占整行（截断到内容区宽），避免长描述被硬折行。
+// 列宽，列与列之间用 muted 竖线隔开；超过列宽的单元独占整行（截断到内容
+// 区宽），避免长描述被硬折行。
 func gridRows(items []helpCell, cols, colW, contentW int) []string {
-	gutter := strings.Repeat(" ", helpColGutter)
+	gutter := " " + mutedStyle().Render("│") + " "
 	var rows []string
 	var cells []string
 	flush := func() {

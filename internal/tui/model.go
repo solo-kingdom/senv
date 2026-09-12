@@ -518,13 +518,14 @@ func (m Model) View() string {
 	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, contentW-2)
 	tabStrip := tabStripStyle.Width(contentW).Render(strip)
 
-	// Active tab content. Overlays take over the content area while open.
+	// Active tab content. The search overlay takes over the content area
+	// while open; the help overlay floats on top of the tab content instead.
 	var content string
 	switch {
 	case m.search != nil:
 		content = m.search.View()
 	case m.help != nil:
-		content = m.help.View()
+		content = overlayBox(m.tabs[m.active].View(), m.help.View(), contentW, m.height-frameRows)
 	default:
 		content = m.tabs[m.active].View()
 	}
@@ -555,6 +556,50 @@ func (m Model) View() string {
 	// the frame's total rendered size exactly m.width x m.height.
 	inner := lipgloss.JoinVertical(lipgloss.Left, tabStrip, content, bottom)
 	return frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
+}
+
+// overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
+// base 每行截断/右补齐到 w 列、总行数收拢到 h 行；box 覆盖的矩形区域整行
+// 替换（浮窗不透明，无需保留被盖住的底色片段），上下垂直居中。
+func overlayBox(base, box string, w, h int) string {
+	baseLines := strings.Split(base, "\n")
+	boxLines := strings.Split(box, "\n")
+	bw := 0
+	for _, l := range boxLines {
+		if x := lipgloss.Width(l); x > bw {
+			bw = x
+		}
+	}
+	if bw > w {
+		bw = w
+	}
+	if len(boxLines) > h {
+		boxLines = boxLines[:h]
+	}
+	left := maxInt((w-bw)/2, 0)
+	top := maxInt((h-len(boxLines))/2, 0)
+
+	out := make([]string, 0, h)
+	for i := 0; i < h; i++ {
+		var l string
+		if i < len(baseLines) {
+			l = baseLines[i]
+		}
+		if lipgloss.Width(l) > w {
+			l = truncateWidth(l, w)
+		} else {
+			l = padRight(l, w)
+		}
+		out = append(out, l)
+	}
+	for j, bl := range boxLines {
+		r := top + j
+		if r >= h {
+			break
+		}
+		out[r] = strings.Repeat(" ", left) + padRight(bl, bw) + strings.Repeat(" ", w-left-bw)
+	}
+	return strings.Join(out, "\n")
 }
 
 // fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部

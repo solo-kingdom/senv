@@ -54,21 +54,24 @@ func TestHelpOverlayFitsScreen(t *testing.T) {
 	}
 }
 
-// TestHelpOverlayMultiColumn 宽终端按多列排布键位（密度低的内容不占满整行）；
-// 窄终端退化为单列。
+// TestHelpOverlayMultiColumn 宽终端按多列排布键位（密度低的内容不占满整行），
+// 列与列之间有竖线分隔；窄终端退化为单列。
 func TestHelpOverlayMultiColumn(t *testing.T) {
 	mgrs := Managers{}
 
-	wide := openHelp(t, mgrs, 80, 24)
+	wide := openHelp(t, mgrs, 100, 24)
 	wideRows := strings.Split(stripANSI(wide.View()), "\n")
 	twoCol := false
 	for _, row := range wideRows {
 		if strings.Contains(row, "cycle tabs") && strings.Contains(row, "global search") {
 			twoCol = true
+			if !strings.Contains(row, "│") {
+				t.Errorf("multi-column row should show a column divider: %q", row)
+			}
 		}
 	}
 	if !twoCol {
-		t.Errorf("80-wide help should lay bindings out in two columns, got:\n%s", wide.View())
+		t.Errorf("100-wide help should lay bindings out in two columns, got:\n%s", wide.View())
 	}
 
 	narrow := openHelp(t, mgrs, 50, 20)
@@ -77,13 +80,45 @@ func TestHelpOverlayMultiColumn(t *testing.T) {
 		if strings.Contains(row, "cycle tabs") && strings.Contains(row, "global search") {
 			t.Errorf("50-wide help should be single column, but two bindings share a row: %q", row)
 		}
+		// 单列时一行只有外框与浮窗自身的左右边框（4 条竖线），不应出现列间隔线。
+		if strings.Contains(row, "cycle tabs") && strings.Count(row, "│") != 4 {
+			t.Errorf("single-column help should not show a column divider: %q", row)
+		}
+	}
+}
+
+// TestHelpOverlayFloats 回归：`?` 总览是浮窗：叠放在当前 Tab 内容之上
+// （底层内容在四周露出），且框体底边框不被截断。
+func TestHelpOverlayFloats(t *testing.T) {
+	mgrs := Managers{}
+	m := openHelp(t, mgrs, 100, 30)
+
+	rows := strings.Split(stripANSI(m.View()), "\n")
+	topIdx, botIdx := -1, -1
+	for i, r := range rows {
+		if strings.HasPrefix(r, "│ ╭") && topIdx == -1 {
+			topIdx = i
+		}
+		if strings.HasPrefix(r, "│ ╰") {
+			botIdx = i
+		}
+	}
+	if topIdx < 3 {
+		t.Errorf("help box should float below the tab strip, top at row %d\n%s", topIdx, m.View())
+	}
+	if botIdx == -1 || botIdx >= len(rows)-2 {
+		t.Errorf("help box bottom border should be visible above the status bar, bottom at row %d of %d\n%s", botIdx, len(rows), m.View())
+	}
+	// 浮窗上沿之上应露出底层 Tab 内容（ pane 边框线），而不是空白填充。
+	if topIdx > 0 && !strings.Contains(rows[topIdx-1], "─") {
+		t.Errorf("row above the floating help should show the underlying tab content, got %q", rows[topIdx-1])
 	}
 }
 
 // TestHelpOverlayScrolls 内容超过框体高度时可以滚动，且滚动有上下限。
 func TestHelpOverlayScrolls(t *testing.T) {
 	mgrs := Managers{}
-	m := openHelp(t, mgrs, 56, 14) // 可视约 5 行，global 键位即超出
+	m := openHelp(t, mgrs, 56, 14) // 可视 2 行，global 键位即超出
 
 	first := m.View()
 	out, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
