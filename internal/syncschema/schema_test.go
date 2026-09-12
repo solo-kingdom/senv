@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestValidateIdentityAcceptsFiveKinds(t *testing.T) {
+func TestValidateIdentityAcceptsLegacyFiveKinds(t *testing.T) {
 	tests := []struct {
 		kind string
 		grp  string

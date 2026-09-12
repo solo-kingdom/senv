@@ -157,11 +157,19 @@ func TestPrintExportPlanMarksUnresolvedRefs(t *testing.T) {
 		t.Errorf("plaintext marker missing:\n%s", out.String())
 	}
 
+	// 同一 alias 的 warning 被赋给全部 target（--all 场景）：重复文本只打一次
+	plan.Items = append(plan.Items, mcp.ExportItem{
+		Agent: "codex", Alias: "github", Action: mcp.ActionCreate, Path: "/x/config.toml",
+		Warnings: plan.Items[0].Warnings,
+	})
 	var errOut bytes.Buffer
 	printExportItemWarnings(&errOut, plan)
 	got := errOut.String()
 	if !strings.Contains(got, "⚠ pi/github") || !strings.Contains(got, "env:secrets:MISSING") {
 		t.Errorf("stderr warnings missing detail:\n%s", got)
+	}
+	if strings.Count(got, "env:secrets:MISSING") != 1 {
+		t.Errorf("duplicated warning across targets must print once:\n%s", got)
 	}
 	if strings.Contains(got, "clean") {
 		t.Errorf("fully resolved item must not warn:\n%s", got)

@@ -117,8 +117,9 @@ func (m *Manager) Get(group string, key string) (string, error) {
 	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// 保留哨兵错误（%w），调用方可用 errors.Is 判定"条目缺失"
-			return "", fmt.Errorf("variable %s not found in group %s: %w", key, group, err)
+			// 包哨兵本身而不是底层 securefs 错误：消息干净、不泄露内部
+			// 存储布局，errors.Is(err, os.ErrNotExist) 仍可判定。
+			return "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
 		}
 		// Fall back to group load (handles old-format groups not yet migrated)
 		envGroup, loadErr := m.loadEnvGroup(group)

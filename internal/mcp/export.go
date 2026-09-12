@@ -57,8 +57,11 @@ func (p *ExportPlan) NeedsWrite() bool {
 // ExporterOptions configures an Exporter. Resolve dereferences {{env:...}} /
 // {{text:...}} templates in env values; nil means "no references to resolve".
 // ResolveLoose, when set, takes precedence: an unresolvable reference keeps
-// its template literal in the written value and returns a warning instead of
-// an error (profiles sync across machines before their credentials do).
+// its template literal in the written value and comes back as a warning
+// instead of an error (profiles sync across machines before their credentials
+// do). The callback must only return a non-nil error for hard failures that
+// should poison the whole target (e.g. reference cycles) — any error does
+// exactly that. Unresolved references are reported as (literal, warning, nil).
 type ExporterOptions struct {
 	Home         string
 	Scope        string
@@ -292,11 +295,14 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 			item.Reason = err.Error()
 			continue
 		}
-		server, _, err := e.resolveEntry(entry)
+		server, warn, err := e.resolveEntry(entry)
 		if err != nil {
 			item.Action = ActionError
 			item.Reason = err.Error()
 			continue
+		}
+		if len(warn) > 0 {
+			item.Warnings = warn
 		}
 		file.set(item.Alias, server)
 		e.ledger.Set(agentID, item.Alias, server.Fingerprint())
@@ -359,8 +365,8 @@ func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server,
 			if err != nil {
 				return "", err
 			}
-			if len(warn) > 0 {
-				warnings = append(warnings, fmt.Sprintf("MCP server %q %s: %s", entry.Alias, field, warn))
+			for _, w := range warn {
+				warnings = append(warnings, fmt.Sprintf("MCP server %q %s: %s", entry.Alias, field, w))
 			}
 			return resolved, nil
 		}

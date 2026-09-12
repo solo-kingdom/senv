@@ -760,7 +760,10 @@ func TestExportLooseResolvesUnresolvedReferences(t *testing.T) {
 	resolveLoose := func(value string) (string, []string, error) {
 		if value == "{{env:secrets:MISSING}}" {
 			resolved++
-			return value, []string{"unresolved reference {{env:secrets:MISSING}}: env group 'secrets' key 'MISSING' not found"}, nil
+			return value, []string{
+				"unresolved reference {{env:secrets:MISSING}}: env group 'secrets' key 'MISSING' not found",
+				"unresolved reference {{env:secrets:MISSING}}: fallback lookup also failed",
+			}, nil
 		}
 		resolved++
 		return value, nil, nil
@@ -773,8 +776,16 @@ func TestExportLooseResolvesUnresolvedReferences(t *testing.T) {
 	if plan.Items[0].Action != ActionCreate {
 		t.Fatalf("loose mode should still create: %+v", plan.Items[0])
 	}
-	if len(plan.Items[0].Warnings) != 1 || !strings.Contains(plan.Items[0].Warnings[0], "env:secrets:MISSING") {
+	// 一个 field 的多条 warning 必须逐条独立成行，不得以 [a b] 切片格式拼接
+	if len(plan.Items[0].Warnings) != 2 ||
+		!strings.Contains(plan.Items[0].Warnings[0], `MCP server "github" env TOKEN: unresolved reference {{env:secrets:MISSING}}`) ||
+		!strings.Contains(plan.Items[0].Warnings[1], "fallback lookup") {
 		t.Fatalf("warnings = %+v", plan.Items[0].Warnings)
+	}
+	for _, w := range plan.Items[0].Warnings {
+		if strings.HasPrefix(w, "[") {
+			t.Errorf("warning formatted as a slice: %q", w)
+		}
 	}
 	report, err := exporter.Execute(plan)
 	if err != nil {

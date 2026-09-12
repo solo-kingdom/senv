@@ -349,7 +349,7 @@ func resolveValue(value string, loose bool, currentGroup string) (string, error)
 // avoiding a re-auth round trip. Used by the MCP server (which authenticates
 // once at startup) and tests.
 func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env.Manager, textMgr *text.Manager) (string, error) {
-	getter := &combinedGetter{envManager: envMgr, textManager: textMgr}
+	getter := newRefGetter(envMgr, textMgr)
 	opts := ref.ResolveOptions{
 		Loose:        loose,
 		CurrentGroup: currentGroup,
@@ -360,6 +360,12 @@ func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env
 	}
 	ref.PrintWarnings(warnings)
 	return result, nil
+}
+
+// newRefGetter 组装 env/text 两路引用读取器；resolveValueWith 与
+// mcp export 的宽松解析共用同一构造。
+func newRefGetter(envMgr *env.Manager, textMgr *text.Manager) *combinedGetter {
+	return &combinedGetter{envManager: envMgr, textManager: textMgr}
 }
 
 // combinedGetter implements ref.ValueGetter using env and text managers

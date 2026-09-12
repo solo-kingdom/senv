@@ -79,7 +79,7 @@ func mcpExporter(scope string) (*mcp.Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	getter := &combinedGetter{envManager: envMgr, textManager: textMgr}
+	getter := newRefGetter(envMgr, textMgr)
 	resolveLoose := func(value string) (string, []string, error) {
 		return ref.ResolveWithWarnings(value, getter, ref.ResolveOptions{Loose: true})
 	}
@@ -247,10 +247,17 @@ func printExportPlanTo(w io.Writer, plan *mcp.ExportPlan) {
 }
 
 // printExportItemWarnings 把宽松模式下未解析引用的 warning 写到 stderr：
-// 档案已写入但引用目标缺失，用户需补齐后重跑导出。
+// 档案已写入但引用目标缺失，用户需补齐后重跑导出。同一 alias 的解析
+// 结果与 target 无关（ResolveLoose 确定性），重复文本只打一次，避免
+// --all 多目标时同一警告刷屏。
 func printExportItemWarnings(w io.Writer, plan *mcp.ExportPlan) {
+	seen := map[string]bool{}
 	for _, item := range plan.Items {
 		for _, warning := range item.Warnings {
+			if seen[warning] {
+				continue
+			}
+			seen[warning] = true
 			fmt.Fprintf(w, "⚠ %s/%s %s\n", item.Agent, item.Alias, warning)
 		}
 	}
@@ -267,6 +274,9 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 			continue
 		}
 		fmt.Printf("\n# %s — add to %s\n", item.AgentName, item.Path)
+		for _, warning := range item.Warnings {
+			fmt.Printf("# ⚠ %s\n", warning)
+		}
 		switch target.Format {
 		case agentcfg.FormatJSON:
 			entry, err := json.MarshalIndent(map[string]any{
