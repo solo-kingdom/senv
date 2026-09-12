@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/perflog"
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
@@ -121,7 +122,10 @@ type textLoadedMsg struct {
 	err          error
 }
 
-type textReloadMsg struct{}
+type textReloadMsg struct {
+	toast string // 成功提示：非空时随 reload 一并显示
+	warn  string // 部分失败提示：非空时随 reload 一并显示
+}
 
 func (t *textTab) Init() tea.Cmd {
 	if t.loaded {
@@ -313,6 +317,12 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case textReloadMsg:
+		switch {
+		case msg.toast != "":
+			return t, tea.Batch(okToast(msg.toast), t.load())
+		case msg.warn != "":
+			return t, tea.Batch(warnToast(msg.warn), t.load())
+		}
 		return t, t.load()
 
 	case tea.KeyMsg:
@@ -340,19 +350,24 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.jumpCursor(t.cursorForFocus() + pageStep(t.height))
 		case " ", "space":
 			if !t.focusLeft {
-				t.sel.Toggle(t.selectionKey())
+				if key := t.selectionKey(); key != "" {
+					t.sel.Toggle(key)
+				}
 			}
 		case "a":
 			if !t.focusLeft {
 				keys := make([]string, 0, len(t.filteredItems()))
 				for _, it := range t.filteredItems() {
-					keys = append(keys, t.currentGroup()+"/"+it.key)
+					keys = append(keys, it.group+"/"+it.key)
 				}
 				t.sel.SelectVisible(keys)
 			}
 		case "e":
 			if t.sel.SelectionCount() > 1 {
 				return t, warnToast("multiple entries selected: narrow to a single selection to edit")
+			}
+			if t.sel.SelectionCount() == 1 && !t.sel.IsSelected(t.selectionKey()) {
+				return t, warnToast("selected entry differs from cursor: clear the selection or align the cursor to edit")
 			}
 			return t.editCurrent()
 		case "n":
@@ -361,7 +376,9 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			if t.focusLeft {
 				return t.enterDeleteGroupConfirm()
 			}
-			if t.sel.SelectionCount() > 1 {
+			// 批量安全动词作用于选择集（spec：选择集非空即批量，含 1 条）；
+			// 空选择集回落游标单条。
+			if t.sel.SelectionCount() > 0 {
 				return t.enterBatchDeleteConfirm()
 			}
 			return t.enterDeleteConfirm()
@@ -413,27 +430,27 @@ func (t *textTab) listForFocus() []string {
 
 func (t *textTab) moveCursor(delta int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(t.groupIndex+delta, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups)-1)
 		t.itemIndex = 0
 	} else {
 		items := t.filteredItems()
-		t.itemIndex = clamp(t.itemIndex+delta, 0, maxLen(items)-1)
+		t.itemIndex = clamp(t.itemIndex+delta, 0, len(items)-1)
 	}
 }
 
 func (t *textTab) jumpCursor(idx int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(idx, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(idx, 0, len(t.groups)-1)
 		t.itemIndex = 0
 	} else {
 		items := t.filteredItems()
-		t.itemIndex = clamp(idx, 0, maxLen(items)-1)
+		t.itemIndex = clamp(idx, 0, len(items)-1)
 	}
 }
 
 func (t *textTab) clampCursors() {
-	t.groupIndex = clamp(t.groupIndex, 0, maxLen(t.groups)-1)
-	t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
+	t.groupIndex = clamp(t.groupIndex, 0, len(t.groups)-1)
+	t.itemIndex = clamp(t.itemIndex, 0, len(t.filteredItems())-1)
 }
 
 // focusJump positions the cursor at (group, key) for search-result navigation.
@@ -609,10 +626,28 @@ func (t *textTab) enterBatchDeleteConfirm() (Tab, tea.Cmd) {
 	return t, nil
 }
 
-// selectedTargets 返回多选集命中的可见条目（group, key）。
+// allItems 返回全部文本块（跨分组聚合、稳定排序），不随过滤收窄。
+// 批量动作的目标解析以此为准：选择集跨过滤持久，被过滤隐藏的已选项
+// MUST 保持在批量目标内（tui-viewer 多选语义）。
+func (t *textTab) allItems() []textItemRow {
+	var all []textItemRow
+	for _, rows := range t.itemsByGroup {
+		all = append(all, rows...)
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].group != all[j].group {
+			return all[i].group < all[j].group
+		}
+		return all[i].key < all[j].key
+	})
+	return all
+}
+
+// selectedTargets 返回多选集命中的全部条目（group, key）——含被过滤隐藏的
+// 已选项；空集回落游标的判定由调用方负责。
 func (t *textTab) selectedTargets() [][2]string {
 	var out [][2]string
-	for _, it := range t.filteredItems() {
+	for _, it := range t.allItems() {
 		k := it.group + "/" + it.key
 		if t.sel.IsSelected(k) {
 			out = append(out, [2]string{it.group, it.key})
@@ -633,29 +668,40 @@ func (t *textTab) enterBatchExportPath() (Tab, tea.Cmd) {
 	return t, textinput.Blink
 }
 
-// doBatchDelete 逐条删除选择集；单条失败不中止其余。
+// doBatchDelete 逐条删除选择集；单条失败不中止其余。每条写操作逐条审计
+// （operation-audit：TUI 写操作与 CLI 同类操作记录同一类事件）；结束后随
+// reload 一并提示结果（与单条 doDelete 收尾一致，列表不再滞留已删条目）。
 func (t *textTab) doBatchDelete(targets [][2]string) tea.Cmd {
 	mgr := t.mgr.Text
+	mgrs := t.mgr
 	return func() tea.Msg {
 		failed := 0
 		for _, tgt := range targets {
 			if err := mgr.Delete(tgt[0], tgt[1]); err != nil {
+				recordAudit(mgrs, session.AuditOpText, textTarget(tgt[0], tgt[1]), false, "batch delete failed")
 				failed++
+				continue
 			}
+			recordAudit(mgrs, session.AuditOpText, textTarget(tgt[0], tgt[1]), true, "batch delete")
 		}
 		if failed > 0 {
-			return warnMsg{text: fmt.Sprintf("batch delete finished, %d failed", failed)}
+			return textReloadMsg{warn: fmt.Sprintf("batch delete finished, %d failed", failed)}
 		}
-		return okToast(fmt.Sprintf("deleted %d entries", len(targets)))
+		return textReloadMsg{toast: fmt.Sprintf("deleted %d entries", len(targets))}
 	}
 }
 
-// doBatchExport 逐块导出到 dir/<key>.txt；单条失败不中止其余。
+// doBatchExport 逐块导出到 dir/<key>.txt；单条失败不中止其余。目标文件名
+// 来自用户数据（key），写入前必须复验路径段（securefs 约束）。
 func (t *textTab) doBatchExport(dir string, targets [][2]string) tea.Cmd {
 	mgr := t.mgr.Text
 	return func() tea.Msg {
 		failed := 0
 		for _, tgt := range targets {
+			if err := securefs.ValidateSegment(tgt[1]); err != nil {
+				failed++
+				continue
+			}
 			path := filepath.Join(dir, tgt[1]+".txt")
 			if err := mgr.GetToFile(tgt[0], tgt[1], path); err != nil {
 				failed++
@@ -958,7 +1004,8 @@ func (t *textTab) doCopy() tea.Cmd {
 		return warnToast("nothing to copy")
 	}
 	mgr := t.mgr.Text
-	group := t.currentGroup()
+	// 条目真实分组：All 伪组视图下 currentGroup() 是 "All"，不是存储分组。
+	group := it.group
 	key := it.key
 	return func() tea.Msg {
 		if err := mgr.GetToClipboard(group, key); err != nil {
@@ -1081,7 +1128,7 @@ func (t *textTab) renderItems(width, height int) string {
 	}
 	visibleKeys := make([]string, 0, len(items))
 	for _, it := range items {
-		visibleKeys = append(visibleKeys, group+"/"+it.key)
+		visibleKeys = append(visibleKeys, it.group+"/"+it.key)
 	}
 	header += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(visibleKeys))
 	if len(items) == 0 {
@@ -1095,7 +1142,7 @@ func (t *textTab) renderItems(width, height int) string {
 	var lines []string
 	for i, it := range items {
 		keyLabel := it.key
-		if group == "" {
+		if group == textAllLabel {
 			keyLabel = it.group + "/" + keyLabel
 		}
 		if t.sel.IsSelected(it.group + "/" + it.key) {

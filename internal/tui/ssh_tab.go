@@ -187,7 +187,7 @@ func (t *sshTab) visibleHostAliases() []string {
 func (t *sshTab) clampFocus() {
 	n := len(t.visibleHosts())
 	if t.hostIndex >= n {
-		t.hostIndex = max(n-1, 0)
+		t.hostIndex = maxInt(n-1, 0)
 	}
 }
 
@@ -425,7 +425,8 @@ func (t *sshTab) cursorForFocus() int {
 
 func (t *sshTab) focusListLen() int {
 	if t.focusLeft {
-		return len(t.hosts)
+		// 游标语义 = 过滤可见列表上的位置（与 hostListLines/currentHost 一致）。
+		return len(t.visibleHosts())
 	}
 	return len(t.keyPairs)
 }
@@ -1267,10 +1268,12 @@ func (t *sshTab) focusJump(group, alias string) {
 }
 
 // applyPendingJump resolves a pending host or keypair name once the data is
-// available (global search target or a just-finished write).
+// available (global search target or a just-finished write). 按过滤契约
+// （tui-ux-filter）先清过滤保证目标可见，再在可见列表上定位。
 func (t *sshTab) applyPendingJump() {
 	if t.pendingJump != "" {
-		for i, h := range t.hosts {
+		t.filterBox.Clear()
+		for i, h := range t.visibleHosts() {
 			if h.Alias == t.pendingJump {
 				t.hostIndex = i
 				t.focusLeft = true
@@ -1310,7 +1313,7 @@ func (t *sshTab) clamp() {
 
 func (t *sshTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("SSH") + "\n" + truncateRunes("⚠ "+t.loadErr, max(t.width, 1))
+		return paneTitleStyle.Render("SSH") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1362,8 +1365,8 @@ func (t *sshTab) viewBaseAt(height int) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
 
-	hostLines := t.hostListLines(max(leftW-4, 8))
-	keyLines := t.keyPairListLines(max(rightW-4, 8))
+	hostLines := t.hostListLines(maxInt(leftW-4, 8))
+	keyLines := t.keyPairListLines(maxInt(rightW-4, 8))
 
 	leftTitle := fmt.Sprintf("Hosts (%d)", len(t.visibleHosts()))
 	if t.filterBox.Active() {

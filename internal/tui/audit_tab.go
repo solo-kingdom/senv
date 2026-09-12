@@ -201,7 +201,7 @@ func (t *auditTab) View() string {
 		return t.plainPane("(no audit events yet)")
 	}
 
-	innerW := max(t.width-4, 8)
+	innerW := maxInt(t.width-4, 8)
 	filterLabel := auditFilterPresets[t.filterIdx].label
 	if t.filterBox.Term() != "" {
 		filterLabel += " + /" + t.filterBox.Term()
@@ -251,7 +251,7 @@ func (t *auditTab) View() string {
 // plainPane 把单段提示文本渲染进撑满内容区的固定面板。
 func (t *auditTab) plainPane(text string) string {
 	lines := strings.Split(text, "\n")
-	innerW := max(t.width-8, 8)
+	innerW := maxInt(t.width-8, 8)
 	for i, l := range lines {
 		lines[i] = truncateWidth(l, innerW)
 	}

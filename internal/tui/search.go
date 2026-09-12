@@ -61,7 +61,6 @@ func (s *searchTab) Title() string { return "Search" }
 
 func (s *searchTab) Bindings() []KeyAction {
 	return []KeyAction{
-		{[]string{"type"}, "search key/name (id match only)", grpSearch},
 		actUp, actDown,
 		{[]string{"enter"}, "jump", grpSearch},
 		{[]string{"esc"}, "close", grpSearch},
@@ -193,6 +192,11 @@ func (s *searchTab) gather() tea.Cmd {
 
 func (s *searchTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// overlay 打开期间终端尺寸变化：跟随重排，避免按旧尺寸渲染溢出。
+		s.width, s.height = msg.Width, msg.Height
+		return s, nil
+
 	case searchGatheredMsg:
 		s.gathered = msg.all
 		s.refilter()
@@ -209,9 +213,9 @@ func (s *searchTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				return s, func() tea.Msg { return searchJumpMsg{rt, g, k} }
 			}
 		case "up", "k":
-			s.index = clamp(s.index-1, 0, maxLen(s.results)-1)
+			s.index = clamp(s.index-1, 0, len(s.results)-1)
 		case "down", "j":
-			s.index = clamp(s.index+1, 0, maxLen(s.results)-1)
+			s.index = clamp(s.index+1, 0, len(s.results)-1)
 		case "backspace":
 			if len(s.input) > 0 {
 				s.input = s.input[:len(s.input)-1]
@@ -241,7 +245,7 @@ func (s *searchTab) refilter() {
 		}
 		s.results = out
 	}
-	s.index = clamp(s.index, 0, maxLen(s.results)-1)
+	s.index = clamp(s.index, 0, len(s.results)-1)
 }
 
 // --- view ---
@@ -274,20 +278,21 @@ func (s *searchTab) View() string {
 			title = fmt.Sprintf("%s  %d–%d / %d", title, start+1, end, len(s.results))
 		}
 		for i, r := range s.results[start:end] {
-			badge := typeBadge(r.resultType)
-			line := truncateWidth(
-				fmt.Sprintf("%s  %s  %s", badge, secondaryLabel(r.group, r.key), r.preview),
-				innerW-2)
-			if start+i == s.index {
-				line = cursorPrefix(true) + selectedLineStyle.Render(line)
-			} else {
-				line = cursorPrefix(false) + line
-			}
-			lines = append(lines, line)
+			// 先按显示宽截断纯文本，再套 badge/选中样式：truncateWidth 不会
+			// 计算 ANSI 转义的显示宽。
+			rest := truncateWidth(
+				fmt.Sprintf("%s  %s", secondaryLabel(r.group, r.key), r.preview),
+				innerW-2-len(r.resultType)-2)
+			line := typeBadge(r.resultType) + "  " + rest
+			lines = append(lines, cursorLine(line, start+i == s.index))
 		}
 	}
+	// 头部（标题 + 输入回显）截断到 innerW，长输入不得撑破 overlay。输入
+	// 段套 statusBarStyle（Padding(0,1) 多占 2 列），一并计入预算。
+	title = truncateWidth(title, innerW-4)
+	inputBudget := innerW - lipgloss.Width(title) - 2 - 2
 	header := lipgloss.NewStyle().Bold(true).Render(title) +
-		"  " + statusBarStyle.Render(s.input+"_")
+		"  " + statusBarStyle.Render(truncateWidth(s.input+"_", maxInt(inputBudget, 4)))
 	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
 		append([]string{header}, lines...)...))
 	// Last line of defence: the overlay must stay inside the frame budget.

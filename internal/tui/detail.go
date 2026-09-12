@@ -52,7 +52,7 @@ func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
 	case "pgdown":
 		d.top += d.pageSize()
 		if d.top > len(d.lines)-1 {
-			d.top = max(len(d.lines)-1, 0)
+			d.top = maxInt(len(d.lines)-1, 0)
 		}
 	}
 	return d, nil
@@ -68,7 +68,7 @@ func (d *detailOverlay) pageSize() int {
 
 func (d *detailOverlay) View() string {
 	page := d.pageSize()
-	start := clamp(d.top, 0, max(len(d.lines)-1, 0))
+	start := clamp(d.top, 0, maxInt(len(d.lines)-1, 0))
 	end := start + page
 	if end > len(d.lines) {
 		end = len(d.lines)

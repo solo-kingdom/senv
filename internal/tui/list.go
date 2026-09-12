@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -190,11 +191,17 @@ func (l *List) End(n int) {
 	}
 }
 
-// Page 按当前可视页整页移动游标（dir=-1 上翻，1 下翻）。
+// Page 按当前可视页整页移动游标（dir=-1 上翻，1 下翻）。无窗口化（height
+// 预算 <=0，全量展示）时整页 = 整个列表：直接跳顶/跳底。
 func (l *List) Page(dir, n int) {
 	page := listPageSize(l.height)
 	if page <= 0 {
-		page = 1
+		if dir < 0 {
+			l.Home()
+		} else {
+			l.End(n)
+		}
+		return
 	}
 	l.Move(dir*page, n)
 }
@@ -214,6 +221,11 @@ func paneBudgets(width, ratioNum, ratioDen, minLeft, maxLeft int) (left, right i
 	}
 	if left < minLeft {
 		left = minLeft
+	}
+	// 小宽度兜底：minLeft clamp 可能把左栏顶过 width-9，右栏挤压后总宽
+	// 超出可用宽度。两栏各保留 4 列下限，总宽 MUST NOT 超过 width。
+	if cap := width - 9; left > cap {
+		left = maxInt(cap, 4)
 	}
 	right = width - left - 5
 	if right < 4 {
@@ -237,7 +249,11 @@ func (l *List) Toggle(key string) {
 }
 
 // SelectVisible 全选/取消全选可见集：可见集已全部选中则整体取消，否则整体勾选。
+// 空可见集是显式 no-op（不改变既有选择）。
 func (l *List) SelectVisible(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
 	if l.selected == nil {
 		l.selected = map[string]bool{}
 	}
@@ -262,6 +278,16 @@ func (l *List) IsSelected(key string) bool { return l.selected[key] }
 
 // SelectionCount 返回多选集大小（含被过滤隐藏的已选项）。
 func (l *List) SelectionCount() int { return len(l.selected) }
+
+// Selected 返回全部已选标识（字典序）；宿主据此做选择集与数据的 reconcile。
+func (l *List) Selected() []string {
+	out := make([]string, 0, len(l.selected))
+	for k := range l.selected {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // SelectedIn 返回 keys 中被选中的个数（宿主据此计算「被过滤隐藏」数）。
 func (l *List) SelectedIn(keys []string) int {

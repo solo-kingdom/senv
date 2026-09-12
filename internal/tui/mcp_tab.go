@@ -162,7 +162,7 @@ func (t *mcpTab) visibleServerAliases() []string {
 func (t *mcpTab) clampLeft() {
 	n := len(t.visibleServers())
 	if t.serverIndex >= n {
-		t.serverIndex = max(n-1, 0)
+		t.serverIndex = maxInt(n-1, 0)
 	}
 }
 
@@ -335,6 +335,7 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.status = msg.status
 		t.warning = msg.warning
 		t.clamp()
+		t.reconcileSelection()
 		t.applyPendingJump()
 		return t, nil
 	case mcpReloadMsg:
@@ -385,9 +386,11 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	case "right", "l":
 		t.focusLeft = false
 	case "/":
-		t.focusLeft = true
-		t.filterBox.EnterFresh()
-		return t, nil
+		// 与 ssh 同范式：过滤只作用于左栏档案列表，右栏不进入过滤态。
+		if t.focusLeft {
+			t.filterBox.EnterFresh()
+			return t, nil
+		}
 	case "enter":
 		return t, t.openDetail()
 	case "n":
@@ -395,6 +398,9 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	case "e":
 		if t.sel.SelectionCount() > 1 {
 			return t, warnToast("multiple profiles selected: narrow to a single selection to edit")
+		}
+		if t.selectionDivergesFromCursor() {
+			return t, warnToast("selected profile differs from cursor: clear the selection or align the cursor to edit")
 		}
 		srv := t.currentServer()
 		if srv == nil {
@@ -422,6 +428,9 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	case "d":
 		if t.sel.SelectionCount() > 1 {
 			return t, warnToast("multiple profiles selected: narrow to a single selection to delete")
+		}
+		if t.selectionDivergesFromCursor() {
+			return t, warnToast("selected profile differs from cursor: clear the selection or align the cursor to delete")
 		}
 		return t.enterDelete()
 	case "x":
@@ -474,7 +483,9 @@ func (t *mcpTab) jumpFocus(idx int) {
 }
 
 func (t *mcpTab) syncStatus() {
-	t.status, t.warning = t.statusFor(t.servers)
+	// 游标是过滤可见列表上的位置；状态右栏必须按同一列表定位选中档案，
+	// 否则过滤态下会把状态算到不可见档案上。
+	t.status, t.warning = t.statusFor(t.visibleServers())
 }
 
 func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
@@ -560,8 +571,10 @@ func (t *mcpTab) currentAgent() agentcfg.Target {
 }
 
 func (t *mcpTab) clamp() {
-	if t.serverIndex >= len(t.servers) {
-		t.serverIndex = len(t.servers) - 1
+	// 游标语义 = 过滤可见列表上的位置（与 currentServer/serverLines 一致）。
+	n := len(t.visibleServers())
+	if t.serverIndex >= n {
+		t.serverIndex = n - 1
 	}
 	if t.serverIndex < 0 {
 		t.serverIndex = 0
@@ -571,6 +584,20 @@ func (t *mcpTab) clamp() {
 	}
 	if t.agentIndex < 0 {
 		t.agentIndex = 0
+	}
+}
+
+// reconcileSelection 丢弃多选集中已不存在的档案别名（删除/改名后 reload 时
+// 防止幽灵勾选）。
+func (t *mcpTab) reconcileSelection() {
+	live := make(map[string]bool, len(t.servers))
+	for _, s := range t.servers {
+		live[s.Alias] = true
+	}
+	for _, alias := range t.sel.Selected() {
+		if !live[alias] {
+			t.sel.Toggle(alias)
+		}
 	}
 }
 
@@ -931,8 +958,26 @@ func (t *mcpTab) exportTargets(all bool) []agentcfg.Target {
 	return []agentcfg.Target{cur}
 }
 
+// selectionDivergesFromCursor 报告「恰好选中 1 条且不是游标所在档案」——
+// 此时单实体/删除动作不应静默作用于游标项。
+func (t *mcpTab) selectionDivergesFromCursor() bool {
+	if t.sel.SelectionCount() != 1 {
+		return false
+	}
+	srv := t.currentServer()
+	if srv == nil {
+		return false
+	}
+	return !t.sel.IsSelected(srv.Alias)
+}
+
 func (t *mcpTab) replanForce() (Tab, tea.Cmd) {
-	if t.planKind != "export" || t.pendingAlias == "" {
+	if t.planKind != "export" || t.exportPlan == nil {
+		return t, warnToast("current plan cannot force overwrite")
+	}
+	// 多选计划的 pendingAlias 为空：别名从计划条目推导，与计划本身对齐。
+	aliases := planAliases(t.exportPlan)
+	if len(aliases) == 0 {
 		return t, warnToast("current plan cannot force overwrite")
 	}
 	targets := make([]agentcfg.Target, 0, len(t.exportPlan.Items))
@@ -950,13 +995,30 @@ func (t *mcpTab) replanForce() (Tab, tea.Cmd) {
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
-	plan, err := exporter.Plan(targets, []string{t.pendingAlias})
+	plan, err := exporter.Plan(targets, aliases)
 	if err != nil {
 		return t, func() tea.Msg { return errMsg{err: err} }
 	}
 	t.exportPlan = plan
 	t.planForce = true
 	return t, nil
+}
+
+// planAliases 返回导出计划涉及的档案别名（保序去重）。
+func planAliases(plan *mcp.ExportPlan) []string {
+	if plan == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, item := range plan.Items {
+		if seen[item.Alias] {
+			continue
+		}
+		seen[item.Alias] = true
+		out = append(out, item.Alias)
+	}
+	return out
 }
 
 func (t *mcpTab) confirmPlan() (Tab, tea.Cmd) {
@@ -988,7 +1050,7 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 	return func() tea.Msg {
 		exporter, err := t.exporter(force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "export failed")
+			recordAudit(mgrs, session.AuditOpMCPExport, mcpExportAuditTarget(plan), false, "export failed")
 			return errMsg{err: err}
 		}
 		report, err := exporter.Execute(plan)
@@ -1020,7 +1082,7 @@ func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias strin
 	return func() tea.Msg {
 		exporter, err := t.exporter(force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "unexport failed")
+			recordAudit(mgrs, session.AuditOpMCPExport, mcpUnexportAuditTarget(plan, alias), false, "unexport failed")
 			return errMsg{err: err}
 		}
 		report, err := exporter.ExecuteUnexport(plan, func(item mcp.UnexportItem) bool {
@@ -1106,7 +1168,7 @@ func mcpUnexportAuditTarget(plan *mcp.UnexportPlan, alias string) string {
 
 func (t *mcpTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("MCP") + "\n" + truncateRunes("⚠ "+t.loadErr, max(t.width, 1))
+		return paneTitleStyle.Render("MCP") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1165,8 +1227,8 @@ func (t *mcpTab) viewBaseAt(height int) string {
 		leftTitle += "  " + t.filterBox.Prompt()
 	}
 	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleServerAliases()))
-	left := windowedPane(leftTitle, t.serverLines(max(leftW-4, 8)), t.serverIndex, height, leftW)
-	right := windowedPane("Agents · export status", t.agentLines(max(rightW-4, 8)), t.agentIndex, height, rightW)
+	left := windowedPane(leftTitle, t.serverLines(maxInt(leftW-4, 8)), t.serverIndex, height, leftW)
+	right := windowedPane("Agents · export status", t.agentLines(maxInt(rightW-4, 8)), t.agentIndex, height, rightW)
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
 		right = paneStyle.Width(rightW).Height(height).Render(right)

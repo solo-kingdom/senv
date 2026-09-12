@@ -282,7 +282,7 @@ func (t *historyTab) View() string {
 		return t.plainPane(title + "\n\n(no history versions: the entry was never modified, or the server has history retention disabled)")
 	}
 
-	innerW := max(t.width-4, 8)
+	innerW := maxInt(t.width-4, 8)
 	title := "vault recent history (enter to view one entry)"
 	if t.entryID != "" {
 		title = fmt.Sprintf("version timeline for %s", t.entryID)
@@ -334,7 +334,7 @@ func (t *historyTab) View() string {
 // plainPane 把单段提示文本渲染进撑满内容区的固定面板。
 func (t *historyTab) plainPane(text string) string {
 	lines := strings.Split(text, "\n")
-	innerW := max(t.width-8, 8)
+	innerW := maxInt(t.width-8, 8)
 	for i, l := range lines {
 		lines[i] = truncateWidth(l, innerW)
 	}

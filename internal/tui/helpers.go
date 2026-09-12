@@ -43,11 +43,8 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
-// maxLen 返回切片长度（nil 安全的语义化写法）。
-func maxLen[T any](s []T) int { return len(s) }
-
 // max 返回较大值。
-func max(a, b int) int {
+func maxInt(a, b int) int {
 	if a > b {
 		return a
 	}

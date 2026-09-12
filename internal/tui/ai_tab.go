@@ -179,7 +179,7 @@ func (t *aiTab) visibleProviders() []*storage.LLMProviderEntry {
 func (t *aiTab) clampLeft() {
 	n := len(t.visibleProviders())
 	if t.providerIndex >= n {
-		t.providerIndex = max(n-1, 0)
+		t.providerIndex = maxInt(n-1, 0)
 	}
 }
 
@@ -367,8 +367,10 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			if isPrintable(msg) {
 				t.filterBox.Append(msg.String())
 				t.clampLeft()
-				return t, nil
 			}
+			// 过滤输入态吞掉其余按键（audit 范式）：导航/实体动作不得在
+			// 编辑过滤词时透传触发。
+			return t, nil
 		}
 		if t.detail != nil {
 			var cmd tea.Cmd
@@ -584,10 +586,12 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 		}
 		alias = row.Pointer.Provider
 	} else {
-		if len(t.providers) == 0 {
-			return t, warnToast("no providers yet, press n to create one")
+		// 游标是过滤可见列表上的位置：一律经 currentProvider 定位。
+		provider := t.currentProvider()
+		if provider == nil {
+			return t, warnToast("no provider selected")
 		}
-		alias = t.providers[clamp(t.providerIndex, 0, len(t.providers)-1)].Alias
+		alias = provider.Alias
 	}
 	entry := t.providerByAlias(alias)
 	if entry == nil {
@@ -1036,7 +1040,7 @@ func providerErrorField(err error) string {
 		return "model_contexts"
 	case strings.Contains(msg, "output"):
 		return "model_outputs"
-	case strings.Contains(msg, "default reasoning"), strings.Contains(msg, "default reasoning"):
+	case strings.Contains(msg, "default reasoning"):
 		return "model_default_reasoning"
 	case strings.Contains(msg, "modalit"):
 		return "model_modalities"
@@ -1321,7 +1325,7 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("AI") + "\n" + truncateRunes("⚠ "+t.loadErr, max(t.width, 1))
+		return paneTitleStyle.Render("AI") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1376,8 +1380,8 @@ func (t *aiTab) viewBaseAt(height int) string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
 
-	providerLines := t.providerLines(max(leftW-4, 8))
-	agentLines := t.agentLines(max(rightW-4, 8))
+	providerLines := t.providerLines(maxInt(leftW-4, 8))
+	agentLines := t.agentLines(maxInt(rightW-4, 8))
 
 	leftTitle := fmt.Sprintf("Providers (%d)", len(t.visibleProviders()))
 	if t.filterBox.Active() {
@@ -1477,7 +1481,7 @@ func (t *aiTab) renderFlow() string {
 		models := t.flowSelectedModels()
 		lines := make([]string, 0, len(models))
 		for i, m := range models {
-			label := truncateWidth(m, max(t.width-10, 12))
+			label := truncateWidth(m, maxInt(t.width-10, 12))
 			lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(models)-1)))
 		}
 		title := fmt.Sprintf("choose default model (%d models) — %s → %s", len(models), agent, t.flowProvider)
@@ -1489,7 +1493,7 @@ func (t *aiTab) renderFlow() string {
 		if t.flowSelected[m] {
 			mark = "[x]"
 		}
-		label := mark + " " + truncateWidth(m, max(t.width-14, 12))
+		label := mark + " " + truncateWidth(m, maxInt(t.width-14, 12))
 		lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(t.flowCandidates)-1)))
 	}
 	title := fmt.Sprintf("choose agent model set (selected %d/%d) — %s → %s",

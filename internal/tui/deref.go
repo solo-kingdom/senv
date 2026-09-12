@@ -45,8 +45,11 @@ type derefResult struct {
 
 // resolveValues dereferences a set of raw values using the managers. On error
 // for a given value the original value is kept and the failure is flagged so
-// the UI can report it without crashing.
-func resolveValues(mgr Managers, currentGroup string, items []envItemRow) (map[string]derefResult, error) {
+// the UI can report it without crashing. Relative references resolve against
+// each item's own group (envItemRow.group), so All-view aggregates resolve
+// per real group. Results are keyed "group/key" — keys alone can collide
+// across groups in the All view.
+func resolveValues(mgr Managers, items []envItemRow) (map[string]derefResult, error) {
 	if mgr.Env == nil || mgr.Text == nil {
 		return nil, fmt.Errorf("managers unavailable for dereference")
 	}
@@ -55,15 +58,15 @@ func resolveValues(mgr Managers, currentGroup string, items []envItemRow) (map[s
 		vars = nil
 	}
 	getter := tuiGetter{envMgr: mgr.Env, textMgr: mgr.Text, envSnap: vars}
-	opts := ref.ResolveOptions{CurrentGroup: currentGroup}
 	out := make(map[string]derefResult, len(items))
 	for _, it := range items {
+		opts := ref.ResolveOptions{CurrentGroup: it.group}
 		r, warnings, err := ref.ResolveWithWarnings(it.value, getter, opts)
 		if err != nil {
-			out[it.key] = derefResult{resolved: it.value, failed: true}
+			out[it.group+"/"+it.key] = derefResult{resolved: it.value, failed: true}
 			continue
 		}
-		out[it.key] = derefResult{resolved: r, warnings: warnings}
+		out[it.group+"/"+it.key] = derefResult{resolved: r, warnings: warnings}
 	}
 	return out, nil
 }

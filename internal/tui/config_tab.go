@@ -376,6 +376,7 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.itemsByGroup = msg.itemsByGroup
 		t.loaded = true
 		t.clampCursors()
+		t.reconcileSelection()
 		if t.pendingFocusName != "" {
 			name, group := t.pendingFocusName, t.pendingFocusGroup
 			t.pendingFocusName, t.pendingFocusGroup = "", ""
@@ -478,7 +479,7 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t.enterCreateName()
 		case "x":
 			return t.doExportCurrent()
-		case "space":
+		case " ", "space":
 			if !t.focusLeft {
 				if it, ok := t.currentItem(); ok {
 					t.sel.Toggle(it.name)
@@ -533,25 +534,25 @@ func (t *configTab) focusListLen() int {
 
 func (t *configTab) moveCursor(delta int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(t.groupIndex+delta, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups)-1)
 		t.itemIndex = 0
 		return
 	}
-	t.itemIndex = clamp(t.itemIndex+delta, 0, maxLen(t.filteredItems())-1)
+	t.itemIndex = clamp(t.itemIndex+delta, 0, len(t.filteredItems())-1)
 }
 
 func (t *configTab) jumpCursor(idx int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(idx, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(idx, 0, len(t.groups)-1)
 		t.itemIndex = 0
 		return
 	}
-	t.itemIndex = clamp(idx, 0, maxLen(t.filteredItems())-1)
+	t.itemIndex = clamp(idx, 0, len(t.filteredItems())-1)
 }
 
 func (t *configTab) clampCursors() {
-	t.groupIndex = clamp(t.groupIndex, 0, maxLen(t.groups)-1)
-	t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
+	t.groupIndex = clamp(t.groupIndex, 0, len(t.groups)-1)
+	t.itemIndex = clamp(t.itemIndex, 0, len(t.filteredItems())-1)
 }
 
 // --- modal handling ---
@@ -724,7 +725,15 @@ func (t *configTab) enterCreateName() (Tab, tea.Cmd) {
 				}
 				return nil
 			}},
-		formField{key: "group", label: "group", kind: formText, value: group, placeholder: "group (empty = default)"},
+		formField{key: "group", label: "group", kind: formText, value: group, placeholder: "group (empty = default)",
+			validate: func(v string) error {
+				// 与 meta 编辑的分组校验一致：空值回落 default，非空须合法。
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return nil
+				}
+				return storage.ValidateName(v)
+			}},
 		formField{key: "description", label: "description", kind: formText, placeholder: "optional"},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
@@ -856,6 +865,9 @@ func (t *configTab) enterPlan(kind string, groupScope bool) (Tab, tea.Cmd) {
 // enterSelectionPlan 以多选集为范围生成合并计划（跨分组逐条列出）。
 func (t *configTab) enterSelectionPlan(kind string) (Tab, tea.Cmd) {
 	mgr := t.mgr.Config
+	if mgr == nil {
+		return t, warnToast("config manager unavailable")
+	}
 	names := t.selectedNames()
 	if len(names) == 0 {
 		return t, warnToast("selection is empty")
@@ -889,15 +901,40 @@ func (t *configTab) enterSelectionPlan(kind string) (Tab, tea.Cmd) {
 	}
 }
 
-// selectedNames 返回多选集命中的可见条目名。
+// allItems 聚合全部真实分组的条目（不过滤），与当前视图无关。批量目标
+// 解析与选择集 reconcile 以此为准：选择集跨过滤与分组持久。
+func (t *configTab) allItems() []configRow {
+	var out []configRow
+	for i := 1; i < len(t.groups); i++ {
+		out = append(out, t.itemsByGroup[t.groups[i].name]...)
+	}
+	return out
+}
+
+// selectedNames 返回多选集命中的全部条目名——选择集跨过滤持久，被过滤隐藏
+// 的已选项保持在批量计划范围内（tui-viewer 多选语义），故遍历全量而非可见集。
 func (t *configTab) selectedNames() []string {
 	var out []string
-	for _, it := range t.filteredItems() {
+	for _, it := range t.allItems() {
 		if t.sel.IsSelected(it.name) {
 			out = append(out, it.name)
 		}
 	}
 	return out
+}
+
+// reconcileSelection 丢弃多选集中已不存在的条目名（删除/改名/外部 reload 后
+// 防止幽灵勾选）。
+func (t *configTab) reconcileSelection() {
+	live := make(map[string]bool)
+	for _, it := range t.allItems() {
+		live[it.name] = true
+	}
+	for _, name := range t.sel.Selected() {
+		if !live[name] {
+			t.sel.Toggle(name)
+		}
+	}
 }
 
 // enterSidebarPlan handles group-scope install/uninstall triggered while the

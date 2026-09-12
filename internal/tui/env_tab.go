@@ -210,21 +210,25 @@ func buildEnvItems(group string, vars map[string]string) []envItemRow {
 // envAllLabel 是 env 侧栏顶部的 All 伪组标签。
 const envAllLabel = "All"
 
-// currentGroupFor 带分组感知的条目标识（group/key）。
-func envWithGroup(group, key string) envItemRow {
-	return envItemRow{group: group, key: key, value: ""}
-}
-
 // resolveDeref computes dereferenced values for the current group's items
-// (all of them, so a filter change does not invalidate the cache).
+// (all of them, so a filter change does not invalidate the cache). In the All
+// pseudo-group view the items of every real group are aggregated, each
+// resolving against its own group.
 func (t *envTab) resolveDeref() tea.Cmd {
 	mgr := t.mgr
 	group := t.currentGroup()
 	items := t.itemsByGroup[group]
-	preview := t.itemsByGroup // capture to avoid stale closure issues
-	_ = preview
+	if group == envAllLabel {
+		items = nil
+		for _, g := range t.groups {
+			if g.isAll {
+				continue
+			}
+			items = append(items, t.itemsByGroup[g.name]...)
+		}
+	}
 	return func() tea.Msg {
-		results, err := resolveValues(mgr, group, items)
+		results, err := resolveValues(mgr, items)
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -384,14 +388,16 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.jumpCursor(t.cursorForFocus() + pageStep(t.height))
 		case " ", "space":
 			if !t.focusLeft {
-				t.sel.Toggle(t.selectionKey())
+				if key := t.selectionKey(); key != "" {
+					t.sel.Toggle(key)
+				}
 			}
 
 		case "a":
 			if !t.focusLeft {
 				keys := make([]string, 0, len(t.filteredItems()))
 				for _, it := range t.filteredItems() {
-					keys = append(keys, t.currentGroup()+"/"+it.key)
+					keys = append(keys, it.group+"/"+it.key)
 				}
 				t.sel.SelectVisible(keys)
 			}
@@ -424,10 +430,14 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			}
 			return t.enterRenameMode()
 		case "t":
-			if row, ok := t.currentGroupRow(); ok && row.isAll {
+			row, ok := t.currentGroupRow()
+			if !ok {
+				return t, nil
+			}
+			if row.isAll {
 				return t, warnToast("All has no activation semantics, pick a specific group")
 			}
-			if row, ok := t.currentGroupRow(); ok && row.isActive {
+			if row.isActive {
 				return t, t.doDeactivate()
 			}
 			return t, t.doActivate()
@@ -486,11 +496,11 @@ func (t *envTab) listForFocus() []string {
 
 func (t *envTab) moveCursor(delta int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(t.groupIndex+delta, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups)-1)
 		t.itemIndex = 0
 	} else {
 		items := t.filteredItems()
-		t.itemIndex = clamp(t.itemIndex+delta, 0, maxLen(items)-1)
+		t.itemIndex = clamp(t.itemIndex+delta, 0, len(items)-1)
 	}
 	// Moving the cursor re-masks the previously revealed value.
 	t.maskRevealed = false
@@ -498,18 +508,18 @@ func (t *envTab) moveCursor(delta int) {
 
 func (t *envTab) jumpCursor(idx int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(idx, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(idx, 0, len(t.groups)-1)
 		t.itemIndex = 0
 	} else {
 		items := t.filteredItems()
-		t.itemIndex = clamp(idx, 0, maxLen(items)-1)
+		t.itemIndex = clamp(idx, 0, len(items)-1)
 	}
 	t.maskRevealed = false
 }
 
 func (t *envTab) clampCursors() {
-	t.groupIndex = clamp(t.groupIndex, 0, maxLen(t.groups)-1)
-	t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
+	t.groupIndex = clamp(t.groupIndex, 0, len(t.groups)-1)
+	t.itemIndex = clamp(t.itemIndex, 0, len(t.filteredItems())-1)
 }
 
 // focusJump positions the cursor at (group, key) for search-result navigation.
@@ -1128,11 +1138,10 @@ func (t *envTab) renderItems(width, height int) string {
 	inner := width - 2
 	var lines []string
 	for i, it := range items {
-		_ = i // cursor 高亮在下方按索引判断
 		shown := it.value
 		failed := false
 		if t.deref {
-			if dr, ok := t.derefResults[it.key]; ok {
+			if dr, ok := t.derefResults[it.group+"/"+it.key]; ok {
 				shown = dr.resolved
 				failed = dr.failed
 			}
@@ -1142,7 +1151,7 @@ func (t *envTab) renderItems(width, height int) string {
 			shown = maskValue(shown)
 		}
 		keyLabel := it.key
-		if group == "" {
+		if group == envAllLabel {
 			keyLabel = it.group + "/" + keyLabel
 		}
 		if t.sel.IsSelected(it.group + "/" + it.key) {
@@ -1152,7 +1161,7 @@ func (t *envTab) renderItems(width, height int) string {
 			keyLabel = "⚠ " + keyLabel
 		}
 		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the pane.
-		shown = truncateRunes(shown, max(4, inner-2-len([]rune(keyLabel))-1))
+		shown = truncateRunes(shown, maxInt(4, inner-2-len([]rune(keyLabel))-1))
 		var line string
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ "+keyLabel+"=") + renderValue(shown, revealed)
