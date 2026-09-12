@@ -53,7 +53,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## TUI 键位（人机交互，agent 不驱动）
 
-`senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。
+`senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。TUI 界面语言为英文；底栏只显示当前 Tab 的键位分组名（如 `Navigate · Items · Groups · Filter · ? keys`），完整键位按分组列在 `?` 总览里。
 
 - 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname、provider alias、MCP 档案 alias/command，不匹配值/私钥/凭据/MCP env 值）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
 - Env/Text/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。

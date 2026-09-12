@@ -81,7 +81,7 @@ func TestHelpOverlayOpensRendersAndCloses(t *testing.T) {
 		t.Fatal("expected help overlay to be open after pressing ?")
 	}
 	view := m.View()
-	for _, want := range []string{"全局", "直达对应 Tab", "键位总览", "Env"} {
+	for _, want := range []string{"Global", "jump to tab", "keybinding overview", "Env"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help overlay missing %q:\n%s", want, view)
 		}

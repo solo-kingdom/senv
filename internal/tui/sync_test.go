@@ -62,12 +62,12 @@ func TestSyncBadgeShowsPendingAndLastSync(t *testing.T) {
 	if src.pushes != 0 {
 		t.Fatalf("Init must not push, got %d pushes", src.pushes)
 	}
-	if !strings.Contains(m.View(), "3 条待推送") {
+	if !strings.Contains(m.View(), "3 pending push") {
 		t.Errorf("badge should show pending count; view=%q", m.View())
 	}
 
 	m.syncState = SyncState{Dirty: 0, Last: src.state.Last}
-	if v := m.View(); !strings.Contains(v, "已同步 14:03") {
+	if v := m.View(); !strings.Contains(v, "synced 14:03") {
 		t.Errorf("badge should show last sync time, got %q", v)
 	}
 }
@@ -100,8 +100,8 @@ func TestWriteTriggersAsyncPushAndRefreshesBadge(t *testing.T) {
 	if m.syncState.Dirty != 0 {
 		t.Errorf("dirty = %d after successful push, want 0", m.syncState.Dirty)
 	}
-	if v := m.View(); !strings.Contains(v, "已同步") {
-		t.Errorf("view = %q, want 已同步", v)
+	if v := m.View(); !strings.Contains(v, "synced") {
+		t.Errorf("view = %q, want synced", v)
 	}
 }
 
@@ -115,7 +115,7 @@ func TestSyncPushFailureKeepsDirtyWithReason(t *testing.T) {
 		m = out.(Model)
 	}
 	view := m.View()
-	if !strings.Contains(view, "1 条待推送") || !strings.Contains(view, "同步失败") {
+	if !strings.Contains(view, "1 pending push") || !strings.Contains(view, "sync failed") {
 		t.Errorf("view = %q, want pending count + failure reason", view)
 	}
 	if !strings.Contains(view, "server 不可达") {
@@ -134,7 +134,7 @@ func TestQuitWarnsOnceWhenDirty(t *testing.T) {
 			t.Fatal("first q with pending changes must not quit")
 		}
 	}
-	if !strings.Contains(m.View(), "2 条待推送") || !strings.Contains(m.View(), "再按一次 q") {
+	if !strings.Contains(m.View(), "2 pending push") || !strings.Contains(m.View(), "press q again") {
 		t.Fatalf("view = %q, want quit warning", m.View())
 	}
 
@@ -273,7 +273,7 @@ func TestSyncPullAppliedReloadsTabsWithToast(t *testing.T) {
 	}
 	sawToast := false
 	for _, msg := range runCmd(cmd) {
-		if toast, ok := msg.(toastMsg); ok && toast.text == "已从 server 更新 2 条" {
+		if toast, ok := msg.(toastMsg); ok && toast.text == "updated 2 entries from server" {
 			sawToast = true
 		}
 		out, _ = m.Update(msg)
@@ -282,7 +282,7 @@ func TestSyncPullAppliedReloadsTabsWithToast(t *testing.T) {
 	if !sawToast {
 		t.Fatal("expected the applied-changes toast message")
 	}
-	if !strings.Contains(m.View(), "已从 server 更新 2 条") {
+	if !strings.Contains(m.View(), "updated 2 entries from server") {
 		t.Errorf("view = %q, want the applied-changes toast", m.View())
 	}
 	if loaded, hasFlag := tabLoadedFlag(m.tabs[m.active]); hasFlag && !loaded {

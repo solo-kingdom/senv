@@ -128,7 +128,7 @@ func TestHistoryTabDecryptFailureShownNotFatal(t *testing.T) {
 	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
 	_ = cmd
 	view := tab.View()
-	if !strings.Contains(view, "<无法解密>") {
+	if !strings.Contains(view, "<cannot decrypt>") {
 		t.Errorf("decrypt failure should be shown inline, got %q", view)
 	}
 }

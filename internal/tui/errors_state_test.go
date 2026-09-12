@@ -9,7 +9,7 @@ import (
 func TestEmptyStateHintsRender(t *testing.T) {
 	// Env tab with a group that has no variables.
 	tab := envTabWith() // default group, no items
-	if got := tab.View(); !contains(got, "该分组暂无环境变量") {
+	if got := tab.View(); !contains(got, "no env vars in this group") {
 		t.Errorf("env empty state hint missing: %q", got)
 	}
 
@@ -19,7 +19,7 @@ func TestEmptyStateHintsRender(t *testing.T) {
 	tt.groups = []textGroupRow{{name: "default"}}
 	tt.itemsByGroup = map[string][]textItemRow{"default": nil}
 	tt.SetSize(80, 20)
-	if got := tt.View(); !contains(got, "该分组暂无文本块") {
+	if got := tt.View(); !contains(got, "no text blocks in this group") {
 		t.Errorf("text empty state hint missing: %q", got)
 	}
 
@@ -29,7 +29,7 @@ func TestEmptyStateHintsRender(t *testing.T) {
 	ct.groups = []configGroupRow{{name: allConfigsLabel}}
 	ct.itemsByGroup = map[string][]configRow{}
 	ct.SetSize(80, 20)
-	if got := ct.View(); !contains(got, "暂无配置文件") {
+	if got := ct.View(); !contains(got, "no config files yet") {
 		t.Errorf("config empty state hint missing: %q", got)
 	}
 }

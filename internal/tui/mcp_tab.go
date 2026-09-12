@@ -97,36 +97,36 @@ func (t *mcpTab) Title() string { return "MCP" }
 func (t *mcpTab) Bindings() []KeyAction {
 	if t.form != nil {
 		return []KeyAction{
-			{[]string{"tab/↑↓"}, "切换字段"},
-			{[]string{"e"}, "编辑多行"},
-			{[]string{"enter"}, "提交"},
-			{[]string{"esc"}, "取消"},
+			{[]string{"tab/↑↓"}, "switch field", grpForm},
+			{[]string{"e"}, "edit multiline", grpForm},
+			{[]string{"enter"}, "submit", grpForm},
+			{[]string{"esc"}, "cancel", grpForm},
 		}
 	}
 	switch t.mode {
 	case mcpModeDelete:
-		return []KeyAction{{[]string{"enter/y"}, "确认"}, {[]string{"esc/n"}, "取消"}}
+		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	case mcpModePlan:
 		return []KeyAction{
-			{[]string{"enter/y"}, "确认"},
-			{[]string{"F"}, "覆盖漂移"},
-			{[]string{"esc/n"}, "取消"},
+			{[]string{"enter/y"}, "confirm", grpConfirm},
+			{[]string{"F"}, "force overwrite drift", grpConfirm},
+			{[]string{"esc/n"}, "cancel", grpConfirm},
 		}
 	case mcpModeChangedConfirm:
 		return []KeyAction{
-			{[]string{"y"}, "删除该条"},
-			{[]string{"n"}, "跳过"},
-			{[]string{"esc"}, "取消整个撤回"},
+			{[]string{"y"}, "delete this one", grpConfirm},
+			{[]string{"n"}, "skip", grpConfirm},
+			{[]string{"esc"}, "cancel entire revert", grpConfirm},
 		}
 	}
 	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
-		actTop, actBottom, actPageUp, actPageDn, actFilter},
-		KeyAction{[]string{"n"}, "新建档案"},
-		KeyAction{[]string{"e"}, "编辑档案"},
-		KeyAction{[]string{"d"}, "删除档案"},
-		KeyAction{[]string{"x/X"}, "导出（当前/全部 agent）"},
-		KeyAction{[]string{"u/U"}, "撤回（当前/全部 agent）"},
-		KeyAction{[]string{"ctrl+r"}, "刷新"},
+		actTop, actBottom, actPageUp, actPageDn},
+		KeyAction{[]string{"n"}, "new profile", grpItem},
+		KeyAction{[]string{"e"}, "edit profile", grpItem},
+		KeyAction{[]string{"d"}, "delete profile", grpItem},
+		KeyAction{[]string{"x/X"}, "export (current/all agents)", grpItem},
+		KeyAction{[]string{"u/U"}, "revert (current/all agents)", grpItem},
+		actFilter, actRefresh,
 	)
 }
 
@@ -206,7 +206,7 @@ func (t *mcpTab) load() tea.Cmd {
 func (t *mcpTab) statusFor(servers []mcp.Server) ([]mcpAgentStatus, string) {
 	out := make([]mcpAgentStatus, 0, len(t.agents))
 	for _, agent := range t.agents {
-		out = append(out, mcpAgentStatus{ID: agent.ID, Name: agent.Name, State: "未导出"})
+		out = append(out, mcpAgentStatus{ID: agent.ID, Name: agent.Name, State: "not exported"})
 	}
 	alias := ""
 	idx := t.serverIndex
@@ -239,22 +239,22 @@ func (t *mcpTab) statusFor(servers []mcp.Server) ([]mcpAgentStatus, string) {
 		out[i].Reason = item.Reason
 		switch item.Action {
 		case mcp.ActionSkip, mcp.ActionUpdate:
-			out[i].State = "已导出"
+			out[i].State = "exported"
 		case mcp.ActionDrift:
-			out[i].State = "漂移"
+			out[i].State = "drift"
 		case mcp.ActionError:
-			out[i].State = "错误"
+			out[i].State = "error"
 		default:
-			out[i].State = "未导出"
+			out[i].State = "not exported"
 		}
 	}
-	warn := strings.Join(exporter.Ledger().Warnings(), "；")
+	warn := strings.Join(exporter.Ledger().Warnings(), "; ")
 	return out, warn
 }
 
 func (t *mcpTab) exporter(force bool) (*mcp.Exporter, error) {
 	if t.mgr.MCP == nil {
-		return nil, fmt.Errorf("MCP 管理器不可用")
+		return nil, fmt.Errorf("MCP manager unavailable")
 	}
 	opts := mcp.ExporterOptions{
 		Home:       t.mgr.MCPHome,
@@ -304,7 +304,7 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case formCancelMsg:
 		t.form = nil
 		t.formSubmit = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	case mcpFormReopenMsg:
 		msg.form.SetSize(t.width, t.height)
 		for key, value := range msg.values {
@@ -394,11 +394,11 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t.enterForm(nil)
 	case "e":
 		if t.sel.SelectionCount() > 1 {
-			return t, warnToast("已多选档案：编辑需先缩小到单选")
+			return t, warnToast("multiple profiles selected: narrow to a single selection to edit")
 		}
 		srv := t.currentServer()
 		if srv == nil {
-			return t, warnToast("没有选中的档案")
+			return t, warnToast("no profile selected")
 		}
 		entry, err := t.mgr.MCP.Get(srv.Alias)
 		if err != nil {
@@ -421,7 +421,7 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		}
 	case "d":
 		if t.sel.SelectionCount() > 1 {
-			return t, warnToast("已多选档案：删除需先缩小到单选")
+			return t, warnToast("multiple profiles selected: narrow to a single selection to delete")
 		}
 		return t.enterDelete()
 	case "x":
@@ -488,7 +488,7 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		}
 		if key == "esc" || key == "n" {
 			t.cancelMode()
-			return t, warnToast("已取消")
+			return t, warnToast("cancelled")
 		}
 		// 其余按键忽略（grill D7：确认页收紧）
 	case mcpModeChangedConfirm:
@@ -496,7 +496,7 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		// 条目同样不生效，不得把 esc 当作「跳过本条」继续执行。
 		if key == "esc" {
 			t.cancelMode()
-			return t, warnToast("已取消撤回")
+			return t, warnToast("unexport cancelled")
 		}
 		items := t.changedItems()
 		item := items[t.changedIdx]
@@ -525,7 +525,7 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t.confirmPlan()
 		case "esc", "n":
 			t.cancelMode()
-			return t, warnToast("已取消")
+			return t, warnToast("cancelled")
 		}
 		// 其余按键忽略：计划确认页不把未知键解释为取消或放行（grill D7）
 	}
@@ -598,7 +598,7 @@ func (t *mcpTab) applyPendingJump() {
 func (t *mcpTab) openDetail() tea.Cmd {
 	srv := t.currentServer()
 	if srv == nil {
-		return warnToast("没有选中的档案")
+		return warnToast("no profile selected")
 	}
 	entry, err := t.mgr.MCP.Get(srv.Alias)
 	if err != nil {
@@ -626,7 +626,7 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 		}
 		sort.Strings(keys)
 		if len(keys) == 0 {
-			lines = append(lines, "  (无)")
+			lines = append(lines, "  (none)")
 		} else {
 			for _, key := range keys {
 				lines = append(lines, "  "+key)
@@ -642,7 +642,7 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 		"args:",
 	}
 	if len(entry.Args) == 0 {
-		lines = append(lines, "  (无)")
+		lines = append(lines, "  (none)")
 	} else {
 		for _, arg := range entry.Args {
 			lines = append(lines, "  "+arg)
@@ -655,7 +655,7 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 	}
 	sort.Strings(keys)
 	if len(keys) == 0 {
-		lines = append(lines, "  (无)")
+		lines = append(lines, "  (none)")
 	} else {
 		for _, key := range keys {
 			lines = append(lines, "  "+key+"="+maskEnvValue(entry.Env[key]))
@@ -686,7 +686,7 @@ func isRemoteTransport(transport string) bool {
 
 func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 	create := existing == nil
-	title := "新建 MCP Server 档案"
+	title := "new MCP server profile"
 	alias := ""
 	transport := storage.MCPTransportStdio
 	command := ""
@@ -696,7 +696,7 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 	headersText := ""
 	desc := ""
 	if !create {
-		title = "编辑 " + existing.Alias
+		title = "edit " + existing.Alias
 		alias = existing.Alias
 		transport = existing.Transport
 		command = existing.Command
@@ -706,7 +706,7 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 		headersText = formatEnvLines(existing.Headers)
 		desc = existing.Description
 	}
-	aliasField := formField{key: "alias", label: "别名", kind: formText, value: alias, validate: requiredAlias}
+	aliasField := formField{key: "alias", label: "alias", kind: formText, value: alias, validate: requiredAlias}
 	if !create {
 		aliasField.kind = formEnum
 		aliasField.options = []string{alias}
@@ -724,7 +724,7 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 		{key: "env", label: "env", kind: formEditor, value: envText, preview: mcpEnvPreview, validate: validateEnvLines, visible: stdioOnly},
 		{key: "url", label: "url", kind: formText, value: url, validate: requiredURL, visible: remoteOnly},
 		{key: "headers", label: "headers", kind: formEditor, value: headersText, preview: mcpHeadersPreview, validate: validateHeaderLines, visible: remoteOnly},
-		{key: "description", label: "描述", kind: formText, value: desc},
+		{key: "description", label: "description", kind: formText, value: desc},
 	}
 	f := newForm(title, fields...)
 	f.editExternal = func(index int, current string) tea.Cmd {
@@ -779,11 +779,11 @@ func (t *mcpTab) doSubmit(create bool, f *form, values map[string]string) tea.Cm
 						field = "url"
 					}
 				}
-				recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "add 失败")
+				recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "add failed")
 				return reopen(field, err)
 			}
 			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, true, "add")
-			return mcpReloadMsg{toast: "已保存 " + alias, alias: alias}
+			return mcpReloadMsg{toast: "saved " + alias, alias: alias}
 		}
 		err := mgrs.MCP.Update(alias, func(existing *storage.MCPServerEntry) error {
 			// 传输切换整体替换字段集：切到 remote 清空 stdio 字段，反之亦然，
@@ -795,7 +795,7 @@ func (t *mcpTab) doSubmit(create bool, f *form, values map[string]string) tea.Cm
 			return nil
 		})
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "edit 失败")
+			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "edit failed")
 			field := "command"
 			if isRemoteTransport(transport) {
 				field = "url"
@@ -803,14 +803,14 @@ func (t *mcpTab) doSubmit(create bool, f *form, values map[string]string) tea.Cm
 			return reopen(field, err)
 		}
 		recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, true, "edit")
-		return mcpReloadMsg{toast: "已更新 " + alias, alias: alias}
+		return mcpReloadMsg{toast: "updated " + alias, alias: alias}
 	}
 }
 
 func (t *mcpTab) enterDelete() (Tab, tea.Cmd) {
 	srv := t.currentServer()
 	if srv == nil {
-		return t, warnToast("没有可删除的档案")
+		return t, warnToast("no profile to delete")
 	}
 	t.mode = mcpModeDelete
 	t.pendingAlias = srv.Alias
@@ -837,22 +837,22 @@ func (t *mcpTab) doDelete(alias string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Delete(alias); err != nil {
-			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "delete 失败")
+			recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpMCPServer, "mcp:"+alias, true, "delete")
-		return mcpReloadMsg{toast: "已删除 " + alias}
+		return mcpReloadMsg{toast: "deleted " + alias}
 	}
 }
 
 func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
 	aliases := t.planAliases()
 	if len(aliases) == 0 {
-		return t, warnToast("没有可导出的档案")
+		return t, warnToast("no profile to export")
 	}
 	targets := t.exportTargets(allAgents)
 	if len(targets) == 0 {
-		return t, warnToast("没有可导出的目标 agent")
+		return t, warnToast("no target agent to export")
 	}
 	exporter, err := t.exporter(false)
 	if err != nil {
@@ -876,11 +876,11 @@ func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
 func (t *mcpTab) startUnexport(allAgents bool) (Tab, tea.Cmd) {
 	aliases := t.planAliases()
 	if len(aliases) == 0 {
-		return t, warnToast("没有可撤回的档案")
+		return t, warnToast("no profile to unexport")
 	}
 	targets := t.exportTargets(allAgents)
 	if len(targets) == 0 {
-		return t, warnToast("没有可撤回的目标 agent")
+		return t, warnToast("no target agent to unexport")
 	}
 	exporter, err := t.exporter(false)
 	if err != nil {
@@ -933,7 +933,7 @@ func (t *mcpTab) exportTargets(all bool) []agentcfg.Target {
 
 func (t *mcpTab) replanForce() (Tab, tea.Cmd) {
 	if t.planKind != "export" || t.pendingAlias == "" {
-		return t, warnToast("当前计划不能强制覆盖")
+		return t, warnToast("current plan cannot force overwrite")
 	}
 	targets := make([]agentcfg.Target, 0, len(t.exportPlan.Items))
 	seen := map[string]bool{}
@@ -976,10 +976,10 @@ func (t *mcpTab) confirmPlan() (Tab, tea.Cmd) {
 
 func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) tea.Cmd {
 	if plan == nil {
-		return warnToast("没有可执行的计划")
+		return warnToast("no plan to execute")
 	}
 	if !plan.NeedsWrite() {
-		return warnToast("无需写入")
+		return warnToast("nothing to write")
 	}
 	mgrs := t.mgr
 	if alias == "" {
@@ -988,18 +988,18 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 	return func() tea.Msg {
 		exporter, err := t.exporter(force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "export 失败")
+			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "export failed")
 			return errMsg{err: err}
 		}
 		report, err := exporter.Execute(plan)
 		ok := err == nil && report.Failures == 0
-		recordAudit(mgrs, session.AuditOpMCPExport, mcpExportAuditTarget(plan), ok, fmt.Sprintf("export %d 项", len(report.Items)))
+		recordAudit(mgrs, session.AuditOpMCPExport, mcpExportAuditTarget(plan), ok, fmt.Sprintf("export %d items", len(report.Items)))
 		if err != nil {
 			return errMsg{err: err}
 		}
-		toast := "已导出"
+		toast := "exported"
 		if report.Failures > 0 {
-			toast = fmt.Sprintf("导出完成，%d 项失败", report.Failures)
+			toast = fmt.Sprintf("export finished, %d failed", report.Failures)
 		}
 		return mcpReloadMsg{toast: toast, alias: alias}
 	}
@@ -1007,11 +1007,11 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 
 func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias string, allowed map[string]bool) tea.Cmd {
 	if plan == nil {
-		return warnToast("没有可执行的计划")
+		return warnToast("no plan to execute")
 	}
 	// 与 executeExport 对齐：没有可移除条目时不执行、不记成功审计。
 	if !plan.NeedsWrite() {
-		return warnToast("无需写入")
+		return warnToast("nothing to write")
 	}
 	if allowed == nil {
 		allowed = map[string]bool{}
@@ -1020,20 +1020,20 @@ func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias strin
 	return func() tea.Msg {
 		exporter, err := t.exporter(force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "unexport 失败")
+			recordAudit(mgrs, session.AuditOpMCPExport, "mcp:"+alias, false, "unexport failed")
 			return errMsg{err: err}
 		}
 		report, err := exporter.ExecuteUnexport(plan, func(item mcp.UnexportItem) bool {
 			return allowed[item.Agent+"/"+item.Alias]
 		})
 		ok := err == nil && report.Failures == 0
-		recordAudit(mgrs, session.AuditOpMCPExport, mcpUnexportAuditTarget(plan, alias), ok, fmt.Sprintf("unexport %d 项", len(report.Items)))
+		recordAudit(mgrs, session.AuditOpMCPExport, mcpUnexportAuditTarget(plan, alias), ok, fmt.Sprintf("unexport %d items", len(report.Items)))
 		if err != nil {
 			return errMsg{err: err}
 		}
-		toast := "已撤回"
+		toast := "unexported"
 		if report.Failures > 0 {
-			toast = fmt.Sprintf("撤回完成，%d 项失败", report.Failures)
+			toast = fmt.Sprintf("unexport finished, %d failed", report.Failures)
 		}
 		return mcpReloadMsg{toast: toast, alias: alias}
 	}
@@ -1117,7 +1117,7 @@ func (t *mcpTab) View() string {
 	if len(t.servers) == 0 && t.mode == mcpModeNormal && t.form == nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("MCP"),
-			emptyStateStyle.Render("暂无 MCP Server 档案；按 n 新建"))
+			emptyStateStyle.Render("no MCP server profiles yet; press n to create one"))
 	}
 	overlay := ""
 	switch {
@@ -1147,13 +1147,13 @@ func (t *mcpTab) viewBaseAt(height int) string {
 	if rightW < 4 {
 		rightW = 4
 	}
-	leftTitle := fmt.Sprintf("档案 (%d)", len(t.visibleServers()))
+	leftTitle := fmt.Sprintf("profiles (%d)", len(t.visibleServers()))
 	if t.filterBox.Active() {
 		leftTitle += "  " + t.filterBox.Prompt()
 	}
 	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleServerAliases()))
 	left := windowedPane(leftTitle, t.serverLines(max(leftW-4, 8)), t.serverIndex, height, leftW)
-	right := windowedPane("Agents · 导出状态", t.agentLines(max(rightW-4, 8)), t.agentIndex, height, rightW)
+	right := windowedPane("Agents · export status", t.agentLines(max(rightW-4, 8)), t.agentIndex, height, rightW)
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
 		right = paneStyle.Width(rightW).Height(height).Render(right)
@@ -1191,11 +1191,11 @@ func (t *mcpTab) agentLines(width int) []string {
 }
 
 func (t *mcpTab) renderDelete() string {
-	body := "只删除 vault 中的档案，不撤回已导出条目。"
+	body := "only deletes the profile in the vault, not exported entries."
 	if len(t.pendingAgents) > 0 {
-		body += "\n已导出到：" + strings.Join(t.pendingAgents, ", ") + "\n请用 u 撤回。"
+		body += "\nexported to:" + strings.Join(t.pendingAgents, ", ") + "\npress u to unexport."
 	}
-	return modalBox("删除 "+t.pendingAlias+"？", body, "enter/y 确认 · esc/n 取消")
+	return modalBox("delete "+t.pendingAlias+"?", body, "enter/y confirm · esc/n cancel")
 }
 
 func (t *mcpTab) renderPlan() string {
@@ -1203,17 +1203,17 @@ func (t *mcpTab) renderPlan() string {
 		items := t.changedItems()
 		if t.changedIdx >= 0 && t.changedIdx < len(items) {
 			item := items[t.changedIdx]
-			return modalBox("条目已被本地修改",
+			return modalBox("entry was modified locally",
 				fmt.Sprintf("%s / %s\n%s", item.Agent, item.Alias, item.Path),
-				"y 删除该条 · n 跳过 · esc 取消")
+				"y delete · n skip · esc cancel")
 		}
 	}
-	title := "导出计划"
+	title := "export plan"
 	if t.planKind == "unexport" {
-		title = "撤回计划"
+		title = "unexport plan"
 	}
 	if t.planForce {
-		title += "（强制覆盖）"
+		title += " (force overwrite)"
 	}
 	var b strings.Builder
 	if t.planKind == "unexport" && t.unexportPlan != nil {
@@ -1228,7 +1228,7 @@ func (t *mcpTab) renderPlan() string {
 		for _, item := range t.exportPlan.Items {
 			fmt.Fprintf(&b, "%-16s %-8s %s", item.Agent, item.Action, item.Path)
 			if item.Plaintext && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
-				b.WriteString("  [明文]")
+				b.WriteString("  [plaintext]")
 			}
 			if item.Reason != "" {
 				fmt.Fprintf(&b, "  — %s", item.Reason)
@@ -1237,26 +1237,26 @@ func (t *mcpTab) renderPlan() string {
 		}
 	}
 	return modalBox(title, strings.TrimRight(b.String(), "\n"),
-		"enter/y 确认 · F 覆盖漂移 · esc/n 取消")
+		"enter/y confirm · F overwrite drift · esc/n cancel")
 }
 
 func requiredAlias(v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("别名不能为空")
+		return fmt.Errorf("alias cannot be empty")
 	}
 	return storage.ValidateName(strings.TrimSpace(v))
 }
 
 func requiredCommand(v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("command 必填")
+		return fmt.Errorf("command is required")
 	}
 	return nil
 }
 
 func requiredURL(v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("url 必填")
+		return fmt.Errorf("url is required")
 	}
 	return nil
 }
@@ -1283,10 +1283,10 @@ func parseHeaderLines(raw string) (map[string]string, error) {
 		key, value, found := strings.Cut(line, ":")
 		key = strings.TrimSpace(key)
 		if !found || key == "" {
-			return nil, fmt.Errorf("header 需要 \"Name: Value\"，收到 %q", line)
+			return nil, fmt.Errorf("header must be \"Name: Value\", got %q", line)
 		}
 		if _, dup := headers[key]; dup {
-			return nil, fmt.Errorf("重复的 header %q", key)
+			return nil, fmt.Errorf("duplicate header %q", key)
 		}
 		headers[key] = strings.TrimSpace(value)
 	}
@@ -1316,10 +1316,10 @@ func parseEnvLines(raw string) (map[string]string, error) {
 		}
 		key, value, found := strings.Cut(line, "=")
 		if !found || strings.TrimSpace(key) == "" {
-			return nil, fmt.Errorf("env 需要 KEY=VALUE，收到 %q", line)
+			return nil, fmt.Errorf("env must be KEY=VALUE, got %q", line)
 		}
 		if _, dup := env[key]; dup {
-			return nil, fmt.Errorf("重复的 env key %q", key)
+			return nil, fmt.Errorf("duplicate env key %q", key)
 		}
 		env[key] = value
 	}
@@ -1358,9 +1358,9 @@ func mcpEnvPreview(raw string) string {
 		}
 	}
 	if len(keys) == 0 {
-		return "(空，按 e 用 $EDITOR 编辑)"
+		return "(empty, press e to edit in $EDITOR)"
 	}
-	return strings.Join(keys, ", ") + "（按 e 编辑）"
+	return strings.Join(keys, ", ") + "(press e to edit)"
 }
 
 // mcpHeadersPreview mirrors mcpEnvPreview for the headers editor field: only
@@ -1378,9 +1378,9 @@ func mcpHeadersPreview(raw string) string {
 		}
 	}
 	if len(keys) == 0 {
-		return "(空，按 e 用 $EDITOR 编辑)"
+		return "(empty, press e to edit in $EDITOR)"
 	}
-	return strings.Join(keys, ", ") + "（按 e 编辑）"
+	return strings.Join(keys, ", ") + "(press e to edit)"
 }
 
 var _ Tab = (*mcpTab)(nil)

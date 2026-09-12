@@ -83,13 +83,13 @@ func (t *envTab) Title() string { return "Env" }
 func (t *envTab) Bindings() []KeyAction {
 	return []KeyAction{
 		actUp, actDown, actLeft, actRight,
-		{[]string{"v"}, "显隐当前值"},
 		actTop, actBottom, actPageUp, actPageDn,
 		actEdit, actNew, actDelete, actRename,
-		{[]string{"t"}, "激活/停用分组（切换）"},
-		{[]string{"+"}, "新建分组"},
-		{[]string{"D"}, "解引用切换"},
-		{[]string{"y"}, "复制"},
+		{[]string{"v"}, "toggle value visibility", grpItem},
+		{[]string{"y"}, "copy", grpItem},
+		{[]string{"t"}, "toggle group active", grpGroup},
+		{[]string{"+"}, "new group", grpGroup},
+		{[]string{"D"}, "deref on/off", grpGroup},
 		actFilter, actRefresh,
 	}
 }
@@ -293,7 +293,7 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case formCancelMsg:
 		t.form = nil
 		t.formSubmit = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	}
 	if t.form != nil {
 		next, cmd := t.form.Update(msg)
@@ -348,7 +348,7 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				}
 			}
 			if t.derefErrors > 0 {
-				return t, warnToast(fmt.Sprintf("%d 个引用无法解析（显示原始值）", t.derefErrors))
+				return t, warnToast(fmt.Sprintf("%d references failed to resolve (showing raw values)", t.derefErrors))
 			}
 		}
 		return t, nil
@@ -397,7 +397,7 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			}
 		case "e":
 			if t.sel.SelectionCount() > 1 {
-				return t, warnToast("已多选条目：编辑需先缩小到单选")
+				return t, warnToast("multiple entries selected: narrow to a single selection to edit")
 			}
 			return t.enterEditMode()
 		case "n":
@@ -405,7 +405,7 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		case "d":
 			if t.focusLeft {
 				if row, ok := t.currentGroupRow(); ok && row.isAll {
-					return t, warnToast("All 无法删除，请选择具体分组")
+					return t, warnToast("All cannot be deleted, pick a specific group")
 				}
 				return t.enterDeleteGroupConfirm()
 			}
@@ -415,17 +415,17 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t.enterDeleteConfirm()
 		case "r":
 			if t.sel.SelectionCount() > 1 {
-				return t, warnToast("已多选条目：重命名需先缩小到单选")
+				return t, warnToast("multiple entries selected: narrow to a single selection to rename")
 			}
 			if t.focusLeft {
 				if row, ok := t.currentGroupRow(); ok && row.isAll {
-					return t, warnToast("All 无法重命名，请选择具体分组")
+					return t, warnToast("All cannot be renamed, pick a specific group")
 				}
 			}
 			return t.enterRenameMode()
 		case "t":
 			if row, ok := t.currentGroupRow(); ok && row.isAll {
-				return t, warnToast("All 无激活语义，请选择具体分组")
+				return t, warnToast("All has no activation semantics, pick a specific group")
 			}
 			if row, ok := t.currentGroupRow(); ok && row.isActive {
 				return t, t.doDeactivate()
@@ -440,11 +440,11 @@ func (t *envTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			if t.deref {
 				t.derefResults = nil
 				t.derefGroup = ""
-				return t, tea.Batch(okToast("解引用视图：ON"), t.resolveDeref())
+				return t, tea.Batch(okToast("dereference view: ON"), t.resolveDeref())
 			}
 			t.derefResults = nil
 			t.derefGroup = ""
-			return t, okToast("解引用视图：OFF")
+			return t, okToast("dereference view: OFF")
 		case "/":
 			return t.enterFilterMode()
 		}
@@ -639,7 +639,7 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 		t.mode = envModeNormal
 		t.input.Blur()
 		if name == "" {
-			return t, warnToast("分组名不能为空")
+			return t, warnToast("group name cannot be empty")
 		}
 		return t, t.doAddGroup(name)
 	}
@@ -652,10 +652,10 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 func (t *envTab) enterEditMode() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可编辑的条目")
+		return t, warnToast("no entry to edit")
 	}
 	t.mode = envModeEditValue
-	t.input.Placeholder = "值"
+	t.input.Placeholder = "value"
 	t.input.SetValue(it.value)
 	t.input.Focus()
 	t.input.CursorEnd()
@@ -666,31 +666,31 @@ func (t *envTab) enterEditMode() (Tab, tea.Cmd) {
 func (t *envTab) enterNewKeyMode() (Tab, tea.Cmd) {
 	group := t.realGroup()
 	if group == "" {
-		return t, warnToast("请先选择分组，或使用分组栏选择具体分组后新建")
+		return t, warnToast("select a group first, or pick one in the group sidebar before creating")
 	}
 	siblings := make(map[string]bool, len(t.itemsByGroup[group]))
 	for _, row := range t.itemsByGroup[group] {
 		siblings[row.key] = true
 	}
-	f := newForm("新建环境变量 — "+group,
+	f := newForm("new env var — "+group,
 		formField{key: "key", label: "key", kind: formText, placeholder: "DB_HOST",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("key 不能为空")
+					return fmt.Errorf("key cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法 key")
+					return fmt.Errorf("invalid key")
 				}
 				if siblings[v] {
-					return fmt.Errorf("key %s 已存在于 %s", v, group)
+					return fmt.Errorf("key %s already exists in %s", v, group)
 				}
 				return nil
 			}},
-		formField{key: "value", label: "value", kind: formSecret, placeholder: "值（回显遮蔽）",
+		formField{key: "value", label: "value", kind: formSecret, placeholder: "value (echo masked)",
 			validate: func(v string) error {
 				if v == "" {
-					return fmt.Errorf("值不能为空")
+					return fmt.Errorf("value cannot be empty")
 				}
 				return nil
 			}},
@@ -703,7 +703,7 @@ func (t *envTab) enterNewKeyMode() (Tab, tea.Cmd) {
 
 func (t *envTab) enterDeleteConfirm() (Tab, tea.Cmd) {
 	if _, ok := t.currentItem(); !ok {
-		return t, warnToast("没有可删除的条目")
+		return t, warnToast("no entry to delete")
 	}
 	t.mode = envModeDeleteConfirm
 	return t, nil
@@ -749,7 +749,7 @@ func (t *envTab) selectedTargets() [][2]string {
 // enterBatchDeleteConfirm 多选集批量删除：一次确认列全部目标（grill D9）。
 func (t *envTab) enterBatchDeleteConfirm() (Tab, tea.Cmd) {
 	if len(t.selectedTargets()) == 0 {
-		return t, warnToast("多选集为空或不含当前分组的条目")
+		return t, warnToast("selection is empty or has no entries in the current group")
 	}
 	t.mode = envModeBatchDeleteConfirm
 	return t, nil
@@ -767,16 +767,16 @@ func (t *envTab) doBatchDelete(targets [][2]string) tea.Cmd {
 			}
 		}
 		if failed > 0 {
-			return warnMsg{text: fmt.Sprintf("批量删除完成，%d 条失败", failed)}
+			return warnMsg{text: fmt.Sprintf("batch delete finished, %d failed", failed)}
 		}
-		return okToast(fmt.Sprintf("已删除 %d 条", len(targets)))
+		return okToast(fmt.Sprintf("deleted %d entries", len(targets)))
 	}
 }
 
 func (t *envTab) enterAddGroupMode() (Tab, tea.Cmd) {
 	t.mode = envModeAddGroup
 	t.input.SetValue("")
-	t.input.Placeholder = "分组名"
+	t.input.Placeholder = "group name"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -793,10 +793,10 @@ func (t *envTab) openForm(f *form, onSubmit func(values map[string]string) tea.C
 func (t *envTab) enterDeleteGroupConfirm() (Tab, tea.Cmd) {
 	row, ok := t.currentGroupRow()
 	if !ok {
-		return t, warnToast("没有可删除的分组")
+		return t, warnToast("no group to delete")
 	}
 	if row.isDefault {
-		return t, warnToast("default 分组不可删除")
+		return t, warnToast("default group cannot be deleted")
 	}
 	t.mode = envModeDeleteGroupConfirm
 	return t, nil
@@ -808,28 +808,28 @@ func (t *envTab) enterRenameMode() (Tab, tea.Cmd) {
 	if t.focusLeft {
 		row, ok := t.currentGroupRow()
 		if !ok {
-			return t, warnToast("没有可重命名的分组")
+			return t, warnToast("no group to rename")
 		}
 		if row.isDefault {
-			return t, warnToast("default 分组不可重命名")
+			return t, warnToast("default group cannot be renamed")
 		}
 		siblings := make(map[string]bool, len(t.groups))
 		for _, g := range t.groups {
 			siblings[g.name] = true
 		}
 		old := row.name
-		f := newForm("重命名分组",
-			formField{key: "name", label: "新名称", kind: formText, value: old, placeholder: "new-group-name",
+		f := newForm("rename group",
+			formField{key: "name", label: "new name", kind: formText, value: old, placeholder: "new-group-name",
 				validate: func(v string) error {
 					v = strings.TrimSpace(v)
 					if v == "" {
-						return fmt.Errorf("分组名不能为空")
+						return fmt.Errorf("group name cannot be empty")
 					}
 					if err := storage.ValidateName(v); err != nil {
-						return fmt.Errorf("非法分组名")
+						return fmt.Errorf("invalid group name")
 					}
 					if v != old && siblings[v] {
-						return fmt.Errorf("分组 %s 已存在", v)
+						return fmt.Errorf("group %s already exists", v)
 					}
 					return nil
 				}})
@@ -841,7 +841,7 @@ func (t *envTab) enterRenameMode() (Tab, tea.Cmd) {
 
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可重命名的条目")
+		return t, warnToast("no entry to rename")
 	}
 	group := t.focusGroup(it)
 	siblings := make(map[string]bool)
@@ -849,21 +849,21 @@ func (t *envTab) enterRenameMode() (Tab, tea.Cmd) {
 		siblings[row.key] = true
 	}
 	old := it.key
-	f := newForm("重命名环境变量",
-		formField{key: "key", label: "新 key", kind: formText, value: old, placeholder: "NEW_KEY",
+	f := newForm("rename env var",
+		formField{key: "key", label: "new key", kind: formText, value: old, placeholder: "NEW_KEY",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("key 不能为空")
+					return fmt.Errorf("key cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法 key")
+					return fmt.Errorf("invalid key")
 				}
 				if err := storage.ValidateEnvKey(v); err != nil {
-					return fmt.Errorf("非法 key：%v", err)
+					return fmt.Errorf("invalid key: %v", err)
 				}
 				if v != old && siblings[v] {
-					return fmt.Errorf("key %s 已存在于 %s", v, group)
+					return fmt.Errorf("key %s already exists in %s", v, group)
 				}
 				return nil
 			}})
@@ -886,7 +886,7 @@ func (t *envTab) doSet(group, key, value string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Set(group, key, value); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), false, "set 失败")
+			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), false, "set failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), true, "set")
@@ -899,7 +899,7 @@ func (t *envTab) doDelete(group, key string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Delete(group, key); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), false, "delete 失败")
+			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), true, "delete")
@@ -911,30 +911,30 @@ func (t *envTab) doDelete(group, key string) tea.Cmd {
 // cursor on the new key after the reload.
 func (t *envTab) doRenameKey(group, oldKey, newKey string) tea.Cmd {
 	if oldKey == newKey {
-		return warnToast("key 未变化")
+		return warnToast("key unchanged")
 	}
 	mgr := t.mgr.Env
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.RenameKey(group, oldKey, newKey); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, oldKey), false, "rename 失败")
+			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, oldKey), false, "rename failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, envTarget(group, newKey), true, "rename "+oldKey)
-		return renameDoneMsg{group: group, key: newKey, text: "已重命名为 " + newKey}
+		return renameDoneMsg{group: group, key: newKey, text: "renamed to " + newKey}
 	}
 }
 
 // doRenameGroup renames a group and keeps its variables and activation state.
 func (t *envTab) doRenameGroup(oldName, newName string) tea.Cmd {
 	if oldName == newName {
-		return warnToast("分组名未变化")
+		return warnToast("group name unchanged")
 	}
 	mgr := t.mgr.Env
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.RenameGroup(oldName, newName); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+oldName, false, "rename group 失败")
+			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+oldName, false, "rename group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+newName, true, "rename group "+oldName)
@@ -949,7 +949,7 @@ func (t *envTab) doDeleteGroup(name string, allowActive bool) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.DeleteGroup(name, allowActive); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "delete group 失败")
+			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "delete group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "delete group")
@@ -963,7 +963,7 @@ func (t *envTab) doActivate() tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.ActivateGroup(name); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "activate 失败")
+			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "activate failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "activate")
@@ -974,13 +974,13 @@ func (t *envTab) doActivate() tea.Cmd {
 func (t *envTab) doDeactivate() tea.Cmd {
 	name := t.currentGroup()
 	if g, ok := t.currentGroupRow(); ok && g.isDefault {
-		return warnToast("default 分组不可停用")
+		return warnToast("default group cannot be deactivated")
 	}
 	mgr := t.mgr.Env
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.DeactivateGroup(name); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "deactivate 失败")
+			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "deactivate failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "deactivate")
@@ -993,7 +993,7 @@ func (t *envTab) doAddGroup(name string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.AddGroup(name); err != nil {
-			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "add group 失败")
+			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "add group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "add group")
@@ -1004,7 +1004,7 @@ func (t *envTab) doAddGroup(name string) tea.Cmd {
 func (t *envTab) doCopy() tea.Cmd {
 	it, ok := t.currentItem()
 	if !ok {
-		return warnToast("没有可复制的内容")
+		return warnToast("nothing to copy")
 	}
 	value := it.value
 	key := it.key
@@ -1012,7 +1012,7 @@ func (t *envTab) doCopy() tea.Cmd {
 		if err := copyToClipboard(value); err != nil {
 			return errMsg{err: err}
 		}
-		return toastMsg{text: "已复制 " + key, level: toastSuccess}
+		return toastMsg{text: "copied " + key, level: toastSuccess}
 	}
 }
 
@@ -1071,10 +1071,10 @@ func (t *envTab) viewBaseAt(h int) string {
 
 func (t *envTab) renderGroups(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载分组中…")
+		return emptyStateStyle.Render("loading groups…")
 	}
 	if len(t.groups) == 0 {
-		return emptyStateStyle.Render("暂无分组 — 按 + 新建")
+		return emptyStateStyle.Render("no groups yet — press + to create one")
 	}
 	rows := make([]SidebarRow, 0, len(t.groups))
 	for i, g := range t.groups {
@@ -1102,11 +1102,11 @@ func (t *envTab) renderGroups(width, height int) string {
 
 func (t *envTab) renderItems(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载环境变量中…")
+		return emptyStateStyle.Render("loading env vars…")
 	}
 	group := t.currentGroup()
 	if group == "" {
-		return emptyStateStyle.Render("请先选择分组")
+		return emptyStateStyle.Render("select a group first")
 	}
 	items := t.filteredItems()
 	header := group
@@ -1119,7 +1119,7 @@ func (t *envTab) renderItems(width, height int) string {
 	}
 	header += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(visibleKeys))
 	if len(items) == 0 {
-		hint := "该分组暂无环境变量"
+		hint := "no env vars in this group"
 		if t.filterBox.Term() != "" {
 			hint = "no keys match /" + t.filterBox.Term()
 		}
@@ -1168,30 +1168,30 @@ func (t *envTab) renderItems(width, height int) string {
 func (t *envTab) renderModal() string {
 	switch t.mode {
 	case envModeEditValue:
-		return modalBox("编辑 "+t.currentItemKeyLabel(), t.input.View(), "enter 保存 · esc 取消")
+		return modalBox("edit "+t.currentItemKeyLabel(), t.input.View(), "enter save · esc cancel")
 	case envModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("删除 "+it.key+"？", "", "enter/y 确认 · esc/n 取消")
+		return modalBox("delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
 	case envModeBatchDeleteConfirm:
 		targets := t.selectedTargets()
 		var b strings.Builder
 		for _, tgt := range targets {
 			fmt.Fprintf(&b, "%s/%s\n", tgt[0], tgt[1])
 		}
-		return modalBox(fmt.Sprintf("删除 %d 条变量？", len(targets)),
-			strings.TrimRight(b.String(), "\n"), "enter/y 全部删除 · esc/n 取消")
+		return modalBox(fmt.Sprintf("delete %d variables?", len(targets)),
+			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
 	case envModeDeleteGroupConfirm:
 		row, _ := t.currentGroupRow()
-		hint := "enter/y 确认 · esc/n 取消"
-		body := fmt.Sprintf("将删除分组 %s 及其 %d 个变量。", row.name, row.varCount)
+		hint := "enter/y confirm · esc/n cancel"
+		body := fmt.Sprintf("group %s and its %d variables will be deleted.", row.name, row.varCount)
 		if row.isActive {
-			body += "\n该分组当前处于激活状态，删除后其变量不再出现在导出结果中。"
+			body += "\nthis group is currently active; its variables will no longer appear in exports after deletion."
 		}
-		return modalBox("删除分组 "+row.name+"？", body, hint)
+		return modalBox("delete group "+row.name+"?", body, hint)
 	case envModeAddGroup:
-		return modalBox("新建分组", t.input.View(), "enter 创建 · esc 取消")
+		return modalBox("new group", t.input.View(), "enter create · esc cancel")
 	case envModeFilter:
-		return modalBox("过滤 key（忽略大小写）", "/"+t.filterBox.Term()+"_", "esc 清除")
+		return modalBox("filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

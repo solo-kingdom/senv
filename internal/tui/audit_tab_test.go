@@ -65,14 +65,14 @@ func TestAuditTabSkippedLinesAndError(t *testing.T) {
 	var tab Tab = newAuditTab(&fakeAuditSource{rows: sampleAuditRows(), skipped: 2})
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
-	if view := tab.View(); !strings.Contains(view, "跳过 2 行") {
+	if view := tab.View(); !strings.Contains(view, "skipped 2 unparseable records") {
 		t.Errorf("view should report skipped lines, got %q", view)
 	}
 
 	var errTab Tab = newAuditTab(&fakeAuditSource{err: fmt.Errorf("boom")})
 	errTab.SetSize(80, 20)
 	errTab, _ = errTab.Update(drainCmd(t, errTab.Init()))
-	if view := errTab.View(); !strings.Contains(view, "加载失败") {
+	if view := errTab.View(); !strings.Contains(view, "failed to load audit log") {
 		t.Errorf("view should show load error, got %q", view)
 	}
 }
@@ -130,7 +130,7 @@ func TestAuditTabFreeTextFilterNoMatch(t *testing.T) {
 	for _, ch := range []string{"z", "z", "z"} {
 		tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(ch)})
 	}
-	if view := tab.View(); !strings.Contains(view, "没有匹配") {
+	if view := tab.View(); !strings.Contains(view, "no events matching") {
 		t.Errorf("view should show a no-match state, got %q", view)
 	}
 }

@@ -85,10 +85,10 @@ func (t *textTab) Bindings() []KeyAction {
 		actUp, actDown, actLeft, actRight,
 		actTop, actBottom, actPageUp, actPageDn,
 		actEdit, actNew, actDelete, actRename, actImport,
-		{[]string{"y"}, "复制"},
+		{[]string{"y"}, "copy", grpItem},
 		actExport,
-		{[]string{"+"}, "新建分组"},
-		{[]string{"D"}, "解引用切换"},
+		{[]string{"+"}, "new group", grpGroup},
+		{[]string{"D"}, "deref on/off", grpGroup},
 		actFilter, actRefresh,
 	}
 }
@@ -278,7 +278,7 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case formCancelMsg:
 		t.form = nil
 		t.formSubmit = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	}
 	if t.form != nil {
 		next, cmd := t.form.Update(msg)
@@ -352,7 +352,7 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			}
 		case "e":
 			if t.sel.SelectionCount() > 1 {
-				return t, warnToast("已多选条目：编辑需先缩小到单选")
+				return t, warnToast("multiple entries selected: narrow to a single selection to edit")
 			}
 			return t.editCurrent()
 		case "n":
@@ -367,7 +367,7 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t.enterDeleteConfirm()
 		case "r":
 			if t.sel.SelectionCount() > 1 {
-				return t, warnToast("已多选条目：重命名需先缩小到单选")
+				return t, warnToast("multiple entries selected: narrow to a single selection to rename")
 			}
 			return t.enterRenameMode()
 		case "i":
@@ -385,7 +385,7 @@ func (t *textTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			// The text list shows metadata only (no content), so dereference has
 			// no visual effect on the list; it would apply to a detail/export view.
 			t.deref = !t.deref
-			return t, okToast("解引用视图：" + onOff(t.deref) + "（列表仅显示元信息）")
+			return t, okToast("dereference view: " + onOff(t.deref) + " (list shows metadata only)")
 		case "/":
 			return t.enterFilterMode()
 		}
@@ -537,7 +537,7 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		t.mode = textModeNormal
 		t.input.Blur()
 		if dir == "" || len(targets) == 0 {
-			return t, warnToast("已取消导出")
+			return t, warnToast("export cancelled")
 		}
 		t.sel.ClearSelection() // 提交即清空多选集
 		return t, t.doBatchExport(dir, targets)
@@ -547,7 +547,7 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		t.mode = textModeNormal
 		t.input.Blur()
 		if !ok || path == "" {
-			return t, warnToast("已取消导出")
+			return t, warnToast("export cancelled")
 		}
 		return t, t.doExport(t.focusGroup(it), it.key, path)
 	case textModeNewKey:
@@ -555,10 +555,10 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		t.mode = textModeNormal
 		t.input.Blur()
 		if key == "" {
-			return t, warnToast("key 不能为空")
+			return t, warnToast("key cannot be empty")
 		}
 		if group == "" {
-			return t, warnToast("请先选择分组，或使用 group:key 形式")
+			return t, warnToast("select a group first, or use group:key form")
 		}
 		return t.editKey(group, key)
 	case textModeAddGroup:
@@ -566,7 +566,7 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		t.mode = textModeNormal
 		t.input.Blur()
 		if name == "" {
-			return t, warnToast("分组名不能为空")
+			return t, warnToast("group name cannot be empty")
 		}
 		return t, t.doAddGroup(name)
 	}
@@ -579,14 +579,14 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 func (t *textTab) enterNewKeyMode() (Tab, tea.Cmd) {
 	t.mode = textModeNewKey
 	t.input.SetValue("")
-	t.input.Placeholder = "key 或 group:key"
+	t.input.Placeholder = "key or group:key"
 	t.input.Focus()
 	return t, textinput.Blink
 }
 
 func (t *textTab) enterDeleteConfirm() (Tab, tea.Cmd) {
 	if _, ok := t.currentItem(); !ok {
-		return t, warnToast("没有可删除的条目")
+		return t, warnToast("no entry to delete")
 	}
 	t.mode = textModeDeleteConfirm
 	return t, nil
@@ -603,7 +603,7 @@ func (t *textTab) selectionKey() string {
 // enterBatchDeleteConfirm 多选集批量删除：一次确认列全部目标。
 func (t *textTab) enterBatchDeleteConfirm() (Tab, tea.Cmd) {
 	if len(t.selectedTargets()) == 0 {
-		return t, warnToast("多选集为空或不含当前分组的条目")
+		return t, warnToast("selection is empty or has no entries in the current group")
 	}
 	t.mode = textModeBatchDeleteConfirm
 	return t, nil
@@ -624,11 +624,11 @@ func (t *textTab) selectedTargets() [][2]string {
 // enterBatchExportPath 批量导出：选一个目录，每块写入 <目录>/<key>.txt。
 func (t *textTab) enterBatchExportPath() (Tab, tea.Cmd) {
 	if len(t.selectedTargets()) == 0 {
-		return t, warnToast("多选集为空或不含当前分组的条目")
+		return t, warnToast("selection is empty or has no entries in the current group")
 	}
 	t.mode = textModeBatchExportPath
 	t.input.SetValue("")
-	t.input.Placeholder = "输出目录（每块写入 <目录>/<key>.txt）"
+	t.input.Placeholder = "output dir (each block written to <dir>/<key>.txt)"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -644,9 +644,9 @@ func (t *textTab) doBatchDelete(targets [][2]string) tea.Cmd {
 			}
 		}
 		if failed > 0 {
-			return warnMsg{text: fmt.Sprintf("批量删除完成，%d 条失败", failed)}
+			return warnMsg{text: fmt.Sprintf("batch delete finished, %d failed", failed)}
 		}
-		return okToast(fmt.Sprintf("已删除 %d 条", len(targets)))
+		return okToast(fmt.Sprintf("deleted %d entries", len(targets)))
 	}
 }
 
@@ -662,19 +662,19 @@ func (t *textTab) doBatchExport(dir string, targets [][2]string) tea.Cmd {
 			}
 		}
 		if failed > 0 {
-			return warnMsg{text: fmt.Sprintf("批量导出完成，%d 条失败", failed)}
+			return warnMsg{text: fmt.Sprintf("batch export finished, %d failed", failed)}
 		}
-		return okToast(fmt.Sprintf("已导出 %d 条到 %s", len(targets), dir))
+		return okToast(fmt.Sprintf("exported %d entries to %s", len(targets), dir))
 	}
 }
 
 func (t *textTab) enterExportMode() (Tab, tea.Cmd) {
 	if _, ok := t.currentItem(); !ok {
-		return t, warnToast("没有可导出的条目")
+		return t, warnToast("no entry to export")
 	}
 	t.mode = textModeExportPath
 	t.input.SetValue("")
-	t.input.Placeholder = "输出文件路径"
+	t.input.Placeholder = "output file path"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -682,7 +682,7 @@ func (t *textTab) enterExportMode() (Tab, tea.Cmd) {
 func (t *textTab) enterAddGroupMode() (Tab, tea.Cmd) {
 	t.mode = textModeAddGroup
 	t.input.SetValue("")
-	t.input.Placeholder = "分组名"
+	t.input.Placeholder = "group name"
 	t.input.Focus()
 	return t, textinput.Blink
 }
@@ -702,10 +702,10 @@ const defaultTextGroup = "default"
 func (t *textTab) enterDeleteGroupConfirm() (Tab, tea.Cmd) {
 	group := t.realGroup()
 	if group == "" {
-		return t, warnToast("没有可删除的分组")
+		return t, warnToast("no group to delete")
 	}
 	if group == defaultTextGroup {
-		return t, warnToast("default 分组不可删除")
+		return t, warnToast("default group cannot be deleted")
 	}
 	t.mode = textModeDeleteGroupConfirm
 	return t, nil
@@ -716,32 +716,32 @@ func (t *textTab) enterDeleteGroupConfirm() (Tab, tea.Cmd) {
 func (t *textTab) enterRenameMode() (Tab, tea.Cmd) {
 	if t.focusLeft {
 		if row, ok := t.currentGroupRow(); ok && row.isAll {
-			return t, warnToast("All 无法重命名，请选择具体分组")
+			return t, warnToast("All cannot be renamed, pick a specific group")
 		}
 		group := t.currentGroup()
 		if group == "" {
-			return t, warnToast("没有可重命名的分组")
+			return t, warnToast("no group to rename")
 		}
 		if group == defaultTextGroup {
-			return t, warnToast("default 分组不可重命名")
+			return t, warnToast("default group cannot be renamed")
 		}
 		siblings := make(map[string]bool, len(t.groups))
 		for _, g := range t.groups {
 			siblings[g.name] = true
 		}
 		old := group
-		f := newForm("重命名分组",
-			formField{key: "name", label: "新名称", kind: formText, value: old, placeholder: "new-group-name",
+		f := newForm("rename group",
+			formField{key: "name", label: "new name", kind: formText, value: old, placeholder: "new-group-name",
 				validate: func(v string) error {
 					v = strings.TrimSpace(v)
 					if v == "" {
-						return fmt.Errorf("分组名不能为空")
+						return fmt.Errorf("group name cannot be empty")
 					}
 					if err := storage.ValidateName(v); err != nil {
-						return fmt.Errorf("非法分组名")
+						return fmt.Errorf("invalid group name")
 					}
 					if v != old && siblings[v] {
-						return fmt.Errorf("分组 %s 已存在", v)
+						return fmt.Errorf("group %s already exists", v)
 					}
 					return nil
 				}})
@@ -753,7 +753,7 @@ func (t *textTab) enterRenameMode() (Tab, tea.Cmd) {
 
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可重命名的条目")
+		return t, warnToast("no entry to rename")
 	}
 	group := t.focusGroup(it)
 	siblings := make(map[string]bool)
@@ -761,18 +761,18 @@ func (t *textTab) enterRenameMode() (Tab, tea.Cmd) {
 		siblings[row.key] = true
 	}
 	old := it.key
-	f := newForm("重命名文本块",
-		formField{key: "key", label: "新 key", kind: formText, value: old, placeholder: "new-key",
+	f := newForm("rename text block",
+		formField{key: "key", label: "new key", kind: formText, value: old, placeholder: "new-key",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("key 不能为空")
+					return fmt.Errorf("key cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法 key")
+					return fmt.Errorf("invalid key")
 				}
 				if v != old && siblings[v] {
-					return fmt.Errorf("key %s 已存在于 %s", v, group)
+					return fmt.Errorf("key %s already exists in %s", v, group)
 				}
 				return nil
 			}})
@@ -788,15 +788,15 @@ func (t *textTab) enterImportMode() (Tab, tea.Cmd) {
 	if group == "" {
 		group = defaultTextGroup
 	}
-	f := newForm("从文件导入文本块",
-		formField{key: "group", label: "分组", kind: formText, value: group, placeholder: "group",
+	f := newForm("import text block from file",
+		formField{key: "group", label: "group", kind: formText, value: group, placeholder: "group",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("分组不能为空")
+					return fmt.Errorf("group cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法分组名")
+					return fmt.Errorf("invalid group name")
 				}
 				return nil
 			}},
@@ -804,14 +804,14 @@ func (t *textTab) enterImportMode() (Tab, tea.Cmd) {
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("key 不能为空")
+					return fmt.Errorf("key cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法 key")
+					return fmt.Errorf("invalid key")
 				}
 				return nil
 			}},
-		formField{key: "path", label: "源文件路径", kind: formPath, placeholder: "/path/to/file"},
+		formField{key: "path", label: "source file path", kind: formPath, placeholder: "/path/to/file"},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
 		return t.doImport(strings.TrimSpace(values["group"]), strings.TrimSpace(values["key"]), strings.TrimSpace(values["path"]))
@@ -831,7 +831,7 @@ func (t *textTab) enterFilterMode() (Tab, tea.Cmd) {
 func (t *textTab) editCurrent() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可编辑的条目")
+		return t, warnToast("no entry to edit")
 	}
 	return t.editKey(t.focusGroup(it), it.key)
 }
@@ -860,11 +860,11 @@ func (t *textTab) finishAfterEdit(es *text.EditorSession, runErr error) tea.Msg 
 	if runErr != nil {
 		// Editor failed/absent: clean up the temp file, do not persist.
 		os.Remove(es.TmpPath)
-		recordAudit(t.mgr, session.AuditOpText, textTarget(es.Group, es.Key), false, "edit editor 失败")
+		recordAudit(t.mgr, session.AuditOpText, textTarget(es.Group, es.Key), false, "edit editor failed")
 		return errMsg{err: fmt.Errorf("editor failed: %w", runErr)}
 	}
 	if _, ferr := t.mgr.Text.FinishEditor(es); ferr != nil {
-		recordAudit(t.mgr, session.AuditOpText, textTarget(es.Group, es.Key), false, "edit 失败")
+		recordAudit(t.mgr, session.AuditOpText, textTarget(es.Group, es.Key), false, "edit failed")
 		return errMsg{err: ferr}
 	}
 	recordAudit(t.mgr, session.AuditOpText, textTarget(es.Group, es.Key), true, "edit")
@@ -878,7 +878,7 @@ func (t *textTab) doDelete(group, key string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Delete(group, key); err != nil {
-			recordAudit(mgrs, session.AuditOpText, textTarget(group, key), false, "delete 失败")
+			recordAudit(mgrs, session.AuditOpText, textTarget(group, key), false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, textTarget(group, key), true, "delete")
@@ -889,30 +889,30 @@ func (t *textTab) doDelete(group, key string) tea.Cmd {
 // doRenameKey atomically renames a text block (content untouched).
 func (t *textTab) doRenameKey(group, oldKey, newKey string) tea.Cmd {
 	if oldKey == newKey {
-		return warnToast("key 未变化")
+		return warnToast("key unchanged")
 	}
 	mgr := t.mgr.Text
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.RenameKey(group, oldKey, newKey); err != nil {
-			recordAudit(mgrs, session.AuditOpText, textTarget(group, oldKey), false, "rename 失败")
+			recordAudit(mgrs, session.AuditOpText, textTarget(group, oldKey), false, "rename failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, textTarget(group, newKey), true, "rename "+oldKey)
-		return renameDoneMsg{group: group, key: newKey, text: "已重命名为 " + newKey}
+		return renameDoneMsg{group: group, key: newKey, text: "renamed to " + newKey}
 	}
 }
 
 // doRenameGroup renames a text group and keeps every block inside it.
 func (t *textTab) doRenameGroup(oldName, newName string) tea.Cmd {
 	if oldName == newName {
-		return warnToast("分组名未变化")
+		return warnToast("group name unchanged")
 	}
 	mgr := t.mgr.Text
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.RenameGroup(oldName, newName); err != nil {
-			recordAudit(mgrs, session.AuditOpText, "text:group:"+oldName, false, "rename group 失败")
+			recordAudit(mgrs, session.AuditOpText, "text:group:"+oldName, false, "rename group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, "text:group:"+newName, true, "rename group "+oldName)
@@ -926,7 +926,7 @@ func (t *textTab) doDeleteGroup(name string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.DeleteGroup(name); err != nil {
-			recordAudit(mgrs, session.AuditOpText, "text:group:"+name, false, "delete group 失败")
+			recordAudit(mgrs, session.AuditOpText, "text:group:"+name, false, "delete group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, "text:group:"+name, true, "delete group")
@@ -938,24 +938,24 @@ func (t *textTab) doDeleteGroup(name string) tea.Cmd {
 // file itself is left untouched.
 func (t *textTab) doImport(group, key, path string) tea.Cmd {
 	if path == "" {
-		return warnToast("源文件路径不能为空")
+		return warnToast("source file path cannot be empty")
 	}
 	mgr := t.mgr.Text
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.SetFromFile(group, key, path); err != nil {
-			recordAudit(mgrs, session.AuditOpText, textTarget(group, key), false, "import 失败")
+			recordAudit(mgrs, session.AuditOpText, textTarget(group, key), false, "import failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, textTarget(group, key), true, "import "+path)
-		return renameDoneMsg{group: group, key: key, text: "已导入 " + key}
+		return renameDoneMsg{group: group, key: key, text: "imported " + key}
 	}
 }
 
 func (t *textTab) doCopy() tea.Cmd {
 	it, ok := t.currentItem()
 	if !ok {
-		return warnToast("没有可复制的内容")
+		return warnToast("nothing to copy")
 	}
 	mgr := t.mgr.Text
 	group := t.currentGroup()
@@ -964,7 +964,7 @@ func (t *textTab) doCopy() tea.Cmd {
 		if err := mgr.GetToClipboard(group, key); err != nil {
 			return errMsg{err: err}
 		}
-		return toastMsg{text: "已复制 " + key, level: toastSuccess}
+		return toastMsg{text: "copied " + key, level: toastSuccess}
 	}
 }
 
@@ -983,7 +983,7 @@ func (t *textTab) doAddGroup(name string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.AddGroup(name); err != nil {
-			recordAudit(mgrs, session.AuditOpText, "text:group:"+name, false, "add group 失败")
+			recordAudit(mgrs, session.AuditOpText, "text:group:"+name, false, "add group failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpText, "text:group:"+name, true, "add group")
@@ -1039,10 +1039,10 @@ func (t *textTab) viewBaseAt(h int) string {
 
 func (t *textTab) renderGroups(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载分组中…")
+		return emptyStateStyle.Render("loading groups…")
 	}
 	if len(t.groups) == 0 {
-		return emptyStateStyle.Render("暂无分组 — 按 + 新建")
+		return emptyStateStyle.Render("no groups yet — press + to create one")
 	}
 	rows := make([]SidebarRow, 0, len(t.groups))
 	for i, g := range t.groups {
@@ -1068,11 +1068,11 @@ func (t *textTab) renderGroups(width, height int) string {
 
 func (t *textTab) renderItems(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载文本块中…")
+		return emptyStateStyle.Render("loading text blocks…")
 	}
 	group := t.currentGroup()
 	if group == "" {
-		return emptyStateStyle.Render("请先选择分组")
+		return emptyStateStyle.Render("select a group first")
 	}
 	items := t.filteredItems()
 	header := group
@@ -1085,7 +1085,7 @@ func (t *textTab) renderItems(width, height int) string {
 	}
 	header += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(visibleKeys))
 	if len(items) == 0 {
-		hint := "该分组暂无文本块"
+		hint := "no text blocks in this group"
 		if t.filterBox.Term() != "" {
 			hint = "no keys match /" + t.filterBox.Term()
 		}
@@ -1118,25 +1118,25 @@ func (t *textTab) renderModal() string {
 		for _, tgt := range targets {
 			fmt.Fprintf(&b, "%s/%s\n", tgt[0], tgt[1])
 		}
-		return modalBox(fmt.Sprintf("删除 %d 条文本块？", len(targets)),
-			strings.TrimRight(b.String(), "\n"), "enter/y 全部删除 · esc/n 取消")
+		return modalBox(fmt.Sprintf("delete %d text blocks?", len(targets)),
+			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
 	case textModeBatchExportPath:
-		return modalBox("批量导出到目录", t.input.View(), "enter 导出 · esc 取消")
+		return modalBox("batch export to directory", t.input.View(), "enter export · esc cancel")
 	case textModeDeleteGroupConfirm:
 		group := t.currentGroup()
-		body := fmt.Sprintf("将删除分组 %s 及其全部文本块。", group)
-		return modalBox("删除分组 "+group+"？", body, "enter/y 确认 · esc/n 取消")
+		body := fmt.Sprintf("group %s and all its text blocks will be deleted.", group)
+		return modalBox("delete group "+group+"?", body, "enter/y confirm · esc/n cancel")
 	case textModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("删除 "+it.key+"？", "", "enter/y 确认 · esc/n 取消")
+		return modalBox("delete "+it.key+"?", "", "enter/y confirm · esc/n cancel")
 	case textModeExportPath:
-		return modalBox("导出到文件", t.input.View(), "enter 导出 · esc 取消")
+		return modalBox("export to file", t.input.View(), "enter export · esc cancel")
 	case textModeNewKey:
-		return modalBox("新建文本块 — key 或 group:key", t.input.View(), "enter 打开 vim · esc 取消")
+		return modalBox("new text block — key or group:key", t.input.View(), "enter open vim · esc cancel")
 	case textModeAddGroup:
-		return modalBox("新建分组", t.input.View(), "enter 创建 · esc 取消")
+		return modalBox("new group", t.input.View(), "enter create · esc cancel")
 	case textModeFilter:
-		return modalBox("过滤 key（忽略大小写）", "/"+t.filterBox.Term()+"_", "esc 清除")
+		return modalBox("filter keys (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

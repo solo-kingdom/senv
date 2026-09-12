@@ -64,14 +64,14 @@ func (t *historyTab) Bindings() []KeyAction {
 	switch t.mode {
 	case historyModeEntry:
 		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
-			{[]string{"enter"}, "查看版本"}, {[]string{"R"}, "恢复"}, actEsc}
+			{[]string{"enter"}, "view revisions", grpItem}, {[]string{"R"}, "restore", grpItem}, actEsc}
 	case historyModeDetail:
-		return []KeyAction{{[]string{"R"}, "恢复"}, actEsc}
+		return []KeyAction{{[]string{"R"}, "restore", grpItem}, actEsc}
 	case historyModeConfirm:
-		return []KeyAction{{[]string{"enter/y"}, "确认恢复"}, {[]string{"esc/n"}, "取消"}}
+		return []KeyAction{{[]string{"enter/y"}, "confirm restore", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	default:
 		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
-			{[]string{"enter"}, "单条目历史"}, {[]string{"R"}, "恢复"}}
+			{[]string{"enter"}, "entry history", grpItem}, {[]string{"R"}, "restore", grpItem}}
 	}
 }
 
@@ -102,7 +102,7 @@ func (t *historyTab) load(entryID string) tea.Cmd {
 		if entryID != "" {
 			kind, grp, key, ok := splitEntryID(entryID)
 			if !ok {
-				return historyLoadedMsg{err: fmt.Errorf("无效条目标识 %q", entryID)}
+				return historyLoadedMsg{err: fmt.Errorf("invalid entry id %q", entryID)}
 			}
 			f = provider.HistoryFilter{Kind: kind, Grp: grp, Key: key, Limit: 50}
 		}
@@ -150,7 +150,7 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		if msg.err != nil {
 			return t, func() tea.Msg { return errMsg{err: msg.err} }
 		}
-		t.flash = "✓ 已恢复并推送（产生新 revision）"
+		t.flash = "✓ restored and pushed (new revision created)"
 		t.mode = historyModeEntry
 		t.loaded = true
 		return t, t.load(t.entryID)
@@ -266,21 +266,21 @@ func (t *historyTab) SetSize(width, height int) {
 
 func (t *historyTab) View() string {
 	if !t.loaded {
-		return "加载历史中…"
+		return "loading history…"
 	}
 	if len(t.rows) == 0 {
-		title := "vault 最近历史变更"
+		title := "vault recent history"
 		if t.entryID != "" {
-			title = "条目 " + t.entryID
+			title = "entry " + t.entryID
 		}
-		return paneStyle.Render(fmt.Sprintf("%s\n\n（无历史版本：条目未被修改过，或 server 未开启历史留存）", title))
+		return paneStyle.Render(fmt.Sprintf("%s\n\n(no history versions: the entry was never modified, or the server has history retention disabled)", title))
 	}
 
 	var b strings.Builder
 	if t.entryID == "" {
-		b.WriteString("vault 最近历史变更（enter 查看单条目）\n\n")
+		b.WriteString("vault recent history (enter to view one entry)\n\n")
 	} else {
-		b.WriteString(fmt.Sprintf("条目 %s 的版本时间线\n\n", t.entryID))
+		b.WriteString(fmt.Sprintf("version timeline for %s\n\n", t.entryID))
 	}
 	start, end := t.list.VisibleRange(len(t.rows))
 	for i := start; i < end; i++ {
@@ -303,8 +303,8 @@ func (t *historyTab) View() string {
 	if t.mode == historyModeConfirm {
 		row := t.current()
 		if row != nil {
-			b.WriteString("\n确认恢复到 revision " + fmt.Sprint(row.Revision) +
-				"？（写回历史值并推送，产生新 revision）[y/N] ")
+			b.WriteString("\nrestore to revision " + fmt.Sprint(row.Revision) +
+				"? (writes back the historical value and pushes, creating a new revision) [y/N] ")
 		}
 	}
 	if t.flash != "" {
@@ -315,11 +315,11 @@ func (t *historyTab) View() string {
 
 func (t *historyTab) previewOf(row provider.HistoryVersion) string {
 	if row.Deleted {
-		return "(删除记录)"
+		return "(deleted record)"
 	}
 	text, err := t.source.DecryptHistory(row)
 	if err != nil {
-		return "<无法解密>"
+		return "<cannot decrypt>"
 	}
 	one := strings.ReplaceAll(strings.TrimSpace(text), "\n", "⏎")
 	return truncateRunes(one, 40)
@@ -332,10 +332,10 @@ func (t *historyTab) detailView() string {
 	}
 	text, err := t.source.DecryptHistory(*row)
 	if err != nil {
-		return fmt.Sprintf("无法解密该版本：%v", err)
+		return fmt.Sprintf("cannot decrypt this version: %v", err)
 	}
 	if len(text) > 4096 {
-		text = text[:4096] + "…（截断）"
+		text = text[:4096] + "…(truncated)"
 	}
 	return fmt.Sprintf("revision %d @ %s\n%s",
 		row.Revision, row.CreatedAt.Local().Format("2006-01-02 15:04:05"), text)

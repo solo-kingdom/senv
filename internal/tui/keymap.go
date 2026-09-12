@@ -2,13 +2,28 @@ package tui
 
 import "strings"
 
-// KeyAction 是 keymap 注册表的一行：一个动作的触发键与说明。它是键位的
-// 唯一真相源——Tab 用 Matches 分发按键，状态栏提示与 `?` 键位总览用 Hint
-// 渲染，因此「帮助列出的键」与「实际执行的键」结构性一致，不可能漂移。
+// KeyAction 是 keymap 注册表的一行：一个动作的触发键、说明与所属分组。它是
+// 键位的唯一真相源——Tab 用 Matches 分发按键，状态栏组名提示与 `?` 键位总览
+// 用 Group/Hint 渲染，因此「帮助列出的键」与「实际执行的键」结构性一致，不
+// 可能漂移。
 type KeyAction struct {
-	Keys []string // bubbletea 键名（如 "r"、"ctrl+r"、"pgup"），多键为同义键
-	Desc string   // 简体中文说明（键位名保留原文）
+	Keys  []string // bubbletea 键名（如 "r"、"ctrl+r"、"pgup"），多键为同义键
+	Desc  string   // 英文说明（键位名保留原文）
+	Group string   // 状态栏与 `?` 总览的分组名（见下方 grp* 常量）
 }
+
+// 状态栏与 `?` 总览共享的分组名。底栏只显示组名（去重、首现顺序），组内键
+// 位全量见 `?` 总览；`?` 总览按组分段渲染。
+const (
+	grpNav     = "Navigate"
+	grpItem    = "Items"
+	grpGroup   = "Groups"
+	grpFilter  = "Filter"
+	grpForm    = "Form"
+	grpConfirm = "Confirm"
+	grpWizard  = "Wizard"
+	grpSearch  = "Search"
+)
 
 // Matches 报告某个 bubbletea key.String() 是否触发本动作。
 func (k KeyAction) Matches(key string) bool {
@@ -25,36 +40,46 @@ func (k KeyAction) Hint() string {
 	return strings.Join(k.Keys, "/") + " " + k.Desc
 }
 
-// hintsFromBindings 把动作列表拼成状态栏单行提示（` · ` 分隔）。
-func hintsFromBindings(bindings []KeyAction) string {
-	parts := make([]string, 0, len(bindings))
+// groupBar 把动作列表折叠成底栏单行提示：组名按首现顺序去重，尾部固定
+// `? keys` 指向完整键位总览。底栏长度只随分组数增长，与组内键数无关。
+func groupBar(bindings []KeyAction) string {
+	seen := make(map[string]bool)
+	parts := make([]string, 0, 4)
 	for _, b := range bindings {
-		parts = append(parts, b.Hint())
+		g := b.Group
+		if g == "" {
+			g = "Keys"
+		}
+		if !seen[g] {
+			seen[g] = true
+			parts = append(parts, g)
+		}
 	}
+	parts = append(parts, "? keys")
 	return strings.Join(parts, " · ")
 }
 
 // 共享动作：全局动词（grill D7 附录），所有列表 Tab 同义。Tab 的 Update 用
 // 它们分发按键，Bindings() 用它们声明键位，两侧共用同一常量。
 var (
-	actNew     = KeyAction{[]string{"n"}, "新建"}
-	actEdit    = KeyAction{[]string{"e"}, "编辑"}
-	actRename  = KeyAction{[]string{"r"}, "重命名"}
-	actDelete  = KeyAction{[]string{"d"}, "删除"}
-	actExport  = KeyAction{[]string{"x"}, "导出"}
-	actImport  = KeyAction{[]string{"i"}, "导入"}
-	actRefresh = KeyAction{[]string{"ctrl+r"}, "刷新"}
-	actFilter  = KeyAction{[]string{"/"}, "过滤"}
-	actDetail  = KeyAction{[]string{"enter"}, "详情/查看"}
-	actEsc     = KeyAction{[]string{"esc"}, "返回/取消/清过滤"}
-	actUp      = KeyAction{[]string{"up", "k"}, "上移"}
-	actDown    = KeyAction{[]string{"down", "j"}, "下移"}
-	actLeft    = KeyAction{[]string{"left", "h"}, "左栏焦点"}
-	actRight   = KeyAction{[]string{"right", "l"}, "右栏焦点"}
-	actTop     = KeyAction{[]string{"g"}, "跳顶"}
-	actBottom  = KeyAction{[]string{"G"}, "跳底"}
-	actPageUp  = KeyAction{[]string{"pgup"}, "上翻页"}
-	actPageDn  = KeyAction{[]string{"pgdown"}, "下翻页"}
+	actNew     = KeyAction{[]string{"n"}, "new", grpItem}
+	actEdit    = KeyAction{[]string{"e"}, "edit", grpItem}
+	actRename  = KeyAction{[]string{"r"}, "rename", grpItem}
+	actDelete  = KeyAction{[]string{"d"}, "delete", grpItem}
+	actExport  = KeyAction{[]string{"x"}, "export", grpItem}
+	actImport  = KeyAction{[]string{"i"}, "import", grpItem}
+	actRefresh = KeyAction{[]string{"ctrl+r"}, "refresh", grpFilter}
+	actFilter  = KeyAction{[]string{"/"}, "filter", grpFilter}
+	actDetail  = KeyAction{[]string{"enter"}, "view", grpItem}
+	actEsc     = KeyAction{[]string{"esc"}, "back/cancel", grpNav}
+	actUp      = KeyAction{[]string{"up", "k"}, "up", grpNav}
+	actDown    = KeyAction{[]string{"down", "j"}, "down", grpNav}
+	actLeft    = KeyAction{[]string{"left", "h"}, "left pane", grpNav}
+	actRight   = KeyAction{[]string{"right", "l"}, "right pane", grpNav}
+	actTop     = KeyAction{[]string{"g"}, "top", grpNav}
+	actBottom  = KeyAction{[]string{"G"}, "bottom", grpNav}
+	actPageUp  = KeyAction{[]string{"pgup"}, "page up", grpNav}
+	actPageDn  = KeyAction{[]string{"pgdown"}, "page down", grpNav}
 )
 
 // overlay chrome 预算：search/help overlay 样式为圆角边框 + Padding(1,2)，

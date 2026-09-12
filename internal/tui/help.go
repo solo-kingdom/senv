@@ -11,13 +11,13 @@ import (
 // globalKeys 是顶层 model 处理的键，对每个 Tab 生效；Tab 专属键位来自该
 // Tab 的 Bindings()（keymap 注册表），因此总览与实际行为同源、不可能漂移。
 var globalKeys = []KeyAction{
-	{[]string{"1–9"}, "直达对应 Tab"},
-	{[]string{"Tab / Shift+Tab"}, "循环切换 Tab"},
-	{[]string{"S"}, "全局搜索"},
-	{[]string{"ctrl+r"}, "刷新当前 Tab"},
-	{[]string{"?"}, "键位总览"},
-	{[]string{"esc"}, "回上一层：清过滤 / 关弹层 / 向导回退"},
-	{[]string{"q / ctrl+c"}, "退出（q 仍有待推送时先提示一次）"},
+	{[]string{"1–9"}, "jump to tab", ""},
+	{[]string{"Tab / Shift+Tab"}, "cycle tabs", ""},
+	{[]string{"S"}, "global search", ""},
+	{[]string{"ctrl+r"}, "refresh current tab", ""},
+	{[]string{"?"}, "keybinding overview", ""},
+	{[]string{"esc"}, "back: clear filter / close overlay / wizard back", ""},
+	{[]string{"q / ctrl+c"}, "quit (q warns once with pending pushes)", ""},
 }
 
 // helpTab is the keybinding overview overlay (triggered by `?`).
@@ -62,20 +62,31 @@ func (h *helpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 func (h *helpTab) View() string {
 	heading := lipgloss.NewStyle().Bold(true)
-	rows := []string{heading.Render("全局")}
+	rows := []string{heading.Render("Global")}
 	for _, b := range globalKeys {
 		rows = append(rows, renderBinding(b))
 	}
 	if h.title != "" {
 		rows = append(rows, "", heading.Render(h.title))
 		if len(h.bindings) == 0 {
-			rows = append(rows, "  （无 Tab 专属键位）")
+			rows = append(rows, "  (no tab-specific keys)")
 		}
+		// Group headings on first appearance, so sections stay contiguous
+		// even when a tab interleaves groups in Bindings().
+		seen := make(map[string]bool)
 		for _, b := range h.bindings {
+			g := b.Group
+			if g == "" {
+				g = "Keys"
+			}
+			if !seen[g] {
+				seen[g] = true
+				rows = append(rows, " ", heading.Render(g))
+			}
 			rows = append(rows, renderBinding(b))
 		}
 	}
-	rows = append(rows, "", statusBarStyle.Render("? / esc 关闭"))
+	rows = append(rows, "", statusBarStyle.Render("? / esc close"))
 	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 	return clipLines(box, h.height-frameRows)
 }

@@ -91,7 +91,7 @@ func TestTextRenameGroupAndDeleteGroup(t *testing.T) {
 	if tab.mode != textModeDeleteGroupConfirm {
 		t.Fatalf("mode = %v, want delete-group confirm", tab.mode)
 	}
-	if !strings.Contains(tab.View(), "删除分组 journal") {
+	if !strings.Contains(tab.View(), "delete group journal") {
 		t.Errorf("confirm modal missing: %q", tab.View())
 	}
 	out, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})

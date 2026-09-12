@@ -121,7 +121,7 @@ func TestSSHHostEditFormKeepsAliasAndRejectsUnknownKey(t *testing.T) {
 	if tab.form == nil {
 		t.Fatal("unknown identityKey must keep the form open")
 	}
-	if !strings.Contains(tab.form.errs[tab.form.fieldIndex("identityKey")], "不存在") {
+	if !strings.Contains(tab.form.errs[tab.form.fieldIndex("identityKey")], "does not exist") {
 		t.Fatalf("inline error missing: %#v", tab.form.errs)
 	}
 	host, err := tab.mgr.SSH.GetHost("web")
@@ -158,7 +158,7 @@ func TestSSHHostDeleteConfirm(t *testing.T) {
 	if tab.mode != sshModeDeleteHost {
 		t.Fatalf("d should stage a delete, mode=%v", tab.mode)
 	}
-	if view := tab.View(); !strings.Contains(view, "删除 host web") {
+	if view := tab.View(); !strings.Contains(view, "delete host web") {
 		t.Fatalf("confirm modal missing:\n%s", view)
 	}
 	// esc cancels and leaves the host in place.
@@ -189,7 +189,7 @@ func TestSSHExportPreviewThenWrite(t *testing.T) {
 		t.Fatalf("x should open the export preview, mode=%v", tab.mode)
 	}
 	view := tab.View()
-	for _, want := range []string{"导出 OpenSSH 片段", "Host web", "HostName web.example"} {
+	for _, want := range []string{"export OpenSSH snippet", "Host web", "HostName web.example"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("preview missing %q:\n%s", want, view)
 		}
@@ -272,7 +272,7 @@ func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 		t.Fatalf("d should stage the keypair delete, mode=%v", tab.mode)
 	}
 	view := tab.View()
-	if !strings.Contains(view, "仍被引用") || !strings.Contains(view, "web") {
+	if !strings.Contains(view, "still referenced") || !strings.Contains(view, "web") {
 		t.Fatalf("referencer list missing:\n%s", view)
 	}
 	out, cmd := tab.Update(runeKey("y"))

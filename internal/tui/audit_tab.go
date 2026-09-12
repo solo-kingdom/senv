@@ -19,9 +19,9 @@ var auditFilterPresets = []struct {
 	label string
 	match func(session.AuditEntry) bool
 }{
-	{"全部", func(session.AuditEntry) bool { return true }},
-	{"操作", func(e session.AuditEntry) bool { return strings.HasPrefix(string(e.EventType), "op_") }},
-	{"会话", func(e session.AuditEntry) bool { return !strings.HasPrefix(string(e.EventType), "op_") }},
+	{"all", func(session.AuditEntry) bool { return true }},
+	{"ops", func(e session.AuditEntry) bool { return strings.HasPrefix(string(e.EventType), "op_") }},
+	{"sessions", func(e session.AuditEntry) bool { return !strings.HasPrefix(string(e.EventType), "op_") }},
 }
 
 // auditTab 渲染本机审计事件时间线（含日期时间、操作、目标、结果）
@@ -56,7 +56,7 @@ func (t *auditTab) Title() string { return "Audit" }
 func (t *auditTab) Bindings() []KeyAction {
 	return []KeyAction{
 		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
-		{[]string{"f"}, "预设过滤(" + auditFilterPresets[t.filterIdx].label + ")"},
+		{[]string{"f"}, "preset filter (" + auditFilterPresets[t.filterIdx].label + ")", grpFilter},
 		actFilter, actRefresh,
 	}
 }
@@ -182,17 +182,17 @@ func (t *auditTab) SetSize(width, height int) {
 
 func (t *auditTab) View() string {
 	if t.loadErr != "" {
-		return paneStyle.Render("审计日志加载失败：" + t.loadErr)
+		return paneStyle.Render("failed to load audit log: " + t.loadErr)
 	}
 	if !t.loaded {
-		return "加载审计日志中…"
+		return "loading audit log…"
 	}
 	rows := t.filtered()
 	if len(rows) == 0 {
 		if t.filterBox.Term() != "" {
-			return paneStyle.Render(emptyStateStyle.Render("（没有匹配 /" + t.filterBox.Term() + " 的审计事件）"))
+			return paneStyle.Render(emptyStateStyle.Render("(no events matching /" + t.filterBox.Term() + ")"))
 		}
-		return paneStyle.Render(emptyStateStyle.Render("（暂无审计事件）"))
+		return paneStyle.Render(emptyStateStyle.Render("(no audit events yet)"))
 	}
 
 	var b strings.Builder
@@ -200,7 +200,7 @@ func (t *auditTab) View() string {
 	if t.filterBox.Term() != "" {
 		filterLabel += " + /" + t.filterBox.Term()
 	}
-	b.WriteString(fmt.Sprintf("本机审计事件（过滤: %s，共 %d 条，时间新到旧）\n\n",
+	b.WriteString(fmt.Sprintf("local audit events (filter: %s, %d total, newest first)\n\n",
 		filterLabel, len(rows)))
 	start, end := t.list.VisibleRange(len(rows))
 	for i := start; i < end; i++ {
@@ -220,10 +220,10 @@ func (t *auditTab) View() string {
 		b.WriteString(prefix + line + "\n")
 	}
 	if t.skipped > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠ 跳过 %d 行无法解析的记录\n", t.skipped))
+		b.WriteString(fmt.Sprintf("\n⚠ skipped %d unparseable records\n", t.skipped))
 	}
 	if t.filterBox.Active() {
-		b.WriteString("\n" + t.filterBox.Prompt() + "（enter 确认 · esc 清除）\n")
+		b.WriteString("\n" + t.filterBox.Prompt() + "(enter confirm · esc clear)\n")
 	}
 	return paneStyle.Render(b.String())
 }

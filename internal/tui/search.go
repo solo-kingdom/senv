@@ -61,10 +61,10 @@ func (s *searchTab) Title() string { return "Search" }
 
 func (s *searchTab) Bindings() []KeyAction {
 	return []KeyAction{
-		{[]string{"键入"}, "搜索 key/名称（只匹配标识）"},
+		{[]string{"type"}, "search key/name (id match only)", grpSearch},
 		actUp, actDown,
-		{[]string{"enter"}, "跳转"},
-		{[]string{"esc"}, "关闭"},
+		{[]string{"enter"}, "jump", grpSearch},
+		{[]string{"esc"}, "close", grpSearch},
 	}
 }
 
@@ -264,7 +264,7 @@ func (s *searchTab) View() string {
 	var lines []string
 	if len(s.results) == 0 {
 		lines = append(lines, emptyStateStyle.Render(
-			"无匹配"+emptyHint(s.input)))
+			"no matches"+emptyHint(s.input)))
 	} else {
 		// 1-line header + windowed results, cursor kept visible (same
 		// primitives as windowedPane).
@@ -298,7 +298,7 @@ func emptyHint(input string) string {
 	if input == "" {
 		return ""
 	}
-	return "（输入只出现在值里？）"
+	return "(input only appears in values?)"
 }
 
 // sshPreview renders the non-sensitive connection summary shown for a host hit.

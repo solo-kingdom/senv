@@ -89,6 +89,6 @@ func (d *detailOverlay) View() string {
 	}
 	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.NewStyle().Bold(true).Render(title), "", body, "",
-		statusBarStyle.Render("↑↓/PgUp/PgDn 滚动 · esc 关闭")))
+		statusBarStyle.Render("↑↓/PgUp/PgDn scroll · esc close")))
 	return clipLines(out, d.height)
 }

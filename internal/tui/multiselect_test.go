@@ -114,7 +114,7 @@ func TestEnvMultiSelectFilteredAllAndPersist(t *testing.T) {
 	if tab.sel.SelectionCount() != 1 {
 		t.Fatalf("selection should persist across filter, got %d", tab.sel.SelectionCount())
 	}
-	if !strings.Contains(tab.View(), "已选 1") {
+	if !strings.Contains(tab.View(), "selected 1") {
 		t.Fatal("selection hint missing from view")
 	}
 }

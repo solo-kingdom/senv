@@ -285,9 +285,9 @@ func (l *List) SelectionHint(hidden int) string {
 		return ""
 	}
 	if hidden > 0 {
-		return fmt.Sprintf(" · 已选 %d（%d 被过滤）", n, hidden)
+		return fmt.Sprintf(" · selected %d (%d filtered)", n, hidden)
 	}
-	return fmt.Sprintf(" · 已选 %d", n)
+	return fmt.Sprintf(" · selected %d", n)
 }
 
 // ---------- 分组侧栏（tui-ux-sidebar：config 范式下沉共享） ----------
