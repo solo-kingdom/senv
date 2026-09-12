@@ -94,3 +94,67 @@ func TestValidateIdentityRejectsInvalidEnvShellKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateIdentityAcceptsConfigSourceKinds(t *testing.T) {
+	tests := []struct {
+		kind string
+		grp  string
+		key  string
+	}{
+		{KindLLMProvider, "", "anthropic"},
+		{KindMCPServer, "", "github-mcp"},
+	}
+	for _, tt := range tests {
+		if err := ValidateIdentity(tt.kind, tt.grp, tt.key); err != nil {
+			t.Errorf("ValidateIdentity(%q, %q, %q) = %v", tt.kind, tt.grp, tt.key, err)
+		}
+	}
+}
+
+func TestValidateIdentityRejectsConfigSourceFieldMatrix(t *testing.T) {
+	tests := []struct {
+		name string
+		kind string
+		grp  string
+		key  string
+	}{
+		{"llm provider extra grp", KindLLMProvider, "group", "alias"},
+		{"llm provider missing key", KindLLMProvider, "", ""},
+		{"mcp server extra grp", KindMCPServer, "group", "alias"},
+		{"mcp server missing key", KindMCPServer, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateIdentity(tt.kind, tt.grp, tt.key)
+			if !errors.Is(err, ErrInvalidIdentity) {
+				t.Fatalf("error = %v, want ErrInvalidIdentity", err)
+			}
+		})
+	}
+}
+
+func TestValidateIdentityRejectsConfigSourcePathAttacks(t *testing.T) {
+	attacks := []string{
+		"", ".", "..", "../x", "a/../../x", "/absolute", `a\b`, `C:\vault`,
+		"nul\x00segment", "colon:name",
+	}
+	for _, attack := range attacks {
+		t.Run(strings.ReplaceAll(attack, "\x00", "NUL"), func(t *testing.T) {
+			for _, identity := range []struct {
+				kind string
+				key  string
+			}{
+				{KindLLMProvider, attack},
+				{KindMCPServer, attack},
+			} {
+				err := ValidateIdentity(identity.kind, "", identity.key)
+				if !errors.Is(err, ErrInvalidIdentity) {
+					t.Errorf("ValidateIdentity(%q, attack) error = %v, want ErrInvalidIdentity", identity.kind, err)
+				}
+				if attack != "" && strings.Contains(err.Error(), attack) {
+					t.Errorf("error %q leaks attack input", err)
+				}
+			}
+		})
+	}
+}

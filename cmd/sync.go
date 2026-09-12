@@ -105,7 +105,7 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	if err != nil {
 		var conflictErr *provider.SyncConflictError
 		if errors.As(err, &conflictErr) {
-			auditOp(session.AuditOpSync, target, false, fmt.Sprintf("同步冲突 %d 项", len(conflictErr.Conflicts)))
+			auditOp(session.AuditOpSync, target, false, formatSyncConflictAuditMessage(conflictErr))
 			if syncConflictResolverAvailable() {
 				return runSyncConflictResolver(cmd, sp, conflictErr)
 			}
@@ -184,6 +184,10 @@ func writeSyncConflictReport(w io.Writer, conflict *provider.SyncConflictError) 
 			displayConflictGroup(detail.Grp), displayConflictKey(detail.Kind, detail.Key))
 		writeConflictSide(w, "local", detail.Local)
 		writeConflictSide(w, "remote", detail.Remote)
+		if isConfigSourceKind(detail.Kind) {
+			fmt.Fprintf(w, "    ⚠ 配置源 %s %s 双端均有修改：local rev %d / remote rev %d，请人工核对后选择保留哪一侧\n",
+				detail.Kind, displayConflictKey(detail.Kind, detail.Key), detail.Local.Revision, detail.Remote.Revision)
+		}
 	}
 	// 旧 server / 极端缺失 detail 时仍保证冲突条目不会从报告中消失。
 	if len(conflict.Details) == 0 {
@@ -198,6 +202,26 @@ func writeSyncConflictReport(w io.Writer, conflict *provider.SyncConflictError) 
 	fmt.Fprintln(w, "\n解决方式（二选一）:")
 	fmt.Fprintln(w, "  senv sync --accept-remote  放弃本地改动，以远端为准")
 	fmt.Fprintln(w, "  senv sync --force-push     放弃远端改动，以本地为准")
+}
+
+// isConfigSourceKind 报告 kind 是否为人工添加、跨机分发的配置源档案；
+// 这类条目的冲突更可能是有意义的双端修改，报告需额外提示人工核对。
+func isConfigSourceKind(kind string) bool {
+	return kind == provider.KindLLMProvider || kind == provider.KindMCPServer
+}
+
+// formatSyncConflictAuditMessage 生成审计用的冲突摘要；含配置源冲突时显式标注数量。
+func formatSyncConflictAuditMessage(conflict *provider.SyncConflictError) string {
+	source := 0
+	for _, c := range conflict.Conflicts {
+		if isConfigSourceKind(c.Kind) {
+			source++
+		}
+	}
+	if source == 0 {
+		return fmt.Sprintf("同步冲突 %d 项", len(conflict.Conflicts))
+	}
+	return fmt.Sprintf("同步冲突 %d 项（含配置源 %d 项）", len(conflict.Conflicts), source)
 }
 
 func displayConflictGroup(group string) string {
