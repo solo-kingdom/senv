@@ -8,7 +8,7 @@ import (
 )
 
 // pushEntry 是测试辅助：以指定 base_revision 推送单条
-func pushEntry(t *testing.T, s *Store, userID int64, vault string, kind, grp, key string, rev int64, ciphertext []byte) {
+func pushEntry(t *testing.T, s *pgStore, userID int64, vault string, kind, grp, key string, rev int64, ciphertext []byte) {
 	t.Helper()
 	_, _, err := s.PushEntries(context.Background(), userID, vault, []Entry{
 		{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext, BaseRevision: rev},
@@ -19,7 +19,7 @@ func pushEntry(t *testing.T, s *Store, userID int64, vault string, kind, grp, ke
 }
 
 func TestEntryHistoryRetention(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -47,7 +47,7 @@ func TestEntryHistoryRetention(t *testing.T) {
 }
 
 func TestEntryHistoryDisabled(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	s.SetHistoryRetain(0)
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
@@ -61,7 +61,7 @@ func TestEntryHistoryDisabled(t *testing.T) {
 }
 
 func TestEntryHistoryDeleteRecoverable(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -96,7 +96,7 @@ func TestEntryHistoryDeleteRecoverable(t *testing.T) {
 }
 
 func TestListHistoryVaultRecent(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 

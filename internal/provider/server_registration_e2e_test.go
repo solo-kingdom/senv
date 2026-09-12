@@ -19,7 +19,7 @@ import (
 
 // registrationE2EEnv 搭建真实 server（Postgres + HTTP），返回地址、存量
 // user 级 token 与 store 句柄（admin 侧操作用）。
-func registrationE2EEnv(t *testing.T) (string, string, *store.Store) {
+func registrationE2EEnv(t *testing.T) (string, string, store.Store) {
 	t.Helper()
 	pool := testdb.New(t)
 	st := store.New(pool)

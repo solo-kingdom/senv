@@ -15,8 +15,15 @@ import (
 )
 
 // New 启动一个临时 Postgres 容器，应用全部 schema 迁移后返回连接池。
-// docker 不可用或容器启动失败时跳过测试。
-func New(t *testing.T) *pgxpool.Pool {
+// docker 不可用或容器启动失败时跳过测试。接受 testing.TB 以便 benchmark 复用。
+func New(t testing.TB) *pgxpool.Pool {
+	pool, _ := NewWithDSN(t)
+	return pool
+}
+
+// NewWithDSN 同 New，但额外返回连接串（失效广播 LISTEN 需要独立于连接池的
+// 专用连接）。
+func NewWithDSN(t testing.TB) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
@@ -57,5 +64,5 @@ func New(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return pool
+	return pool, dsn
 }

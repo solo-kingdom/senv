@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-09-12
-skip_specs: true
-goal: 沉淀配置源同步的边界文档：CONTEXT.md 术语、ADR 0019、senv-cli skill

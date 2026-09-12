@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-12
+skip_specs: true
+goal: server-storage-cache-driver 子 change：TouchClient 内存节流、ADR 与文档落盘

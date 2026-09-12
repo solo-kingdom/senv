@@ -42,7 +42,7 @@ type AuthResult struct {
 
 // GenerateRegistrationCode 生成一次性注册码并入库（仅存哈希），返回明文。
 // 明文只在签发时展示一次；注册成功或过期后注册码即失效。
-func (s *Store) CreateRegistrationCode(ctx context.Context, userID int64, ttl time.Duration) (string, error) {
+func (s *pgStore) CreateRegistrationCode(ctx context.Context, userID int64, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		return "", validationErrorf("注册码有效期必须为正")
 	}
@@ -64,7 +64,7 @@ func (s *Store) CreateRegistrationCode(ctx context.Context, userID int64, ttl ti
 // client 创建、token 签发原子完成；任何一步失败注册码不被消费。
 // 无效/过期/已用的注册码统一返回 ErrNotFound（HTTP 层映射为 400 通用消息，
 // 不区分具体原因以防枚举）。
-func (s *Store) RegisterClient(ctx context.Context, code, name string) (string, *Client, error) {
+func (s *pgStore) RegisterClient(ctx context.Context, code, name string) (string, *Client, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", nil, err
@@ -125,7 +125,7 @@ func (s *Store) RegisterClient(ctx context.Context, code, name string) (string, 
 }
 
 // SetClientStatus 屏蔽/解封指定 client。userID<0 表示不限用户（admin 全局操作）。
-func (s *Store) SetClientStatus(ctx context.Context, userID int64, name, status string) error {
+func (s *pgStore) SetClientStatus(ctx context.Context, userID int64, name, status string) error {
 	if status != ClientStatusActive && status != ClientStatusBlocked {
 		return validationErrorf("未知的 client 状态 %q", status)
 	}
@@ -142,11 +142,14 @@ func (s *Store) SetClientStatus(ctx context.Context, userID int64, name, status 
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	// 屏蔽与解封都必须即时穿透认证缓存：admin 进程经 pg_notify 广播到
+	// serve 进程（解封不广播会让已缓存的 403 滞留到 TTL）
+	s.notifyCacheInvalidation(ctx)
 	return nil
 }
 
 // ListClients 列出 client；userID<0 表示全部用户。按创建时间正序。
-func (s *Store) ListClients(ctx context.Context, userID int64) ([]Client, error) {
+func (s *pgStore) ListClients(ctx context.Context, userID int64) ([]Client, error) {
 	query := `SELECT id, user_id, name, status, created_at, last_seen_at FROM clients`
 	args := []any{}
 	if userID >= 0 {
@@ -172,7 +175,7 @@ func (s *Store) ListClients(ctx context.Context, userID int64) ([]Client, error)
 }
 
 // UserIDByName 按用户名查 id（admin 命令使用）；不存在返回 ErrNotFound
-func (s *Store) UserIDByName(ctx context.Context, name string) (int64, error) {
+func (s *pgStore) UserIDByName(ctx context.Context, name string) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE name = $1`, name).Scan(&id)
 	if err != nil {
@@ -187,7 +190,7 @@ func (s *Store) UserIDByName(ctx context.Context, name string) (int64, error) {
 // AuthenticateWithClient 用 token 换取认证结果（user + 所属 client 状态）。
 // 无效或已吊销返回 ErrNotFound（与 Authenticate 一致，不泄露存在性）。
 // 屏蔽状态不在此判定——client 被屏蔽时 token 仍能解析，由 HTTP 层返回 403。
-func (s *Store) AuthenticateWithClient(ctx context.Context, token string) (AuthResult, error) {
+func (s *pgStore) AuthenticateWithClient(ctx context.Context, token string) (AuthResult, error) {
 	var res AuthResult
 	var clientID pgxNullInt64
 	var status pgxNullString
@@ -211,7 +214,7 @@ func (s *Store) AuthenticateWithClient(ctx context.Context, token string) (AuthR
 
 // TouchClient 节流地刷新 client 最近活跃时间（成功认证后调用，best-effort）。
 // 仅当上次刷新超过一分钟前才写，避免每个请求一次磁盘写放大。
-func (s *Store) TouchClient(ctx context.Context, clientID int64) {
+func (s *pgStore) TouchClient(ctx context.Context, clientID int64) {
 	if clientID <= 0 {
 		return
 	}

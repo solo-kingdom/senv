@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-12
+goal: server-storage-cache-driver 子 change：auth/vault/seq 内存缓存与 NOTIFY 失效链路

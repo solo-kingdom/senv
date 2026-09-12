@@ -61,7 +61,7 @@ func truncateUTF8(s string, max int) string {
 
 // RecordAccess 落一条安全事件（调用方 best-effort：失败仅记服务端日志）。
 // e.Time 为零值时取当前时刻；变长字段入库前截断（见 MaxAccessLog* 常量）。
-func (s *Store) RecordAccess(ctx context.Context, e AccessEvent) error {
+func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
@@ -90,7 +90,7 @@ type AccessLogFilter struct {
 }
 
 // ListAccessLogs 按过滤条件查询安全事件，时间新到旧，带 client/user 名称
-func (s *Store) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]AccessEventRow, error) {
+func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]AccessEventRow, error) {
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
@@ -149,7 +149,7 @@ func (s *Store) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Access
 
 // PruneAccessLogs 分批删除 before 之前的所有事件，返回删除总数。
 // 分批避免长事务与大范围锁表。
-func (s *Store) PruneAccessLogs(ctx context.Context, before time.Time) (int64, error) {
+func (s *pgStore) PruneAccessLogs(ctx context.Context, before time.Time) (int64, error) {
 	var total int64
 	for {
 		tag, err := s.pool.Exec(ctx,

@@ -8,7 +8,7 @@ import (
 	"github.com/wii/senv/internal/server/testdb"
 )
 
-func recordEvent(t *testing.T, s *Store, e AccessEvent) {
+func recordEvent(t *testing.T, s *pgStore, e AccessEvent) {
 	t.Helper()
 	if err := s.RecordAccess(context.Background(), e); err != nil {
 		t.Fatalf("RecordAccess: %v", err)
@@ -16,7 +16,7 @@ func recordEvent(t *testing.T, s *Store, e AccessEvent) {
 }
 
 func TestAccessLogRecordAndFilter(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	userID, _ := newTestUser(t, s, "alice")
 
@@ -64,7 +64,7 @@ func TestAccessLogRecordAndFilter(t *testing.T) {
 }
 
 func TestAccessLogPrune(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	ctx := context.Background()
 	now := time.Now()
 	for i := 0; i < 5; i++ {
@@ -90,7 +90,7 @@ func TestAccessLogPrune(t *testing.T) {
 }
 
 func TestAccessLogZeroTimeDefaultsToNow(t *testing.T) {
-	s := New(testdb.New(t))
+	s := NewSQL(testdb.New(t))
 	recordEvent(t, s, AccessEvent{IP: "10.0.0.9", Method: "GET", Path: "/x", Outcome: AccessOutcomeOK})
 	events, err := s.ListAccessLogs(context.Background(), AccessLogFilter{})
 	if err != nil || len(events) != 1 {

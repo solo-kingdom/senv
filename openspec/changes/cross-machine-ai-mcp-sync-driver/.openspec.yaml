@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-09-12
-skip_specs: true
-goal: 把人工添加的 LLM Provider / MCP Server 配置源纳入跨机同步通道，本机状态保持不同步

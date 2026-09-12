@@ -9,12 +9,12 @@ import (
 )
 
 // newStore 创建测试用 Store
-func newStore(t *testing.T) *Store {
-	return New(testdb.New(t))
+func newStore(t *testing.T) *pgStore {
+	return NewSQL(testdb.New(t))
 }
 
 // newUser 创建用户并认证回 user_id
-func newUser(t *testing.T, st *Store, name string) int64 {
+func newUser(t *testing.T, st *pgStore, name string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	token, err := st.CreateUser(ctx, name)

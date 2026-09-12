@@ -28,7 +28,7 @@ type HistoryVersion struct {
 }
 
 // SetHistoryRetain 设置每条目保留的历史版本数；<=0 关闭历史留存
-func (s *Store) SetHistoryRetain(n int) { s.historyRetain = n }
+func (s *pgStore) SetHistoryRetain(n int) { s.historyRetain = n }
 
 // recordHistoryPreimages 在推送应用变更前，把受影响条目的当前值写入历史。
 // 单条 INSERT..SELECT：条目不存在时插入 0 行，天然跳过新条目。
@@ -71,7 +71,7 @@ type HistoryFilter struct {
 
 // ListHistory 查询条目历史。指定 key（或 grp+kind）时按该条目 revision 新到旧
 // 返回；否则返回 vault 级按写入时间新到旧的最近变更。只能查自己的 vault。
-func (s *Store) ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error) {
+func (s *pgStore) ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, err
 	}
