@@ -12,4 +12,4 @@
 - [x] 3.1 全仓回归与静态检查（`make check`），命令与结果写入 proposal 验证记录
 - [x] 3.2 回填 proposal 验收标准
 - [x] 3.3 提交交付仓改动
-- [ ] 3.4 按 core → hygiene 顺序归档全部子 change（`openspec archive`）
+- [x] 3.4 按 core → hygiene 顺序归档全部子 change（`openspec archive`）
