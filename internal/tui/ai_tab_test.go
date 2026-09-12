@@ -87,7 +87,7 @@ func TestAITabBrowseNoSecretLeak(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	view := tab.View()
-	for _, want := range []string{"main", "未切换", "不支持", "zcode", "cursor", "当前指向"} {
+	for _, want := range []string{"main", "not switched", "unsupported", "zcode", "cursor", "current target"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -273,8 +273,8 @@ func TestAITabModelOnlyChange(t *testing.T) {
 		t.Fatalf("pointer not set:\n%s", tab.View())
 	}
 
-	// m：仅换模型到 m2。
-	msg := driveAISwitch(t, tab, 0, 1, "m")
+	// M：仅换模型到 m2（grill D7：model-only 键 m→M）。
+	msg := driveAISwitch(t, tab, 0, 1, "M")
 	result := msg.(aiSwitchResultMsg)
 	if result.err != nil {
 		t.Fatalf("model-only change error: %v", result.err)
@@ -282,7 +282,7 @@ func TestAITabModelOnlyChange(t *testing.T) {
 	if !result.onlyModel || result.out.Provider != "main" || result.out.DefaultModel != "m2" {
 		t.Fatalf("model-only result = %+v", result.out)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "仅换默认模型") {
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "default model only") {
 		t.Fatalf("notice = %q", notices)
 	}
 	if !strings.Contains(tab.View(), "main / m2") {
@@ -295,7 +295,7 @@ func TestAITabModelOnlyRequiresPointer(t *testing.T) {
 	runAITabLoad(t, tab)
 	tab.focusLeft = false
 	tab.agentIndex = 0
-	_, cmd := tab.Update(runeKey("m"))
+	_, cmd := tab.Update(runeKey("M"))
 	if tab.flow != aiFlowNone {
 		t.Fatal("m without a pointer must not start a flow")
 	}
@@ -304,7 +304,7 @@ func TestAITabModelOnlyRequiresPointer(t *testing.T) {
 		t.Fatalf("messages = %#v", msgs)
 	}
 	tm, ok := msgs[0].(toastMsg)
-	if !ok || !strings.Contains(tm.text, "请先按 s") {
+	if !ok || !strings.Contains(tm.text, "press s first") {
 		t.Fatalf("expected guidance toast, got %#v", msgs)
 	}
 }
@@ -580,7 +580,7 @@ func TestAITabDeleteProviderConfirmAndAudit(t *testing.T) {
 	if tab.mode != aiModeDeleteProvider {
 		t.Fatalf("d should stage a delete, mode=%v", tab.mode)
 	}
-	if view := tab.View(); !strings.Contains(view, "删除 provider main") {
+	if view := tab.View(); !strings.Contains(view, "delete provider main") {
 		t.Fatalf("confirm modal missing:\n%s", view)
 	}
 	// esc 取消不删除。
@@ -722,7 +722,7 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 	if got := strings.Join(result.out.Models, ","); got != "m1" {
 		t.Fatalf("switched models = %q, want the selected subset", got)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "1 个模型") {
+	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "1 models") {
 		t.Fatalf("notice should include the model count: %q", notices)
 	}
 	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
@@ -761,7 +761,7 @@ func TestAITabSwitchEmptySelectionBlocked(t *testing.T) {
 		t.Fatalf("messages = %#v, want a single warning toast", msgs)
 	}
 	tm, ok := msgs[0].(toastMsg)
-	if !ok || !strings.Contains(tm.text, "不能为空") {
+	if !ok || !strings.Contains(tm.text, "cannot be empty") {
 		t.Fatalf("expected an empty-set toast, got %#v", msgs)
 	}
 	if _, err := os.Stat(tab.mgr.LLMPointer); !os.IsNotExist(err) {
@@ -807,7 +807,7 @@ func TestAITabModelOnlyCandidatesLimitedToPointer(t *testing.T) {
 	tab.focusLeft = false
 	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
 
-	tab.Update(runeKey("m"))
+	tab.Update(runeKey("M"))
 	if tab.flow != aiFlowSelectDefault {
 		t.Fatalf("flow = %v, want selectDefault directly", tab.flow)
 	}
@@ -839,7 +839,7 @@ func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
 	}
 	collectAIToasts(t, tab, result)
 	view := tab.View()
-	if !strings.Contains(view, "main / m1（2 个模型）") {
+	if !strings.Contains(view, "main / m1 (2 models)") {
 		t.Fatalf("agent row missing the model count:\n%s", view)
 	}
 	if strings.Contains(view, "sk-tui-secret") {
@@ -852,24 +852,36 @@ func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
 		t.Fatalf("EditProvider: %v", err)
 	}
 	runAITabLoad(t, tab)
-	if view := tab.View(); !strings.Contains(view, "main / m1（2 个模型） ⚠") {
+	if view := tab.View(); !strings.Contains(view, "main / m1 (2 models) ⚠") {
 		t.Fatalf("drift marker missing:\n%s", view)
 	}
 }
 
-// TestAITabSwitchHelpDocumentsMultiSelect 覆盖任务 1.3 的 Help 文案。
+// TestAITabSwitchHelpDocumentsMultiSelect 覆盖 keymap 注册表的流内键位。
 func TestAITabSwitchHelpDocumentsMultiSelect(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	tab.focusLeft = false
 	tab.Update(runeKey("s"))
-	if help := tab.Help(); !strings.Contains(help, "space 勾选") {
-		t.Fatalf("multi-select help = %q", help)
+	if !bindingsContain(tab.Bindings(), "space", "toggle") {
+		t.Fatalf("multi-select bindings missing space: %v", tab.Bindings())
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if help := tab.Help(); !strings.Contains(help, "默认模型") {
-		t.Fatalf("default-model help = %q", help)
+	if !bindingsContain(tab.Bindings(), "enter", "next") {
+		t.Fatalf("default-model bindings missing enter: %v", tab.Bindings())
 	}
+}
+
+// bindingsContain 报告键位列表里是否存在指定键与说明的条目。
+func bindingsContain(bs []KeyAction, key, descPart string) bool {
+	for _, b := range bs {
+		for _, k := range b.Keys {
+			if k == key && strings.Contains(b.Desc, descPart) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestAITabReloadKeepsDataVisibleAndReloads 验证 stale-while-revalidate：
@@ -954,5 +966,33 @@ func TestAITabEditProviderClearsMetadataFields(t *testing.T) {
 	}
 	if !strings.Contains(values["model_reasoning"], "low") {
 		t.Fatalf("reasoning prefill lost: %#v", values)
+	}
+}
+
+// TestAITabLoadingStateBeforeLoad 校验加载态范式：装载完成前渲染常驻双栏几何
+// 并内嵌加载提示，不得误显带操作指引的空态文案（tui-tab-consistency-render）。
+func TestAITabLoadingStateBeforeLoad(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	if tab.loaded {
+		t.Fatal("fresh tab should not be loaded")
+	}
+	out := tab.View()
+	if !strings.Contains(out, "loading providers…") {
+		t.Fatalf("loading hint missing before load: %q", clipRunesT(out, 120))
+	}
+	if strings.Contains(out, "no LLM provider profiles yet") {
+		t.Fatal("empty-state guidance shown while loading")
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 100 || h != 26 {
+		t.Fatalf("loading view size = %dx%d, want 100x26 (persistent two-pane geometry)", w, h)
+	}
+
+	runAITabLoad(t, tab)
+	out = tab.View()
+	if strings.Contains(out, "loading providers…") {
+		t.Fatal("loading hint still shown after load")
+	}
+	if !strings.Contains(out, "Providers (1)") {
+		t.Fatalf("provider list missing after load: %q", clipRunesT(out, 120))
 	}
 }

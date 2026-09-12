@@ -59,8 +59,12 @@ func newSearchTab(mgr Managers) *searchTab {
 
 func (s *searchTab) Title() string { return "Search" }
 
-func (s *searchTab) Help() string {
-	return "输入以搜索 key/名称 · ↑↓ 选择 · enter 跳转 · esc 关闭"
+func (s *searchTab) Bindings() []KeyAction {
+	return []KeyAction{
+		actUp, actDown,
+		{[]string{"enter"}, "jump", grpSearch},
+		{[]string{"esc"}, "close", grpSearch},
+	}
 }
 
 // InputMode is always true for the search overlay: it captures all keys.
@@ -188,6 +192,11 @@ func (s *searchTab) gather() tea.Cmd {
 
 func (s *searchTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// overlay 打开期间终端尺寸变化：跟随重排，避免按旧尺寸渲染溢出。
+		s.width, s.height = msg.Width, msg.Height
+		return s, nil
+
 	case searchGatheredMsg:
 		s.gathered = msg.all
 		s.refilter()
@@ -204,9 +213,9 @@ func (s *searchTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				return s, func() tea.Msg { return searchJumpMsg{rt, g, k} }
 			}
 		case "up", "k":
-			s.index = clamp(s.index-1, 0, maxLen(s.results)-1)
+			s.index = clamp(s.index-1, 0, len(s.results)-1)
 		case "down", "j":
-			s.index = clamp(s.index+1, 0, maxLen(s.results)-1)
+			s.index = clamp(s.index+1, 0, len(s.results)-1)
 		case "backspace":
 			if len(s.input) > 0 {
 				s.input = s.input[:len(s.input)-1]
@@ -236,40 +245,65 @@ func (s *searchTab) refilter() {
 		}
 		s.results = out
 	}
-	s.index = clamp(s.index, 0, maxLen(s.results)-1)
+	s.index = clamp(s.index, 0, len(s.results)-1)
 }
 
 // --- view ---
 
 func (s *searchTab) View() string {
-	header := lipgloss.NewStyle().Bold(true).Render("Search") +
-		"  " + statusBarStyle.Render(s.input+"_")
+	// s.width/s.height come from SetSize with the FULL terminal size; budget
+	// constants (frame/overlay chrome) are package-level in keymap.go. Results
+	// render inside what is left so a large inventory can never push the box
+	// past the outer frame.
+	innerH := s.height - frameRows - overlayRows
+	if innerH < 1 {
+		innerH = 1
+	}
+	innerW := s.width - overlayCols
+	if innerW < 10 {
+		innerW = 10
+	}
 
-	parts := []string{header}
+	title := "Search"
+	var lines []string
 	if len(s.results) == 0 {
-		parts = append(parts, emptyStateStyle.Render(
-			"无匹配"+emptyHint(s.input)))
+		lines = append(lines, emptyStateStyle.Render(
+			"no matches"+emptyHint(s.input)))
 	} else {
-		for i, r := range s.results {
-			badge := typeBadge(r.resultType)
-			line := fmt.Sprintf("%s  %s  %s", badge, secondaryLabel(r.group, r.key), r.preview)
-			if i == s.index {
-				line = selectedLineStyle.Render("▸ ") + line
-			} else {
-				line = "  " + line
-			}
-			parts = append(parts, line)
+		// 1-line header + windowed results, cursor kept visible (same
+		// primitives as windowedPane).
+		page := listPageSize(innerH)
+		start, end := visibleRange(len(s.results), s.index, page)
+		if start > 0 || end < len(s.results) {
+			title = fmt.Sprintf("%s  %d–%d / %d", title, start+1, end, len(s.results))
+		}
+		for i, r := range s.results[start:end] {
+			// 先按显示宽截断纯文本，再套 badge/选中样式：truncateWidth 不会
+			// 计算 ANSI 转义的显示宽。
+			rest := truncateWidth(
+				fmt.Sprintf("%s  %s", secondaryLabel(r.group, r.key), r.preview),
+				innerW-2-len(r.resultType)-2)
+			line := typeBadge(r.resultType) + "  " + rest
+			lines = append(lines, cursorLine(line, start+i == s.index))
 		}
 	}
-	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	return box
+	// 头部（标题 + 输入回显）截断到 innerW，长输入不得撑破 overlay。输入
+	// 段套 statusBarStyle（Padding(0,1) 多占 2 列），一并计入预算。
+	title = truncateWidth(title, innerW-4)
+	inputBudget := innerW - lipgloss.Width(title) - 2 - 2
+	header := lipgloss.NewStyle().Bold(true).Render(title) +
+		"  " + statusBarStyle.Render(truncateWidth(s.input+"_", maxInt(inputBudget, 4)))
+	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+		append([]string{header}, lines...)...))
+	// Last line of defence: the overlay must stay inside the frame budget.
+	return clipLines(box, s.height-frameRows)
 }
 
 func emptyHint(input string) string {
 	if input == "" {
 		return ""
 	}
-	return "（输入只出现在值里？）"
+	return "(input only appears in values?)"
 }
 
 // sshPreview renders the non-sensitive connection summary shown for a host hit.

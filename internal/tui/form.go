@@ -313,7 +313,9 @@ func (f *form) openEditor() tea.Cmd {
 		return nil
 	}
 	if f.editExternal == nil {
-		return func() tea.Msg { return toastMsg{text: "当前表单不支持外部编辑器", level: toastWarn} }
+		return func() tea.Msg {
+			return toastMsg{text: "this form does not support an external editor", level: toastWarn}
+		}
 	}
 	f.commitInput()
 	return f.editExternal(f.index, f.fields[f.index].value)
@@ -373,7 +375,7 @@ func (f *form) enumPreview(i int) []string {
 	for j := start; j < end; j++ {
 		label := options[j]
 		if label == "" {
-			label = "(无)"
+			label = "(none)"
 		}
 		if j == current {
 			lines = append(lines, "      "+selectedLineStyle.Render("● "+label))
@@ -391,12 +393,12 @@ func (f *form) renderValue(i int) string {
 	switch field.kind {
 	case formSecret:
 		if field.value == "" {
-			return mutedStyle().Render("(未设置)")
+			return mutedStyle().Render("(not set)")
 		}
 		return maskedValueStyle.Render("********")
 	case formEnum, formRef:
 		if field.value == "" {
-			return mutedStyle().Render("(无)")
+			return mutedStyle().Render("(none)")
 		}
 		if i != f.index {
 			return field.value
@@ -418,7 +420,7 @@ func (f *form) renderValue(i int) string {
 			return f.input.View()
 		}
 		if field.value == "" {
-			return mutedStyle().Render("(空)")
+			return mutedStyle().Render("(empty)")
 		}
 		return field.value
 	}
@@ -428,9 +430,9 @@ func (f *form) renderValue(i int) string {
 // (long content belongs in $EDITOR, not in a one-line modal).
 func editorSummary(lines int) string {
 	if lines == 0 {
-		return "(空，按 e 用 $EDITOR 编辑)"
+		return "(empty, press e to edit in $EDITOR)"
 	}
-	return "(" + strconv.Itoa(lines) + " 行，按 e 用 $EDITOR 编辑)"
+	return "(" + strconv.Itoa(lines) + " lines, press e to edit in $EDITOR)"
 }
 
 func mutedStyle() lipgloss.Style {
@@ -439,10 +441,10 @@ func mutedStyle() lipgloss.Style {
 
 // help returns the footer hint, including the editor key when relevant.
 func (f *form) help() string {
-	hint := "tab/↑↓ 切换字段 · enter 提交 · esc 取消"
+	hint := "tab/↑↓ switch field · enter submit · esc cancel"
 	for _, field := range f.fields {
 		if field.kind == formEditor {
-			hint += " · e/$EDITOR 编辑多行字段"
+			hint += " · e/$EDITOR edit multi-line field"
 			break
 		}
 	}
@@ -482,11 +484,11 @@ func externalEditorCmd(index int, prefix, content string) tea.Cmd {
 	return tea.ExecProcess(cmd, func(runErr error) tea.Msg {
 		defer os.Remove(path)
 		if runErr != nil {
-			return formEditorDoneMsg{index: index, err: fmt.Errorf("editor 退出异常: %w", runErr)}
+			return formEditorDoneMsg{index: index, err: fmt.Errorf("editor exited abnormally: %w", runErr)}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return formEditorDoneMsg{index: index, err: fmt.Errorf("读取编辑结果失败: %w", err)}
+			return formEditorDoneMsg{index: index, err: fmt.Errorf("failed to read edited content: %w", err)}
 		}
 		return formEditorDoneMsg{index: index, value: string(data)}
 	})
@@ -497,21 +499,21 @@ func externalEditorCmd(index int, prefix, content string) tea.Cmd {
 func writeEditorTempFile(prefix, content string) (string, error) {
 	f, err := os.CreateTemp("", prefix)
 	if err != nil {
-		return "", fmt.Errorf("创建临时文件失败: %w", err)
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	path := f.Name()
 	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		os.Remove(path)
-		return "", fmt.Errorf("写入临时文件失败: %w", err)
+		return "", fmt.Errorf("failed to write temp file: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(path)
-		return "", fmt.Errorf("写入临时文件失败: %w", err)
+		return "", fmt.Errorf("failed to write temp file: %w", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		os.Remove(path)
-		return "", fmt.Errorf("设置临时文件权限失败: %w", err)
+		return "", fmt.Errorf("failed to set temp file permissions: %w", err)
 	}
 	return path, nil
 }

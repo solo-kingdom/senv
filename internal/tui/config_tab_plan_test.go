@@ -195,11 +195,11 @@ func TestConfigTabFilterMatchesGroupAndDescription(t *testing.T) {
 	tab := newConfigTab(Managers{Config: mgr})
 	tab = flushConfig(tab, tab.load())
 
-	tab.filter = "work"
+	tab.filterBox = Filter{term: "work"}
 	if got := len(tab.filteredItems()); got != 1 || tab.filteredItems()[0].name != "app" {
 		t.Errorf("filter by group = %d items, want app only", got)
 	}
-	tab.filter = "main app"
+	tab.filterBox = Filter{term: "main app"}
 	if got := len(tab.filteredItems()); got != 1 || tab.filteredItems()[0].name != "app" {
 		t.Errorf("filter by description = %d items, want app only", got)
 	}

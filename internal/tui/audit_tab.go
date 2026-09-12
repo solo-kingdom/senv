@@ -19,9 +19,9 @@ var auditFilterPresets = []struct {
 	label string
 	match func(session.AuditEntry) bool
 }{
-	{"全部", func(session.AuditEntry) bool { return true }},
-	{"操作", func(e session.AuditEntry) bool { return strings.HasPrefix(string(e.EventType), "op_") }},
-	{"会话", func(e session.AuditEntry) bool { return !strings.HasPrefix(string(e.EventType), "op_") }},
+	{"all", func(session.AuditEntry) bool { return true }},
+	{"ops", func(e session.AuditEntry) bool { return strings.HasPrefix(string(e.EventType), "op_") }},
+	{"sessions", func(e session.AuditEntry) bool { return !strings.HasPrefix(string(e.EventType), "op_") }},
 }
 
 // auditTab 渲染本机审计事件时间线（含日期时间、操作、目标、结果）
@@ -33,13 +33,12 @@ type auditTab struct {
 	rows      []session.AuditEntry
 	skipped   int
 	filterIdx int
-	// filter 是 'f' 预设之外的自由文本过滤（匹配 event type / target / message），
-	// filtering 为 true 时键盘输入进入过滤器而不是移动光标。
-	filter    string
-	filtering bool
-	cursor    int
-	top       int
-	loadErr   string
+	// filterBox 是 'f' 预设之外的自由文本过滤状态机（匹配 event type /
+	// target / message）；输入态下键盘进入过滤器而不是移动光标。
+	filterBox Filter
+	// list 承载游标与窗口（共享列表组件），替代手写 top/pageSize/clampWindow。
+	list    List
+	loadErr string
 }
 
 type auditLoadedMsg struct {
@@ -54,11 +53,15 @@ func newAuditTab(source AuditSource) *auditTab {
 
 func (t *auditTab) Title() string { return "Audit" }
 
-func (t *auditTab) Help() string {
-	return "↑↓/jk 移动 · PgUp/PgDn 翻页 · f 预设过滤(" + auditFilterPresets[t.filterIdx].label + ") · / 文本过滤 · r 刷新"
+func (t *auditTab) Bindings() []KeyAction {
+	return []KeyAction{
+		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
+		{[]string{"f"}, "preset filter (" + auditFilterPresets[t.filterIdx].label + ")", grpFilter},
+		actFilter, actRefresh,
+	}
 }
 
-func (t *auditTab) InputMode() bool { return t.filtering }
+func (t *auditTab) InputMode() bool { return t.filterBox.Active() }
 
 func (t *auditTab) Init() tea.Cmd {
 	return t.load()
@@ -95,27 +98,24 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case tea.KeyMsg:
-		// Free-text filter input owns every key while active (mirrors the env
-		// tab filter: live match, esc clears, enter keeps).
-		if t.filtering {
+		// 自由文本过滤（共享 Filter 状态机）：live match、esc 清词、enter 确认；
+		// 匹配谓词保留 audit 专属的 auditEntryMatches（比 matchKey 多匹配 message）。
+		if t.filterBox.Active() {
 			switch msg.String() {
 			case "esc":
-				t.filter = ""
-				t.filtering = false
+				t.filterBox.Clear()
 				t.clampCursor()
 				return t, nil
 			case "enter":
-				t.filtering = false
+				t.filterBox.Confirm()
 				return t, nil
 			case "backspace":
-				if r := []rune(t.filter); len(r) > 0 {
-					t.filter = string(r[:len(r)-1])
-				}
+				t.filterBox.Backspace()
 				t.clampCursor()
 				return t, nil
 			}
 			if isPrintable(msg) {
-				t.filter += msg.String()
+				t.filterBox.Append(msg.String())
 				t.clampCursor()
 			}
 			return t, nil
@@ -123,30 +123,26 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 		switch msg.String() {
 		case "/":
-			t.filtering = true
+			t.filterBox.Enter()
 			t.clampCursor()
 			return t, nil
 		case "up", "k":
-			if t.cursor > 0 {
-				t.cursor--
-				t.clampWindow()
-			}
+			t.list.Move(-1, len(t.filtered()))
 		case "down", "j":
-			if t.cursor < len(t.filtered())-1 {
-				t.cursor++
-				t.clampWindow()
-			}
+			t.list.Move(1, len(t.filtered()))
 		case "pgup":
-			t.cursor -= t.pageSize()
-			t.clampCursor()
+			t.list.Page(-1, len(t.filtered()))
 		case "pgdown":
-			t.cursor += t.pageSize()
-			t.clampCursor()
+			t.list.Page(1, len(t.filtered()))
 		case "f":
 			t.filterIdx = (t.filterIdx + 1) % len(auditFilterPresets)
 			t.clampCursor()
-		case "r":
+		case "ctrl+r":
 			return t, t.load()
+		case "g":
+			t.list.Home()
+		case "G":
+			t.list.End(len(t.filtered()))
 		}
 	}
 	return t, nil
@@ -154,7 +150,7 @@ func (t *auditTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 func (t *auditTab) filtered() []session.AuditEntry {
 	match := auditFilterPresets[t.filterIdx].match
-	needle := strings.ToLower(strings.TrimSpace(t.filter))
+	needle := strings.ToLower(strings.TrimSpace(t.filterBox.Term()))
 	out := make([]session.AuditEntry, 0, len(t.rows))
 	for _, e := range t.rows {
 		if !match(e) {
@@ -174,69 +170,46 @@ func auditEntryMatches(e session.AuditEntry, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
 
-func (t *auditTab) pageSize() int {
-	h := t.height - 6
-	if h < 1 {
-		h = 1
-	}
-	return h
-}
-
 func (t *auditTab) clampCursor() {
-	n := len(t.filtered())
-	if t.cursor >= n {
-		t.cursor = n - 1
-	}
-	if t.cursor < 0 {
-		t.cursor = 0
-	}
-	t.clampWindow()
+	t.list.SetCursor(t.list.Cursor(), len(t.filtered()))
 }
 
-func (t *auditTab) clampWindow() {
-	h := t.pageSize()
-	if t.top > t.cursor-h+1 {
-		t.top = t.cursor - h + 1
-	}
-	if t.top < 0 {
-		t.top = 0
-	}
-	if t.top > t.cursor {
-		t.top = t.cursor
-	}
+func (t *auditTab) SetSize(width, height int) {
+	t.width, t.height = width, height
+	// 4 行 chrome：面板标题 1 行 + 提示/过滤附加行预留 + 边距。
+	// 仅作翻页步长预算；渲染窗口按 View 内实际附加行高度精算。
+	t.list.SetHeight(height - 4)
 }
-
-func (t *auditTab) SetSize(width, height int) { t.width, t.height = width, height }
 
 func (t *auditTab) View() string {
+	// 最小终端（30×7）下内容区高度恰为 0：不渲染，避免任何溢出。
+	if t.height <= 0 || t.width <= 0 {
+		return ""
+	}
+	// 加载/错误/空态与列表同用固定面板几何（撑满内容区），切换无布局跳动。
 	if t.loadErr != "" {
-		return paneStyle.Render("审计日志加载失败：" + t.loadErr)
+		return t.plainPane("failed to load audit log: " + t.loadErr)
 	}
 	if !t.loaded {
-		return "加载审计日志中…"
+		return t.plainPane("loading audit log…")
 	}
 	rows := t.filtered()
 	if len(rows) == 0 {
-		if t.filter != "" {
-			return paneStyle.Render(emptyStateStyle.Render("（没有匹配 /" + t.filter + " 的审计事件）"))
+		if t.filterBox.Term() != "" {
+			return t.plainPane("(no events matching /" + t.filterBox.Term() + ")")
 		}
-		return paneStyle.Render(emptyStateStyle.Render("（暂无审计事件）"))
+		return t.plainPane("(no audit events yet)")
 	}
 
-	var b strings.Builder
+	innerW := maxInt(t.width-4, 8)
 	filterLabel := auditFilterPresets[t.filterIdx].label
-	if t.filter != "" {
-		filterLabel += " + /" + t.filter
+	if t.filterBox.Term() != "" {
+		filterLabel += " + /" + t.filterBox.Term()
 	}
-	b.WriteString(fmt.Sprintf("本机审计事件（过滤: %s，共 %d 条，时间新到旧）\n\n",
-		filterLabel, len(rows)))
-	page := t.pageSize()
-	end := t.top + page
-	if end > len(rows) {
-		end = len(rows)
-	}
-	for i := t.top; i < end; i++ {
-		e := rows[i]
+	title := truncateWidth(fmt.Sprintf("local audit events (filter: %s, %d total, newest first)",
+		filterLabel, len(rows)), innerW)
+	lines := make([]string, 0, len(rows))
+	for i, e := range rows {
 		outcome := "✓"
 		if !e.Success {
 			outcome = "✗"
@@ -244,18 +217,43 @@ func (t *auditTab) View() string {
 		line := fmt.Sprintf("%s  %-18s %-8s %s",
 			e.Timestamp.Local().Format("2006-01-02 15:04:05"),
 			string(e.EventType), outcome, e.Target)
-		prefix := "  "
-		if i == t.cursor {
-			prefix = "> "
-			line = selectedLineStyle.Render(line)
+		if i == t.list.Cursor() {
+			line = selectedLineStyle.Render("> " + line)
+		} else {
+			line = "  " + line
 		}
-		b.WriteString(prefix + line + "\n")
+		lines = append(lines, truncateWidth(line, innerW))
 	}
+
+	// 附加行渲染在面板内部（skipped/过滤输入），空行分隔计入高度预算。
+	var extraRows []string
 	if t.skipped > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠ 跳过 %d 行无法解析的记录\n", t.skipped))
+		extraRows = append(extraRows, "", truncateWidth(
+			fmt.Sprintf("⚠ skipped %d unparseable records", t.skipped), innerW))
 	}
-	if t.filtering {
-		b.WriteString("\n/" + t.filter + "_（enter 确认 · esc 清除）\n")
+	if t.filterBox.Active() {
+		extraRows = append(extraRows, "", truncateWidth(
+			t.filterBox.Prompt()+"(enter confirm · esc clear)", innerW))
 	}
-	return paneStyle.Render(b.String())
+
+	listH := t.height - len(extraRows)
+	if listH < 1 {
+		listH = 1
+	}
+	out := windowedPane(title, lines, t.list.Cursor(), listH, t.width)
+	if len(extraRows) > 0 {
+		out = out + "\n" + strings.Join(extraRows, "\n")
+	}
+	out = clipLines(out, t.height)
+	return paneStyle.Width(t.width).Height(t.height).Render(out)
+}
+
+// plainPane 把单段提示文本渲染进撑满内容区的固定面板。
+func (t *auditTab) plainPane(text string) string {
+	lines := strings.Split(text, "\n")
+	innerW := maxInt(t.width-8, 8)
+	for i, l := range lines {
+		lines[i] = truncateWidth(l, innerW)
+	}
+	return paneStyle.Width(t.width).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
 }

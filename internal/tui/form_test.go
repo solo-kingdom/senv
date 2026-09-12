@@ -34,9 +34,9 @@ func formKey(s string) tea.KeyMsg {
 // a secret field and an enum with an empty choice.
 func newTestForm() *form {
 	return newForm("测试表单",
-		formField{key: "name", label: "名称", kind: formText, validate: func(v string) error {
+		formField{key: "name", label: "name", kind: formText, validate: func(v string) error {
 			if strings.TrimSpace(v) == "" {
-				return fmt.Errorf("名称不能为空")
+				return fmt.Errorf("name cannot be empty")
 			}
 			return nil
 		}},
@@ -89,7 +89,7 @@ func TestFormValidationKeepsInputAndBlocksSubmit(t *testing.T) {
 			t.Fatal("invalid form must not submit")
 		}
 	}
-	if !strings.Contains(f.View(), "名称不能为空") {
+	if !strings.Contains(f.View(), "name cannot be empty") {
 		t.Errorf("view should show the inline validation error, got %q", f.View())
 	}
 
@@ -175,7 +175,7 @@ func TestFormEditorFieldUsesExternalHook(t *testing.T) {
 	if got := f.Values()["extra"]; got != "a=1\nb=2\n" {
 		t.Fatalf("editor result not stored, got %q", got)
 	}
-	if !strings.Contains(f.View(), "2 行") {
+	if !strings.Contains(f.View(), "2 lines") {
 		t.Errorf("editor field should render a line summary, got %q", f.View())
 	}
 }

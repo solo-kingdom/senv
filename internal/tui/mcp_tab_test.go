@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/mcp"
@@ -155,7 +156,7 @@ func TestMCPEmptyState(t *testing.T) {
 	tab, _, _ := newMCPTestTab(t)
 	tab = loadMCPTab(t, tab)
 	view := tab.View()
-	if !strings.Contains(view, "暂无 MCP Server 档案；按 n 新建") {
+	if !strings.Contains(view, "no MCP server profiles yet; press n to create one") {
 		t.Fatalf("empty state missing:\n%s", view)
 	}
 }
@@ -188,10 +189,10 @@ func TestMCPTwoPanesStatusAndFocus(t *testing.T) {
 		t.Fatal("expected cursor export")
 	}
 	view = tab.View()
-	if !strings.Contains(view, "cursor · 已导出") {
+	if !strings.Contains(view, "cursor · exported") {
 		t.Fatalf("cursor should show 已导出:\n%s", view)
 	}
-	if !strings.Contains(view, "claude-code · 未导出") {
+	if !strings.Contains(view, "claude-code · not exported") {
 		t.Fatalf("other agents should stay 未导出:\n%s", view)
 	}
 
@@ -323,7 +324,7 @@ func TestMCPDeleteDoesNotUnexport(t *testing.T) {
 	out, _ = tab.Update(runeKey("d"))
 	tab = out.(*mcpTab)
 	confirm := tab.View()
-	for _, want := range []string{"cursor", "不撤回"} {
+	for _, want := range []string{"cursor", "not exported entries"} {
 		if !strings.Contains(confirm, want) {
 			t.Fatalf("delete confirm missing %q:\n%s", want, confirm)
 		}
@@ -353,7 +354,7 @@ func TestMCPExportPlanCancelAndCurrentAliasOnly(t *testing.T) {
 	out, cmd := tab.Update(runeKey("x"))
 	tab = flushTab(out, cmd).(*mcpTab)
 	plan := tab.View()
-	if !strings.Contains(plan, "导出计划") || !strings.Contains(plan, "[明文]") {
+	if !strings.Contains(plan, "export plan") || !strings.Contains(plan, "[plaintext]") {
 		t.Fatalf("plan missing labels:\n%s", plan)
 	}
 	if tab.exportPlan == nil || len(tab.exportPlan.Items) != 1 || tab.exportPlan.Items[0].Alias != "github" {
@@ -416,7 +417,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	tab = loadMCPTab(t, tab)
-	if !strings.Contains(tab.View(), "cursor · 漂移") {
+	if !strings.Contains(tab.View(), "cursor · drift") {
 		t.Fatalf("expected drift status:\n%s", tab.View())
 	}
 
@@ -436,7 +437,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, _ = tab.Update(runeKey("F"))
 	tab = out.(*mcpTab)
-	if !strings.Contains(tab.View(), "强制覆盖") {
+	if !strings.Contains(tab.View(), "force overwrite") {
 		t.Fatalf("F should replan with force:\n%s", tab.View())
 	}
 	out, cmd = tab.Update(runeKey("y"))
@@ -479,7 +480,7 @@ func TestMCPUnexportChangedConfirm(t *testing.T) {
 	if tab.mode != mcpModeChangedConfirm {
 		t.Fatalf("mode = %d, want changed confirm", tab.mode)
 	}
-	if !strings.Contains(tab.View(), "条目已被本地修改") {
+	if !strings.Contains(tab.View(), "entry was modified locally") {
 		t.Fatalf("changed prompt missing:\n%s", tab.View())
 	}
 	out, cmd = tab.Update(runeKey("y"))
@@ -495,12 +496,12 @@ func TestMCPExportRequiresSelection(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	_, cmd := tab.Update(runeKey("x"))
 	texts := toastTexts(cmd)
-	if len(texts) == 0 || !strings.Contains(texts[0], "没有可导出的档案") {
+	if len(texts) == 0 || !strings.Contains(texts[0], "no profile to export") {
 		t.Fatalf("empty export toast = %v", texts)
 	}
 	_, cmd = tab.Update(runeKey("u"))
 	texts = toastTexts(cmd)
-	if len(texts) == 0 || !strings.Contains(texts[0], "没有可撤回的档案") {
+	if len(texts) == 0 || !strings.Contains(texts[0], "no profile to unexport") {
 		t.Fatalf("empty unexport toast = %v", texts)
 	}
 }
@@ -577,7 +578,7 @@ func TestMCPUnexportChangedConfirmEscCancelsAll(t *testing.T) {
 		t.Fatalf("esc must leave changed confirm, mode = %d", tab.mode)
 	}
 	texts := toastTexts(cmd)
-	if len(texts) == 0 || !strings.Contains(texts[0], "已取消撤回") {
+	if len(texts) == 0 || !strings.Contains(texts[0], "unexport cancelled") {
 		t.Fatalf("esc toast = %v", texts)
 	}
 	for _, agent := range []string{"claude-code", "cursor"} {
@@ -605,7 +606,7 @@ func TestMCPUnexportAbsentOnlyDoesNotFakeSuccess(t *testing.T) {
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	texts := toastTexts(cmd)
-	if len(texts) == 0 || !strings.Contains(texts[0], "无需写入") {
+	if len(texts) == 0 || !strings.Contains(texts[0], "nothing to write") {
 		t.Fatalf("absent-only unexport toast = %v, want 无需写入", texts)
 	}
 	for _, c := range w.calls {
@@ -750,5 +751,33 @@ func TestMCPFormEditSwitchesTransportCleanly(t *testing.T) {
 	}
 	if entry.CreatedAt.IsZero() {
 		t.Fatal("switched entry lost CreatedAt")
+	}
+}
+
+// TestMCPTabLoadingStateBeforeLoad 校验加载态范式：装载完成前渲染常驻双栏几何
+// 并内嵌加载提示，不得误显带操作指引的空态文案（tui-tab-consistency-render）。
+func TestMCPTabLoadingStateBeforeLoad(t *testing.T) {
+	tab, _, _ := newMCPTestTab(t)
+	if tab.loaded {
+		t.Fatal("fresh tab should not be loaded")
+	}
+	out := tab.View()
+	if !strings.Contains(out, "loading MCP profiles…") {
+		t.Fatalf("loading hint missing before load: %q", clipRunesT(out, 120))
+	}
+	if strings.Contains(out, "no MCP server profiles yet") {
+		t.Fatal("empty-state guidance shown while loading")
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 120 || h != 26 {
+		t.Fatalf("loading view size = %dx%d, want 120x26 (persistent two-pane geometry)", w, h)
+	}
+
+	tab = loadMCPTab(t, tab)
+	out = tab.View()
+	if strings.Contains(out, "loading MCP profiles…") {
+		t.Fatal("loading hint still shown after load")
+	}
+	if !strings.Contains(out, "no MCP server profiles yet") {
+		t.Fatalf("empty state missing after empty load: %q", clipRunesT(out, 120))
 	}
 }

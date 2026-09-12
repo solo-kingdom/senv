@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-12
+goal: 修复 tui-tab-consistency 分支代码审查发现：P1×18 全部 + P2×24（P3×27 明确不做）
+skip_specs: true

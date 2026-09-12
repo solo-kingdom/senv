@@ -83,7 +83,7 @@ func TestEnvRenameConflictKeepsFormOpen(t *testing.T) {
 	if tab.form == nil {
 		t.Fatal("conflicting rename must keep the form open")
 	}
-	if !strings.Contains(tab.View(), "已存在") {
+	if !strings.Contains(tab.View(), "already exists") {
 		t.Errorf("inline conflict error missing: %q", tab.View())
 	}
 	if cmd != nil {
@@ -135,7 +135,7 @@ func TestEnvRenameGroupAndDeleteGroup(t *testing.T) {
 	if tab.mode != envModeDeleteGroupConfirm {
 		t.Fatalf("mode = %v, want delete-group confirm", tab.mode)
 	}
-	if !strings.Contains(tab.View(), "删除分组 prod") {
+	if !strings.Contains(tab.View(), "delete group prod") {
 		t.Errorf("confirm modal missing group name: %q", tab.View())
 	}
 	out, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -182,7 +182,7 @@ func TestEnvDeleteActiveGroupWarnsAboutActivation(t *testing.T) {
 	tab.focusLeft = true
 	out, _ := tab.Update(runeKey("d"))
 	tab = out.(*envTab)
-	if !strings.Contains(tab.View(), "激活") {
+	if !strings.Contains(tab.View(), "currently active") {
 		t.Errorf("active-group confirm must mention the activation loss: %q", tab.View())
 	}
 	out, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})

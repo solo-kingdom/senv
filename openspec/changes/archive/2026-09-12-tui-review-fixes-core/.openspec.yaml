@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-12
+goal: 审查 P1×18 全修 + 耦合 P2：All 伪组语义 / 过滤感知游标 / 多选与审计缺口
+skip_specs: true

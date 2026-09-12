@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 )
@@ -74,5 +75,40 @@ func TestSSHTabShowsSelectedRows(t *testing.T) {
 	view := tab.View()
 	if !strings.Contains(view, "▸ web") || !strings.Contains(view, "▸ old") {
 		t.Fatalf("selected rows missing markers:\n%s", view)
+	}
+}
+
+// TestSSHTabLoadingStateBeforeLoad 校验加载态范式：装载完成前渲染常驻双栏几何
+// 并内嵌加载提示，不得误显带操作指引的空态文案（tui-tab-consistency-render）。
+func TestSSHTabLoadingStateBeforeLoad(t *testing.T) {
+	base := t.TempDir()
+	store := storage.NewManager(filepath.Join(base, "config"), filepath.Join(base, "data"))
+	if err := store.Initialize("test-password"); err != nil {
+		t.Fatal(err)
+	}
+	tab := newSSHTab(Managers{SSH: ssh.NewManager(store, "test-password")})
+	tab.SetSize(100, 24)
+	if tab.loaded {
+		t.Fatal("fresh tab should not be loaded")
+	}
+	out := tab.View()
+	if !strings.Contains(out, "loading SSH assets…") {
+		t.Fatalf("loading hint missing before load: %q", clipRunesT(out, 120))
+	}
+	if strings.Contains(out, "no SSH assets yet") {
+		t.Fatal("empty-state guidance shown while loading")
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 100 || h != 26 {
+		t.Fatalf("loading view size = %dx%d, want 100x26 (persistent two-pane geometry)", w, h)
+	}
+
+	next, _ := tab.Update(sshLoadedMsg{})
+	tab = next.(*sshTab)
+	out = tab.View()
+	if strings.Contains(out, "loading SSH assets…") {
+		t.Fatal("loading hint still shown after load")
+	}
+	if !strings.Contains(out, "no SSH assets yet") {
+		t.Fatalf("empty state missing after empty load: %q", clipRunesT(out, 120))
 	}
 }

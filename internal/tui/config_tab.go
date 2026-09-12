@@ -35,20 +35,17 @@ type configTab struct {
 	pendingFocusName  string
 	pendingFocusGroup string
 
-	filter    string
-	filtering bool
+	filterBox Filter
+	// sel 仅承载条目多选集（条目名即稳定标识；跨分组在 All 视图可用）。
+	sel List
 
 	// form 非 nil 时表示打开了一个结构化表单（重命名/元信息编辑）。
 	form       *form
 	formSubmit func(values map[string]string) tea.Cmd
 
-	input         textinput.Model
-	mode          configMode
-	pendingName   string // staging create: name, source, target, group, description
-	pendingSource string
-	pendingTarget string
-	pendingGroup  string
-	detail        *configDetail // set when viewing details
+	input  textinput.Model
+	mode   configMode
+	detail *configDetail // set when viewing details
 
 	plan *planState // pending install/uninstall plan awaiting confirmation
 }
@@ -97,11 +94,6 @@ const (
 	configModeDetail
 	configModeDeleteConfirm
 	configModeExportPath
-	configModeCreateName
-	configModeCreateSource
-	configModeCreateTarget
-	configModeCreateGroup
-	configModeCreateDesc
 	configModeFilter
 	configModePlan
 	configModeChangedConfirm
@@ -115,8 +107,26 @@ func newConfigTab(mgr Managers) *configTab {
 
 func (t *configTab) Title() string { return "Config" }
 
-func (t *configTab) Help() string {
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · e vim 编辑 · r 重命名 · m 元信息 · n 新建 · i/I 安装 · u/U 卸载 · x 导出 · d 删除 · / 过滤"
+func (t *configTab) Bindings() []KeyAction {
+	return []KeyAction{
+		actUp, actDown, actLeft, actRight,
+		actTop, actBottom, actPageUp, actPageDn,
+		actDetail, actEdit, actRename,
+		{[]string{"m"}, "metadata", grpItem},
+		actNew,
+		{[]string{"i/I"}, "install (one/all)", grpItem},
+		{[]string{"u/U"}, "uninstall (one/all)", grpItem},
+		actExport, actDelete,
+		actFilter, actRefresh,
+	}
+}
+
+// cursorForFocus 返回当前焦点栏的游标位置（翻页用）。
+func (t *configTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.groupIndex
+	}
+	return t.itemIndex
 }
 
 func (t *configTab) InputMode() bool {
@@ -124,9 +134,7 @@ func (t *configTab) InputMode() bool {
 		return true
 	}
 	switch t.mode {
-	case configModeFilter, configModeExportPath, configModeCreateName,
-		configModeCreateSource, configModeCreateTarget,
-		configModeCreateGroup, configModeCreateDesc:
+	case configModeFilter, configModeExportPath:
 		return true
 	}
 	return false
@@ -176,7 +184,7 @@ func (t *configTab) Reload() tea.Cmd {
 // group falls back to the "All" view so stale/foreign data cannot strand the
 // cursor.
 func (t *configTab) focusJump(group, name string) {
-	t.filter = ""
+	t.filterBox.Clear()
 	t.mode = configModeNormal
 	t.detail = nil
 	t.focusLeft = false
@@ -279,15 +287,15 @@ func (t *configTab) baseItems() []configRow {
 }
 
 func (t *configTab) matchesFilter(it configRow) bool {
-	if t.filter == "" {
+	if t.filterBox.Term() == "" {
 		return true
 	}
-	return matchKey(it.name, t.filter) || matchKey(it.group, t.filter) || matchKey(it.description, t.filter)
+	return t.filterBox.Matches(it.name) || t.filterBox.Matches(it.group) || t.filterBox.Matches(it.description)
 }
 
 func (t *configTab) filteredItems() []configRow {
 	base := t.baseItems()
-	if t.filter == "" {
+	if t.filterBox.Term() == "" {
 		return base
 	}
 	out := make([]configRow, 0, len(base))
@@ -345,7 +353,7 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case formCancelMsg:
 		t.form = nil
 		t.formSubmit = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	}
 	if t.form != nil {
 		next, cmd := t.form.Update(msg)
@@ -368,6 +376,7 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.itemsByGroup = msg.itemsByGroup
 		t.loaded = true
 		t.clampCursors()
+		t.reconcileSelection()
 		if t.pendingFocusName != "" {
 			name, group := t.pendingFocusName, t.pendingFocusGroup
 			t.pendingFocusName, t.pendingFocusGroup = "", ""
@@ -378,9 +387,9 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		parts := make([]string, 0, len(msg.warnings))
 		for _, w := range msg.warnings {
-			parts = append(parts, fmt.Sprintf("跳过配置 %s", w.OldName))
+			parts = append(parts, fmt.Sprintf("skipped config %s", w.OldName))
 		}
-		text := strings.Join(parts, "、") + "：名称不可移植，运行 senv config repair 修复"
+		text := strings.Join(parts, ", ") + ": name is not portable, run senv config repair to fix"
 		return t, func() tea.Msg { return warnMsg{text: text} }
 
 	case configCreatedMsg:
@@ -445,19 +454,49 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.jumpCursor(0)
 		case "G":
 			t.jumpCursor(t.focusListLen() - 1)
+		case "pgup":
+			t.jumpCursor(t.cursorForFocus() - pageStep(t.height))
+		case "pgdown":
+			t.jumpCursor(t.cursorForFocus() + pageStep(t.height))
 		case "enter":
 			return t.showDetail()
 		case "e":
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("multiple entries selected: narrow to a single selection to edit")
+			}
 			return t.editCurrent()
 		case "r":
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("multiple entries selected: narrow to a single selection to rename")
+			}
 			return t.enterRenameMode()
 		case "m":
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("multiple entries selected: narrow to a single selection to edit metadata")
+			}
 			return t.enterMetaMode()
 		case "n":
 			return t.enterCreateName()
 		case "x":
 			return t.doExportCurrent()
+		case " ", "space":
+			if !t.focusLeft {
+				if it, ok := t.currentItem(); ok {
+					t.sel.Toggle(it.name)
+				}
+			}
+		case "a":
+			if !t.focusLeft {
+				keys := make([]string, 0, len(t.filteredItems()))
+				for _, it := range t.filteredItems() {
+					keys = append(keys, it.name)
+				}
+				t.sel.SelectVisible(keys)
+			}
 		case "i":
+			if !t.focusLeft && t.sel.SelectionCount() > 1 {
+				return t.enterSelectionPlan("install")
+			}
 			return t.enterPlan("install", false)
 		case "I":
 			if t.focusLeft {
@@ -465,6 +504,9 @@ func (t *configTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			}
 			return t.enterPlan("install", true)
 		case "u":
+			if !t.focusLeft && t.sel.SelectionCount() > 1 {
+				return t.enterSelectionPlan("uninstall")
+			}
 			return t.enterPlan("uninstall", false)
 		case "U":
 			if t.focusLeft {
@@ -492,25 +534,25 @@ func (t *configTab) focusListLen() int {
 
 func (t *configTab) moveCursor(delta int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(t.groupIndex+delta, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups)-1)
 		t.itemIndex = 0
 		return
 	}
-	t.itemIndex = clamp(t.itemIndex+delta, 0, maxLen(t.filteredItems())-1)
+	t.itemIndex = clamp(t.itemIndex+delta, 0, len(t.filteredItems())-1)
 }
 
 func (t *configTab) jumpCursor(idx int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(idx, 0, maxLen(t.groups)-1)
+		t.groupIndex = clamp(idx, 0, len(t.groups)-1)
 		t.itemIndex = 0
 		return
 	}
-	t.itemIndex = clamp(idx, 0, maxLen(t.filteredItems())-1)
+	t.itemIndex = clamp(idx, 0, len(t.filteredItems())-1)
 }
 
 func (t *configTab) clampCursors() {
-	t.groupIndex = clamp(t.groupIndex, 0, maxLen(t.groups)-1)
-	t.itemIndex = clamp(t.itemIndex, 0, maxLen(t.filteredItems())-1)
+	t.groupIndex = clamp(t.groupIndex, 0, len(t.groups)-1)
+	t.itemIndex = clamp(t.itemIndex, 0, len(t.filteredItems())-1)
 }
 
 // --- modal handling ---
@@ -534,7 +576,7 @@ func (t *configTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		if t.mode == configModeFilter {
-			t.filter = ""
+			t.filterBox.Clear() // esc 清词并退出
 		}
 		t.mode = configModeNormal
 		t.input.Blur()
@@ -546,14 +588,13 @@ func (t *configTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	if t.mode == configModeFilter {
 		switch msg.String() {
 		case "backspace":
-			if len(t.filter) > 0 {
-				t.filter = t.filter[:len(t.filter)-1]
+			if t.filterBox.Backspace() {
+				t.itemIndex = 0
 			}
-			t.itemIndex = 0
 			return t, nil
 		}
 		if isPrintable(msg) {
-			t.filter += msg.String()
+			t.filterBox.Append(msg.String())
 			t.itemIndex = 0
 		}
 		return t, nil
@@ -575,59 +616,6 @@ func (t *configTab) submitModal() (Tab, tea.Cmd) {
 			return t, nil
 		}
 		return t, t.doExport(it.name, path)
-	case configModeCreateName:
-		name := t.input.Value()
-		if name == "" {
-			return t, warnToast("名称不能为空")
-		}
-		t.pendingName = name
-		t.input.SetValue("")
-		t.input.Placeholder = "源文件路径"
-		t.mode = configModeCreateSource
-		t.input.Focus()
-		return t, textinput.Blink
-	case configModeCreateSource:
-		src := t.input.Value()
-		if src == "" {
-			return t, warnToast("源文件路径不能为空")
-		}
-		t.pendingSource = src
-		t.input.SetValue("")
-		t.input.Placeholder = "目标路径"
-		t.mode = configModeCreateTarget
-		t.input.Focus()
-		return t, textinput.Blink
-	case configModeCreateTarget:
-		target := t.input.Value()
-		if target == "" {
-			return t, warnToast("target 路径不能为空")
-		}
-		t.pendingTarget = target
-		t.input.SetValue("")
-		t.input.Placeholder = "分组（可选，默认 default）"
-		t.mode = configModeCreateGroup
-		t.input.Focus()
-		return t, textinput.Blink
-	case configModeCreateGroup:
-		t.pendingGroup = t.input.Value()
-		t.input.SetValue("")
-		t.input.Placeholder = "描述（可选）"
-		t.mode = configModeCreateDesc
-		t.input.Focus()
-		return t, textinput.Blink
-	case configModeCreateDesc:
-		desc := t.input.Value()
-		name := t.pendingName
-		src := t.pendingSource
-		target := t.pendingTarget
-		group := t.pendingGroup
-		t.mode = configModeNormal
-		t.pendingName = ""
-		t.pendingSource = ""
-		t.pendingTarget = ""
-		t.pendingGroup = ""
-		t.input.Blur()
-		return t, t.doCreate(name, src, target, group, desc)
 	}
 	t.mode = configModeNormal
 	return t, nil
@@ -638,7 +626,7 @@ func (t *configTab) submitModal() (Tab, tea.Cmd) {
 func (t *configTab) showDetail() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有选中的条目")
+		return t, warnToast("no entry selected")
 	}
 	mgr := t.mgr.Config
 	name := it.name
@@ -657,7 +645,7 @@ func (t *configTab) showDetail() (Tab, tea.Cmd) {
 func (t *configTab) editCurrent() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可编辑的条目")
+		return t, warnToast("no entry to edit")
 	}
 	mgr := t.mgr.Config
 	if mgr == nil {
@@ -687,16 +675,73 @@ func (t *configTab) finishAfterEdit(session *config.ConfigEditSession, runErr er
 	return configReloadMsg{}
 }
 
+// realGroup 返回当前选中的真实分组名；All 伪组返回 ""。
+func (t *configTab) realGroup() string {
+	if g := t.currentGroup(); g != allConfigsLabel {
+		return g
+	}
+	return ""
+}
+
+// enterCreateName 创建配置走结构化表单（grill D6-⑥）：一次收集
+// name/源路径/target/分组/描述，内联校验，esc 取消零副作用。
 func (t *configTab) enterCreateName() (Tab, tea.Cmd) {
-	t.mode = configModeCreateName
-	t.pendingName = ""
-	t.pendingSource = ""
-	t.pendingTarget = ""
-	t.pendingGroup = ""
-	t.input.SetValue("")
-	t.input.Placeholder = "配置名"
-	t.input.Focus()
-	return t, textinput.Blink
+	mgr := t.mgr.Config
+	siblings := make(map[string]bool)
+	if mgr != nil {
+		if cfgs, err := mgr.List(""); err == nil {
+			for _, c := range cfgs {
+				siblings[c.Name] = true
+			}
+		}
+	}
+	group := t.realGroup()
+	f := newForm("create config",
+		formField{key: "name", label: "name", kind: formText, placeholder: "app-config",
+			validate: func(v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return fmt.Errorf("name cannot be empty")
+				}
+				if err := storage.ValidateName(v); err != nil {
+					return fmt.Errorf("invalid name")
+				}
+				if siblings[v] {
+					return fmt.Errorf("config %s already exists", v)
+				}
+				return nil
+			}},
+		formField{key: "source", label: "source file path", kind: formPath, placeholder: "~/app.conf",
+			validate: func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("source file path cannot be empty")
+				}
+				return nil
+			}},
+		formField{key: "target", label: "target path", kind: formPath, placeholder: "~/.config/app/app.conf",
+			validate: func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("target path cannot be empty")
+				}
+				return nil
+			}},
+		formField{key: "group", label: "group", kind: formText, value: group, placeholder: "group (empty = default)",
+			validate: func(v string) error {
+				// 与 meta 编辑的分组校验一致：空值回落 default，非空须合法。
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return nil
+				}
+				return storage.ValidateName(v)
+			}},
+		formField{key: "description", label: "description", kind: formText, placeholder: "optional"},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		return t.doCreate(strings.TrimSpace(values["name"]), strings.TrimSpace(values["source"]),
+			strings.TrimSpace(values["target"]), strings.TrimSpace(values["group"]),
+			strings.TrimSpace(values["description"]))
+	})
+	return t, nil
 }
 
 // openForm installs a structured form and the action to run on submit.
@@ -711,25 +756,25 @@ func (t *configTab) openForm(f *form, onSubmit func(values map[string]string) te
 func (t *configTab) enterRenameMode() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可重命名的条目")
+		return t, warnToast("no entry to rename")
 	}
 	names := make(map[string]bool, len(t.baseItems()))
 	for _, row := range t.baseItems() {
 		names[row.name] = true
 	}
 	old := it.name
-	f := newForm("重命名配置条目",
-		formField{key: "name", label: "新名称", kind: formText, value: old, placeholder: "new-name",
+	f := newForm("rename config entry",
+		formField{key: "name", label: "new name", kind: formText, value: old, placeholder: "new-name",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("名称不能为空")
+					return fmt.Errorf("name cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法名称")
+					return fmt.Errorf("invalid name")
 				}
 				if v != old && names[v] {
-					return fmt.Errorf("配置 %s 已存在", v)
+					return fmt.Errorf("config %s already exists", v)
 				}
 				return nil
 			}})
@@ -744,26 +789,26 @@ func (t *configTab) enterRenameMode() (Tab, tea.Cmd) {
 func (t *configTab) enterMetaMode() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可编辑的条目")
+		return t, warnToast("no entry to edit")
 	}
 	groups := make([]string, 0, len(t.groups))
 	for i := 1; i < len(t.groups); i++ {
 		groups = append(groups, t.groups[i].name)
 	}
 	old := it
-	f := newForm("编辑配置元信息",
-		formField{key: "group", label: "分组", kind: formText, value: old.group, placeholder: storage.ConfigDefaultGroup,
+	f := newForm("edit config metadata",
+		formField{key: "group", label: "group", kind: formText, value: old.group, placeholder: storage.ConfigDefaultGroup,
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
 					return nil // empty falls back to the default group
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法分组名")
+					return fmt.Errorf("invalid group name")
 				}
 				return nil
 			}},
-		formField{key: "description", label: "描述", kind: formText, value: old.description, placeholder: "可选"},
+		formField{key: "description", label: "description", kind: formText, value: old.description, placeholder: "optional"},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
 		return t.doSetMeta(old.name, strings.TrimSpace(values["group"]), strings.TrimSpace(values["description"]))
@@ -773,7 +818,7 @@ func (t *configTab) enterMetaMode() (Tab, tea.Cmd) {
 
 func (t *configTab) enterDeleteConfirm() (Tab, tea.Cmd) {
 	if _, ok := t.currentItem(); !ok {
-		return t, warnToast("没有可删除的条目")
+		return t, warnToast("no entry to delete")
 	}
 	t.mode = configModeDeleteConfirm
 	return t, nil
@@ -781,7 +826,7 @@ func (t *configTab) enterDeleteConfirm() (Tab, tea.Cmd) {
 
 func (t *configTab) enterFilterMode() (Tab, tea.Cmd) {
 	t.mode = configModeFilter
-	t.filter = ""
+	t.filterBox.EnterFresh() // config 语义：`/` 清词重新开始
 	return t, nil
 }
 
@@ -806,15 +851,90 @@ func (t *configTab) enterPlan(kind string, groupScope bool) (Tab, tea.Cmd) {
 		}
 		it, ok := t.currentItem()
 		if !ok {
-			return t, warnToast("没有选中的条目")
+			return t, warnToast("no entry selected")
 		}
 		return t.planForScope(kind, config.Scope{Group: it.group})
 	}
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有选中的条目")
+		return t, warnToast("no entry selected")
 	}
 	return t.planForScope(kind, config.Scope{Name: it.name})
+}
+
+// enterSelectionPlan 以多选集为范围生成合并计划（跨分组逐条列出）。
+func (t *configTab) enterSelectionPlan(kind string) (Tab, tea.Cmd) {
+	mgr := t.mgr.Config
+	if mgr == nil {
+		return t, warnToast("config manager unavailable")
+	}
+	names := t.selectedNames()
+	if len(names) == 0 {
+		return t, warnToast("selection is empty")
+	}
+	return t, func() tea.Msg {
+		msg := configPlanLoadedMsg{kind: kind}
+		if kind == "install" {
+			merged := &config.InstallPlan{}
+			for _, name := range names {
+				plan, err := mgr.PlanInstall(config.Scope{Name: name})
+				if err != nil {
+					msg.err = err
+					return msg
+				}
+				merged.Items = append(merged.Items, plan.Items...)
+			}
+			msg.installPlan = merged
+		} else {
+			merged := &config.UninstallPlan{}
+			for _, name := range names {
+				plan, err := mgr.PlanUninstall(config.Scope{Name: name})
+				if err != nil {
+					msg.err = err
+					return msg
+				}
+				merged.Items = append(merged.Items, plan.Items...)
+			}
+			msg.uninstallPlan = merged
+		}
+		return msg
+	}
+}
+
+// allItems 聚合全部真实分组的条目（不过滤），与当前视图无关。批量目标
+// 解析与选择集 reconcile 以此为准：选择集跨过滤与分组持久。
+func (t *configTab) allItems() []configRow {
+	var out []configRow
+	for i := 1; i < len(t.groups); i++ {
+		out = append(out, t.itemsByGroup[t.groups[i].name]...)
+	}
+	return out
+}
+
+// selectedNames 返回多选集命中的全部条目名——选择集跨过滤持久，被过滤隐藏
+// 的已选项保持在批量计划范围内（tui-viewer 多选语义），故遍历全量而非可见集。
+func (t *configTab) selectedNames() []string {
+	var out []string
+	for _, it := range t.allItems() {
+		if t.sel.IsSelected(it.name) {
+			out = append(out, it.name)
+		}
+	}
+	return out
+}
+
+// reconcileSelection 丢弃多选集中已不存在的条目名（删除/改名/外部 reload 后
+// 防止幽灵勾选）。
+func (t *configTab) reconcileSelection() {
+	live := make(map[string]bool)
+	for _, it := range t.allItems() {
+		live[it.name] = true
+	}
+	for _, name := range t.sel.Selected() {
+		if !live[name] {
+			t.sel.Toggle(name)
+		}
+	}
 }
 
 // enterSidebarPlan handles group-scope install/uninstall triggered while the
@@ -890,11 +1010,13 @@ func (t *configTab) handlePlanKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		plan := t.plan
 		t.plan = nil
 		return t, t.executePlan(plan)
-	default: // esc / n / anything else cancels
+	case "esc", "n":
 		t.mode = configModeNormal
 		t.plan = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	}
+	// 其余按键忽略：计划确认页不把未知键解释为取消或放行（grill D7）
+	return t, nil
 }
 
 // scopeLabel 汇总安装/卸载范围用于审计 target（不含文件内容）。
@@ -920,7 +1042,7 @@ func (ps *planState) scopeLabel() string {
 	if ps.scope.Name != "" {
 		return ps.scope.Name
 	}
-	return "[" + fmt.Sprint(len(names)) + " 项]"
+	return "[" + fmt.Sprint(len(names)) + " items]"
 }
 
 // executePlan runs a confirmed plan and reloads the list afterwards.
@@ -941,7 +1063,7 @@ func (t *configTab) executePlan(ps *planState) tea.Cmd {
 			})
 		}
 		if err != nil {
-			recordAudit(mgrs, eventType, "config:"+ps.scopeLabel(), false, detail+" 失败")
+			recordAudit(mgrs, eventType, "config:"+ps.scopeLabel(), false, detail+" failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, eventType, "config:"+ps.scopeLabel(), true, detail)
@@ -956,7 +1078,7 @@ func (t *configTab) doDelete(name string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Delete(name); err != nil {
-			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, false, "delete 失败")
+			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, true, "delete")
@@ -967,17 +1089,17 @@ func (t *configTab) doDelete(name string) tea.Cmd {
 // doRename renames a config entry through the storage-layer atomic rename.
 func (t *configTab) doRename(oldName, newName string) tea.Cmd {
 	if oldName == newName {
-		return warnToast("名称未变化")
+		return warnToast("name unchanged")
 	}
 	mgr := t.mgr.Config
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Rename(oldName, newName); err != nil {
-			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+oldName, false, "rename 失败")
+			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+oldName, false, "rename failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+newName, true, "rename "+oldName)
-		return renameDoneMsg{group: t.currentGroup(), key: newName, text: "已重命名为 " + newName}
+		return renameDoneMsg{group: t.currentGroup(), key: newName, text: "renamed to " + newName}
 	}
 }
 
@@ -987,11 +1109,11 @@ func (t *configTab) doSetMeta(name, group, description string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.SetMeta(name, group, description); err != nil {
-			recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), false, "set meta 失败")
+			recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), false, "set meta failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), true, "set meta")
-		return renameDoneMsg{group: group, key: name, text: "已更新元信息"}
+		return renameDoneMsg{group: group, key: name, text: "metadata updated"}
 	}
 }
 
@@ -999,7 +1121,7 @@ func (t *configTab) doSetMeta(name, group, description string) tea.Cmd {
 func (t *configTab) doExportCurrent() (Tab, tea.Cmd) {
 	it, ok := t.currentItem()
 	if !ok {
-		return t, warnToast("没有可导出的条目")
+		return t, warnToast("no entry to export")
 	}
 	return t, t.doExport(it.name, "") // empty -> config's TargetPath
 }
@@ -1009,11 +1131,11 @@ func (t *configTab) doExport(name, path string) tea.Cmd {
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Export(name, path); err != nil {
-			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, false, "export 失败")
+			recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, false, "export failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, sessionpkg.AuditOpConfig, "config:"+name, true, "export")
-		return toastMsg{text: "已导出 " + name, level: toastSuccess}
+		return toastMsg{text: "exported " + name, level: toastSuccess}
 	}
 }
 
@@ -1022,7 +1144,7 @@ func (t *configTab) doCreate(name, source, target, group, description string) te
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if err := mgr.Create(name, source, target, group, description); err != nil {
-			recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), false, "create 失败")
+			recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), false, "create failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, sessionpkg.AuditOpConfig, configTarget(group, name), true, "create")
@@ -1089,27 +1211,24 @@ func (t *configTab) viewBaseAt(h int) string {
 
 func (t *configTab) renderGroups(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载分组中…")
+		return emptyStateStyle.Render("loading groups…")
 	}
-	inner := width - 2
-	var lines []string
+	rows := make([]SidebarRow, 0, len(t.groups))
 	for i, g := range t.groups {
-		line := truncateRunes(fmt.Sprintf("%s  [%d]", g.name, t.sidebarCount(i)), inner-2)
-		selected := i == t.groupIndex && t.focusLeft
-		if selected {
-			line = selectedLineStyle.Render(cursorPrefix(true) + line)
-		} else {
-			line = cursorPrefix(false) + line
-		}
-		lines = append(lines, line)
+		rows = append(rows, SidebarRow{
+			Marker:   " ",
+			Name:     g.name,
+			Count:    t.sidebarCount(i),
+			Selected: i == t.groupIndex && t.focusLeft,
+		})
 	}
 	// Count excludes the "All" pseudo-group.
-	return windowedPane(fmt.Sprintf("Groups (%d)", max(0, len(t.groups)-1)), lines, t.groupIndex, height, width)
+	return renderSidebar(rows, t.groupIndex, height, width)
 }
 
 func (t *configTab) renderItems(width, height int) string {
 	if !t.loaded {
-		return emptyStateStyle.Render("加载配置中…")
+		return emptyStateStyle.Render("loading configs…")
 	}
 	items := t.filteredItems()
 	label := t.currentGroup()
@@ -1117,13 +1236,18 @@ func (t *configTab) renderItems(width, height int) string {
 		label = allConfigsLabel
 	}
 	header := fmt.Sprintf("%s (%d)", label, len(items))
-	if t.filter != "" {
-		header += "  /" + t.filter
+	if t.filterBox.Term() != "" {
+		header += "  /" + t.filterBox.Term()
 	}
+	visibleKeys := make([]string, 0, len(items))
+	for _, it := range items {
+		visibleKeys = append(visibleKeys, it.name)
+	}
+	header += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(visibleKeys))
 	if len(items) == 0 {
-		hint := "暂无配置文件"
-		if t.filter != "" {
-			hint = "no names match /" + t.filter
+		hint := "no config files yet"
+		if t.filterBox.Term() != "" {
+			hint = "no names match /" + t.filterBox.Term()
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, paneTitleStyle.Render(header), emptyStateStyle.Render(hint))
 	}
@@ -1138,6 +1262,9 @@ func (t *configTab) renderItems(width, height int) string {
 	var lines []string
 	for i, it := range items {
 		displayName := it.name
+		if t.sel.IsSelected(it.name) {
+			displayName = "[x] " + displayName
+		}
 		if t.currentGroup() == "" {
 			displayName = it.group + "/" + it.name
 		}
@@ -1168,9 +1295,9 @@ func (t *configTab) renderPlan() string {
 		inner = 40
 	}
 	var lines []string
-	title := "安装计划"
+	title := "install plan"
 	if t.plan.kind == "uninstall" {
-		title = "卸载计划"
+		title = "uninstall plan"
 	}
 	if t.plan.installPlan != nil {
 		for _, item := range t.plan.installPlan.Items {
@@ -1209,10 +1336,10 @@ func (t *configTab) renderPlan() string {
 
 	if t.mode == configModeChangedConfirm {
 		item := t.plan.uninstallPlan.Items[t.plan.changedIdx]
-		prompt := fmt.Sprintf("目标文件已被本地修改，确认删除 %s？y 删除 · n 保留", item.TargetPath)
+		prompt := fmt.Sprintf("target file was modified locally, delete %s? y delete · n keep", item.TargetPath)
 		return modalBox(title, body+"\n\n"+prompt, "")
 	}
-	return modalBox(title, body, "y 确认 · esc 取消")
+	return modalBox(title, body, "y confirm · esc cancel")
 }
 
 // formatPlanLine aligns action / name / path / reason so multi-file plans
@@ -1253,7 +1380,7 @@ func (t *configTab) renderDetail() string {
 	body := fmt.Sprintf(
 		"name:     %s\ngroup:    %s\ndesc:     %s\ntarget:   %s\ncreated:  %s\nupdated:  %s",
 		d.name, d.group, d.description, d.targetPath, d.createdAt, d.updatedAt)
-	box := modalBox("配置详情", body, "任意键关闭")
+	box := modalBox("config detail", body, "any key to close")
 	return box
 }
 
@@ -1261,21 +1388,11 @@ func (t *configTab) renderModal() string {
 	switch t.mode {
 	case configModeDeleteConfirm:
 		it, _ := t.currentItem()
-		return modalBox("删除 "+it.name+"？", "", "enter/y 确认 · esc/n 取消")
+		return modalBox("delete "+it.name+"?", "", "enter/y confirm · esc/n cancel")
 	case configModeExportPath:
-		return modalBox("导出到文件", t.input.View(), "enter 导出 · esc 取消")
-	case configModeCreateName:
-		return modalBox("新建配置 — 名称", t.input.View(), "enter 下一步 · esc 取消")
-	case configModeCreateSource:
-		return modalBox(t.pendingName+" 的源文件路径", t.input.View(), "enter 下一步 · esc 取消")
-	case configModeCreateTarget:
-		return modalBox(t.pendingName+" 的目标路径", t.input.View(), "enter 下一步 · esc 取消")
-	case configModeCreateGroup:
-		return modalBox(t.pendingName+" 的分组（可选）", t.input.View(), "enter 下一步 · esc 取消")
-	case configModeCreateDesc:
-		return modalBox(t.pendingName+" 的描述（可选）", t.input.View(), "enter 创建 · esc 取消")
+		return modalBox("export to file", t.input.View(), "enter export · esc cancel")
 	case configModeFilter:
-		return modalBox("过滤名称（忽略大小写）", "/"+t.filter+"_", "esc 清除")
+		return modalBox("filter names (case insensitive)", "/"+t.filterBox.Term()+"_", "esc clear")
 	}
 	return ""
 }

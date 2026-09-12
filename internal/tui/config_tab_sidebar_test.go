@@ -185,7 +185,7 @@ func TestConfigTabFocusJumpFallsBackToAll(t *testing.T) {
 func TestConfigTabFilterUpdatesSidebarCounts(t *testing.T) {
 	tab := setupSidebarTab(t)
 
-	tab.filter = "app"
+	tab.filterBox = Filter{term: "app"}
 	if got := len(tab.filteredItems()); got != 1 {
 		t.Fatalf("filtered items = %d, want 1", got)
 	}
@@ -204,7 +204,7 @@ func TestConfigTabFilterUpdatesSidebarCounts(t *testing.T) {
 	}
 
 	// Clearing the filter restores real counts.
-	tab.filter = ""
+	tab.filterBox = Filter{term: ""}
 	if got := tab.sidebarCount(0); got != 2 {
 		t.Errorf("All count after clearing filter = %d, want 2", got)
 	}

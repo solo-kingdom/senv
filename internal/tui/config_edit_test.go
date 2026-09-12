@@ -75,7 +75,7 @@ func TestConfigRenameConflictKeepsFormOpen(t *testing.T) {
 	if tab.form == nil {
 		t.Fatal("conflicting rename must keep the form open")
 	}
-	if !strings.Contains(tab.View(), "已存在") {
+	if !strings.Contains(tab.View(), "already exists") {
 		t.Errorf("inline conflict error missing: %q", tab.View())
 	}
 	if cmd != nil {
@@ -131,7 +131,7 @@ func TestConfigDetailShowsMetadata(t *testing.T) {
 	tab = out.(*configTab)
 	tab = flushConfig(tab, cmd)
 	view := tab.View()
-	for _, want := range []string{"配置详情", "ops", "demo desc", "/etc/app.conf"} {
+	for _, want := range []string{"config detail", "ops", "demo desc", "/etc/app.conf"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("detail view missing %q: %q", want, view)
 		}

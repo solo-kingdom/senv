@@ -140,7 +140,7 @@ func TestMinSizeGuard(t *testing.T) {
 		m := New(Managers{})
 		m.width, m.height = c.w, c.h
 		out := m.View()
-		if !strings.Contains(out, "终端太小") {
+		if !strings.Contains(out, "terminal too small") {
 			t.Errorf("%dx%d: expected the too-small hint, got %q", c.w, c.h, clipRunesT(out, 40))
 		}
 		if strings.ContainsAny(out, "╭╮╰╯│─") {

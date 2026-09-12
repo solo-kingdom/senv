@@ -27,11 +27,16 @@ type sshTab struct {
 
 	hosts     []storage.HostEntry
 	keyPairs  []ssh.KeyPairSummary
-	focusLeft bool
-	hostIndex int
-	keyIndex  int
-	loadErr   string
-	detail    *detailOverlay
+	filterBox Filter // `/` 过滤左栏主列表（alias/hostname 标识）
+	sel       List   // 仅承载 host 多选集（space 勾选 / a 全选可见）
+
+	// pendingBatchHosts 批量删除确认页暂存的 host 别名列表。
+	pendingBatchHosts []string
+	focusLeft         bool
+	hostIndex         int
+	keyIndex          int
+	loadErr           string
+	detail            *detailOverlay
 	// pendingJump holds a host alias requested by the global search before the
 	// tab finished loading, since there is nothing to point at yet.
 	pendingJump string
@@ -63,6 +68,7 @@ const (
 	sshModeDeleteKey
 	sshModeMaterialize
 	sshModeExportPreview
+	sshModeBatchDeleteHost
 )
 
 type sshLoadedMsg struct {
@@ -92,23 +98,98 @@ func newSSHTab(mgr Managers) *sshTab {
 
 func (t *sshTab) Title() string { return "SSH" }
 
-func (t *sshTab) Help() string {
+func (t *sshTab) Bindings() []KeyAction {
 	if t.form != nil {
-		return "tab/↑↓ 切换字段 · enter 提交 · esc 取消"
+		return []KeyAction{
+			{[]string{"tab/↑↓"}, "switch field", grpForm},
+			{[]string{"enter"}, "submit", grpForm},
+			{[]string{"esc"}, "cancel", grpForm},
+		}
 	}
 	switch t.mode {
-	case sshModeDeleteHost, sshModeDeleteKey, sshModeMaterialize:
-		return "enter/y 确认 · esc/n 取消"
+	case sshModeDeleteHost, sshModeDeleteKey, sshModeMaterialize, sshModeBatchDeleteHost:
+		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	case sshModeExportPreview:
-		return "w 写入文件 · esc 取消"
+		return []KeyAction{{[]string{"w"}, "write file", grpConfirm}, {[]string{"esc"}, "cancel", grpConfirm}}
 	}
+	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
+		actTop, actBottom, actPageUp, actPageDn}
 	if t.focusLeft {
-		return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · x 导出 · r 刷新"
+		return append(append(nav, actNew, actEdit, actDelete, actExport), actRefresh, actFilter)
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · i 导入 · R 重命名 · m materialize · d 删除 · x 导出全部 · r 刷新"
+	return append(append(nav,
+		KeyAction{[]string{"i"}, "import keypair", grpItem},
+		KeyAction{[]string{"r"}, "rename keypair", grpItem},
+		KeyAction{[]string{"m"}, "materialize", grpItem},
+		KeyAction{[]string{"d"}, "delete", grpItem},
+		KeyAction{[]string{"x"}, "export OpenSSH fragment", grpItem},
+	), actRefresh, actFilter)
 }
 
-func (t *sshTab) InputMode() bool { return t.form != nil || t.mode != sshModeNormal }
+func (t *sshTab) InputMode() bool {
+	return t.form != nil || t.mode != sshModeNormal || t.filterBox.Active()
+}
+
+// visibleHosts 返回过滤后的左栏可见列表（空词 = 全量）。
+func (t *sshTab) visibleHosts() []storage.HostEntry {
+	if t.filterBox.Term() == "" {
+		return t.hosts
+	}
+	out := make([]storage.HostEntry, 0, len(t.hosts))
+	for _, h := range t.hosts {
+		if t.filterBox.Matches(h.Alias + " " + h.Hostname) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// enterFilter 进入 `/` 过滤（清词重新开始，与 env/text/config 一致）。
+func (t *sshTab) enterFilter() {
+	t.focusLeft = true
+	t.filterBox.EnterFresh()
+}
+
+// handleFilterKeys 处理过滤输入态按键；返回 true 表示按键已被消费。
+func (t *sshTab) handleFilterKeys(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "esc":
+		t.filterBox.Clear()
+		t.clampFocus()
+		return true
+	case "enter":
+		t.filterBox.Confirm()
+		return true
+	case "backspace":
+		t.filterBox.Backspace()
+		t.clampFocus()
+		return true
+	}
+	if isPrintable(msg) {
+		t.filterBox.Append(msg.String())
+		t.clampFocus()
+		return true
+	}
+	return false
+}
+
+// visibleHostAliases 返回可见 host 的别名（计数提示用）。
+func (t *sshTab) visibleHostAliases() []string {
+	hosts := t.visibleHosts()
+	out := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		out = append(out, h.Alias)
+	}
+	return out
+}
+
+// clampFocus 把两栏游标都收回可见范围。
+func (t *sshTab) clampFocus() {
+	n := len(t.visibleHosts())
+	if t.hostIndex >= n {
+		t.hostIndex = maxInt(n-1, 0)
+	}
+}
 
 func (t *sshTab) SetSize(width, height int) {
 	t.width, t.height = width, height
@@ -156,6 +237,11 @@ func (t *sshTab) load() tea.Cmd {
 }
 
 func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && t.filterBox.Active() && t.form == nil && t.mode == sshModeNormal {
+		if t.handleFilterKeys(key) {
+			return t, nil
+		}
+	}
 	// Form results must be handled before routing further messages into the
 	// still-open form.
 	switch msg := msg.(type) {
@@ -171,7 +257,7 @@ func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.form = nil
 		t.formSubmit = nil
 		t.cancelMode()
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	}
 	if t.form != nil {
 		next, cmd := t.form.Update(msg)
@@ -245,7 +331,7 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.keyIndex--
 		}
 	case "down", "j":
-		if t.focusLeft && t.hostIndex < len(t.hosts)-1 {
+		if t.focusLeft && t.hostIndex < len(t.visibleHosts())-1 {
 			t.hostIndex++
 		} else if !t.focusLeft && t.keyIndex < len(t.keyPairs)-1 {
 			t.keyIndex++
@@ -254,7 +340,12 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.focusLeft = true
 	case "right", "l":
 		t.focusLeft = false
-	case "r":
+	case "/":
+		if t.focusLeft {
+			t.enterFilter()
+			return t, nil
+		}
+	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
 	case "enter":
@@ -264,19 +355,12 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t.enterHostForm(nil)
 		}
 		return t.enterImportKeyPair()
-	case "e":
-		if t.focusLeft {
-			host, ok := t.currentHost()
-			if !ok {
-				return t, warnToast("没有选中的 host")
-			}
-			return t.enterHostForm(&host)
-		}
 	case "i":
 		if !t.focusLeft {
 			return t.enterImportKeyPair()
 		}
-	case "R":
+	case "r":
+		// r=重命名全局唯一：keypair 重命名从 R 迁到 r（host 重命名走 e 表单）
 		if !t.focusLeft {
 			return t.enterRenameKeyPair()
 		}
@@ -284,12 +368,81 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		if !t.focusLeft {
 			return t.enterMaterialize()
 		}
+	case " ", "space":
+		if t.focusLeft {
+			if host, ok := t.currentHost(); ok {
+				t.sel.Toggle(host.Alias)
+			}
+		}
+	case "a":
+		if t.focusLeft {
+			keys := make([]string, 0, len(t.visibleHosts()))
+			for _, h := range t.visibleHosts() {
+				keys = append(keys, h.Alias)
+			}
+			t.sel.SelectVisible(keys)
+		}
 	case "x":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t.enterBatchHostExport()
+		}
 		return t.enterExport()
 	case "d":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t.enterBatchDeleteHosts()
+		}
 		return t.enterDelete()
+	case "e":
+		if t.focusLeft && t.sel.SelectionCount() > 1 {
+			return t, warnToast("multiple hosts selected: narrow to a single selection to edit")
+		}
+		if t.focusLeft {
+			host, ok := t.currentHost()
+			if !ok {
+				return t, warnToast("no host selected")
+			}
+			return t.enterHostForm(&host)
+		}
+	case "g":
+		t.jumpFocus(0)
+	case "G":
+		t.jumpFocus(t.focusListLen() - 1)
+	case "pgup":
+		t.jumpFocus(t.cursorForFocus() - pageStep(t.height))
+	case "pgdown":
+		t.jumpFocus(t.cursorForFocus() + pageStep(t.height))
 	}
 	return t, nil
+}
+
+// cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
+func (t *sshTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.hostIndex
+	}
+	return t.keyIndex
+}
+
+func (t *sshTab) focusListLen() int {
+	if t.focusLeft {
+		// 游标语义 = 过滤可见列表上的位置（与 hostListLines/currentHost 一致）。
+		return len(t.visibleHosts())
+	}
+	return len(t.keyPairs)
+}
+
+func (t *sshTab) jumpFocus(idx int) {
+	n := t.focusListLen()
+	if n == 0 || idx < 0 {
+		idx = 0
+	} else if idx > n-1 {
+		idx = n - 1
+	}
+	if t.focusLeft {
+		t.hostIndex = idx
+	} else {
+		t.keyIndex = idx
+	}
 }
 
 // updateMode handles the delete/materialize/export confirmation modals.
@@ -299,6 +452,16 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		switch msg.String() {
 		case "enter", "y":
 			return t.doDeleteHost(t.pendingHost)
+		case "esc", "n":
+			t.cancelMode()
+		}
+	case sshModeBatchDeleteHost:
+		switch msg.String() {
+		case "enter", "y":
+			targets := t.pendingBatchHosts
+			t.cancelMode()
+			t.sel.ClearSelection() // 提交即清空多选集
+			return t, t.doBatchDeleteHosts(targets)
 		case "esc", "n":
 			t.cancelMode()
 		}
@@ -347,11 +510,103 @@ func (t *sshTab) cancelMode() {
 
 // enterDelete stages the focused host or keypair for deletion, gathering the
 // keypair's referencing hosts so the confirmation can list them.
+// enterBatchDeleteHosts 多选集批量删除 host：一次确认列全部目标。
+func (t *sshTab) enterBatchDeleteHosts() (Tab, tea.Cmd) {
+	targets := t.selectedHostAliases()
+	if len(targets) == 0 {
+		return t, warnToast("selection is empty")
+	}
+	t.pendingBatchHosts = targets
+	t.mode = sshModeBatchDeleteHost
+	return t, nil
+}
+
+// selectedHostAliases 返回多选集命中的可见 host 别名。
+func (t *sshTab) selectedHostAliases() []string {
+	var out []string
+	for _, h := range t.visibleHosts() {
+		if t.sel.IsSelected(h.Alias) {
+			out = append(out, h.Alias)
+		}
+	}
+	return out
+}
+
+// doBatchDeleteHosts 逐条删除；单条失败不中止其余。
+func (t *sshTab) doBatchDeleteHosts(aliases []string) tea.Cmd {
+	mgr := t.mgr.SSH
+	mgrs := t.mgr
+	return func() tea.Msg {
+		failed := 0
+		for _, alias := range aliases {
+			if err := mgr.DeleteHost(alias); err != nil {
+				failed++
+				recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "delete failed")
+				continue
+			}
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "delete")
+		}
+		if failed > 0 {
+			return warnMsg{text: fmt.Sprintf("batch delete finished, %d failed", failed)}
+		}
+		return sshReloadMsg{toast: fmt.Sprintf("deleted %d hosts", len(aliases))}
+	}
+}
+
+// enterBatchHostExport 批量导出：选目录，每个 host 写入 <目录>/<alias>.conf。
+func (t *sshTab) enterBatchHostExport() (Tab, tea.Cmd) {
+	targets := t.selectedHostAliases()
+	if len(targets) == 0 {
+		return t, warnToast("selection is empty")
+	}
+	f := newForm("batch export host snippets",
+		formField{
+			key: "dir", label: "output directory", kind: formPath, placeholder: "~/.ssh/config.d",
+			validate: func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("output directory cannot be empty")
+				}
+				return nil
+			},
+		},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		dir := strings.TrimSpace(values["dir"])
+		targets := t.selectedHostAliases()
+		t.sel.ClearSelection()
+		return t.doBatchExportHosts(dir, targets)
+	})
+	return t, nil
+}
+
+// doBatchExportHosts 逐个导出；单条失败不中止其余并汇总。
+func (t *sshTab) doBatchExportHosts(dir string, aliases []string) tea.Cmd {
+	mgr := t.mgr.SSH
+	return func() tea.Msg {
+		failed := 0
+		for _, alias := range aliases {
+			content, err := mgr.Export(alias)
+			if err != nil {
+				failed++
+				continue
+			}
+			path := filepath.Join(expandHome(dir), alias+".conf")
+			if err := storage.WriteSensitiveFile(path, []byte(content), 0o700, 0o600); err != nil {
+				failed++
+			}
+		}
+		if failed > 0 {
+			return warnMsg{text: fmt.Sprintf("batch export finished, %d failed", failed)}
+		}
+		return sshReloadMsg{toast: fmt.Sprintf("exported %d hosts to %s", len(aliases), dir)}
+	}
+}
+
 func (t *sshTab) enterDelete() (Tab, tea.Cmd) {
 	if t.focusLeft {
 		host, ok := t.currentHost()
 		if !ok {
-			return t, warnToast("没有可删除的 host")
+			return t, warnToast("no host to delete")
 		}
 		t.pendingHost = host.Alias
 		t.mode = sshModeDeleteHost
@@ -359,7 +614,7 @@ func (t *sshTab) enterDelete() (Tab, tea.Cmd) {
 	}
 	key, ok := t.currentKey()
 	if !ok {
-		return t, warnToast("没有可删除的 keypair")
+		return t, warnToast("no keypair to delete")
 	}
 	t.pendingKey = key.Name
 	t.keyRefs = t.hostRefs(key.Name)
@@ -372,7 +627,7 @@ func (t *sshTab) enterDelete() (Tab, tea.Cmd) {
 func (t *sshTab) enterMaterialize() (Tab, tea.Cmd) {
 	key, ok := t.currentKey()
 	if !ok {
-		return t, warnToast("没有可落盘的 keypair")
+		return t, warnToast("no keypair to materialize")
 	}
 	path, err := ssh.MaterializePath(key.Name)
 	if err != nil {
@@ -395,11 +650,11 @@ func (t *sshTab) enterMaterialize() (Tab, tea.Cmd) {
 func (t *sshTab) enterExport() (Tab, tea.Cmd) {
 	mgr := t.mgr.SSH
 	alias := ""
-	label := "全部 host"
+	label := "all hosts"
 	if t.focusLeft {
 		host, ok := t.currentHost()
 		if !ok {
-			return t, warnToast("没有可导出的 host")
+			return t, warnToast("no host to export")
 		}
 		alias = host.Alias
 		label = "host " + alias
@@ -465,28 +720,28 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 		base = *existing
 	}
 
-	title := "新建 host"
+	title := "new host"
 	fields := make([]formField, 0, 8)
 	if existing == nil {
-		title = "新建 host"
+		title = "new host"
 		fields = append(fields, formField{
 			key: "alias", label: "alias", kind: formText, value: base.Alias, placeholder: "web",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("alias 不能为空")
+					return fmt.Errorf("alias cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法 alias")
+					return fmt.Errorf("invalid alias")
 				}
 				if knownHost(v) {
-					return fmt.Errorf("host %s 已存在", v)
+					return fmt.Errorf("host %s already exists", v)
 				}
 				return nil
 			},
 		})
 	} else {
-		title = "编辑 host " + existing.Alias
+		title = "edit host " + existing.Alias
 	}
 	fields = append(fields,
 		formField{
@@ -494,10 +749,10 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("hostname 不能为空")
+					return fmt.Errorf("hostname cannot be empty")
 				}
 				if strings.ContainsAny(v, "\r\n\x00") {
-					return fmt.Errorf("hostname 不能包含换行或 NUL")
+					return fmt.Errorf("hostname cannot contain newlines or NUL")
 				}
 				return nil
 			},
@@ -506,7 +761,7 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 			key: "user", label: "user", kind: formText, value: base.User, placeholder: "deploy",
 			validate: func(v string) error {
 				if strings.ContainsAny(v, "\r\n\x00") {
-					return fmt.Errorf("user 不能包含换行或 NUL")
+					return fmt.Errorf("user cannot contain newlines or NUL")
 				}
 				return nil
 			},
@@ -520,7 +775,7 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 				}
 				n, err := strconv.Atoi(v)
 				if err != nil || n < 0 || n > 65535 {
-					return fmt.Errorf("port 需为 0-65535 的整数")
+					return fmt.Errorf("port must be an integer between 0 and 65535")
 				}
 				return nil
 			},
@@ -533,10 +788,10 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 					return nil
 				}
 				if existing != nil && v == existing.Alias {
-					return fmt.Errorf("host 不能以自身作为 proxyJump")
+					return fmt.Errorf("host cannot use itself as proxyJump")
 				}
 				if !knownHost(v) {
-					return fmt.Errorf("proxyJump %s 不存在", v)
+					return fmt.Errorf("proxyJump %s does not exist", v)
 				}
 				return nil
 			},
@@ -549,7 +804,7 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 					return nil
 				}
 				if !knownKey(v) {
-					return fmt.Errorf("keypair %s 不存在", v)
+					return fmt.Errorf("keypair %s does not exist", v)
 				}
 				return nil
 			},
@@ -580,7 +835,7 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 	if raw := strings.TrimSpace(values["port"]); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil {
-			err := fmt.Errorf("port 非法: %s", raw)
+			err := fmt.Errorf("invalid port: %s", raw)
 			return func() tea.Msg { return errMsg{err: err} }
 		}
 		port = n
@@ -606,11 +861,11 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 		entry.Alias = alias
 		return func() tea.Msg {
 			if err := mgr.AddHost(&entry); err != nil {
-				recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "add 失败")
+				recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "add failed")
 				return errMsg{err: err}
 			}
 			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "add")
-			return sshReloadMsg{toast: "已新建 host " + alias, hostAlias: alias}
+			return sshReloadMsg{toast: "created host " + alias, hostAlias: alias}
 		}
 	}
 	alias := existing.Alias
@@ -626,11 +881,11 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 			return nil
 		})
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "edit 失败")
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "edit failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "edit")
-		return sshReloadMsg{toast: "已更新 host " + alias, hostAlias: alias}
+		return sshReloadMsg{toast: "updated host " + alias, hostAlias: alias}
 	}
 }
 
@@ -640,11 +895,11 @@ func (t *sshTab) doDeleteHost(alias string) (Tab, tea.Cmd) {
 	t.cancelMode()
 	return t, func() tea.Msg {
 		if err := mgr.DeleteHost(alias); err != nil {
-			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "delete 失败")
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "delete")
-		return sshReloadMsg{toast: "已删除 host " + alias}
+		return sshReloadMsg{toast: "deleted host " + alias}
 	}
 }
 
@@ -655,27 +910,27 @@ func (t *sshTab) enterImportKeyPair() (Tab, tea.Cmd) {
 	for _, k := range t.keyPairs {
 		siblings = append(siblings, k.Name)
 	}
-	f := newForm("导入 keypair",
+	f := newForm("import keypair",
 		formField{
-			key: "name", label: "名称", kind: formText, placeholder: "web-key",
+			key: "name", label: "name", kind: formText, placeholder: "web-key",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("名称不能为空")
+					return fmt.Errorf("name cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法名称")
+					return fmt.Errorf("invalid name")
 				}
 				for _, name := range siblings {
 					if name == v {
-						return fmt.Errorf("keypair %s 已存在", v)
+						return fmt.Errorf("keypair %s already exists", v)
 					}
 				}
 				return nil
 			},
 		},
 		formField{
-			key: "path", label: "私钥文件", kind: formPath, placeholder: "~/.ssh/id_ed25519",
+			key: "path", label: "private key file", kind: formPath, placeholder: "~/.ssh/id_ed25519",
 		},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
@@ -686,45 +941,45 @@ func (t *sshTab) enterImportKeyPair() (Tab, tea.Cmd) {
 
 func (t *sshTab) doImportKeyPair(name, path string) tea.Cmd {
 	if path == "" {
-		return warnToast("私钥文件路径不能为空")
+		return warnToast("private key file path cannot be empty")
 	}
 	mgr := t.mgr.SSH
 	mgrs := t.mgr
 	return func() tea.Msg {
 		if _, err := mgr.ImportKeyPair(name, expandHome(path), false); err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "import 失败")
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "import failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "import")
-		return sshReloadMsg{toast: "已导入 keypair " + name, keyName: name}
+		return sshReloadMsg{toast: "imported keypair " + name, keyName: name}
 	}
 }
 
 func (t *sshTab) enterRenameKeyPair() (Tab, tea.Cmd) {
 	key, ok := t.currentKey()
 	if !ok {
-		return t, warnToast("没有可重命名的 keypair")
+		return t, warnToast("no keypair to rename")
 	}
 	siblings := make([]string, 0, len(t.keyPairs))
 	for _, k := range t.keyPairs {
 		siblings = append(siblings, k.Name)
 	}
 	old := key.Name
-	f := newForm("重命名 keypair "+old,
+	f := newForm("rename keypair "+old,
 		formField{
-			key: "name", label: "新名称", kind: formText, value: old, placeholder: "prod-key",
+			key: "name", label: "new name", kind: formText, value: old, placeholder: "prod-key",
 			validate: func(v string) error {
 				v = strings.TrimSpace(v)
 				if v == "" {
-					return fmt.Errorf("名称不能为空")
+					return fmt.Errorf("name cannot be empty")
 				}
 				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("非法名称")
+					return fmt.Errorf("invalid name")
 				}
 				if v != old {
 					for _, name := range siblings {
 						if name == v {
-							return fmt.Errorf("keypair %s 已存在", v)
+							return fmt.Errorf("keypair %s already exists", v)
 						}
 					}
 				}
@@ -740,20 +995,20 @@ func (t *sshTab) enterRenameKeyPair() (Tab, tea.Cmd) {
 
 func (t *sshTab) doRenameKeyPair(oldName, newName string) tea.Cmd {
 	if oldName == newName {
-		return warnToast("名称未变化")
+		return warnToast("name unchanged")
 	}
 	mgr := t.mgr.SSH
 	mgrs := t.mgr
 	return func() tea.Msg {
 		updated, err := mgr.RenameKeyPair(oldName, newName)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+oldName, false, "rename 失败")
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+oldName, false, "rename failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+newName, true, "rename "+oldName)
-		toast := "已重命名为 " + newName
+		toast := "renamed to " + newName
 		if len(updated) > 0 {
-			toast += fmt.Sprintf("（已联动 %d 个 host 引用）", len(updated))
+			toast += fmt.Sprintf(" (updated %d host references)", len(updated))
 		}
 		return sshReloadMsg{toast: toast, keyName: newName}
 	}
@@ -767,15 +1022,15 @@ func (t *sshTab) doDeleteKey(name string, force bool) (Tab, tea.Cmd) {
 	return t, func() tea.Msg {
 		cleared, err := mgr.DeleteKeyPair(name, force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "delete 失败")
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "delete failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "delete")
-		toast := "已删除 keypair " + name
+		toast := "deleted keypair " + name
 		if force && len(cleared) > 0 {
-			toast += fmt.Sprintf("（已清空 %d 个 host 引用）", len(cleared))
+			toast += fmt.Sprintf(" (cleared %d host references)", len(cleared))
 		} else if force && len(refs) > 0 {
-			toast += fmt.Sprintf("（已清空 %d 个 host 引用）", len(refs))
+			toast += fmt.Sprintf(" (cleared %d host references)", len(refs))
 		}
 		return sshReloadMsg{toast: toast}
 	}
@@ -788,22 +1043,22 @@ func (t *sshTab) doMaterialize(name string, force bool) (Tab, tea.Cmd) {
 	return t, func() tea.Msg {
 		path, err := mgr.Materialize(name, force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "materialize 失败")
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "materialize failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "materialize")
 		// Only the落盘路径 is surfaced; the private key body never reaches the UI.
-		return toastMsg{text: "已写入 " + path, level: toastSuccess}
+		return toastMsg{text: "written to " + path, level: toastSuccess}
 	}
 }
 
 func (t *sshTab) enterExportPathForm(content string) (Tab, tea.Cmd) {
-	f := newForm("导出到文件",
+	f := newForm("export to file",
 		formField{
-			key: "path", label: "目标文件", kind: formPath, placeholder: "~/.ssh/config.d/senv",
+			key: "path", label: "target file", kind: formPath, placeholder: "~/.ssh/config.d/senv",
 			validate: func(v string) error {
 				if strings.TrimSpace(v) == "" {
-					return fmt.Errorf("目标路径不能为空")
+					return fmt.Errorf("target path cannot be empty")
 				}
 				return nil
 			},
@@ -823,7 +1078,7 @@ func doWriteExport(path, content string) tea.Cmd {
 		if err := storage.WriteSensitiveFile(target, []byte(content), 0o700, 0o600); err != nil {
 			return errMsg{err: err}
 		}
-		return toastMsg{text: "已写入 " + target, level: toastSuccess}
+		return toastMsg{text: "written to " + target, level: toastSuccess}
 	}
 }
 
@@ -879,10 +1134,10 @@ func parseExtraText(raw string) (map[string]string, error) {
 		key, value, found := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
 		if !found || key == "" {
-			return nil, fmt.Errorf("extra 需为 KEY=VALUE 形式：%q", line)
+			return nil, fmt.Errorf("extra must be KEY=VALUE, got %q", line)
 		}
 		if strings.ContainsAny(key, " \t") {
-			return nil, fmt.Errorf("extra 键不能包含空白：%q", key)
+			return nil, fmt.Errorf("extra key cannot contain whitespace: %q", key)
 		}
 		out[key] = value
 	}
@@ -928,13 +1183,13 @@ func (t *sshTab) openDetail() tea.Cmd {
 	if t.focusLeft {
 		host, ok := t.currentHost()
 		if !ok {
-			return warnToast("没有选中的 host")
+			return warnToast("no host selected")
 		}
 		t.detail = newDetailOverlay("Host "+host.Alias, t.hostDetailLines(host))
 	} else {
 		key, ok := t.currentKey()
 		if !ok {
-			return warnToast("没有选中的 keypair")
+			return warnToast("no keypair selected")
 		}
 		t.detail = newDetailOverlay("KeyPair "+key.Name, keyPairDetailLines(key))
 	}
@@ -966,7 +1221,7 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 			}
 		}
 		if summary == "" {
-			lines = append(lines, "  keypair:   ⚠ 引用不存在")
+			lines = append(lines, "  keypair:   ⚠ reference missing")
 		} else {
 			lines = append(lines, "  keypair:   "+h.IdentityKey+"  "+summary)
 		}
@@ -989,7 +1244,7 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 func keyPairDetailLines(k ssh.KeyPairSummary) []string {
 	fp := k.Fingerprint
 	if fp == "" {
-		fp = "（未派生，可能为 passphrase 加密的私钥）"
+		fp = " (not derived; may be a passphrase-encrypted private key)"
 	}
 	lines := []string{
 		"name:        " + k.Name,
@@ -1004,16 +1259,6 @@ func keyPairDetailLines(k ssh.KeyPairSummary) []string {
 	return append(lines, "  "+k.PublicKey)
 }
 
-// sortedKeys returns map keys in stable order.
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // --- cursor ---
 
 // focusJump positions the cursor on a host alias (global search target).
@@ -1023,10 +1268,12 @@ func (t *sshTab) focusJump(group, alias string) {
 }
 
 // applyPendingJump resolves a pending host or keypair name once the data is
-// available (global search target or a just-finished write).
+// available (global search target or a just-finished write). 按过滤契约
+// （tui-ux-filter）先清过滤保证目标可见，再在可见列表上定位。
 func (t *sshTab) applyPendingJump() {
 	if t.pendingJump != "" {
-		for i, h := range t.hosts {
+		t.filterBox.Clear()
+		for i, h := range t.visibleHosts() {
 			if h.Alias == t.pendingJump {
 				t.hostIndex = i
 				t.focusLeft = true
@@ -1066,15 +1313,15 @@ func (t *sshTab) clamp() {
 
 func (t *sshTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("SSH") + "\n" + truncateRunes("⚠ "+t.loadErr, max(t.width, 1))
+		return paneTitleStyle.Render("SSH") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if len(t.hosts) == 0 && len(t.keyPairs) == 0 {
+	if t.loaded && len(t.hosts) == 0 && len(t.keyPairs) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("SSH"),
-			emptyStateStyle.Render("暂无 SSH 资产；按 n 新建 host 或导入 keypair，之后按 r 刷新"))
+			emptyStateStyle.Render("no SSH assets yet; press n to create a host or import a keypair, then Ctrl+R to refresh"))
 	}
 	overlay := ""
 	if t.form != nil {
@@ -1104,11 +1351,30 @@ func (t *sshTab) viewBaseAt(height int) string {
 		rightW = 4
 	}
 
-	hostLines := t.hostListLines(max(leftW-4, 8))
-	keyLines := t.keyPairListLines(max(rightW-4, 8))
+	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
+	if !t.loaded {
+		left := emptyStateStyle.Render("loading SSH assets…")
+		right := emptyStateStyle.Render("loading SSH assets…")
+		if t.focusLeft {
+			left = activePaneStyle.Width(leftW).Height(height).Render(left)
+			right = paneStyle.Width(rightW).Height(height).Render(right)
+		} else {
+			left = paneStyle.Width(leftW).Height(height).Render(left)
+			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
+	}
 
-	left := windowedPane(fmt.Sprintf("Hosts (%d)", len(t.hosts)), hostLines, t.hostIndex, height, leftW)
-	right := windowedPane(fmt.Sprintf("KeyPairs (%d) · 私钥已遮蔽", len(t.keyPairs)), keyLines, t.keyIndex, height, rightW)
+	hostLines := t.hostListLines(maxInt(leftW-4, 8))
+	keyLines := t.keyPairListLines(maxInt(rightW-4, 8))
+
+	leftTitle := fmt.Sprintf("Hosts (%d)", len(t.visibleHosts()))
+	if t.filterBox.Active() {
+		leftTitle += "  " + t.filterBox.Prompt()
+	}
+	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleHostAliases()))
+	left := windowedPane(leftTitle, hostLines, t.hostIndex, height, leftW)
+	right := windowedPane(fmt.Sprintf("KeyPairs (%d) · private keys masked", len(t.keyPairs)), keyLines, t.keyIndex, height, rightW)
 
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
@@ -1127,8 +1393,9 @@ func (t *sshTab) hostListLines(width int) []string {
 	for _, k := range t.keyPairs {
 		byName[k.Name] = k
 	}
-	lines := make([]string, 0, len(t.hosts))
-	for i, host := range t.hosts {
+	hosts := t.visibleHosts()
+	lines := make([]string, 0, len(hosts))
+	for i, host := range hosts {
 		line := truncateWidth(hostListLabel(host, byName), width)
 		lines = append(lines, cursorLine(line, i == t.hostIndex))
 	}
@@ -1149,7 +1416,7 @@ func hostListLabel(host storage.HostEntry, keys map[string]ssh.KeyPairSummary) s
 	}
 	summary, ok := keys[host.IdentityKey]
 	if !ok {
-		return line + "  key:" + host.IdentityKey + " ⚠缺失"
+		return line + "  key:" + host.IdentityKey + " ⚠missing"
 	}
 	if fp := shortFingerprint(summary.Fingerprint); fp != "" {
 		return line + "  key:" + host.IdentityKey + "(" + fp + ")"
@@ -1180,46 +1447,38 @@ func shortFingerprint(fp string) string {
 
 func (t *sshTab) renderModal() string {
 	switch t.mode {
-	case sshModeDeleteHost:
-		body := "删除后不可恢复。"
-		if host, ok := t.hostByAlias(t.pendingHost); ok {
-			body = "hostname: " + orDash(host.Hostname) + "\n删除后不可恢复。"
+	case sshModeBatchDeleteHost:
+		var b strings.Builder
+		for _, alias := range t.pendingBatchHosts {
+			b.WriteString(alias + "\n")
 		}
-		return modalBox("删除 host "+t.pendingHost+"？", body, "enter/y 确认 · esc/n 取消")
+		return modalBox(fmt.Sprintf("delete %d hosts?", len(t.pendingBatchHosts)),
+			strings.TrimRight(b.String(), "\n"), "enter/y delete all · esc/n cancel")
+	case sshModeDeleteHost:
+		body := "cannot be undone after deletion."
+		if host, ok := t.hostByAlias(t.pendingHost); ok {
+			body = "hostname: " + orDash(host.Hostname) + "\ncannot be undone after deletion."
+		}
+		return modalBox("delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
 	case sshModeDeleteKey:
 		if len(t.keyRefs) == 0 {
-			return modalBox("删除 keypair "+t.pendingKey+"？", "删除后该私钥无法恢复。", "enter/y 确认 · esc/n 取消")
+			return modalBox("delete keypair "+t.pendingKey+"?", "the private key cannot be recovered after deletion.", "enter/y confirm · esc/n cancel")
 		}
 		var b strings.Builder
-		b.WriteString("以下 host 仍在引用该 keypair：\n")
+		b.WriteString("these hosts still reference the keypair:\n")
 		for _, alias := range t.keyRefs {
 			b.WriteString("  · " + alias + "\n")
 		}
-		b.WriteString("\n默认拒绝删除。按 F 强制删除并清空这些 host 的 identityKey。")
-		return modalBox("keypair "+t.pendingKey+" 仍被引用", b.String(), "F 强制删除 · esc 取消")
+		b.WriteString("\ndeletion is refused by default. press F to force delete and clear identityKey on these hosts.")
+		return modalBox("keypair "+t.pendingKey+" still referenced", b.String(), "F force delete · esc cancel")
 	case sshModeMaterialize:
-		body := "将把私钥明文写入 " + t.materializePath + "（0600）。"
+		body := "will write the private key in plaintext to:\n" + t.materializePath + " (0600)."
 		if t.pendingForce {
-			body += "\n⚠ 目标文件已存在，确认后将覆盖。"
+			body += "\n⚠ target file exists and will be overwritten."
 		}
-		return modalBox("materialize keypair "+t.pendingKey, body, "enter/y 确认 · esc/n 取消")
+		return modalBox("materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
 	case sshModeExportPreview:
-		return modalBox("导出 OpenSSH 片段 — "+t.exportLabel, t.exportContent, "w 写入文件 · esc 取消")
+		return modalBox("export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
 	}
 	return ""
-}
-
-// cursorLine renders a selectable list row with a fixed-width selection marker.
-func cursorLine(line string, selected bool) string {
-	if selected {
-		return selectedLineStyle.Render(cursorPrefix(true) + line)
-	}
-	return cursorPrefix(false) + line
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -3,7 +3,6 @@
 ## Purpose
 把 provider 档案浏览与 agent 切换纳入 `senv tui` 全屏界面：浏览时不得泄露凭据，切换复用 agents 子 change 的 SwitchManager（原子写 + 指针 + 回滚），让用户不离开 TUI 即可完成「哪个 agent 用哪个 provider 的哪个模型」。
 ## Requirements
-
 ### Requirement: AI Tab 注册
 `senv tui` 在 vault 解锁后 SHALL 注册 AI Tab；`tui.Managers` 的 LLM 管理器为 nil（如 git 模式）时 SHALL 跳过注册且不影响其他 Tab。
 
@@ -39,7 +38,8 @@ AI Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模
 - **THEN** Tab 正常渲染空态提示，引导执行 `senv ai provider add`
 
 ### Requirement: Tab 内切换操作
-AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provider 为目标，对右栏选中的 agent 执行切换——先多选 Agent 模型集（space 逐个勾选/取消，进入时默认全选 Provider 模型集），再选定默认模型（默认取档案默认模型）后确认；`m` 对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 provider 当前写入该 agent 的 Agent 模型集内，不改动模型集；两者均复用 SwitchManager 的原子写回与回滚。模型集为空时 MUST NOT 提交切换。成功后 SHALL 刷新指针展示并提示结果（含模型集条数与默认模型；codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
+
+AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provider 为目标，对右栏选中的 agent 执行切换——先多选 Agent 模型集（space 逐个勾选/取消，进入时默认全选 Provider 模型集），再选定默认模型（默认取档案默认模型）后确认；`M` 对右栏已指向某 provider 的 agent 仅更换默认模型（与 `s` 成对，大写为变体语义），候选限定在该 provider 当前写入该 agent 的 Agent 模型集内，不改动模型集；两者均复用 SwitchManager 的原子写回与回滚。模型集为空时 MUST NOT 提交切换。成功后 SHALL 刷新指针展示并提示结果（含模型集条数与默认模型；codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
 
 #### Scenario: 切换成功
 - **WHEN** 用户对 provider main 按 `s` 并在右栏选中 claude-code，勾选两个模型、选定默认模型后确认
@@ -62,11 +62,11 @@ AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provi
 - **THEN** 成功提示包含需设置的环境变量名（如 `SENV_MAIN_API_KEY`）
 
 #### Scenario: 仅换模型无未指向报错
-- **WHEN** 用户对未指向任何 provider 的 agent 按 `m`
+- **WHEN** 用户对未指向任何 provider 的 agent 按 `M`
 - **THEN** 界面提示先执行切换（`s`），不调用 SwitchManager
 
 #### Scenario: 仅换模型限定在已写入集合内
-- **WHEN** agent 当前 Agent 模型集为 m1、m2，用户按 `m`
+- **WHEN** agent 当前 Agent 模型集为 m1、m2，用户按 `M`
 - **THEN** 候选只有 m1、m2，选择后只更新默认模型，模型集与 provider 指向不变
 
 #### Scenario: 漂移展示与 status 一致
@@ -141,3 +141,4 @@ AI Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>
 #### Scenario: 全界面无明文
 - **WHEN** 用户在 AI Tab 内浏览并完成任意操作
 - **THEN** 界面渲染与状态中均不含 key 明文（凭据引用文本除外）
+

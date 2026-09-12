@@ -52,7 +52,7 @@ func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
 	case "pgdown":
 		d.top += d.pageSize()
 		if d.top > len(d.lines)-1 {
-			d.top = max(len(d.lines)-1, 0)
+			d.top = maxInt(len(d.lines)-1, 0)
 		}
 	}
 	return d, nil
@@ -68,7 +68,7 @@ func (d *detailOverlay) pageSize() int {
 
 func (d *detailOverlay) View() string {
 	page := d.pageSize()
-	start := clamp(d.top, 0, max(len(d.lines)-1, 0))
+	start := clamp(d.top, 0, maxInt(len(d.lines)-1, 0))
 	end := start + page
 	if end > len(d.lines) {
 		end = len(d.lines)
@@ -89,6 +89,6 @@ func (d *detailOverlay) View() string {
 	}
 	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.NewStyle().Bold(true).Render(title), "", body, "",
-		statusBarStyle.Render("↑↓/PgUp/PgDn 滚动 · esc 关闭")))
+		statusBarStyle.Render("↑↓/PgUp/PgDn scroll · esc close")))
 	return clipLines(out, d.height)
 }

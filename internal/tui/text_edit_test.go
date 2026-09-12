@@ -13,7 +13,12 @@ func newLoadedTextTab(t *testing.T) *textTab {
 	t.Helper()
 	tab := newTextTab(Managers{Text: newTestTextManager(t)})
 	tab.SetSize(80, 20)
-	return flushText(tab, tab.load())
+	tab = flushText(tab, tab.load())
+	// 侧栏范式：All 伪组占 0，条目类测试默认落在 default 分组
+	if i := indexOfTextGroup(tab, "default"); i >= 0 {
+		tab.groupIndex = i
+	}
+	return tab
 }
 
 func replaceFormText(t *testing.T, f *form, value string) *form {
@@ -86,7 +91,7 @@ func TestTextRenameGroupAndDeleteGroup(t *testing.T) {
 	if tab.mode != textModeDeleteGroupConfirm {
 		t.Fatalf("mode = %v, want delete-group confirm", tab.mode)
 	}
-	if !strings.Contains(tab.View(), "删除分组 journal") {
+	if !strings.Contains(tab.View(), "delete group journal") {
 		t.Errorf("confirm modal missing: %q", tab.View())
 	}
 	out, cmd = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})

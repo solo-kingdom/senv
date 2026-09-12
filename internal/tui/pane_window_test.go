@@ -124,7 +124,7 @@ func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
 	const innerH = 8
 	tab.SetSize(80, innerH)
 	tab.mode = envModeFilter
-	tab.filter = "KEY"
+	tab.filterBox = Filter{term: "KEY"}
 
 	view := tab.View()
 	if h := lipgloss.Height(view); h > paneBudget(innerH) {
@@ -133,7 +133,7 @@ func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
 	if !contains(view, "Groups") {
 		t.Fatalf("group sidebar missing when a prompt is open:\n%s", view)
 	}
-	if !contains(view, "过滤") {
+	if !contains(view, "filter keys (case insensitive)") {
 		t.Fatalf("filter prompt missing:\n%s", view)
 	}
 }
@@ -161,7 +161,7 @@ func TestFramedModalDoesNotOverflowOuterFrame(t *testing.T) {
 	if !strings.Contains(out, "Groups") {
 		t.Error("group sidebar missing from framed view with a prompt open")
 	}
-	if !strings.Contains(out, "删除") {
+	if !strings.Contains(out, "delete ") {
 		t.Error("delete prompt missing from framed view")
 	}
 }

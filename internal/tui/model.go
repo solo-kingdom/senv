@@ -286,7 +286,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.out.Applied > 0 || msg.out.MetadataUpdated {
 			m.mgr.snap.Invalidate()
 			return m, tea.Batch(
-				okToast(fmt.Sprintf("已从 server 更新 %d 条", msg.out.Applied)),
+				okToast(fmt.Sprintf("updated %d entries from server", msg.out.Applied)),
 				reloadAllTabs(m),
 				m.refreshSync(),
 			)
@@ -325,10 +325,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// long-running TUI does not silently drop the sync attempt.
 			if m.sync != nil && m.syncState.Dirty > 0 && !m.quitArmed {
 				m.quitArmed = true
-				m.warn = fmt.Sprintf("仍有 %d 条待推送，再按一次 q 退出（或等待自动同步完成）", m.syncState.Dirty)
+				m.warn = fmt.Sprintf("%d entries still pending push, press q again to quit (or wait for auto sync)", m.syncState.Dirty)
 				return m, nil
 			}
 			return m, tea.Quit
+		case "ctrl+r":
+			// 刷新当前 Tab（grill D7：refresh 统一 Ctrl+R，腾出 r=rename）。
+			m.err = ""
+			return m, m.tabs[m.active].Reload()
 		case "S":
 			// Open the global cross-type search overlay (task 10.1).
 			m.search = newSearchTab(m.mgr)
@@ -336,7 +340,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.search.Init()
 		case "?":
 			// Open the keybinding overview for the active tab.
-			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active].Help())
+			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active])
 			m.help.SetSize(m.width, m.height)
 			return m, nil
 		case "tab":
@@ -464,7 +468,7 @@ func tabTitleForResult(resultType string) string {
 // View renders the tab strip + active tab content + status/error bar.
 func (m Model) View() string {
 	if m.height == 0 {
-		return "启动中…"
+		return "starting…"
 	}
 
 	// Minimum size guard: the outer frame (2 rows) + tab strip with its
@@ -472,7 +476,7 @@ func (m Model) View() string {
 	// need height >= 7, and the shortest tab strip needs width >= 30. Below
 	// this the layout collapses, so show a plain centered hint with no chrome.
 	if m.height < 7 || m.width < 30 {
-		hint := "终端太小（需要 ≥30×7 字符）"
+		hint := "terminal too small (need ≥30×7 chars)"
 		// Center the hint within the available area without any box drawing.
 		padLines := (m.height - 1) / 2
 		if padLines < 0 {
@@ -542,7 +546,7 @@ func (m Model) View() string {
 		}
 		bottom = m.bottomBar(prefix+m.toast, style)
 	default:
-		bottom = m.bottomBar(m.tabs[m.active].Help(), statusBarStyle)
+		bottom = m.bottomBar(groupBar(m.tabs[m.active].Bindings()), statusBarStyle)
 	}
 
 	// Stack the chrome inside the frame. lipgloss v1.x draws borders

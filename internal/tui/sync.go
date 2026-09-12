@@ -98,13 +98,13 @@ func (m Model) syncBadge() string {
 	}
 	switch {
 	case m.syncState.Err != nil:
-		return fmt.Sprintf("⟳ %d 条待推送 · 同步失败：%s", m.syncState.Dirty, shortReason(m.syncState.Err))
+		return fmt.Sprintf("⟳ %d pending push · sync failed: %s", m.syncState.Dirty, shortReason(m.syncState.Err))
 	case m.syncState.Dirty > 0:
-		return fmt.Sprintf("⟳ %d 条待推送", m.syncState.Dirty)
+		return fmt.Sprintf("⟳ %d pending push", m.syncState.Dirty)
 	case !m.syncState.Last.IsZero():
-		return "⟳ 已同步 " + m.syncState.Last.Local().Format("15:04")
+		return "⟳ synced " + m.syncState.Last.Local().Format("15:04")
 	default:
-		return "⟳ 已同步"
+		return "⟳ synced"
 	}
 }
 

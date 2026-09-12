@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-12
+goal: 审查其余 P2：search/list/helpers 内部缺陷、config 表单校验、死代码清理
+skip_specs: true

@@ -15,7 +15,7 @@ import (
 
 // aiNewCredential is the credential-field sentinel: picking it switches the
 // form to the masked own-credential input instead of referencing an entry.
-const aiNewCredential = "「新建自有凭据」"
+const aiNewCredential = "[new own credential]"
 
 // aiCredentialRefLimit caps how many existing vault entries the credential
 // picker offers, so a large vault cannot make the form unusable.
@@ -41,6 +41,7 @@ type aiTab struct {
 	providerIndex int
 	agentIndex    int
 	focusLeft     bool
+	filterBox     Filter // `/` 过滤左栏主列表（provider alias 标识）
 	pendingJump   string
 	detail        *detailOverlay
 
@@ -118,28 +119,68 @@ func newAITab(mgr Managers) *aiTab {
 
 func (t *aiTab) Title() string { return "AI" }
 
-func (t *aiTab) Help() string {
+func (t *aiTab) Bindings() []KeyAction {
 	if t.form != nil {
-		return "tab/↑↓ 切换字段 · ←→ 选候选 · enter 提交 · esc 取消"
+		return []KeyAction{
+			{[]string{"tab/↑↓"}, "switch field", grpForm},
+			{[]string{"←→"}, "pick candidate", grpForm},
+			{[]string{"enter"}, "submit", grpForm},
+			{[]string{"esc"}, "cancel", grpForm},
+		}
 	}
 	switch t.flow {
 	case aiFlowSelectModel:
-		return "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消"
+		return []KeyAction{
+			{[]string{"space"}, "toggle", grpWizard},
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard},
+			{[]string{"esc"}, "cancel", grpWizard},
+		}
 	case aiFlowSelectDefault:
-		return "↑↓/jk 选默认模型 · enter 下一步 · esc 返回"
+		return []KeyAction{actUp, actDown, {[]string{"enter"}, "next", grpWizard}, {[]string{"esc"}, "back", grpWizard}}
 	case aiFlowConfirm:
-		return "enter/y 确认 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	}
 	if t.mode == aiModeDeleteProvider {
-		return "enter/y 确认 · esc/n 取消"
+		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	}
-	return "↑↓/jk 移动 · ←→/hl 切换栏 · enter 详情 · n 新建 · e 编辑 · d 删除 · s 切换 · m 换默认模型 · r 刷新"
+	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
+		actTop, actBottom, actPageUp, actPageDn},
+		KeyAction{[]string{"n"}, "new provider", grpItem},
+		KeyAction{[]string{"e"}, "edit provider", grpItem},
+		KeyAction{[]string{"d"}, "delete provider", grpItem},
+		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem},
+		KeyAction{[]string{"M"}, "default model only", grpItem},
+		actFilter, actRefresh,
+	)
 }
 
 // InputMode reports that the tab owns the keyboard: forms, the switch wizard and
 // destructive confirmations must not be interrupted by global shortcuts.
 func (t *aiTab) InputMode() bool {
-	return t.form != nil || t.flow != aiFlowNone || t.mode != aiModeNormal
+	return t.form != nil || t.flow != aiFlowNone || t.mode != aiModeNormal || t.filterBox.Active()
+}
+
+// visibleProviders 返回过滤后的左栏可见列表（空词 = 全量）。
+func (t *aiTab) visibleProviders() []*storage.LLMProviderEntry {
+	if t.filterBox.Term() == "" {
+		return t.providers
+	}
+	out := make([]*storage.LLMProviderEntry, 0, len(t.providers))
+	for _, p := range t.providers {
+		if t.filterBox.Matches(p.Alias) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// clampLeft 把左栏游标收回可见范围。
+func (t *aiTab) clampLeft() {
+	n := len(t.visibleProviders())
+	if t.providerIndex >= n {
+		t.providerIndex = maxInt(n-1, 0)
+	}
 }
 
 func (t *aiTab) SetSize(width, height int) {
@@ -239,7 +280,7 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	case formCancelMsg:
 		t.form = nil
 		t.formSubmit = nil
-		return t, warnToast("已取消")
+		return t, warnToast("cancelled")
 	case aiFormReopenMsg:
 		msg.form.SetSize(t.width, t.height)
 		for key, value := range msg.values {
@@ -291,16 +332,16 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t, func() tea.Msg { return errMsg{err: err} }
 		}
 		out := msg.out
-		notice := fmt.Sprintf("%s → %s（默认 %s，%d 个模型）",
+		notice := fmt.Sprintf("%s → %s (default %s, %d models)",
 			out.AgentName, out.Provider, out.DefaultModel, len(out.Models))
 		if msg.onlyModel {
-			notice = fmt.Sprintf("%s 仅换默认模型 → %s", out.AgentName, out.DefaultModel)
+			notice = fmt.Sprintf("%s default model only → %s", out.AgentName, out.DefaultModel)
 		}
 		if out.CredentialEnv != "" {
-			notice += fmt.Sprintf("；%s 从环境变量 %s 读取凭据", out.AgentName, out.CredentialEnv)
+			notice += fmt.Sprintf("; %s reads credentials from env %s", out.AgentName, out.CredentialEnv)
 		}
 		if len(out.Warnings) > 0 {
-			notice += "；" + out.Warnings[0]
+			notice += "; " + out.Warnings[0]
 		}
 		return t, tea.Batch(okToast(notice), t.load())
 
@@ -309,6 +350,28 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, nil
 
 	case tea.KeyMsg:
+		if t.filterBox.Active() && t.form == nil && t.flow == aiFlowNone && t.mode == aiModeNormal {
+			switch msg.String() {
+			case "esc":
+				t.filterBox.Clear()
+				t.clampLeft()
+				return t, nil
+			case "enter":
+				t.filterBox.Confirm()
+				return t, nil
+			case "backspace":
+				t.filterBox.Backspace()
+				t.clampLeft()
+				return t, nil
+			}
+			if isPrintable(msg) {
+				t.filterBox.Append(msg.String())
+				t.clampLeft()
+			}
+			// 过滤输入态吞掉其余按键（audit 范式）：导航/实体动作不得在
+			// 编辑过滤词时透传触发。
+			return t, nil
+		}
 		if t.detail != nil {
 			var cmd tea.Cmd
 			t.detail, cmd = t.detail.Update(msg)
@@ -334,7 +397,7 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.agentIndex--
 		}
 	case "down", "j":
-		if t.focusLeft && t.providerIndex < len(t.providers)-1 {
+		if t.focusLeft && t.providerIndex < len(t.visibleProviders())-1 {
 			t.providerIndex++
 		} else if !t.focusLeft && t.agentIndex < len(t.rows)-1 {
 			t.agentIndex++
@@ -343,7 +406,11 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.focusLeft = true
 	case "right", "l":
 		t.focusLeft = false
-	case "r":
+	case "/":
+		t.focusLeft = true
+		t.filterBox.EnterFresh()
+		return t, nil
+	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
 	case "enter":
@@ -357,7 +424,7 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			if p := t.currentProvider(); p != nil {
 				return t.enterProviderForm(p)
 			}
-			return t, warnToast("没有选中的 provider")
+			return t, warnToast("no provider selected")
 		}
 	case "d":
 		if t.focusLeft {
@@ -365,10 +432,48 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		}
 	case "s":
 		return t.startSwitch(false)
-	case "m":
+	case "M":
+		// M=仅换默认模型（与 s 成对，大写为变体；grill D7）
 		return t.startSwitch(true)
+	case "g":
+		t.jumpFocus(0)
+	case "G":
+		t.jumpFocus(t.focusListLen() - 1)
+	case "pgup":
+		t.jumpFocus(t.cursorForFocus() - pageStep(t.height))
+	case "pgdown":
+		t.jumpFocus(t.cursorForFocus() + pageStep(t.height))
 	}
 	return t, nil
+}
+
+// cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
+func (t *aiTab) cursorForFocus() int {
+	if t.focusLeft {
+		return t.providerIndex
+	}
+	return t.agentIndex
+}
+
+func (t *aiTab) focusListLen() int {
+	if t.focusLeft {
+		return len(t.visibleProviders())
+	}
+	return len(t.rows)
+}
+
+func (t *aiTab) jumpFocus(idx int) {
+	n := t.focusListLen()
+	if n == 0 || idx < 0 {
+		idx = 0
+	} else if idx > n-1 {
+		idx = n - 1
+	}
+	if t.focusLeft {
+		t.providerIndex = idx
+	} else {
+		t.agentIndex = idx
+	}
 }
 
 func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
@@ -394,7 +499,7 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		case "enter":
 			// 空集在提交前拦截：不进入下一步，也不触碰 SwitchManager。
 			if len(t.flowSelectedModels()) == 0 {
-				return t, warnToast("Agent 模型集不能为空：至少勾选一个模型")
+				return t, warnToast("agent model set cannot be empty: select at least one model")
 			}
 			t.flowCursor = t.defaultModelCursor()
 			t.flow = aiFlowSelectDefault
@@ -468,30 +573,32 @@ func (t *aiTab) cancelMode() {
 // (onlyModel=true) wizard for the agent selected in the right pane.
 func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 	if len(t.rows) == 0 {
-		return t, warnToast("没有可操作的 agent")
+		return t, warnToast("no agent to operate on")
 	}
 	row := t.rows[clamp(t.agentIndex, 0, len(t.rows)-1)]
 	if !row.Supported {
-		return t, warnToast("agent " + row.AgentID + " 暂不支持切换")
+		return t, warnToast("agent " + row.AgentID + " switching not supported yet")
 	}
 	var alias string
 	if onlyModel {
 		if row.Pointer == nil {
-			return t, warnToast("请先按 s 为 " + row.AgentID + " 选择 provider")
+			return t, warnToast("press s first for " + row.AgentID + ": choose a provider")
 		}
 		alias = row.Pointer.Provider
 	} else {
-		if len(t.providers) == 0 {
-			return t, warnToast("暂无 provider，按 n 新建")
+		// 游标是过滤可见列表上的位置：一律经 currentProvider 定位。
+		provider := t.currentProvider()
+		if provider == nil {
+			return t, warnToast("no provider selected")
 		}
-		alias = t.providers[clamp(t.providerIndex, 0, len(t.providers)-1)].Alias
+		alias = provider.Alias
 	}
 	entry := t.providerByAlias(alias)
 	if entry == nil {
-		return t, warnToast("provider " + alias + " 不存在")
+		return t, warnToast("provider " + alias + " does not exist")
 	}
 	if len(entry.Models) == 0 {
-		return t, warnToast("provider " + alias + " 没有可用模型")
+		return t, warnToast("provider " + alias + " has no usable models")
 	}
 	t.flowProvider = alias
 	t.flowAgent = clamp(t.agentIndex, 0, len(t.rows)-1)
@@ -500,7 +607,7 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 		// m 只在已写入该 agent 的 Agent 模型集内换默认模型，不动模型集。
 		candidates := append([]string(nil), row.Pointer.Models...)
 		if len(candidates) == 0 {
-			return t, warnToast("指针未记录 Agent 模型集，请先按 s 重新切换")
+			return t, warnToast("pointer has no agent model set recorded, press s to switch again first")
 		}
 		t.flowCandidates = candidates
 		t.flowSelected = allModelsSelected(candidates)
@@ -617,19 +724,19 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 	if credentialValue == "" {
 		credentialValue = aiNewCredential
 	}
-	allowHTTP := "否"
+	allowHTTP := "no"
 	if strings.HasPrefix(base.BaseURL, "http://") {
-		allowHTTP = "是"
+		allowHTTP = "yes"
 	}
 
-	title := "新建 LLM Provider"
+	title := "new LLM provider"
 	fields := make([]formField, 0, 9)
 	if create {
 		fields = append(fields, formField{
-			key: "alias", label: "别名", kind: formText, placeholder: "main",
+			key: "alias", label: "alias", kind: formText, placeholder: "main",
 		})
 	} else {
-		title = "编辑 Provider " + existing.Alias
+		title = "edit provider " + existing.Alias
 	}
 	fields = append(fields,
 		formField{
@@ -637,7 +744,7 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			placeholder: "https://api.example.com/v1",
 		},
 		formField{
-			key: "api_shape", label: "接入形态", kind: formEnum, value: base.APIShape,
+			key: "api_shape", label: "api shape", kind: formEnum, value: base.APIShape,
 			options: []string{
 				storage.LLMAPIShapeOpenAIChat,
 				storage.LLMAPIShapeOpenAIResponses,
@@ -646,53 +753,53 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			optional: true,
 		},
 		formField{
-			key: "catalog", label: "目录 provider", kind: formText, value: base.CatalogProvider,
-			placeholder: "models.dev provider id（可选）",
+			key: "catalog", label: "catalog provider", kind: formText, value: base.CatalogProvider,
+			placeholder: "models.dev provider id (optional)",
 		},
 		formField{
-			key: "models", label: "模型集", kind: formText, value: strings.Join(base.Models, ", "),
-			placeholder: "m1, m2（逗号分隔）",
+			key: "models", label: "model set", kind: formText, value: strings.Join(base.Models, ", "),
+			placeholder: "m1, m2 (comma separated)",
 		},
 		formField{
-			key: "model_contexts", label: "模型上下文", kind: formText,
+			key: "model_contexts", label: "model contexts", kind: formText,
 			value:       formatModelContexts(base.Models, base.ModelInfo),
-			placeholder: "m1=1000000（自定义模型缺少目录元数据时必填）",
+			placeholder: "m1=1000000 (required for custom models without catalog metadata)",
 		},
 		formField{
-			key: "model_outputs", label: "模型输出", kind: formText,
+			key: "model_outputs", label: "model outputs", kind: formText,
 			value:       formatModelOutputs(base.Models, base.ModelInfo),
-			placeholder: "m1=32000（输出上限，可选）",
+			placeholder: "m1=32000 (output cap, optional)",
 		},
 		formField{
-			key: "model_reasoning", label: "模型推理", kind: formText,
+			key: "model_reasoning", label: "model reasoning", kind: formText,
 			value:       formatModelReasoning(base.Models, base.ModelInfo),
-			placeholder: "m1=low;high（推理档位，可选）",
+			placeholder: "m1=low;high (reasoning effort, optional)",
 		},
 		formField{
-			key: "model_default_reasoning", label: "默认推理档", kind: formText,
+			key: "model_default_reasoning", label: "default reasoning", kind: formText,
 			value:       formatModelDefaultReasoning(base.Models, base.ModelInfo),
-			placeholder: "m1=high 或集合级 high（有档位时必填）",
+			placeholder: "m1=high or set-level high (required when efforts exist)",
 		},
 		formField{
-			key: "model_modalities", label: "输入模态", kind: formText,
+			key: "model_modalities", label: "input modalities", kind: formText,
 			value:       formatModelModalities(base.Models, base.ModelInfo),
-			placeholder: "m1=text,image（可选）",
+			placeholder: "m1=text,image (optional)",
 		},
 		formField{
-			key: "default_model", label: "默认模型", kind: formText, value: base.DefaultModel,
-			placeholder: "m1（可选）",
+			key: "default_model", label: "default model", kind: formText, value: base.DefaultModel,
+			placeholder: "m1 (optional)",
 		},
 		formField{
-			key: "credential", label: "凭据来源", kind: formRef, value: credentialValue,
+			key: "credential", label: "credential source", kind: formRef, value: credentialValue,
 			options: credentialOptions,
 		},
 		formField{
-			key: "api_key", label: "自有凭据", kind: formSecret,
-			placeholder: "仅「新建自有凭据」时填写",
+			key: "api_key", label: "own credential", kind: formSecret,
+			placeholder: "only when picking [new own credential]",
 		},
 		formField{
-			key: "allow_http", label: "允许 HTTP", kind: formEnum, value: allowHTTP,
-			options: []string{"否", "是"},
+			key: "allow_http", label: "allow HTTP", kind: formEnum, value: allowHTTP,
+			options: []string{"no", "yes"},
 		},
 	)
 
@@ -719,13 +826,13 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if create {
 		alias = strings.TrimSpace(values["alias"])
 		if alias == "" {
-			return reopen("alias", fmt.Errorf("别名不能为空"))
+			return reopen("alias", fmt.Errorf("alias cannot be empty"))
 		}
 		if err := storage.ValidateName(alias); err != nil {
-			return reopen("alias", fmt.Errorf("非法别名"))
+			return reopen("alias", fmt.Errorf("invalid alias"))
 		}
 		if t.providerByAlias(alias) != nil {
-			return reopen("alias", fmt.Errorf("provider %s 已存在", alias))
+			return reopen("alias", fmt.Errorf("provider %s already exists", alias))
 		}
 	} else {
 		alias = existing.Alias
@@ -733,9 +840,9 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 
 	baseURL := strings.TrimSpace(values["base_url"])
 	if baseURL == "" {
-		return reopen("base_url", fmt.Errorf("base_url 不能为空"))
+		return reopen("base_url", fmt.Errorf("base_url cannot be empty"))
 	}
-	allowHTTP := strings.TrimSpace(values["allow_http"]) == "是"
+	allowHTTP := strings.TrimSpace(values["allow_http"]) == "yes"
 	if err := storage.ValidateLLMProviderURL(baseURL, allowHTTP); err != nil {
 		return reopen("base_url", err)
 	}
@@ -766,21 +873,21 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		return reopen("model_modalities", err)
 	}
 	if catalog == "" && len(models) == 0 {
-		return reopen("models", fmt.Errorf("模型集不能为空：填写模型或目录 provider"))
+		return reopen("models", fmt.Errorf("model set cannot be empty: fill in models or a catalog provider"))
 	}
 	defaultModel := strings.TrimSpace(values["default_model"])
 	if catalog == "" && defaultModel != "" && !containsString(models, defaultModel) {
-		return reopen("default_model", fmt.Errorf("默认模型 %s 不在模型集中", defaultModel))
+		return reopen("default_model", fmt.Errorf("default model %s not in model set", defaultModel))
 	}
 	credential := strings.TrimSpace(values["credential"])
 	apiKey := strings.TrimSpace(values["api_key"])
 	switch {
 	case credential == aiNewCredential && apiKey == "":
-		return reopen("api_key", fmt.Errorf("新建自有凭据需要输入 API key"))
+		return reopen("api_key", fmt.Errorf("[new own credential] requires an API key"))
 	case credential != aiNewCredential && apiKey != "":
-		return reopen("api_key", fmt.Errorf("已选择既有条目时请清空自有凭据字段"))
+		return reopen("api_key", fmt.Errorf("clear the own-credential field when an existing entry is selected"))
 	case credential == "" && create:
-		return reopen("credential", fmt.Errorf("请选择凭据来源或新建自有凭据"))
+		return reopen("credential", fmt.Errorf("choose a credential source or [new own credential]"))
 	}
 
 	mgr := t.mgr.LLM
@@ -813,13 +920,13 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		return func() tea.Msg {
 			res, err := mgr.AddProvider(opts)
 			if err != nil {
-				recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "add 失败")
+				recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "add failed")
 				return aiFormReopenMsg{form: f, submit: submit, values: values, field: providerErrorField(err), err: err}
 			}
 			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+res.Entry.Alias, true, "add")
-			toast := fmt.Sprintf("已保存 provider %s（%d 个模型）", res.Entry.Alias, len(res.Entry.Models))
+			toast := fmt.Sprintf("saved provider %s (%d models)", res.Entry.Alias, len(res.Entry.Models))
 			if len(res.Warnings) > 0 {
-				toast += "；" + truncateWidth(res.Warnings[0], 40)
+				toast += "; " + truncateWidth(res.Warnings[0], 40)
 			}
 			return aiProviderReloadMsg{toast: toast, providerAlias: res.Entry.Alias}
 		}
@@ -872,13 +979,13 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	return func() tea.Msg {
 		res, err := mgr.EditProvider(opts)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "edit 失败")
+			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "edit failed")
 			return aiFormReopenMsg{form: f, submit: submit, values: values, field: providerErrorField(err), err: err}
 		}
 		recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+res.Entry.Alias, true, "edit")
-		toast := fmt.Sprintf("已更新 provider %s（%d 个模型）", res.Entry.Alias, len(res.Entry.Models))
+		toast := fmt.Sprintf("updated provider %s (%d models)", res.Entry.Alias, len(res.Entry.Models))
 		if len(res.Warnings) > 0 {
-			toast += "；" + truncateWidth(res.Warnings[0], 40)
+			toast += "; " + truncateWidth(res.Warnings[0], 40)
 		}
 		return aiProviderReloadMsg{toast: toast, providerAlias: res.Entry.Alias}
 	}
@@ -887,7 +994,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 func (t *aiTab) enterDeleteProvider() (Tab, tea.Cmd) {
 	p := t.currentProvider()
 	if p == nil {
-		return t, warnToast("没有可删除的 provider")
+		return t, warnToast("no provider to delete")
 	}
 	t.pendingProvider = p.Alias
 	t.mode = aiModeDeleteProvider
@@ -901,13 +1008,13 @@ func (t *aiTab) doDeleteProvider(alias string) (Tab, tea.Cmd) {
 	return t, func() tea.Msg {
 		res, err := mgr.RemoveProvider(alias)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "remove 失败")
+			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, false, "remove failed")
 			return errMsg{err: err}
 		}
 		recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+alias, true, "remove")
-		toast := "已删除 provider " + alias
+		toast := "removed provider " + alias
 		if res.CredentialRemoved {
-			toast += "（含自有凭据）"
+			toast += " (including own credential)"
 		}
 		return aiProviderReloadMsg{toast: toast}
 	}
@@ -933,7 +1040,7 @@ func providerErrorField(err error) string {
 		return "model_contexts"
 	case strings.Contains(msg, "output"):
 		return "model_outputs"
-	case strings.Contains(msg, "default reasoning"), strings.Contains(msg, "默认推理"):
+	case strings.Contains(msg, "default reasoning"):
 		return "model_default_reasoning"
 	case strings.Contains(msg, "modalit"):
 		return "model_modalities"
@@ -953,12 +1060,12 @@ func (t *aiTab) openDetail() tea.Cmd {
 	if t.focusLeft {
 		p := t.currentProvider()
 		if p == nil {
-			return warnToast("没有选中的 provider")
+			return warnToast("no provider selected")
 		}
 		t.detail = newDetailOverlay("Provider "+p.Alias, t.providerDetailLines(p))
 	} else {
 		if len(t.rows) == 0 {
-			return warnToast("没有选中的 agent")
+			return warnToast("no agent selected")
 		}
 		row := t.rows[clamp(t.agentIndex, 0, len(t.rows)-1)]
 		t.detail = newDetailOverlay("Agent "+row.AgentID, agentDetailLines(row))
@@ -1001,7 +1108,7 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		}
 		lines = append(lines, line)
 	}
-	lines = append(lines, "", "被指向的 agent:")
+	lines = append(lines, "", "pointed-to agent:")
 	used := false
 	for _, r := range t.rows {
 		if r.Pointer != nil && r.Pointer.Provider == p.Alias {
@@ -1019,10 +1126,10 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 }
 
 func agentDetailLines(row llm.StatusRow) []string {
-	state := "未切换"
+	state := "not switched"
 	switch {
 	case !row.Supported:
-		state = "不支持"
+		state = "unsupported"
 	case row.Pointer != nil:
 		state = row.Pointer.Provider + " / " + row.Pointer.DefaultModel
 	}
@@ -1034,7 +1141,7 @@ func agentDetailLines(row llm.StatusRow) []string {
 		"config:      " + orDash(row.ConfigPath),
 	}
 	if !row.Supported {
-		lines = append(lines, "senv 无法写回该 agent 的配置（无公开 schema）")
+		lines = append(lines, "senv cannot write back this agent's config (no public schema)")
 	}
 	return lines
 }
@@ -1042,10 +1149,11 @@ func agentDetailLines(row llm.StatusRow) []string {
 // --- lookups ---
 
 func (t *aiTab) currentProvider() *storage.LLMProviderEntry {
-	if t.providerIndex < 0 || t.providerIndex >= len(t.providers) {
+	providers := t.visibleProviders()
+	if t.providerIndex < 0 || t.providerIndex >= len(providers) {
 		return nil
 	}
-	return t.providers[t.providerIndex]
+	return providers[t.providerIndex]
 }
 
 func (t *aiTab) providerByAlias(alias string) *storage.LLMProviderEntry {
@@ -1082,6 +1190,7 @@ func (t *aiTab) applyPendingJump() {
 	if t.pendingJump == "" {
 		return
 	}
+	t.filterBox.Clear() // 跳转前清过滤，保证目标可见
 	for i, p := range t.providers {
 		if p.Alias == t.pendingJump {
 			t.providerIndex = i
@@ -1216,15 +1325,15 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("AI") + "\n" + truncateRunes("⚠ "+t.loadErr, max(t.width, 1))
+		return paneTitleStyle.Render("AI") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if len(t.providers) == 0 {
+	if t.loaded && len(t.providers) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("AI"),
-			emptyStateStyle.Render("暂无 LLM Provider 档案；执行 senv ai provider add 或按 n 新建后按 r 刷新"))
+			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then r to refresh"))
 	}
 	overlay := ""
 	switch {
@@ -1257,11 +1366,29 @@ func (t *aiTab) viewBaseAt(height int) string {
 		rightW = 4
 	}
 
-	providerLines := t.providerLines(max(leftW-4, 8))
-	agentLines := t.agentLines(max(rightW-4, 8))
+	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
+	if !t.loaded {
+		left := emptyStateStyle.Render("loading providers…")
+		right := emptyStateStyle.Render("loading providers…")
+		if t.focusLeft {
+			left = activePaneStyle.Width(leftW).Height(height).Render(left)
+			right = paneStyle.Width(rightW).Height(height).Render(right)
+		} else {
+			left = paneStyle.Width(leftW).Height(height).Render(left)
+			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
+	}
 
-	left := windowedPane(fmt.Sprintf("Providers (%d)", len(t.providers)), providerLines, t.providerIndex, height, leftW)
-	right := windowedPane("Agents · 当前指向", agentLines, t.agentIndex, height, rightW)
+	providerLines := t.providerLines(maxInt(leftW-4, 8))
+	agentLines := t.agentLines(maxInt(rightW-4, 8))
+
+	leftTitle := fmt.Sprintf("Providers (%d)", len(t.visibleProviders()))
+	if t.filterBox.Active() {
+		leftTitle += "  " + t.filterBox.Prompt()
+	}
+	left := windowedPane(leftTitle, providerLines, t.providerIndex, height, leftW)
+	right := windowedPane("Agents · current target", agentLines, t.agentIndex, height, rightW)
 
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
@@ -1280,13 +1407,14 @@ func (t *aiTab) providerLines(width int) []string {
 			pointed[r.Pointer.Provider] = true
 		}
 	}
-	lines := make([]string, 0, len(t.providers))
-	for i, p := range t.providers {
+	providers := t.visibleProviders()
+	lines := make([]string, 0, len(providers))
+	for i, p := range providers {
 		def := p.DefaultModel
 		if def == "" {
 			def = "-"
 		}
-		line := fmt.Sprintf("%s · 默认 %s · %d 模型", p.Alias, def, len(p.Models))
+		line := fmt.Sprintf("%s · default %s · %d models", p.Alias, def, len(p.Models))
 		if pointed[p.Alias] {
 			line += " ●"
 		}
@@ -1301,12 +1429,12 @@ func (t *aiTab) agentLines(width int) []string {
 		lines = append(lines, mutedStyle().Render(truncateWidth("⚠ "+t.warning, width)))
 	}
 	for i, r := range t.rows {
-		state := "未切换"
+		state := "not switched"
 		switch {
 		case !r.Supported:
-			state = "不支持"
+			state = "unsupported"
 		case r.Pointer != nil:
-			state = fmt.Sprintf("%s / %s（%d 个模型）",
+			state = fmt.Sprintf("%s / %s (%d models)",
 				r.Pointer.Provider, r.Pointer.DefaultModel, len(r.Pointer.Models))
 			if r.Drift != "" {
 				state += " ⚠"
@@ -1321,8 +1449,8 @@ func (t *aiTab) agentLines(width int) []string {
 func (t *aiTab) renderModal() string {
 	switch t.mode {
 	case aiModeDeleteProvider:
-		return modalBox("删除 provider "+t.pendingProvider+"？",
-			"自有凭据会一并删除；外部引用保留。", "enter/y 确认 · esc/n 取消")
+		return modalBox("delete provider "+t.pendingProvider+"?",
+			"own credential is deleted too; external references are kept.", "enter/y confirm · esc/n cancel")
 	}
 	return ""
 }
@@ -1342,22 +1470,22 @@ func (t *aiTab) renderFlow() string {
 		if len(models) > 0 {
 			model = models[clamp(t.flowCursor, 0, len(models)-1)]
 		}
-		action := "切换"
+		action := "switch"
 		if t.flowOnlyModel {
-			action = "仅换默认模型"
+			action = "default model only"
 		}
-		return modalBox("确认"+action,
-			fmt.Sprintf("%s → %s / %s（%d 个模型）", agent, t.flowProvider, model, len(models)),
-			"enter/y 确认 · esc/n 取消")
+		return modalBox("confirm"+action,
+			fmt.Sprintf("%s → %s / %s (%d models)", agent, t.flowProvider, model, len(models)),
+			"enter/y confirm · esc/n cancel")
 	case aiFlowSelectDefault:
 		models := t.flowSelectedModels()
 		lines := make([]string, 0, len(models))
 		for i, m := range models {
-			label := truncateWidth(m, max(t.width-10, 12))
+			label := truncateWidth(m, maxInt(t.width-10, 12))
 			lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(models)-1)))
 		}
-		title := fmt.Sprintf("选择默认模型（%d 个模型）— %s → %s", len(models), agent, t.flowProvider)
-		return modalBox(title, strings.Join(lines, "\n"), "↑↓/jk 选择 · enter 下一步 · esc 返回")
+		title := fmt.Sprintf("choose default model (%d models) — %s → %s", len(models), agent, t.flowProvider)
+		return modalBox(title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
 	}
 	lines := make([]string, 0, len(t.flowCandidates))
 	for i, m := range t.flowCandidates {
@@ -1365,17 +1493,10 @@ func (t *aiTab) renderFlow() string {
 		if t.flowSelected[m] {
 			mark = "[x]"
 		}
-		label := mark + " " + truncateWidth(m, max(t.width-14, 12))
+		label := mark + " " + truncateWidth(m, maxInt(t.width-14, 12))
 		lines = append(lines, cursorLine(label, i == clamp(t.flowCursor, 0, len(t.flowCandidates)-1)))
 	}
-	title := fmt.Sprintf("选择 Agent 模型集（已选 %d/%d）— %s → %s",
+	title := fmt.Sprintf("choose agent model set (selected %d/%d) — %s → %s",
 		len(t.flowSelectedModels()), len(t.flowCandidates), agent, t.flowProvider)
-	return modalBox(title, strings.Join(lines, "\n"), "space 勾选 · ↑↓/jk 移动 · enter 下一步 · esc 取消")
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
+	return modalBox(title, strings.Join(lines, "\n"), "space toggle · ↑↓/jk move · enter next · esc cancel")
 }
