@@ -161,14 +161,14 @@ func TestHistoryTabPaneFillsContentArea(t *testing.T) {
 		return tab
 	}
 
-	// 加载态：不再是裸文本，面板撑满 80x19（Width+2/Height+2）
+	// 加载态：不再是裸文本，面板与内容区等宽（78），高度 +2 为圆角边框
 	tab := newTab()
 	out := tab.View()
 	if !strings.Contains(out, "loading history…") {
 		t.Fatalf("loading hint missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("loading pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("loading pane size = %dx%d, want 78x19", w, h)
 	}
 
 	// 空态：同样撑满
@@ -180,8 +180,8 @@ func TestHistoryTabPaneFillsContentArea(t *testing.T) {
 	if !strings.Contains(out, "(no history versions:") {
 		t.Fatalf("empty hint missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("empty pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("empty pane size = %dx%d, want 78x19", w, h)
 	}
 
 	// 列表态：撑满，且列表多于可视行数时标题带可见区间提示
@@ -199,8 +199,8 @@ func TestHistoryTabPaneFillsContentArea(t *testing.T) {
 	full.visited = true
 	full.Update(drainCmd(t, full.Init()))
 	out = full.View()
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("list pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("list pane size = %dx%d, want 78x19", w, h)
 	}
 	if !strings.Contains(out, " 1–") {
 		t.Fatalf("windowed range hint missing in title: %q", clipRunesT(out, 80))
@@ -215,8 +215,8 @@ func TestHistoryTabPaneFillsContentArea(t *testing.T) {
 	// resize 跟随：新尺寸后面板宽度跟随内容区
 	full.SetSize(60, 12)
 	out = full.View()
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 62 || h != 14 {
-		t.Fatalf("after resize pane size = %dx%d, want 62x14", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 60 || h != 14 {
+		t.Fatalf("after resize pane size = %dx%d, want 60x14", w, h)
 	}
 }
 
@@ -230,8 +230,8 @@ func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // recent → entry
 	out := tab.View()
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("entry pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("entry pane size = %dx%d, want 78x19", w, h)
 	}
 
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail
@@ -239,8 +239,8 @@ func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 	if !strings.Contains(out, "value-of-rev-") {
 		t.Fatalf("detail content missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("detail pane size = %dx%d, want 80x19 (extras clipped inside pane)", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("detail pane size = %dx%d, want 78x19 (extras clipped inside pane)", w, h)
 	}
 
 	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEscape}) // detail → entry
@@ -249,7 +249,7 @@ func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 	if !strings.Contains(out, "[y/N]") {
 		t.Fatalf("confirm prompt missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("confirm pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("confirm pane size = %dx%d, want 78x19", w, h)
 	}
 }

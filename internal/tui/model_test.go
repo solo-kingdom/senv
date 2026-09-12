@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // runeKey builds a KeyMsg for a rune keystroke (e.g. "2", "q", "v").
@@ -143,4 +144,38 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// TestModelViewFitsScreen 回归：每个已注册 tab 激活时，整屏 View 必须恰好
+// 是终端宽×高。单栏 tab（History/Audit）面板若忘记给圆角边框预留 2 列，
+// 顶/底边框会在 frame 内折行，把底部内容挤出屏幕。
+func TestModelViewFitsScreen(t *testing.T) {
+	mgrs := Managers{
+		History: &fakeHistorySource{rows: sampleHistoryRows()},
+		Audit:   &fakeAuditSource{rows: sampleAuditRows()},
+	}
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		for start := 0; start < 5; start++ {
+			m := New(mgrs)
+			out, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			m = out.(Model)
+			// 依次切过每个 tab（数字键直达），各自渲染整屏校验几何。
+			for i := 0; i < 5; i++ {
+				out, _ = m.Update(runeKey(string(rune('1' + i))))
+				m = out.(Model)
+			}
+			for i := range m.tabs {
+				out, _ = m.Update(runeKey(string(rune('1' + i))))
+				m = out.(Model)
+				if m.active != i {
+					continue // 数字键越界（可选 tab 未注册）时跳过
+				}
+				v := m.View()
+				if w, h := lipgloss.Width(v), lipgloss.Height(v); w != size[0] || h != size[1] {
+					t.Errorf("size=%dx%d tab=%s: view=%dx%d, want exactly %dx%d",
+						size[0], size[1], m.tabs[i].Title(), w, h, size[0], size[1])
+				}
+			}
+		}
+	}
 }

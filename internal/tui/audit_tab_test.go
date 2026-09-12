@@ -146,8 +146,8 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	if !strings.Contains(out, "loading audit log…") {
 		t.Fatalf("loading hint missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("loading pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("loading pane size = %dx%d, want 78x19", w, h)
 	}
 
 	// 错误态：内嵌面板、撑满
@@ -158,8 +158,8 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	if !strings.Contains(out, "permission denied") {
 		t.Fatalf("error text missing: %q", clipRunesT(out, 80))
 	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("error pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("error pane size = %dx%d, want 78x19", w, h)
 	}
 
 	// 空态与列表态：撑满；resize 跟随
@@ -168,8 +168,8 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 	tab.SetSize(78, 17)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	out = tab.View()
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 80 || h != 19 {
-		t.Fatalf("list pane size = %dx%d, want 80x19", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("list pane size = %dx%d, want 78x19", w, h)
 	}
 
 	// 最小终端冒烟：内容区高度为 0 时不得外溢
@@ -180,7 +180,7 @@ func TestAuditTabPaneFillsContentArea(t *testing.T) {
 
 	tab.SetSize(60, 12)
 	out = tab.View()
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 62 || h != 14 {
-		t.Fatalf("after resize pane size = %dx%d, want 62x14", w, h)
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 60 || h != 14 {
+		t.Fatalf("after resize pane size = %dx%d, want 60x14", w, h)
 	}
 }

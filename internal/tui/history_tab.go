@@ -282,7 +282,10 @@ func (t *historyTab) View() string {
 		return t.plainPane(title + "\n\n(no history versions: the entry was never modified, or the server has history retention disabled)")
 	}
 
-	innerW := maxInt(t.width-4, 8)
+	// 面板边框画在 Width 之外（与其他 tab 的双栏预算一致）：内容区宽
+	// t.width 时面板 Width 必须留出 2 列边框，否则圆角边框在 frame 内折行。
+	paneW := maxInt(t.width-2, 4)
+	innerW := maxInt(paneW-2, 8)
 	title := "vault recent history (enter to view one entry)"
 	if t.entryID != "" {
 		title = fmt.Sprintf("version timeline for %s", t.entryID)
@@ -316,29 +319,31 @@ func (t *historyTab) View() string {
 		}
 	}
 	if t.flash != "" {
-		extraRows = append(extraRows, "", historyFlashStyle.Render(t.flash))
+		extraRows = append(extraRows, "", historyFlashStyle.Render(truncateWidth(t.flash, innerW)))
 	}
 
 	listH := t.height - len(extraRows)
 	if listH < 1 {
 		listH = 1
 	}
-	out := windowedPane(title, lines, t.list.Cursor(), listH, t.width)
+	out := windowedPane(title, lines, t.list.Cursor(), listH, paneW)
 	if len(extraRows) > 0 {
 		out = out + "\n" + strings.Join(extraRows, "\n")
 	}
 	out = clipLines(out, t.height)
-	return paneStyle.Width(t.width).Height(t.height).Render(out)
+	return paneStyle.Width(paneW).Height(t.height).Render(out)
 }
 
 // plainPane 把单段提示文本渲染进撑满内容区的固定面板。
 func (t *historyTab) plainPane(text string) string {
+	paneW := maxInt(t.width-2, 4)
 	lines := strings.Split(text, "\n")
-	innerW := maxInt(t.width-8, 8)
+	// emptyStateStyle 自带 Padding(1,2)：文本上限再让出 4 列。
+	innerW := maxInt(paneW-6, 8)
 	for i, l := range lines {
 		lines[i] = truncateWidth(l, innerW)
 	}
-	return paneStyle.Width(t.width).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
+	return paneStyle.Width(paneW).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
 }
 
 func (t *historyTab) previewOf(row provider.HistoryVersion) string {
