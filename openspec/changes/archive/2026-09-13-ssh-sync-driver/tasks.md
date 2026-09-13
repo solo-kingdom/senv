@@ -1,5 +1,5 @@
 ## 1. 准备
-- [ ] 1.1 把涉及面里角色为必须的仓（`.`）切到任务分支 `ssh-sync`（无则 `git switch -c`，有则 `git switch`；工作树 dirty 时按 Driver 协议处理）
+- [x] 1.1 把涉及面里角色为必须的仓（`.`）切到任务分支 `ssh-sync`（无则 `git switch -c`，有则 `git switch`；工作树 dirty 时按 Driver 协议处理）
 
 ## 2. 实施
 - [x] 2.1 完成子 change `ssh-sync-channel`：apply 至全部 checkbox 勾选且 `openspec validate --strict --type change ssh-sync-channel` 通过
