@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -37,6 +39,77 @@ func TestSessionRefreshCommandRegistered(t *testing.T) {
 	if !strings.Contains(cmd.Long, "never prompts for a password") {
 		t.Fatal("session refresh help does not state it never prompts")
 	}
+}
+
+func TestRunSessionSaveInsecureFallback(t *testing.T) {
+	origTerminal, origConfirm, origEnable := stdinIsTerminal, insecureCacheConfirm, enableInsecureCache
+	t.Cleanup(func() {
+		stdinIsTerminal, insecureCacheConfirm, enableInsecureCache = origTerminal, origConfirm, origEnable
+	})
+
+	secureStoreErr := fmt.Errorf("failed to save session cache: %w", session.ErrNoSecureSessionStore)
+
+	t.Run("non-interactive stays fail-closed", func(t *testing.T) {
+		stdinIsTerminal = func() bool { return false }
+		prompted := false
+		insecureCacheConfirm = func(string) bool { prompted = true; return true }
+		calls := 0
+		err := runSessionSave(func() error { calls++; return secureStoreErr })
+		if !errors.Is(err, session.ErrNoSecureSessionStore) {
+			t.Fatalf("expected fail-closed error, got %v", err)
+		}
+		if prompted || calls != 1 {
+			t.Fatalf("non-interactive path prompted=%v calls=%d, want no prompt and a single call", prompted, calls)
+		}
+	})
+
+	t.Run("declined keeps the original error", func(t *testing.T) {
+		stdinIsTerminal = func() bool { return true }
+		insecureCacheConfirm = func(string) bool { return false }
+		calls := 0
+		err := runSessionSave(func() error { calls++; return secureStoreErr })
+		if !errors.Is(err, session.ErrNoSecureSessionStore) {
+			t.Fatalf("expected original error after decline, got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("declined prompt retried the save: calls=%d", calls)
+		}
+	})
+
+	t.Run("accepted opts in and retries once", func(t *testing.T) {
+		stdinIsTerminal = func() bool { return true }
+		insecureCacheConfirm = func(string) bool { return true }
+		enabled := false
+		enableInsecureCache = func() { enabled = true }
+		calls := 0
+		err := runSessionSave(func() error {
+			calls++
+			if calls == 1 {
+				return secureStoreErr
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("accepted fallback still failed: %v", err)
+		}
+		if calls != 2 || !enabled {
+			t.Fatalf("accepted fallback calls=%d enabled=%v, want one retry with the hatch enabled", calls, enabled)
+		}
+	})
+
+	t.Run("unrelated errors pass through without prompting", func(t *testing.T) {
+		stdinIsTerminal = func() bool { return true }
+		insecureCacheConfirm = func(string) bool { return true }
+		calls := 0
+		wantErr := errors.New("invalid password")
+		err := runSessionSave(func() error { calls++; return wantErr })
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("expected pass-through error, got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("unrelated error triggered a retry: calls=%d", calls)
+		}
+	})
 }
 
 func TestSessionClearAllFlagRegistered(t *testing.T) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,7 +30,8 @@ Security considerations:
   - Only the derived key is cached, not your password
   - The cache lives in a verified memory-backed filesystem (tmpfs/ramfs) when
     the OS can prove that backing; otherwise Darwin writes the disk escape hatch
-    and Linux fails closed unless --insecure-cache is set
+    and Linux fails closed unless --insecure-cache is set (interactively,
+    'session start' offers that fallback as a y/N prompt when detection fails)
   - XDG_RUNTIME_DIR is preferred; fallback is allowed only on another
     verified memory-backed filesystem, in a random 0700 directory
   - The disk escape hatch is 0600. Darwin uses it by default when no tmpfs is
@@ -74,6 +76,34 @@ func timeoutForRenewal(cache *session.SessionCache, flagValue, configPath, dataP
 	return sessionTimeoutFromSettings(configPath, dataPath)
 }
 
+// insecureCacheConfirm is the y/N seam for the interactive disk fallback;
+// tests may replace it. Production reads the answer from stdin.
+var insecureCacheConfirm = confirmPrompt
+
+// enableInsecureCache redirects session cache writes to the disk escape hatch;
+// the seam lets tests observe the opt-in without flipping package state.
+var enableInsecureCache = session.EnableInsecureCache
+
+// runSessionSave runs one session-cache write for `session start` (fresh start
+// or renewal). A write that fails because no platform-verified secure store is
+// available stays fail-closed in headless use; with an interactive terminal it
+// first offers the --insecure-cache disk escape hatch as an explicit y/N
+// consent — the same opt-in the flag expresses, asked once per invocation.
+// Declining (or EOF) keeps the original actionable error.
+func runSessionSave(save func() error) error {
+	err := save()
+	if err == nil || !errors.Is(err, session.ErrNoSecureSessionStore) || !stdinIsTerminal() {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "senv: %v\n", err)
+	if !insecureCacheConfirm("Fall back to storing the session key on disk (--insecure-cache, 0600, unencrypted)? (y/N): ") {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, session.InsecureCacheWarning)
+	enableInsecureCache()
+	return save()
+}
+
 var sessionStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start or extend a session",
@@ -84,7 +114,9 @@ session already exists for this vault, the command extends it directly from the
 cached key and does NOT prompt for a password; otherwise it prompts once and
 writes a fresh session. All timeout modes prefer a verified memory-backed
 filesystem (tmpfs/ramfs). Darwin without one writes the disk escape hatch and
-prints a warning; Linux fails closed unless --insecure-cache is explicitly set.
+prints a warning; Linux fails closed unless --insecure-cache is explicitly set —
+when stdin is a terminal, a failed store check offers the disk escape hatch as
+a y/N prompt before erroring.
 
 Examples:
   # Start session with default timeout
@@ -135,7 +167,9 @@ Examples:
 			if timeout == nil {
 				return fmt.Errorf("session cache is disabled in configuration")
 			}
-			if err := sessionManager.RenewSession(timeout); err != nil {
+			if err := runSessionSave(func() error {
+				return sessionManager.RenewSession(timeout)
+			}); err != nil {
 				return err
 			}
 			printSessionStarted(timeout, true)
@@ -148,7 +182,9 @@ Examples:
 			return fmt.Errorf("failed to read password: %w", err)
 		}
 
-		if err := sessionManager.StartSession(password, timeout); err != nil {
+		if err := runSessionSave(func() error {
+			return sessionManager.StartSession(password, timeout)
+		}); err != nil {
 			return err
 		}
 		printSessionStarted(timeout, false)
@@ -392,7 +428,7 @@ func init() {
 	sessionStartCmd.Flags().StringP("timeout", "t", "",
 		"Session timeout (e.g., 30m, 8h, 1d, 1y, restart)")
 	sessionStartCmd.Flags().Bool("insecure-cache", false,
-		"store the session key on disk (0600); required on Linux/CI without tmpfs; Darwin already defaults to this when no tmpfs is available")
+		"store the session key on disk (0600); on Linux without tmpfs, interactive session start offers this fallback via y/N prompt; CI must pass it explicitly; Darwin already defaults to this when no tmpfs is available")
 	addRefreshFlag(sessionStartCmd)
 
 	sessionRefreshCmd.Flags().StringP("timeout", "t", "",

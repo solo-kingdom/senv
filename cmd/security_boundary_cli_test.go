@@ -81,6 +81,9 @@ func TestSecurityBoundaryCLI(t *testing.T) {
 			"--path", data, "session", "start", "--timeout", "restart")
 		requireCLIError(t, output, code, "no secure session store available")
 		requireCLIError(t, output, code, "--insecure-cache")
+		// The child forces interactive stdin, so the run must offer the y/N
+		// disk fallback before failing; EOF on the pipe declines it.
+		requireCLIError(t, output, code, "(y/N)")
 		if strings.Contains(output, "Session started") {
 			t.Fatalf("unsafe runtime reported success: %s", output)
 		}

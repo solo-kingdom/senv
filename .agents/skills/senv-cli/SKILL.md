@@ -17,7 +17,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 21 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 21 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/materialize、LLM Provider 写入与 coding agent 切换。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。
@@ -29,7 +29,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - senv 解密需要密码，提示走 TTY。**管道/脚本环境里任何可能触发密码提示的命令都会卡住**——执行前先 `senv session status` 确认有活跃会话（它同时给出状态、原因与下一步）；没有会话就停下来让用户 `senv session start`。会话只是临近到期而非失效时，可用 `senv session refresh` 免密延长（见「会话（session）」）；agent 不要尝试替用户输密码。
 - 需要 env 注入 shell 时用 `eval "$(senv env export --if-session)"`：无会话时静默退出 0，不会卡。
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
-- Linux 无安全内存存储时需 `senv session start --insecure-cache`（密钥落盘 0600），仅在用户明确要求时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
+- Linux 无安全内存存储时：交互式（TTY）`senv session start` 在检测失败后先弹 y/N 确认，同意即写磁盘逃生舱（密钥明文 0600，附一次警告）完成初始化，拒绝才报错；无 TTY（管道/CI）仍直接报错，须显式 `senv session start --insecure-cache`（密钥落盘 0600）。落盘仅在用户明确要求/确认时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
 - `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
@@ -39,7 +39,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - **状态四态**：`Active` / `Expired`（duration 到期）/ `Invalidated`（重启后 `restart`、槽不匹配）/ `Unverifiable`（boot ID 读不到、缓存损坏）。`senv session status` 输出状态、原因、剩余时间（Active 还给出 `Session cap` 绝对上限剩余）与下一步。
 - **续期**：`duration` 会话在业务命令复用 key 时滑动延长，但不超过绝对上限 `session.max_lifetime`（默认 24h）；`restart` 会话不看时间、只按 boot ID 判定，因此 `duration` 会话可跨重启存活到到期。只读命令（`session status`、`doctor`）不续期。
 - **`senv session refresh`**：只用缓存 key 延长，**从不提示密码**；过期/失效/不可判定时报原因与下一步，不新建会话、不删缓存。agent 需要延长会话时优先用它。
-- **`senv session start`**：已有有效会话时免密续期并保留原 timeout 策略；否则提示一次密码写入新会话。
+- **`senv session start`**：已有有效会话时免密续期并保留原 timeout 策略；否则提示一次密码写入新会话。写缓存时安全存储不可用（如 Linux 容器 /tmp 非 tmpfs）：TTY 下先问 y/N 是否改落磁盘逃生舱，拒绝才报错；非 TTY 直接报错（CI 需 `--insecure-cache`）。
 - **`senv session clear`**：默认只清当前 vault；`--all` 清所有槽位加旧单槽残留。
 - **只有到期才自动清缓存**：`Expired` 才清；`Invalidated` 与 `Unverifiable` 一律保留，因为缓存可能是另一个 vault 的唯一恢复钥匙。需要丢弃时显式 `senv session clear` / `--all`。
 - **多缓存新者优先**：同一槽位同时有平台存储与逃生舱两份缓存时，按 `created_at` 选新的一份完成校验并复用，保留另一份；时间戳完全相同才报错要求 `senv session clear --all`。被选中的缓存仍须过 salt/key 校验。
@@ -119,6 +119,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
+- token 存储：server token 存 `<configPath>/server-token.json`（0600，机器本地），**不在 settings.json**——settings.json 会被 git provider 同步，token 绝不能进 git 远端；`.gitignore`（覆盖 `server-token.json`、`mcp-exports.json`）自动生成，`git add` 亦有排除路径规格兜底。旧版 settings 内嵌 token 在下次读取时自动迁移。
 - 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步；`~/.ssh/senv/` 下已 materialize 的落盘文件也是本机状态，需在新机器显式 materialize。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
