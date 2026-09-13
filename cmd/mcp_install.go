@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wii/senv/internal/agentcfg"
+	"github.com/wii/senv/internal/agentext"
 )
 
 // mcpInstallCmd writes the senv MCP server config into a target agent's config
@@ -65,6 +66,15 @@ func installInto(t agentTarget, scope string, printOnly bool, out interface{ Wri
 	cfgPath := t.ResolveConfigPath(home, scope)
 	spec := defaultServerSpec(!printOnly).server()
 
+	// Best-effort prerequisite install: an agent without built-in MCP support
+	// (pi) cannot read the config senv writes without its adapter. A failed
+	// install is reported and the write still happens.
+	if !printOnly {
+		if result, attempted := agentext.Ensure(t, home); attempted {
+			fmt.Fprintf(out, "  %s\n", result.Message)
+		}
+	}
+
 	switch t.Format {
 	case formatJSON:
 		return installJSON(t, cfgPath, spec, printOnly, out)
@@ -97,13 +107,14 @@ func installJSON(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly 
 	if err != nil {
 		return err
 	}
-	agentcfg.SetJSONServer(root, t.JSONServersKey, "senv", spec)
+	agentcfg.SetJSONServer(root, t.JSONServersKey, "senv", spec, t.Remote.TypeKey)
 
 	if printOnly {
 		entry, _ := json.MarshalIndent(map[string]any{
 			t.JSONServersKey: map[string]any{"senv": agentcfg.JSONServers(root, t.JSONServersKey)["senv"]},
 		}, "", "  ")
 		fmt.Fprintf(out, "# %s — add to %s\n%s\n", t.Name, cfgPath, entry)
+		printRequirement(out, t)
 		return nil
 	}
 
@@ -118,15 +129,26 @@ func installJSON(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly 
 	if t.Note != "" {
 		fmt.Fprintf(out, "  %s\n", t.Note)
 	}
+	printRequirement(out, t)
 	return nil
+}
+
+// printRequirement echoes a target's external prerequisite (e.g. an MCP
+// adapter extension) so a successful write is not mistaken for a working
+// setup.
+func printRequirement(out interface{ Write([]byte) (int, error) }, t agentTarget) {
+	if display := t.PrerequisiteDisplay(); display != "" {
+		fmt.Fprintf(out, "  Requires: %s\n", display)
+	}
 }
 
 // installTOML handles the Codex-style [mcp_servers.<name>] config. It preserves
 // all other tables and only upserts the senv server block.
 func installTOML(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
-	block := agentcfg.RenderTOMLServerBlock(t.TOMLTableName, "senv", spec)
+	block := agentcfg.RenderTOMLServerBlock(t.TOMLTableName, "senv", spec, t.Remote.TypeKey)
 	if printOnly {
 		fmt.Fprintf(out, "# %s — add to %s\n%s", t.Name, cfgPath, block)
+		printRequirement(out, t)
 		return nil
 	}
 
@@ -142,6 +164,7 @@ func installTOML(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly 
 	if t.Note != "" {
 		fmt.Fprintf(out, "  %s\n", t.Note)
 	}
+	printRequirement(out, t)
 	return nil
 }
 

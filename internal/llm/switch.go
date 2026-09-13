@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -550,21 +551,22 @@ func kimiCapabilities(meta ModelMetadata) []string {
 	return caps
 }
 
-// piAdapter：~/.pi/agent/models.json 写 provider 定义（含 apiKey），
-// ~/.pi/agent/settings.json 写 defaultProvider/defaultModel。两份文件属于
-// 同一事务，第二份失败时第一份由 SwitchManager 统一回滚。
+// piAdapter：<PI agent dir>（$PI_CODING_AGENT_DIR，默认 ~/.pi/agent）下
+// models.json 写 provider 定义（含 apiKey）、settings.json 写
+// defaultProvider/defaultModel。两份文件属于同一事务，第二份失败时第一份由
+// SwitchManager 统一回滚。agent dir 与 agentcfg 的 MCP 目标共用一处解析。
 func piAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "pi",
 		Name:     "Pi",
 		Protocol: ProtocolOpenAICompatible,
 		ConfigPath: func(home string) string {
-			return filepath.Join(home, ".pi", "agent", "models.json")
+			return filepath.Join(agentcfg.PiAgentDir(home), "models.json")
 		},
 		ConfigPaths: func(home string) []string {
 			return []string{
-				filepath.Join(home, ".pi", "agent", "models.json"),
-				filepath.Join(home, ".pi", "agent", "settings.json"),
+				filepath.Join(agentcfg.PiAgentDir(home), "models.json"),
+				filepath.Join(agentcfg.PiAgentDir(home), "settings.json"),
 			}
 		},
 		Credential: CredentialInline,

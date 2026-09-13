@@ -55,7 +55,7 @@ func TestSaveServerTokenWritesGitIgnore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading .gitignore: %v", err)
 	}
-	for _, name := range []string{"server-token.json", "mcp-exports.json"} {
+	for _, name := range storage.MachineLocalGitIgnoreEntries() {
 		if !strings.Contains(string(data), name) {
 			t.Fatalf(".gitignore missing entry %q:\n%s", name, data)
 		}

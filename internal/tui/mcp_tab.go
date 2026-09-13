@@ -3,12 +3,14 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/agentcfg"
+	"github.com/wii/senv/internal/agentext"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/ref"
@@ -78,6 +80,9 @@ type mcpLoadedMsg struct {
 type mcpReloadMsg struct {
 	toast string
 	alias string
+	// warn renders the toast as a warning (e.g. a prerequisite install failed);
+	// the touch/reload itself still succeeded.
+	warn bool
 }
 
 type mcpFormReopenMsg struct {
@@ -345,6 +350,9 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		cmd := t.load()
 		if msg.toast != "" {
+			if msg.warn {
+				return t, tea.Batch(warnToast(msg.toast), cmd)
+			}
 			return t, tea.Batch(okToast(msg.toast), cmd)
 		}
 		return t, cmd
@@ -1037,6 +1045,7 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 			recordAudit(mgrs, session.AuditOpMCPExport, mcpExportAuditTarget(plan), false, "export failed")
 			return errMsg{err: err}
 		}
+		notice, noticeWarn := t.ensureExportPrerequisites(plan)
 		report, err := exporter.Execute(plan)
 		ok := err == nil && report.Failures == 0
 		recordAudit(mgrs, session.AuditOpMCPExport, mcpExportAuditTarget(plan), ok, fmt.Sprintf("export %d items", len(report.Items)))
@@ -1047,8 +1056,39 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 		if report.Failures > 0 {
 			toast = fmt.Sprintf("export finished, %d failed", report.Failures)
 		}
-		return mcpReloadMsg{toast: toast, alias: alias}
+		if notice != "" {
+			toast = toast + "; " + notice
+		}
+		return mcpReloadMsg{toast: toast, alias: alias, warn: noticeWarn}
 	}
+}
+
+// ensureExportPrerequisites attempts the written targets' declared prerequisite
+// install (e.g. the pi-mcp-adapter extension) once, best-effort: the export
+// proceeds either way and a failure is surfaced as a warning toast.
+func (t *mcpTab) ensureExportPrerequisites(plan *mcp.ExportPlan) (string, bool) {
+	home := t.mgr.MCPHome
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	seen := map[string]bool{}
+	for _, item := range plan.Items {
+		if item.Action != mcp.ActionCreate && item.Action != mcp.ActionUpdate {
+			continue
+		}
+		if seen[item.Agent] {
+			continue
+		}
+		seen[item.Agent] = true
+		target, ok := agentcfg.Find(item.Agent)
+		if !ok {
+			continue
+		}
+		if result, attempted := agentext.Ensure(target, home); attempted {
+			return result.Short, result.Status != agentext.StatusInstalled
+		}
+	}
+	return "", false
 }
 
 func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias string, allowed map[string]bool) tea.Cmd {
@@ -1294,9 +1334,33 @@ func (t *mcpTab) renderPlan() string {
 			}
 			b.WriteByte('\n')
 		}
+		for _, line := range exportPlanRequirements(t.exportPlan) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
 	}
 	return modalBox(t.width, t.height, title, strings.TrimRight(b.String(), "\n"),
 		"enter/y confirm · F overwrite drift · esc/n cancel")
+}
+
+// exportPlanRequirements lists the external prerequisites of the targets in a
+// plan (e.g. the pi-mcp-adapter extension for PI), deduplicated by target.
+func exportPlanRequirements(plan *mcp.ExportPlan) []string {
+	lines := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, item := range plan.Items {
+		target, ok := agentcfg.Find(item.Agent)
+		if !ok || seen[target.ID] {
+			continue
+		}
+		display := target.PrerequisiteDisplay()
+		if display == "" {
+			continue
+		}
+		seen[target.ID] = true
+		lines = append(lines, fmt.Sprintf("%s requires %s", target.Name, display))
+	}
+	return lines
 }
 
 func requiredAlias(v string) error {

@@ -184,7 +184,10 @@ func (e *Exporter) Plan(targets []agentcfg.Target, aliases []string) (*ExportPla
 // planItem fills in the action for one (target, alias) pair.
 func (e *Exporter) planItem(item *ExportItem, file *agentFile, alias string, wanted agentcfg.Server) {
 	current, present := file.entry(alias)
-	wantedFingerprint := wanted.Fingerprint()
+	// Compare in the target's stored form: a target without a transport type
+	// key writes http and sse identically, so its ledger fingerprints must
+	// agree with what the file can actually hold.
+	wantedFingerprint := file.target.Normalize(wanted).Fingerprint()
 	// Remote entries always carry their endpoint in the clear; env values and
 	// headers may hold resolved secrets. All three are plaintext on write.
 	item.Plaintext = len(wanted.Env) > 0 || wanted.URL != "" || len(wanted.Headers) > 0
@@ -305,7 +308,7 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 			item.Warnings = warn
 		}
 		file.set(item.Alias, server)
-		e.ledger.Set(agentID, item.Alias, server.Fingerprint())
+		e.ledger.Set(agentID, item.Alias, item.target.Normalize(server).Fingerprint())
 	}
 
 	// Recompute after the re-checks above: every planned write may have
@@ -333,7 +336,7 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 		if items[i].Action == ActionSkip {
 			if entry, err := e.mgr.Get(items[i].Alias); err == nil {
 				if server, _, err := e.resolveEntry(entry); err == nil {
-					e.ledger.Set(agentID, items[i].Alias, server.Fingerprint())
+					e.ledger.Set(agentID, items[i].Alias, items[i].target.Normalize(server).Fingerprint())
 				}
 			}
 		}
@@ -434,19 +437,31 @@ func loadAgentFile(target agentcfg.Target, path string) (*agentFile, error) {
 	return file, nil
 }
 
+// entry reads a server back in this target's comparable form: the file's
+// values plus the target's normalization (e.g. dropping a transport the
+// target cannot store).
 func (f *agentFile) entry(name string) (agentcfg.Server, bool) {
+	var (
+		srv agentcfg.Server
+		ok  bool
+	)
 	if f.isJSON {
-		return agentcfg.JSONServer(f.jsonRoot, f.target.JSONServersKey, name)
+		srv, ok = agentcfg.JSONServer(f.jsonRoot, f.target.JSONServersKey, name)
+	} else {
+		srv, ok = agentcfg.TOMLServer(f.tomlSrc, f.target.TOMLTableName, name)
 	}
-	return agentcfg.TOMLServer(f.tomlSrc, f.target.TOMLTableName, name)
+	if !ok {
+		return agentcfg.Server{}, false
+	}
+	return f.target.Normalize(srv), true
 }
 
 func (f *agentFile) set(name string, server agentcfg.Server) {
 	if f.isJSON {
-		agentcfg.SetJSONServer(f.jsonRoot, f.target.JSONServersKey, name, server)
+		agentcfg.SetJSONServer(f.jsonRoot, f.target.JSONServersKey, name, server, f.target.Remote.TypeKey)
 		return
 	}
-	block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server)
+	block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server, f.target.Remote.TypeKey)
 	updated, err := agentcfg.UpsertTOMLServer(f.tomlSrc, f.target.TOMLTableName, name, block)
 	if err != nil {
 		// Upsert only fails on impossible inputs; keep the previous text so the

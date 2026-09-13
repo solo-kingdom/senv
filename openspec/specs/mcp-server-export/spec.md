@@ -34,7 +34,7 @@
 
 ### Requirement: 格式映射与合并
 
-导出 SHALL 按目标 agent 的配置格式写入：JSON 族写 `<serversKey>.<alias>` 对象，TOML 族写 `[mcp_servers.<alias>]` 表。`stdio` 档案只落跨 agent 公共子集 `command` / `args` / `env`，`command` MUST 原样写入，不做路径归一。`http` / `sse` 档案 SHALL 按目标 agent 的 remote 键名矩阵写入其文档化键集（传输类型、`url`、`headers`），`url` 与 header 值 MUST 为导出时解析后的明文；MUST NOT 透传 agent 特有键。写入 MUST 保留配置中的其它键与其它 MCP server。目标 agent 的配置格式无法表达该传输时，SHALL 将该 (agent, alias) 条目标注 `error` 并说明原因，MUST NOT 静默跳过或写入不可用配置。
+导出 SHALL 按目标 agent 的配置格式写入：JSON 族写 `<serversKey>.<alias>` 对象，TOML 族写 `[mcp_servers.<alias>]` 表。`stdio` 档案只落跨 agent 公共子集 `command` / `args` / `env`，`command` MUST 原样写入，不做路径归一。`http` / `sse` 档案 SHALL 按目标 agent 的 remote 键名矩阵写入其文档化键集（`url`、`headers`，以及该目标确实有文档化的传输类型键时才写该键），`url` 与 header 值 MUST 为导出时解析后的明文；MUST NOT 透传 agent 特有键。写入 MUST 保留配置中的其它键与其它 MCP server。目标 agent 的配置格式无法表达该传输时，SHALL 将该 (agent, alias) 条目标注 `error` 并说明原因，MUST NOT 静默跳过或写入不可用配置。
 
 #### Scenario: 保留其它 server
 
@@ -65,6 +65,25 @@
 
 - **WHEN** 某 agent 的配置格式无法表达 `sse` 档案时导出该档案
 - **THEN** 计划中该条目标注 `error` 并说明原因，该 agent 的文件不被修改，其余 agent 继续
+
+### Requirement: 目标前置依赖提示与自动安装
+
+当目标 agent 需要外部组件才能读取 senv 写入的配置时（例如无内置 MCP 支持、依赖扩展适配器的目标），senv SHALL 在写盘前尝试安装该组件（best-effort）：已装（根据 agent 设置文件判定）则跳过，未装则调用该 agent 的安装器并设超时。安装失败、安装器不在 PATH 或超时 SHALL 只输出提示（含手动安装方式）并继续写盘，MUST NOT 中止写入、MUST NOT 计入导出失败；安装成功也 SHALL 在输出中报告。senv MUST NOT 卸载该组件，也 MUST NOT 让用户把写入成功误认为配置已生效。
+
+#### Scenario: 适配器型目标自动安装前置依赖
+
+- **WHEN** 安装或导出到依赖扩展适配器且该扩展尚未安装的目标（如 pi）
+- **THEN** 写盘前尝试安装该扩展并报告结果，随后照常写入配置
+
+#### Scenario: 安装失败不阻断写盘
+
+- **WHEN** 自动安装失败或安装器不在 PATH
+- **THEN** 输出失败原因与手动安装命令，配置文件仍被写入，导出结果不计失败
+
+#### Scenario: 已安装则跳过
+
+- **WHEN** agent 设置文件已列出该扩展包
+- **THEN** 不调用安装器，不产生额外输出
 
 ### Requirement: 备份与文件权限
 

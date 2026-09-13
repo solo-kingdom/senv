@@ -20,7 +20,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 21 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/materialize、LLM Provider 写入与 coding agent 切换。
 
-给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。
+给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
 
 `senv mcp install` 写的是 **senv 自己**的 MCP server；用户自己的 MCP server 定义用 `senv mcp add/export` 管理，见下文「MCP Server 档案与导出」。两件事不要混用。
 
@@ -107,7 +107,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - `senv mcp import <file> [--dry-run]`：把既有 agent 配置文件批量建档。JSON 读 `mcpServers` 对象（Claude/Cursor/ZCode/Kimi 惯例），`.toml` 读 `[mcp_servers.<alias>]`（Codex）。传输识别：显式 `type`（http/sse/stdio）优先，无 type 有 `url` 按 `http`，有 `command` 按 `stdio`；codex 的 `transport: streamable-http` 归一为 `http`。值原样保存；别名已存在报 conflict 跳过（**从不覆盖**）；个别条目失败不中止其余，命令以非零退出汇总。
 - `senv mcp list` 只列别名/传输/命令（remote 显示 `scheme://host` 来源）/env 键名，**不输出值、url query 与 header**；`senv mcp get <alias>` 才展示完整字段（含值），是 CLI 解密面。`senv mcp edit <alias>` 就地改字段（别名不可改；`--transport` 可切换传输，切换后字段集整体替换并按目标传输校验，失败不落库；`--arg`/`--env`/`--header` 传了即整体替换，`--unset-env`/`--unset-header` 删单个键）。`senv mcp delete <alias>` 只删档案，不动任何 agent 配置。
 - 导出：`senv mcp export --agent codex,cursor` 或 `--all`（必须显式给目标，没有默认全量）。按目标 agent 的格式合并写入其**全局配置**：JSON 族 stdio 写 `command/args/env`、remote 写 `type/url/headers`；Codex TOML 写 `url`（+`transport`）。`--dry-run` 只出计划，`--print` 只输出片段，二者都不落盘。
-- **remote 能力矩阵**：目标 agent 配置格式表达不了的条目在计划里标 `error` 并说明原因，该 agent 文件不动、其余 agent 继续（已知：claude-desktop 与 pi 不支持任何 remote 条目；codex remote 不支持 headers；zcode/kimi 未核验 sse）。senv 只写各 agent 文档化键，不猜键名。
+- **remote 能力矩阵**：目标 agent 配置格式表达不了的条目在计划里标 `error` 并说明原因，该 agent 文件不动、其余 agent 继续（已知：claude-desktop 不支持任何 remote 条目；codex remote 不支持 headers；zcode/kimi 未核验 sse）。senv 只写各 agent 文档化键，不猜键名：`type`/`transport` 只在声明的目标上写（pi、kimi 无该键，http 与 sse 落盘形状相同）。**pi 无内置 MCP**：配置写 `$PI_CODING_AGENT_DIR/mcp.json`（默认 `~/.pi/agent/mcp.json`），由 pi-mcp-adapter 扩展读取（`pi install npm:pi-mcp-adapter`，stdio/http/sse + headers 均支持）；此类适配器目标的前置依赖会随安装/导出计划输出，并在写盘前自动尝试安装（检测 `settings.json` 的 `packages` 已装则跳过；安装失败/不在 PATH 只提示，导出与写盘继续，失败不计入导出失败）。
 - **明文落盘**：导出会把解析后的 env、url 与 header 值明文写进 agent 配置文件（0600，覆盖前备份 `<file>.bak`）。计划里会标出哪些条目含明文，执行前需确认；agent 与用户确认是必要前提，不要把值复述进回复或日志。
 - **引用缺失宽松写入**：`{{env:...}}`/`{{text:...}}` 引用目标在本机缺失时不再终止该 agent 的写入——模板原文照写入文件、stderr 逐条 warning（含缺失的 env/text 名）、计划标注 `[未解析引用]`。典型场景是档案先随 sync 到新机器、凭据后补；补齐后重跑 export 即收敛（产生新指纹，按漂移语义处理）。
 - 漂移与覆盖：senv 用本机台账 `~/.config/senv/mcp-exports.json`（不进 vault、不同步）判断条目是否由自己写入（指纹覆盖 url/headers）；目标条目被本地改过或是别人写的，默认拒绝覆盖，需 `--force`。台账损坏时按「全部外部条目」处理。旧版本导出的 stdio 条目指纹在升级后依然有效。

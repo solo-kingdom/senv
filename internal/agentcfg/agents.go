@@ -42,6 +42,12 @@ type Target struct {
 	TOMLTableName string
 	// Note is extra guidance printed after a write (e.g. "restart Cursor").
 	Note string
+	// Prerequisite is an external component the user must have for what senv
+	// writes to take effect (nil when the agent reads its config natively).
+	// senv attempts to install it best-effort before writing; see
+	// internal/agentext. A failed install is reported and never blocks the
+	// write, so install and export output echo it too.
+	Prerequisite *Prerequisite
 	// Remote describes which remote (http/sse) entries this target accepts.
 	// Only transports verified against the agent's current documentation are
 	// enabled; anything else must produce an explicit plan error rather than a
@@ -65,9 +71,52 @@ type RemoteRender struct {
 	Reason string
 }
 
+// Prerequisite is an external component a target needs for senv's config to
+// take effect: an agent without built-in MCP support reads its config only
+// through an extension. senv installs it best-effort (internal/agentext): a
+// missing installer, a failed install or a timeout is reported and the config
+// write still happens. senv never removes the component afterwards.
+type Prerequisite struct {
+	// Display is the human-readable requirement echoed in install/export
+	// output, e.g. "pi-mcp-adapter extension (`pi install npm:pi-mcp-adapter`)".
+	Display string
+	// Package is the package name used to detect an existing install in the
+	// agent's settings file.
+	Package string
+	// SettingsPath returns the agent's settings file to inspect for an existing
+	// install. Empty disables detection, so senv always attempts the install.
+	SettingsPath func(home string) string
+	// Command is the installer executable; empty means the target ID.
+	Command string
+	// Args are the installer arguments.
+	Args []string
+}
+
+// Normalize returns srv in the form this target stores and reads back. A
+// target with no transport type key cannot distinguish http from sse in its
+// file, so the transport drops out of the comparable form. Plan and ledger
+// checks must normalize both the profile side and the file side, otherwise
+// every export of such a target would look stale and flip to drift.
+func (t Target) Normalize(srv Server) Server {
+	if t.Remote.TypeKey || srv.URL == "" {
+		return srv
+	}
+	srv.Transport = ""
+	return srv
+}
+
 // ResolveConfigPath resolves the target's config path for a scope.
 func (t Target) ResolveConfigPath(home, scope string) string {
 	return t.ConfigPath(home, scope)
+}
+
+// PrerequisiteDisplay returns the target's human-readable prerequisite, empty
+// when it has none.
+func (t Target) PrerequisiteDisplay() string {
+	if t.Prerequisite == nil {
+		return ""
+	}
+	return t.Prerequisite.Display
 }
 
 // Supported is the registry of writable agents, in stable display order.
@@ -144,17 +193,53 @@ func Supported() []Target {
 			Remote:         RemoteRender{HTTP: true, Headers: true, Reason: "sse entry shape is not verified for Kimi Code"},
 		},
 		{
+			// PI has no built-in MCP: the `~/.pi/agent/mcp.json` Pi global
+			// override is read by the pi-mcp-adapter extension
+			// (github.com/nicobailon/pi-mcp-adapter, verified against its
+			// README 2026-09). Servers live under "mcpServers" as
+			// {command,args,env} or {url,headers}; there is no transport
+			// "type" key (the adapter infers it from command vs url) and SSE
+			// is a fallback of url, so http and sse profiles share one shape.
 			ID:             "pi",
 			Name:           "PI",
 			Format:         FormatJSON,
-			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".pi", "config.json") },
+			ConfigPath:     piMCPConfigPath,
 			JSONServersKey: "mcpServers",
-			Note:           "Restart PI for the server to load.",
-			Remote: RemoteRender{
-				Reason: "pi has no built-in MCP support (extension adapters only); remote entries are not verified",
+			Note:           "Run /reload in PI (or restart) to load the server.",
+			Prerequisite: &Prerequisite{
+				Display:      "pi-mcp-adapter extension (`pi install npm:pi-mcp-adapter`)",
+				Package:      "pi-mcp-adapter",
+				SettingsPath: func(home string) string { return filepath.Join(PiAgentDir(home), "settings.json") },
+				Args:         []string{"install", "npm:pi-mcp-adapter"},
 			},
+			Remote: RemoteRender{HTTP: true, SSE: true, Headers: true},
 		},
 	}
+}
+
+// PiAgentDir resolves PI's config directory. PI and pi-mcp-adapter both honor
+// $PI_CODING_AGENT_DIR (default ~/.pi/agent), including the `~` and `~/...`
+// spellings; a relative value stays relative to the process working directory,
+// as in the adapter. Only the stock `PI` name is honored — rebranded pi
+// distributions derive <NAME>_CODING_AGENT_DIR from their package manifest,
+// which senv cannot discover from here.
+func PiAgentDir(home string) string {
+	dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	switch {
+	case dir == "":
+		return filepath.Join(home, ".pi", "agent")
+	case dir == "~":
+		return home
+	case strings.HasPrefix(dir, "~/"):
+		return filepath.Join(home, strings.TrimPrefix(dir, "~/"))
+	default:
+		return filepath.Clean(dir)
+	}
+}
+
+// piMCPConfigPath is the Pi global MCP override read by pi-mcp-adapter.
+func piMCPConfigPath(home, _ string) string {
+	return filepath.Join(PiAgentDir(home), "mcp.json")
 }
 
 // RemoteError reports why srv cannot be exported to this target, or nil when

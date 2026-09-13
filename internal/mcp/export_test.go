@@ -178,7 +178,7 @@ func TestExportDriftNeedsForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"})
+	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"}, false)
 	data, _ := agentcfg.EncodeJSON(root)
 	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestUnexportRemovesExportedAndConfirmsChanged(t *testing.T) {
 
 	// Hand-edit one exported entry.
 	root, _ := agentcfg.ReadJSONRoot(cfgPath)
-	agentcfg.SetJSONServer(root, target.JSONServersKey, "other", agentcfg.Server{Command: "edited"})
+	agentcfg.SetJSONServer(root, target.JSONServersKey, "other", agentcfg.Server{Command: "edited"}, false)
 	data, _ := agentcfg.EncodeJSON(root)
 	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -659,6 +659,84 @@ func TestExportRemoteUnsupportedTargetIsPlanError(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatalf("claude-desktop config changed despite the error:\n%s", after)
+	}
+}
+
+// PI has no built-in MCP: profiles land in the Pi global MCP override read by
+// the pi-mcp-adapter extension. Its entries are {url, headers} with no
+// transport type key, and http/sse profiles are therefore stored identically.
+func TestExportRemoteToPiUsesAdapterShape(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp",
+		map[string]string{"Authorization": "Bearer token-1"})
+	addRemoteProfile(t, mgr, "legacy", storage.MCPTransportSSE, "https://api.example.com/sse", nil)
+	target := targetFor(t, "pi")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if cfgPath != filepath.Join(dir, ".pi", "agent", "mcp.json") {
+		t.Fatalf("pi config path = %q", cfgPath)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	for _, item := range plan.Items {
+		if item.Action != ActionCreate {
+			t.Fatalf("pi item = %+v; want create", item)
+		}
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures != 0 {
+		t.Fatalf("Execute = %+v, %v; want no failures", report, err)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read pi config: %v", err)
+	}
+	var root struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("pi config is not JSON: %v\n%s", err, data)
+	}
+	web := root.MCPServers["web"]
+	if web["url"] != "https://api.example.com/mcp" {
+		t.Fatalf("web url = %v", web["url"])
+	}
+	if _, ok := web["command"]; ok {
+		t.Fatalf("web entry leaked a stdio key: %v", web)
+	}
+	if _, ok := web["type"]; ok {
+		t.Fatalf("pi entries must not carry an undocumented transport type key: %v", web)
+	}
+	if headers, _ := web["headers"].(map[string]any); headers["Authorization"] != "Bearer token-1" {
+		t.Fatalf("web headers = %v", web["headers"])
+	}
+	legacy := root.MCPServers["legacy"]
+	if legacy["url"] != "https://api.example.com/sse" {
+		t.Fatalf("legacy url = %v", legacy["url"])
+	}
+	if _, ok := legacy["headers"]; ok {
+		t.Fatalf("sse profile without headers must not grow a headers key: %v", legacy)
+	}
+	if _, ok := legacy["type"]; ok {
+		t.Fatalf("pi entries must not carry an undocumented transport type key: %v", legacy)
+	}
+
+	// Re-planning must settle at skip. A typeless target cannot store the
+	// transport, so comparing raw fingerprints would report perpetual drift.
+	exporter = testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err = exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("re-Plan: %v", err)
+	}
+	for _, item := range plan.Items {
+		if item.Action != ActionSkip {
+			t.Fatalf("re-plan item = %+v; want skip", item)
+		}
 	}
 }
 

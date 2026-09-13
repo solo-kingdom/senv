@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/wii/senv/internal/agentcfg"
+	"github.com/wii/senv/internal/agentext"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/session"
@@ -122,6 +123,7 @@ Examples:
 			return err
 		}
 		printExportPlan(plan)
+		printTargetRequirements(os.Stdout, targets)
 		printExportItemWarnings(cmd.ErrOrStderr(), plan)
 		if mcpExportPrint {
 			printExportSnippets(plan)
@@ -139,6 +141,7 @@ Examples:
 			return nil
 		}
 
+		ensurePlanPrerequisites(plan)
 		report, execErr := exporter.Execute(plan)
 		printExportReport(report)
 		auditOp(session.AuditOpMCPExport, mcpExportTargetName(targets, args), report.Failures == 0, fmt.Sprintf("export %d 项", len(report.Items)))
@@ -225,6 +228,44 @@ func printLedgerWarnings(ledger *mcp.Ledger) {
 	}
 }
 
+// ensurePlanPrerequisites attempts each written target's declared prerequisite
+// install once, best-effort: a failure is reported and the export continues, so
+// a missing extension never turns into a failed export.
+func ensurePlanPrerequisites(plan *mcp.ExportPlan) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, item := range plan.Items {
+		if item.Action != mcp.ActionCreate && item.Action != mcp.ActionUpdate {
+			continue
+		}
+		if seen[item.Agent] {
+			continue
+		}
+		seen[item.Agent] = true
+		target, ok := agentcfg.Find(item.Agent)
+		if !ok {
+			continue
+		}
+		if result, attempted := agentext.Ensure(target, home); attempted {
+			fmt.Printf("  %s\n", result.Message)
+		}
+	}
+}
+
+// printTargetRequirements echoes per-target external prerequisites (e.g. an MCP
+// adapter extension) next to the plan so a successful export is not mistaken
+// for a working setup; the install itself is attempted just before writing.
+func printTargetRequirements(w io.Writer, targets []agentcfg.Target) {
+	for _, t := range targets {
+		if display := t.PrerequisiteDisplay(); display != "" {
+			fmt.Fprintf(w, "  %s requires %s\n", t.Name, display)
+		}
+	}
+}
+
 func printExportPlan(plan *mcp.ExportPlan) {
 	printExportPlanTo(os.Stdout, plan)
 }
@@ -280,7 +321,7 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 		switch target.Format {
 		case agentcfg.FormatJSON:
 			entry, err := json.MarshalIndent(map[string]any{
-				target.JSONServersKey: map[string]any{item.Alias: jsonEntry(server)},
+				target.JSONServersKey: map[string]any{item.Alias: agentcfg.JSONEntry(server, target.Remote.TypeKey)},
 			}, "", "  ")
 			if err != nil {
 				fmt.Printf("# render failed: %v\n", err)
@@ -288,13 +329,9 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 			}
 			fmt.Printf("%s\n", entry)
 		case agentcfg.FormatTOML:
-			fmt.Print(agentcfg.RenderTOMLServerBlock(target.TOMLTableName, item.Alias, server))
+			fmt.Print(agentcfg.RenderTOMLServerBlock(target.TOMLTableName, item.Alias, server, target.Remote.TypeKey))
 		}
 	}
-}
-
-func jsonEntry(server agentcfg.Server) map[string]any {
-	return agentcfg.JSONEntry(server)
 }
 
 func printUnexportPlan(plan *mcp.UnexportPlan) {

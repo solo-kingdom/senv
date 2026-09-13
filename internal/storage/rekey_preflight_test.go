@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,57 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 )
+
+// TestRekeyPreflightSkipsMachineLocalArtifact 验证 rekey 预检跳过机器本地
+// 工件（TUI 快照），既不报“未索引 config”，也不读取/改动其内容。
+func TestRekeyPreflightSkipsMachineLocalArtifact(t *testing.T) {
+	manager, _ := setupTestManager(t)
+	oldKey := derivedKey(t, manager, "test-password")
+	if err := manager.SaveEnvVarWithKey("default", "TOKEN", &EnvVarEntry{Value: "secret"}, oldKey); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotPath := filepath.Join(manager.dataPath, "tui-snapshot.enc")
+	original := []byte("machine-local-cache-bytes")
+	if err := os.WriteFile(snapshotPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _, _, err := manager.rekeyPreflight(oldKey)
+	if err != nil {
+		t.Fatalf("rekeyPreflight with machine-local artifact: %v", err)
+	}
+	for _, entry := range entries {
+		if len(entry.identity) == 1 && entry.identity[0] == "tui-snapshot.enc" {
+			t.Fatal("machine-local artifact was enumerated for rekey")
+		}
+	}
+	got, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatal("machine-local artifact content changed during preflight")
+	}
+}
+
+// TestRekeyPreflightStillRejectsUnindexedCiphertext 验证机器本地例外没有
+// 放松失败关闭：真正的顶层未索引密文仍必须让预检失败。
+func TestRekeyPreflightStillRejectsUnindexedCiphertext(t *testing.T) {
+	manager, _ := setupTestManager(t)
+	oldKey := derivedKey(t, manager, "test-password")
+	if err := manager.SaveEnvVarWithKey("default", "TOKEN", &EnvVarEntry{Value: "secret"}, oldKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manager.dataPath, "rogue.enc"), []byte("ciphertext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := manager.rekeyPreflight(oldKey); err == nil {
+		t.Fatal("rekeyPreflight must fail closed on unindexed ciphertext")
+	} else if !strings.Contains(err.Error(), "unindexed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 type rekeyTestInputs struct {
 	key         []byte

@@ -44,8 +44,17 @@ func TestAddExcludesMachineLocalSecrets(t *testing.T) {
 	write("metadata.json", "{}")
 	write("server-token.json", `{"token":"secret-token"}`)
 	write("mcp-exports.json", `{"cursor":{"github":"fp"}}`)
+	write("agent-pointers.json", `{"provider":"x"}`)
+	write(".senv-vault.lock", "")
+	write("cache/models-dev.json", "{}")
 	// 嵌套目录里的同名文件也要被排除（自定义 configPath 布局）
 	write("nested/cfg/server-token.json", `{"token":"nested-token"}`)
+	write("nested/cfg/agent-pointers.json", `{}`)
+	// 机器本地缓存（TUI 快照、同步 state、同步锁）
+	write("tui-snapshot.enc", "snapshot")
+	write("data/tui-snapshot.enc", "snapshot")
+	write("data/.senv-sync-state.json", "{}")
+	write("data/.senv-sync.lock", "")
 	write("data/envs/default/API_KEY.enc", "cipher")
 
 	if err := m.Add(); err != nil {
@@ -72,6 +81,14 @@ func TestAddExcludesMachineLocalSecrets(t *testing.T) {
 		"server-token.json",
 		"nested/cfg/server-token.json",
 		"mcp-exports.json",
+		"agent-pointers.json",
+		"nested/cfg/agent-pointers.json",
+		".senv-vault.lock",
+		"cache/models-dev.json",
+		"tui-snapshot.enc",
+		"data/tui-snapshot.enc",
+		"data/.senv-sync-state.json",
+		"data/.senv-sync.lock",
 	} {
 		if staged(forbidden) {
 			t.Fatalf("%s must never be staged by git add", forbidden)

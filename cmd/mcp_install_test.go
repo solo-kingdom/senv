@@ -23,6 +23,14 @@ func installWithHome(t *testing.T, target agentTarget, scope string, printOnly b
 	return cfgPath, &buf, home
 }
 
+// noPiOnPath keeps the pi extension install out of tests that only exercise
+// the config write: agentext reports "unavailable", runs no subprocess and
+// touches no network, while the write path stays identical.
+func noPiOnPath(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestInstallJSON_CreatesNewConfig(t *testing.T) {
 	target, ok := findAgent("claude-code")
 	if !ok {
@@ -198,6 +206,43 @@ func TestInstallTOML_UpsertReplacesExistingSenv(t *testing.T) {
 	_ = home
 }
 
+func TestInstallPiDeclaresAdapterRequirement(t *testing.T) {
+	noPiOnPath(t)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	target, ok := findAgent("pi")
+	if !ok {
+		t.Fatal("pi not found")
+	}
+	cfgPath, out, _ := installWithHome(t, target, "user", false)
+	if !strings.HasSuffix(cfgPath, filepath.Join(".pi", "agent", "mcp.json")) {
+		t.Fatalf("pi config path = %q", cfgPath)
+	}
+	if !strings.Contains(out.String(), "Requires: pi-mcp-adapter") {
+		t.Fatalf("write output dropped the adapter requirement:\n%s", out.String())
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("config not valid JSON: %v\n%s", err, data)
+	}
+	senvEntry, ok := root["mcpServers"].(map[string]any)["senv"].(map[string]any)
+	if !ok {
+		t.Fatalf("senv server missing: %v", root)
+	}
+	if _, ok := senvEntry["type"]; ok {
+		t.Fatalf("stdio entry gained a type key: %v", senvEntry)
+	}
+
+	// --print reports the same requirement without writing (and installs nothing).
+	_, out, _ = installWithHome(t, target, "user", true)
+	if !strings.Contains(out.String(), "Requires: pi-mcp-adapter") {
+		t.Fatalf("print mode dropped the requirement:\n%s", out.String())
+	}
+}
+
 func TestInstallUnknownAgent(t *testing.T) {
 	if _, ok := findAgent("nope"); ok {
 		t.Fatal("expected unknown agent to not be found")
@@ -208,6 +253,7 @@ func TestInstallUnknownAgent(t *testing.T) {
 }
 
 func TestInstallAll(t *testing.T) {
+	noPiOnPath(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	var buf bytes.Buffer

@@ -28,11 +28,6 @@ const (
 	snapshotCacheVersion = 1
 )
 
-// syncLockFileName 与 provider 的进程间同步锁同文件名。锁文件随每次获取被
-// chmod、mtime 抖动且不含 vault 数据，必须排除在指纹外（不反向依赖
-// provider 的内部常量）。
-const syncLockFileName = ".senv-sync.lock"
-
 // SnapshotCache 是 TUI 明文列表（env 变量 + text 元数据展示视图）的加密
 // 磁盘缓存：载荷序列化后用 vault 主密钥 AES-256-GCM 加密落盘，权限 0600。
 // 静态安全级别与 vault 条目等同（同密钥、同算法、同权限位），攻击者能读
@@ -210,7 +205,7 @@ func (c *SnapshotCache) vaultFingerprint() (string, error) {
 }
 
 // manifestEntries 枚举参与指纹的密文文件条目（"相对路径\x00size\x00mtime"），
-// 排序后返回。dataPath 全量递归（排除快照文件自身与同步锁）；configPath
+// 排序后返回。dataPath 全量递归（排除机器本地工件，见 storage 登记表）；configPath
 // 只含 config_index.json——其余 configPath 文件不喂养快照数据，metadata
 // 变化由 salt 自然覆盖，session/agent 指针等频繁变动文件避免指纹抖动。
 func (c *SnapshotCache) manifestEntries() ([]string, error) {
@@ -243,7 +238,7 @@ func (c *SnapshotCache) manifestEntries() ([]string, error) {
 }
 
 // walkManifest 递归枚举 trusted root 下的普通文件（不跟随符号链接），
-// 快照文件自身与同步锁排除在指纹外。
+// dataPath 顶层的机器本地工件（快照、同步 state、锁）排除在指纹外。
 func walkManifest(root *securefs.Root, prefix []string, out *[]string) error {
 	entries, err := root.ReadDir(prefix...)
 	if err != nil {
@@ -256,7 +251,7 @@ func walkManifest(root *securefs.Root, prefix []string, out *[]string) error {
 			}
 			continue
 		}
-		if len(prefix) == 0 && (e.Name == snapshotCacheFileName || e.Name == syncLockFileName) {
+		if len(prefix) == 0 && storage.IsMachineLocalDataArtifact(e.Name) {
 			continue
 		}
 		*out = append(*out, manifestEntry(strings.Join(append(append([]string{}, prefix...), e.Name), "/"), e))

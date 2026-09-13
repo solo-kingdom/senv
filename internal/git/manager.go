@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 // ErrNothingToPush indicates the local branch has no commits to push to its upstream.
@@ -216,13 +218,11 @@ func (m *Manager) revListHasCommits(ctx context.Context, rangeSpec, parseErrPref
 	return n > 0, nil
 }
 
-// machineLocalExcludePathspecs 是 git add 时永远排除的路径规格：server
-// provider token 与 MCP 导出账本等机器本地敏感文件，即使 .gitignore 缺失
-// （用户自建仓库、旧版本初始化）也不会被暂存提交。`**/` 形式匹配任意深度。
-var machineLocalExcludePathspecs = []string{
-	":(exclude,glob)**/server-token.json",
-	":(exclude,glob)**/mcp-exports.json",
-}
+// machineLocalExcludePathspecs 是 git add 时永远排除的路径规格，由 storage
+// 的机器本地工件登记表派生（见 internal/storage/machine_local.go）：server
+// token、MCP 导出账本、agent 指针、同步/口令锁、同步状态、TUI 快照、模型
+// 目录缓存。`**/` 形式匹配任意深度；即使 .gitignore 缺失也不会被暂存。
+var machineLocalExcludePathspecs = storage.MachineLocalGitExcludeGlobs()
 
 // Add adds all changes to the staging area except machine-local secret files
 func (m *Manager) Add() error {

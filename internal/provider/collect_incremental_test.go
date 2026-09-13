@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -178,5 +179,51 @@ func TestCollectIncrementalDropsDeleted(t *testing.T) {
 	}
 	if _, ok := got[entryID(KindEnv, "default", "GONE")]; ok {
 		t.Fatal("deleted entry still present in incremental snapshot")
+	}
+}
+
+// TestCollectSkipsMachineLocalArtifacts 验证 dataPath 顶层的机器本地工件
+// （TUI 快照、同步状态、锁）不会被当成 config 条目收集，且其内容变化不
+// 产生待推送条目。
+func TestCollectSkipsMachineLocalArtifacts(t *testing.T) {
+	srv := newFakeServer()
+	p, cache := newTestProvider(t, srv)
+	writeEnvVar(t, cache, "default", "A", "aaa")
+
+	st, err := cache.loadState()
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+
+	artifacts := []string{"tui-snapshot.enc", ".senv-sync-state.json", ".senv-sync.lock"}
+	writeAll := func(marker string) {
+		for _, name := range artifacts {
+			if err := os.WriteFile(filepath.Join(cache.dataPath, name), []byte(marker+"-"+name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeAll("first")
+
+	entries, err := cache.collect()
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	for _, key := range []string{"tui-snapshot", ".senv-sync-state"} {
+		if _, ok := entries[entryID(KindConfig, "", key)]; ok {
+			t.Fatalf("machine-local artifact %q was collected as config entry", key)
+		}
+	}
+
+	dirtyBefore := len(p.collectDirty(st, entries))
+	writeAll("second") // 内容变化
+	cache.resetCollectCache()
+	entries2, err := cache.collect()
+	if err != nil {
+		t.Fatalf("collect after rewrite: %v", err)
+	}
+	dirtyAfter := len(p.collectDirty(st, entries2))
+	if dirtyBefore != dirtyAfter {
+		t.Fatalf("machine-local rewrite changed dirty count %d -> %d", dirtyBefore, dirtyAfter)
 	}
 }

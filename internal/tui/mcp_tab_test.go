@@ -408,7 +408,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := agentcfg.Find("cursor")
-	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"})
+	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"}, false)
 	data, _ := agentcfg.EncodeJSON(root)
 	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -462,7 +462,7 @@ func TestMCPUnexportChangedConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := agentcfg.Find("cursor")
-	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"})
+	agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"}, false)
 	data, _ := agentcfg.EncodeJSON(root)
 	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestMCPUnexportChangedConfirmEscCancelsAll(t *testing.T) {
 			t.Fatal(err)
 		}
 		target, _ := agentcfg.Find(agent)
-		agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"})
+		agentcfg.SetJSONServer(root, target.JSONServersKey, "github", agentcfg.Server{Command: "local-edit"}, false)
 		data, _ := agentcfg.EncodeJSON(root)
 		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 			t.Fatal(err)

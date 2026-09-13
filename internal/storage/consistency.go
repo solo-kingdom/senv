@@ -291,7 +291,11 @@ func (m *Manager) HasOrphanedData() bool {
 			}
 			continue
 		}
-		// env_*.json.enc, *.enc config files
+		// env_*.json.enc 与顶层 config *.enc。机器本地工件（TUI 快照、同步
+		// state、锁）不是用户密文，不得因此误报 orphan，否则 init 会被无谓拒绝。
+		if IsMachineLocalDataArtifact(name) {
+			continue
+		}
 		if strings.HasSuffix(name, EnvFileSuffix) || strings.HasSuffix(name, ConfigFileSuffix) {
 			return true
 		}

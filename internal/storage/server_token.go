@@ -19,11 +19,6 @@ const ServerTokenFile = "server-token.json"
 // GitIgnoreFile 是写入 configPath 的 .gitignore 文件名。
 const GitIgnoreFile = ".gitignore"
 
-// gitIgnoredMachineLocal 列出必须被 git 同步排除的机器本地文件。
-// mcp-exports.json 含各 agent 导出配置的指纹（对低熵 secret 是离线验证
-// 预言机），同样只在单机有意义。
-var gitIgnoredMachineLocal = []string{ServerTokenFile, "mcp-exports.json"}
-
 // ErrServerTokenNotFound 表示 token 文件不存在（未注册/未配置 server provider）
 var ErrServerTokenNotFound = errors.New("server token file not found")
 
@@ -90,9 +85,15 @@ func (m *Manager) ClearServerToken() error {
 }
 
 // EnsureGitIgnoreServerToken 确保 configPath 下存在 .gitignore 且覆盖全部
-// 机器本地敏感文件。已存在的条目不重复；其余既有内容原样保留。
-// configPath 不在任何 git 仓库内时该文件无害。
+// 机器本地工件（清单见 machine_local.go）。函数名保留以兼容既有调用方。
 func (m *Manager) EnsureGitIgnoreServerToken() error {
+	return m.EnsureGitIgnoreMachineLocal()
+}
+
+// EnsureGitIgnoreMachineLocal 确保 configPath 下存在 .gitignore 且覆盖
+// MachineLocalGitIgnoreEntries() 的全部条目。已存在的条目不重复；其余既有
+// 内容原样保留。configPath 不在任何 git 仓库内时该文件无害。
+func (m *Manager) EnsureGitIgnoreMachineLocal() error {
 	root, err := m.openConfigRoot()
 	if err != nil {
 		return err
@@ -110,7 +111,7 @@ func (m *Manager) EnsureGitIgnoreServerToken() error {
 	if updated != "" && !strings.HasSuffix(updated, "\n") {
 		updated += "\n"
 	}
-	for _, name := range gitIgnoredMachineLocal {
+	for _, name := range MachineLocalGitIgnoreEntries() {
 		if ignoreLineCovers(existing, name) {
 			continue
 		}

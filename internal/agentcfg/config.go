@@ -136,17 +136,21 @@ func JSONServers(root map[string]any, serversKey string) map[string]any {
 }
 
 // JSONEntry renders one server into the object stored under the entry name.
-// Remote entries take the documented remote key set (transport type, url,
-// headers); stdio entries keep the historical command/args/env shape with no
-// type key, so pre-existing entries render byte-identically.
-func JSONEntry(srv Server) map[string]any {
+// Remote entries take the documented remote key set (url, headers, plus the
+// transport type key only when the target has one — targets that auto-detect
+// the transport pass typeKey false and must not gain an undocumented key);
+// stdio entries keep the historical command/args/env shape with no type key,
+// so pre-existing entries render byte-identically.
+func JSONEntry(srv Server, typeKey bool) map[string]any {
 	entry := map[string]any{}
 	if srv.URL != "" {
-		transport := srv.Transport
-		if transport == "" {
-			transport = "http"
+		if typeKey {
+			transport := srv.Transport
+			if transport == "" {
+				transport = "http"
+			}
+			entry["type"] = transport
 		}
-		entry["type"] = transport
 		entry["url"] = srv.URL
 		if len(srv.Headers) > 0 {
 			entry["headers"] = srv.Headers
@@ -163,10 +167,11 @@ func JSONEntry(srv Server) map[string]any {
 	return entry
 }
 
-// SetJSONServer upserts one server entry, preserving every other key.
-func SetJSONServer(root map[string]any, serversKey, name string, srv Server) {
+// SetJSONServer upserts one server entry, preserving every other key. typeKey
+// comes from the target's RemoteRender capability.
+func SetJSONServer(root map[string]any, serversKey, name string, srv Server, typeKey bool) {
 	servers := jsonTable(root, serversKey, true)
-	servers[name] = JSONEntry(srv)
+	servers[name] = JSONEntry(srv, typeKey)
 }
 
 // DeleteJSONServer removes one server entry, reporting whether it was present.
@@ -272,13 +277,14 @@ func EncodeJSON(root map[string]any) ([]byte, error) {
 // RenderTOMLServerBlock renders the TOML block for one server, matching Codex's
 // [mcp_servers.<name>] convention. stdio entries keep the historical
 // command/args/env shape; remote entries render the documented url/transport
-// keys. Custom headers are not rendered: only targets whose RemoteRender
-// accepts headers get them, and those are JSON targets today.
-func RenderTOMLServerBlock(table, name string, srv Server) string {
+// keys (transport only for targets with a transport type key). Custom headers
+// are not rendered: only targets whose RemoteRender accepts headers get them,
+// and those are JSON targets today.
+func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s.%s]\n", table, name)
 	if srv.URL != "" {
-		if srv.Transport != "" && srv.Transport != "stdio" {
+		if typeKey && srv.Transport != "" && srv.Transport != "stdio" {
 			fmt.Fprintf(&b, "transport = %q\n", srv.Transport)
 		}
 		fmt.Fprintf(&b, "url = %q\n", srv.URL)

@@ -67,7 +67,7 @@ func TestSetJSONServerRemoteShape(t *testing.T) {
 		Transport: "http",
 		URL:       "https://api.example.com/mcp",
 		Headers:   map[string]string{"Authorization": "Bearer x"},
-	})
+	}, true)
 	entry, ok := JSONServers(root, "mcpServers")["web"].(map[string]any)
 	if !ok {
 		t.Fatal("remote entry not written")
@@ -86,7 +86,7 @@ func TestSetJSONServerRemoteShape(t *testing.T) {
 	}
 
 	// Empty headers are omitted, and an empty transport defaults to http.
-	SetJSONServer(root, "mcpServers", "bare", Server{URL: "https://api.example.com/mcp"})
+	SetJSONServer(root, "mcpServers", "bare", Server{URL: "https://api.example.com/mcp"}, true)
 	bare := JSONServers(root, "mcpServers")["bare"].(map[string]any)
 	if _, ok := bare["headers"]; ok {
 		t.Fatalf("empty headers must be omitted: %v", bare)
@@ -96,7 +96,7 @@ func TestSetJSONServerRemoteShape(t *testing.T) {
 	}
 
 	// stdio entries keep the historical shape with no type key.
-	SetJSONServer(root, "mcpServers", "gh", Server{Command: "npx", Args: []string{"-y"}, Env: map[string]string{"K": "v"}})
+	SetJSONServer(root, "mcpServers", "gh", Server{Command: "npx", Args: []string{"-y"}, Env: map[string]string{"K": "v"}}, true)
 	stdio := JSONServers(root, "mcpServers")["gh"].(map[string]any)
 	if _, ok := stdio["type"]; ok {
 		t.Fatalf("stdio entry must not gain a type key: %v", stdio)
@@ -104,11 +104,21 @@ func TestSetJSONServerRemoteShape(t *testing.T) {
 	if stdio["command"] != "npx" {
 		t.Fatalf("stdio entry = %v", stdio)
 	}
+
+	// A target with no transport type key (pi, kimi) must not gain the key.
+	SetJSONServer(root, "mcpServers", "typeless", Server{Transport: "sse", URL: "https://api.example.com/sse"}, false)
+	typeless := JSONServers(root, "mcpServers")["typeless"].(map[string]any)
+	if _, ok := typeless["type"]; ok {
+		t.Fatalf("typeless target must not gain a type key: %v", typeless)
+	}
+	if typeless["url"] != "https://api.example.com/sse" {
+		t.Fatalf("typeless entry = %v", typeless)
+	}
 }
 
 func TestJSONServerDottedKey(t *testing.T) {
 	root := map[string]any{"mcp": map[string]any{"other": 1}}
-	SetJSONServer(root, "mcp.servers", "web", Server{Transport: "sse", URL: "https://api.example.com/sse"})
+	SetJSONServer(root, "mcp.servers", "web", Server{Transport: "sse", URL: "https://api.example.com/sse"}, true)
 	got, ok := JSONServer(root, "mcp.servers", "web")
 	if !ok {
 		t.Fatal("entry not found under dotted key")
@@ -120,7 +130,7 @@ func TestJSONServerDottedKey(t *testing.T) {
 		t.Fatal("sibling key under the dotted path was lost")
 	}
 	// Creates missing intermediates.
-	SetJSONServer(root, "a.b.c", "x", Server{Command: "npx"})
+	SetJSONServer(root, "a.b.c", "x", Server{Command: "npx"}, true)
 	if _, ok := JSONServer(root, "a.b.c", "x"); !ok {
 		t.Fatal("entry not created under a fresh dotted path")
 	}
@@ -136,7 +146,7 @@ func TestJSONServerDottedKey(t *testing.T) {
 }
 
 func TestRenderTOMLServerBlockRemote(t *testing.T) {
-	block := RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "streamable-http", URL: "https://api.example.com/mcp"})
+	block := RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "streamable-http", URL: "https://api.example.com/mcp"}, true)
 	for _, want := range []string{`[mcp_servers.web]`, `transport = "streamable-http"`, `url = "https://api.example.com/mcp"`} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("block missing %q:\n%s", want, block)
@@ -148,7 +158,7 @@ func TestRenderTOMLServerBlockRemote(t *testing.T) {
 }
 
 func TestTOMLServersRoundTrip(t *testing.T) {
-	src := "model = \"gpt\"\n" + RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "http", URL: "https://api.example.com/mcp"}) + "\n" + RenderTOMLServerBlock("mcp_servers", "gh", Server{Command: "npx"})
+	src := "model = \"gpt\"\n" + RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "http", URL: "https://api.example.com/mcp"}, true) + "\n" + RenderTOMLServerBlock("mcp_servers", "gh", Server{Command: "npx"}, true)
 	servers, err := TOMLServers(src, "mcp_servers")
 	if err != nil {
 		t.Fatalf("TOMLServers: %v", err)
@@ -198,8 +208,9 @@ func TestRemoteErrorMatrix(t *testing.T) {
 		{"zcode", sse, true},
 		{"kimi", httpHeaders, false},
 		{"kimi", sse, true},
-		{"pi", httpPlain, true},
-		{"pi", sse, true},
+		{"pi", httpPlain, false},
+		{"pi", httpHeaders, false},
+		{"pi", sse, false},
 	}
 	for _, tc := range cases {
 		target, ok := Find(tc.agent)
@@ -232,6 +243,43 @@ func TestRemoteErrorMatrix(t *testing.T) {
 	}
 }
 
+func TestRenderTOMLServerBlockTypeKey(t *testing.T) {
+	srv := Server{Transport: "http", URL: "https://api.example.com/mcp"}
+	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, true); !strings.Contains(block, `transport = "http"`) {
+		t.Fatalf("typeKey=true block = %q", block)
+	}
+	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, false); strings.Contains(block, "transport") {
+		t.Fatalf("typeKey=false block = %q", block)
+	}
+}
+
+func TestNormalizeDropsUnstorableTransport(t *testing.T) {
+	http := Server{Transport: "http", URL: "https://api.example.com/mcp", Headers: map[string]string{"A": "b"}}
+	sse := Server{Transport: "sse", URL: "https://api.example.com/mcp", Headers: map[string]string{"A": "b"}}
+	stdio := Server{Command: "npx"}
+
+	typed, ok := Find("cursor")
+	if !ok || !typed.Remote.TypeKey {
+		t.Fatal("cursor must be a transport-type-key target for this test")
+	}
+	if got := typed.Normalize(sse); got.Transport != "sse" {
+		t.Fatalf("typed target Normalize = %+v; must keep transport", got)
+	}
+
+	typeless, ok := Find("pi")
+	if !ok || typeless.Remote.TypeKey {
+		t.Fatal("pi must be a typeless target for this test")
+	}
+	// A typeless target stores http and sse identically, so their comparable
+	// form (and therefore fingerprint) must match or every plan flips to drift.
+	if typeless.Normalize(http).Fingerprint() != typeless.Normalize(sse).Fingerprint() {
+		t.Fatal("typeless target must treat http and sse as the same stored entry")
+	}
+	if got := typeless.Normalize(stdio); got.Transport != "" || got.Command != "npx" {
+		t.Fatalf("stdio normalization must be a no-op: %+v", got)
+	}
+}
+
 func TestZCodeTargetPaths(t *testing.T) {
 	target, ok := Find("zcode")
 	if !ok {
@@ -256,5 +304,57 @@ func TestKimiTargetPaths(t *testing.T) {
 	// ~/.kimi-code/mcp.json; the retired ~/.kimi/mcp.json is never read.
 	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/.kimi-code/mcp.json" {
 		t.Fatalf("config path = %q", path)
+	}
+}
+
+func TestPiTargetPaths(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	target, ok := Find("pi")
+	if !ok {
+		t.Fatal("pi target missing")
+	}
+	// PI has no built-in MCP: the Pi global MCP override is read by the
+	// pi-mcp-adapter extension, which resolves the agent dir the same way as
+	// pi ($PI_CODING_AGENT_DIR, default ~/.pi/agent).
+	if target.JSONServersKey != "mcpServers" {
+		t.Fatalf("JSONServersKey = %q, want mcpServers", target.JSONServersKey)
+	}
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/.pi/agent/mcp.json" {
+		t.Fatalf("config path = %q", path)
+	}
+	if target.Prerequisite == nil || target.Prerequisite.Display == "" {
+		t.Fatal("pi must declare the pi-mcp-adapter prerequisite")
+	}
+
+	t.Setenv("PI_CODING_AGENT_DIR", "/opt/pi-agent")
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/opt/pi-agent/mcp.json" {
+		t.Fatalf("absolute PI_CODING_AGENT_DIR path = %q", path)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", "~/custom/pi")
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/custom/pi/mcp.json" {
+		t.Fatalf("~ PI_CODING_AGENT_DIR path = %q", path)
+	}
+	t.Setenv("PI_CODING_AGENT_DIR", "~")
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/mcp.json" {
+		t.Fatalf("bare ~ PI_CODING_AGENT_DIR path = %q", path)
+	}
+}
+
+func TestAdapterTargetsDeclarePrerequisite(t *testing.T) {
+	// Targets whose config is only read by an external extension must carry a
+	// visible, installable prerequisite; native readers must not.
+	for _, target := range Supported() {
+		if target.ID == "pi" {
+			if target.Prerequisite == nil {
+				t.Fatalf("%s: missing Prerequisite", target.ID)
+			}
+			if target.Prerequisite.Package == "" || len(target.Prerequisite.Args) == 0 {
+				t.Fatalf("%s: prerequisite is not installable: %+v", target.ID, target.Prerequisite)
+			}
+			continue
+		}
+		if target.Prerequisite != nil {
+			t.Fatalf("%s: unexpected Prerequisite %+v", target.ID, target.Prerequisite)
+		}
 	}
 }

@@ -95,3 +95,44 @@ func TestHasOrphanedData_FalseOnFreshDirs(t *testing.T) {
 		t.Fatal("fresh project must not report orphaned data")
 	}
 }
+
+// TestInitGuard_MachineLocalArtifactsDoNotBlockInit 验证仅含机器本地工件
+// （TUI 快照、同步 state、锁）的目录不会被误判为 orphan，init 正常完成。
+func TestInitGuard_MachineLocalArtifactsDoNotBlockInit(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "cfg")
+	data := filepath.Join(tmp, "data")
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	for _, name := range []string{"tui-snapshot.enc", ".senv-sync-state.json", ".senv-sync.lock"} {
+		if err := os.WriteFile(filepath.Join(data, name), []byte("local"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	mgr := NewManager(cfg, data)
+	if mgr.HasOrphanedData() {
+		t.Fatal("machine-local artifacts must not count as orphaned user data")
+	}
+	if err := mgr.Initialize("test-password"); err != nil {
+		t.Fatalf("Initialize with only machine-local artifacts must succeed: %v", err)
+	}
+}
+
+// TestCheckConsistencyIgnoresMachineLocalArtifacts 验证一致性探针不把
+// 机器本地工件计入失败清单。
+func TestCheckConsistencyIgnoresMachineLocalArtifacts(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	if err := os.WriteFile(filepath.Join(mgr.dataPath, "tui-snapshot.enc"), []byte("local"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := mgr.CheckConsistency(key)
+	if err != nil {
+		t.Fatalf("CheckConsistency: %v", err)
+	}
+	if !report.AllOK() {
+		t.Fatalf("machine-local artifact must not affect consistency: %+v", report)
+	}
+}

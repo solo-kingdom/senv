@@ -263,3 +263,41 @@ func TestSnapshotVerifyMsgReloadsActivatedTab(t *testing.T) {
 		t.Fatal("activated env tab must reload to the real data after verify mismatch")
 	}
 }
+
+// TestSnapshotFingerprintIgnoresMachineLocalArtifacts 验证机器本地工件
+// （同步 state、锁、快照自身）不参与首屏指纹：新增或重写这些文件不得
+// 使指纹失配（否则每次 TUI 会话都会回退直接解密路径）。
+func TestSnapshotFingerprintIgnoresMachineLocalArtifacts(t *testing.T) {
+	mgrs, cache, dataPath := snapshotTestVault(t)
+	seedSnapshotData(t, mgrs)
+	if !cache.Write(mgrs) {
+		t.Fatal("Write failed")
+	}
+	before, err := cache.vaultFingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+
+	// 新增机器本地工件：不应进入指纹
+	for _, name := range []string{".senv-sync-state.json", ".senv-sync.lock"} {
+		if err := os.WriteFile(filepath.Join(dataPath, name), []byte("local"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 重写快照（mtime 变化）：快照自身不应进入指纹
+	blob, err := os.ReadFile(filepath.Join(dataPath, snapshotCacheFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataPath, snapshotCacheFileName), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := cache.vaultFingerprint()
+	if err != nil {
+		t.Fatalf("fingerprint after: %v", err)
+	}
+	if before != after {
+		t.Fatalf("fingerprint changed by machine-local artifacts: %s -> %s", before, after)
+	}
+}

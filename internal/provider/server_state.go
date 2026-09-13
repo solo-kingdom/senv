@@ -321,9 +321,11 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 	if err != nil {
 		return nil, nil, reads, err
 	}
+	// 顶层 *.enc 视为 config 密文，但机器本地工件（快照/同步状态/锁）不是
+	// 受管条目，必须排除，否则会被当 config 推送并产生假冲突。
 	for _, file := range files {
 		name := file.Name
-		if file.IsDir || name == syncStateFileName ||
+		if file.IsDir || storage.IsMachineLocalDataArtifact(name) ||
 			(strings.HasSuffix(name, storage.EnvFileSuffix) && strings.HasPrefix(name, storage.EnvFilePrefix)) {
 			continue
 		}

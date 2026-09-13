@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/storage"
 )
@@ -22,6 +23,9 @@ func newMCPExportProject(t *testing.T) string {
 	// the export home must be set afterwards.
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	// Export writes to pi as well; keep the pi extension install out of the test
+	// (agentext reports "unavailable" and no subprocess or network is touched).
+	t.Setenv("PATH", t.TempDir())
 	resetMCPAddFlags(t)
 	mcpAddCommand = "npx"
 	mcpAddArgs = []string{"-y", "@modelcontextprotocol/server-github"}
@@ -220,5 +224,59 @@ func TestMCPExportLooseWritesLiteralAndWarns(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "plain-value") {
 		t.Errorf("plain env value not written:\n%s", data)
+	}
+}
+
+// printTargetRequirements 只对依赖外部扩展的目标出提示，原生读取的目标保持安静。
+func TestPrintTargetRequirements(t *testing.T) {
+	pi, ok := agentcfg.Find("pi")
+	if !ok {
+		t.Fatal("pi target missing")
+	}
+	var buf bytes.Buffer
+	printTargetRequirements(&buf, []agentcfg.Target{pi})
+	if !strings.Contains(buf.String(), "pi-mcp-adapter") {
+		t.Fatalf("pi requirement not printed:\n%s", buf.String())
+	}
+
+	cursor, ok := agentcfg.Find("cursor")
+	if !ok {
+		t.Fatal("cursor target missing")
+	}
+	buf.Reset()
+	printTargetRequirements(&buf, []agentcfg.Target{cursor})
+	if buf.Len() != 0 {
+		t.Fatalf("native target printed a requirement: %q", buf.String())
+	}
+}
+
+// 真实安装由 internal/agentext 的 fake-installer 测试覆盖；这里验证 CLI 在
+// 扩展安装不可用时照常导出，只多一条提示、不把导出判失败。
+func TestExportContinuesWhenPrerequisiteUnavailable(t *testing.T) {
+	dir := newMCPExportProject(t) // 内含 PATH 隔离：pi 不在 PATH
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	mcpExportAgents, mcpExportAll = "pi", false
+
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			if err := mcpExportCmd.RunE(&cobra.Command{}, nil); err != nil {
+				t.Errorf("export failed despite the unavailable prerequisite: %v", err)
+			}
+		})
+	})
+	if !strings.Contains(stdout, "not on PATH") {
+		t.Fatalf("prerequisite notice missing from stdout:\n%s", stdout)
+	}
+	if strings.Contains(stderr, "not on PATH") {
+		t.Fatalf("prerequisite notice belongs on stdout:\n%s", stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".pi", "agent", "mcp.json"))
+	if err != nil {
+		t.Fatalf("pi config not written despite the failed prerequisite: %v", err)
+	}
+	if !strings.Contains(string(data), `"senv"`) && !strings.Contains(string(data), "github") {
+		t.Fatalf("pi config does not contain the exported profile:\n%s", data)
 	}
 }

@@ -355,6 +355,12 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 		if dirEntry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symlink in managed data at %q", filepath.ToSlash(rel))
 		}
+		// 机器本地工件（TUI 快照、同步 state、锁）不属于受管密文，不参与
+		// rekey，也不得触发“未索引 config”失败关闭。journal 校验（见
+		// classifyRekeyEntry 的调用方）不走此分支，仍对控制文件 fail closed。
+		if len(segments) == 1 && IsMachineLocalDataArtifact(segments[0]) {
+			return nil
+		}
 		if dirEntry.IsDir() || !strings.HasSuffix(dirEntry.Name(), ".enc") {
 			return nil
 		}
