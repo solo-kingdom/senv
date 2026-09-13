@@ -174,17 +174,20 @@ func ensureSubMap(root map[string]any, key string) map[string]any {
 	return sub
 }
 
-// atomicWriteWithBackup 将原文件复制为 <path>.senv-bak，再以 temp+rename
-// 原子替换 path。原文件不存在时跳过备份。
+// atomicWriteWithBackup 将原文件复制为 <path>.senv-bak（供写入中途崩溃后
+// 人工恢复），再以 temp+rename 原子替换 path；替换成功后立即删除备份——
+// 备份内容含旧凭据，不能在磁盘上无限期残留。原文件不存在时跳过备份。
 func atomicWriteWithBackup(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
+	hadBackup := false
 	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
 		if err := os.WriteFile(path+".senv-bak", existing, 0o600); err != nil {
 			return fmt.Errorf("write backup: %w", err)
 		}
+		hadBackup = true
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read config: %w", err)
 	}
@@ -212,6 +215,10 @@ func atomicWriteWithBackup(path string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("replace config: %w", err)
+	}
+	if hadBackup {
+		// best-effort：删除失败只留一个可人工恢复的备份，不值得报错回滚
+		os.Remove(path + ".senv-bak")
 	}
 	return nil
 }

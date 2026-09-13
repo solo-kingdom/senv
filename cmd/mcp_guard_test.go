@@ -94,14 +94,14 @@ func TestMCPRequestSessionGuard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("authorize valid never session: %v", err)
 		}
-		if requestManagers == nil || requestManagers.env == nil || requestManagers.text == nil || requestManagers.config == nil {
+		if requestManagers == nil || requestManagers.env == nil || requestManagers.text.Manager == nil || requestManagers.config == nil {
 			t.Fatal("valid request did not construct all temporary managers")
 		}
 		if err := requestManagers.env.Set("default", "VALID", "value"); err != nil {
 			t.Fatalf("temporary manager unusable: %v", err)
 		}
 		release()
-		if requestManagers.env != nil || requestManagers.text != nil || requestManagers.config != nil {
+		if requestManagers.env != nil || requestManagers.text.Manager != nil || requestManagers.config != nil {
 			t.Fatal("release retained request-scoped managers")
 		}
 	})

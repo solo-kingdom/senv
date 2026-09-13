@@ -51,7 +51,9 @@ export SENV_SERVER_DSN="postgres://senv:****@db-host:5432/senv"
 senv migrate to-server --server https://senv.example.com --token <token>
 
 # 本机切到 server provider：编辑 ~/.config/senv/settings.json
-#   "provider": {"type": "server", "address": "...", "token": "...", "vault": "main"}
+#   "provider": {"type": "server", "address": "...", "vault": "main"}
+# token 存独立的机器本地文件 ~/.config/senv/server-token.json（0600，
+# 不入 git 同步；register/init 自动写入，旧版 settings 内嵌 token 自动迁移）
 # 可选自动同步配置：
 #   "auto_sync": false,     # 默认开启；false 时回到仅手动 senv sync
 #   "sync_throttle": "30s"  # 自动 pull 节流窗口；空/非法值回退 30s
@@ -189,9 +191,9 @@ senv sync --force-push      # 放弃远端，采用本地
 识别（`--trust-proxy-headers`）、访问日志截断与自动保留（`--logs-retain-days`，
 默认 90 天）、vault 名与设备名 server 侧校验、优雅停机、`revoke-token -` stdin 传 token。
 
-### 1. registry 加认证（供应链，P1）
+### 1. registry 加认证（供应链，P1，未完成）
 
-`registry.wii.pub` 目前无认证，wg/LAN 内任何被攻破的机器都可 push 恶意镜像。
+`registry.wii.pub` 目前无认证（2026-09-13 复测匿名 `/v2/` 仍返回 200），wg/LAN 内任何被攻破的机器都可 push 恶意镜像。
 给 registry 加 htpasswd：
 
 ```bash
@@ -208,10 +210,11 @@ htpasswd -Bbn registry-admin '<强口令>' > /etc/registry/htpasswd
 docker login registry.wii.pub
 ```
 
-### 2. PG 收紧跨库 CONNECT（信任边界，P2）
+### 2. PG 收紧跨库 CONNECT（信任边界，P2，已完成 2026-09-13）
 
 senv 与 casdoor 共享 PG 实例。casdoor 角色是实例 superuser，应用层沦陷可拖走 senv
-全部密文离线爆破；反向也应收紧——默认 PUBLIC 可 CONNECT 任意库：
+全部密文离线爆破；2026-09-13 已执行跨库 CONNECT 收紧（casdoor 因 superuser 仍可跨库，
+降权/拆实例仍是远期项）：
 
 ```sql
 REVOKE CONNECT ON DATABASE casdoor FROM PUBLIC;
@@ -220,8 +223,9 @@ GRANT  CONNECT ON DATABASE senv    TO senv;
 GRANT  CONNECT ON DATABASE casdoor TO casdoor;
 ```
 
-验证：以无权限角色 `\c casdoor` / `\c senv` 应报 `permission denied for database "..."`。
-远期项（本次不做）：拆分实例或给 casdoor 角色降权。
+验证（已通过）：`has_database_privilege('senv','casdoor','CONNECT')` 为 false、
+`('litellm','senv'/'casdoor')` 均为 false；senv 与 casdoor 应用连接正常。
+回滚方式：`GRANT CONNECT ON DATABASE <db> TO PUBLIC;`
 
 ### 3. 存量文件权限一次性收紧（本机/各客户端节点）
 
@@ -234,20 +238,25 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
 
 ### 4. 备份排除项更新（P1 配套）
 
-- `~/.config/senv/settings.json` 含 provider token（server 模式），确认备份策略里它的
-  保护级别与 vault 本体一致，或直接排除
+- server token 现存 `~/.config/senv/server-token.json`（0600，机器本地；旧版在
+  settings.json 内，升级后自动迁移），确认备份策略里它的保护级别与 vault 本体
+  一致，或直接排除；`mcp-exports.json`（导出台账，含指纹）同理
 - session 派生密钥缓存现在只存在于 tmpfs（`XDG_RUNTIME_DIR`），不再出现在
   `~/.local/share/senv`，备份天然不会带走；旧版本遗留的
   `~/.local/share/senv/session/` 已被新版本自动清理
+  （例外：显式 `--insecure-cache` 或 Darwin 无 tmpfs 时的磁盘逃生舱会写
+  `~/.cache/senv/session-*.json`，见 session-auth spec）
 
-### 5. caddy 层配置（真实来源 IP 透传为必选项）
+### 5. caddy 层配置（真实来源 IP 透传为必选项，X-Real-IP 已配置 2026-09-13）
 
-- 真实来源 IP：caddy 与 server 同机部署时，server 启动加 `--trust-proxy-headers`，
-  并在 caddy 反代块显式透传客户端 IP——否则限速与访问日志都记成回环地址，
-  全部客户端共享一个限速窗口，单个攻击者即可把整个服务锁在限速之外：
+- 真实来源 IP（**已配置并验证**）：tcbj 的 Caddyfile `senv.wii.pub` 块已含
+  `header_up X-Real-IP {remote_host}`。没有这行时，caddy 不清洗客户端自带的
+  X-Real-IP/XFF 头，而 server 对私网对端（caddy 容器网桥地址）采信这些头——
+  公网攻击者伪造即可轮换限速窗口、污染审计 IP（修复前实测伪造 `9.9.9.9` 生效，
+  修复后日志记录真实出口 IP）。部署形态变化时保持该配置：
 
   ```
-  reverse_proxy 127.0.0.1:8080 {
+  reverse_proxy senv-server:8080 {
       header_up X-Real-IP {remote_host}
   }
   ```

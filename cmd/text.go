@@ -345,10 +345,16 @@ func resolveValue(value string, loose bool, currentGroup string) (string, error)
 	return resolveValueWith(value, loose, currentGroup, envMgr, textMgr)
 }
 
+// textValueGetter 是引用解析需要的最小 text 读取面。除 *text.Manager 外，
+// MCP 侧传入带保留组限制的包装（见 cmd/mcp.go 的 mcpTextManager）。
+type textValueGetter interface {
+	Get(group, key string) (string, error)
+}
+
 // resolveValueWith resolves references using explicitly-provided managers,
 // avoiding a re-auth round trip. Used by the MCP server (which authenticates
 // once at startup) and tests.
-func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env.Manager, textMgr *text.Manager) (string, error) {
+func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env.Manager, textMgr textValueGetter) (string, error) {
 	getter := newRefGetter(envMgr, textMgr)
 	opts := ref.ResolveOptions{
 		Loose:        loose,
@@ -364,7 +370,7 @@ func resolveValueWith(value string, loose bool, currentGroup string, envMgr *env
 
 // newRefGetter 组装 env/text 两路引用读取器；resolveValueWith 与
 // mcp export 的宽松解析共用同一构造。
-func newRefGetter(envMgr *env.Manager, textMgr *text.Manager) *combinedGetter {
+func newRefGetter(envMgr *env.Manager, textMgr textValueGetter) *combinedGetter {
 	return &combinedGetter{envManager: envMgr, textManager: textMgr}
 }
 
@@ -373,7 +379,7 @@ type combinedGetter struct {
 	envManager interface {
 		Get(group, key string) (string, error)
 	}
-	textManager *text.Manager
+	textManager textValueGetter
 }
 
 func (g *combinedGetter) GetEnvValue(group, key string) (string, error) {

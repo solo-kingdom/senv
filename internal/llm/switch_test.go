@@ -44,8 +44,9 @@ func TestApplyJSONMergePreservesUnknownKeys(t *testing.T) {
 	if !ok || custom["keep"] != true {
 		t.Fatalf("custom = %v, want keep:true", root["custom"])
 	}
-	if _, err := os.Stat(path + ".senv-bak"); err != nil {
-		t.Fatalf("backup missing: %v", err)
+	// 成功写入后备份必须删除：备份内容含旧凭据，不允许在磁盘上残留
+	if _, err := os.Stat(path + ".senv-bak"); !os.IsNotExist(err) {
+		t.Fatalf("backup must be removed after a successful write (stat err=%v)", err)
 	}
 }
 

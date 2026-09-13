@@ -19,11 +19,11 @@ var (
 
 func init() {
 	migrateToServerCmd.Flags().StringVar(&migrateServerAddress, "server", "", "senv-server 地址（默认取 settings 或 SENV_SERVER_ADDRESS）")
-	migrateToServerCmd.Flags().StringVar(&migrateServerToken, "token", "", "server token（默认取 settings 或 SENV_SERVER_TOKEN）")
+	migrateToServerCmd.Flags().StringVar(&migrateServerToken, "token", "", "server token（默认取本机 token 文件/settings 或 SENV_SERVER_TOKEN）")
 	migrateToServerCmd.Flags().StringVar(&migrateServerVault, "vault", "main", "server 端 vault 名")
 	migrateToServerCmd.Flags().BoolVar(&migrateForce, "force", false, "目标非空时显式确认覆盖（以源为准）")
 	migrateFromServerCmd.Flags().StringVar(&migrateServerAddress, "server", "", "senv-server 地址（默认取 settings 或 SENV_SERVER_ADDRESS）")
-	migrateFromServerCmd.Flags().StringVar(&migrateServerToken, "token", "", "server token（默认取 settings 或 SENV_SERVER_TOKEN）")
+	migrateFromServerCmd.Flags().StringVar(&migrateServerToken, "token", "", "server token（默认取本机 token 文件/settings 或 SENV_SERVER_TOKEN）")
 	migrateFromServerCmd.Flags().StringVar(&migrateServerVault, "vault", "main", "server 端 vault 名")
 	migrateFromServerCmd.Flags().BoolVar(&migrateForce, "force", false, "目标非空时显式确认覆盖（以源为准）")
 	migrateCmd.AddCommand(migrateToServerCmd, migrateFromServerCmd)
@@ -38,9 +38,9 @@ func resolveServerConn() (address, token, vault string, err error) {
 		if address == "" {
 			address = settings.Provider.Address
 		}
-		if token == "" {
-			token = settings.Provider.Token
-		}
+	}
+	if token == "" {
+		token = storedServerToken(getStorage())
 	}
 	if address == "" {
 		address = os.Getenv("SENV_SERVER_ADDRESS")

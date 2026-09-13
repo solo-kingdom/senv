@@ -170,6 +170,10 @@ func (m *Manager) Initialize(password string) error {
 	if err := m.SaveSettings(settings); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
 	}
+	// 机器本地敏感文件（server token 等）从第一天起就被 git 同步排除
+	if err := m.EnsureGitIgnoreServerToken(); err != nil {
+		return fmt.Errorf("failed to write .gitignore: %w", err)
+	}
 
 	// Create config index
 	configIndex := NewConfigIndex()

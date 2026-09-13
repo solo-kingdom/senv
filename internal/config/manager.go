@@ -294,6 +294,23 @@ func (m *Manager) Edit(name string) error {
 	return nil
 }
 
+// Content returns the decrypted content of a stored config file without
+// writing anything to disk. Used by the MCP export tool, which must not
+// stage plaintext in shared temp directories.
+func (m *Manager) Content(name string) ([]byte, error) {
+	if err := validateConfigName(name); err != nil {
+		return nil, err
+	}
+	configIndex, err := m.storage.LoadConfigIndex()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config index: %w", err)
+	}
+	if _, exists := configIndex.Configs[name]; !exists {
+		return nil, fmt.Errorf("config %s not found", name)
+	}
+	return m.loadConfigFile(name)
+}
+
 // Export exports a configuration file using the private default mode.
 func (m *Manager) Export(name string, targetPath string) error {
 	return m.ExportWithMode(name, targetPath, exportfile.DefaultMode)

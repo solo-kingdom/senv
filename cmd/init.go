@@ -122,7 +122,7 @@ func applyRegisteredServerDefaults(manager *storage.Manager) {
 	}
 	initServerAddress = settings.Provider.Address
 	if initServerToken == "" {
-		initServerToken = settings.Provider.Token
+		initServerToken = storedServerToken(manager)
 	}
 	if (initServerVault == "" || initServerVault == "main") && settings.Provider.Vault != "" {
 		initServerVault = settings.Provider.Vault
@@ -167,7 +167,8 @@ func runInitServer(manager *storage.Manager, configPath, dataPath string) error 
 		return fmt.Errorf("vault 口令错误（本地缓存已落盘，修正口令可通过 senv session start 或直接重试命令解锁）")
 	}
 
-	// 写入 provider 配置（机器本地，不同步）
+	// 写入 provider 配置：settings.json 只留非敏感字段，token 进机器本地
+	// server-token.json（git 同步永远排除）
 	settings, err := manager.LoadSettings()
 	if err != nil {
 		settings = storage.NewSettings()
@@ -175,14 +176,17 @@ func runInitServer(manager *storage.Manager, configPath, dataPath string) error 
 	settings.Provider = storage.ProviderConfig{
 		Type:    provider.TypeServer,
 		Address: initServerAddress,
-		Token:   token,
 		Vault:   initServerVault,
 	}
 	if err := manager.SaveSettings(settings); err != nil {
 		return fmt.Errorf("保存 provider 配置失败: %w", err)
 	}
+	if err := manager.SaveServerToken(token); err != nil {
+		return fmt.Errorf("保存 server token 失败: %w", err)
+	}
 
 	fmt.Println("✓ 已接入 server vault，口令验证通过")
+	fmt.Printf("  token 已写入 %s（机器本地，不入 git 同步）\n", storage.ServerTokenFile)
 	fmt.Println("  同步: senv sync")
 	return nil
 }

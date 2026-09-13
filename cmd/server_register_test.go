@@ -3,7 +3,9 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -51,8 +53,28 @@ func TestServerRegisterWritesSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSettings: %v", err)
 	}
-	if settings.Provider.Type != "server" || settings.Provider.Token != "reg-token-1" || settings.Provider.Address != srv.URL {
-		t.Errorf("provider settings = %+v, want server/reg-token-1/%s", settings.Provider, srv.URL)
+	// settings.json 只保留非敏感字段；token 绝不能出现在会被 git 同步的文件里
+	if settings.Provider.Type != "server" || settings.Provider.Address != srv.URL {
+		t.Errorf("provider settings = %+v, want server/%s", settings.Provider, srv.URL)
+	}
+	if settings.Provider.Token != "" {
+		t.Errorf("settings must not embed the token (git-synced file), got %q", settings.Provider.Token)
+	}
+	mgr := storage.NewManager(cfg, filepath.Join(cfg, "data"))
+	token, err := mgr.LoadServerToken()
+	if err != nil {
+		t.Fatalf("LoadServerToken: %v", err)
+	}
+	if token != "reg-token-1" {
+		t.Errorf("server-token.json = %q, want reg-token-1", token)
+	}
+	// .gitignore 必须覆盖 token 文件
+	ignore, err := os.ReadFile(filepath.Join(cfg, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(ignore), storage.ServerTokenFile) {
+		t.Errorf(".gitignore missing %s:\n%s", storage.ServerTokenFile, ignore)
 	}
 }
 
@@ -85,5 +107,18 @@ func TestApplyRegisteredServerDefaults(t *testing.T) {
 	applyRegisteredServerDefaults(mgr)
 	if initServerAddress != "https://senv.example.com" || initServerToken != "stored-token" || initServerVault != "team-vault" {
 		t.Errorf("defaults = %q/%q/%q, want registered provider config", initServerAddress, initServerToken, initServerVault)
+	}
+
+	// 回落过程应把遗留的 settings 内嵌 token 迁移到机器本地文件并清空字段
+	token, err := mgr.LoadServerToken()
+	if err != nil || token != "stored-token" {
+		t.Errorf("LoadServerToken = %q (%v), want stored-token", token, err)
+	}
+	after, err := mgr.LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings after migration: %v", err)
+	}
+	if after.Provider.Token != "" {
+		t.Errorf("settings token must be cleared after fallback read, got %q", after.Provider.Token)
 	}
 }

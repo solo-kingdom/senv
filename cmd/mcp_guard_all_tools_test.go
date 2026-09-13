@@ -23,7 +23,7 @@ func assertMCPToolDenied[Input any](t *testing.T, name string, handler func(*man
 		authorizeCalls++
 		return nil, nil, session.ErrMCPRevoked
 	}
-	wrapped := guardMCPTool(authorize, func() { autoPullCalls++ }, handler)
+	wrapped := guardMCPTool("test_tool", authorize, func() { autoPullCalls++ }, handler)
 	result, _, err := wrapped(context.Background(), nil, input)
 	if err != nil {
 		t.Fatalf("%s returned Go error: %v", name, err)
@@ -88,7 +88,7 @@ func TestMCPRevocationNoSideEffects(t *testing.T) {
 	}
 
 	autoPullCalls := 0
-	get := guardMCPTool(fixture.authorize, func() { autoPullCalls++ }, (*managers).envGet)
+	get := guardMCPTool("senv_env_get", fixture.authorize, func() { autoPullCalls++ }, (*managers).envGet)
 	getResult, _, err := get(context.Background(), nil, envGetInput{Key: "API_KEY"})
 	if err != nil {
 		t.Fatalf("revoked get Go error: %v", err)
@@ -98,7 +98,7 @@ func TestMCPRevocationNoSideEffects(t *testing.T) {
 		t.Fatalf("revoked get leaked or returned wrong error: %q", getText)
 	}
 
-	set := guardMCPTool(fixture.authorize, func() { autoPullCalls++ }, (*managers).envSet)
+	set := guardMCPTool("senv_env_set", fixture.authorize, func() { autoPullCalls++ }, (*managers).envSet)
 	setResult, _, err := set(context.Background(), nil, envSetValueInput{Key: "API_KEY", Value: "mutated"})
 	if err != nil {
 		t.Fatalf("revoked set Go error: %v", err)

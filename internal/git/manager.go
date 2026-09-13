@@ -216,15 +216,27 @@ func (m *Manager) revListHasCommits(ctx context.Context, rangeSpec, parseErrPref
 	return n > 0, nil
 }
 
-// Add adds all changes to the staging area
+// machineLocalExcludePathspecs 是 git add 时永远排除的路径规格：server
+// provider token 与 MCP 导出账本等机器本地敏感文件，即使 .gitignore 缺失
+// （用户自建仓库、旧版本初始化）也不会被暂存提交。`**/` 形式匹配任意深度。
+var machineLocalExcludePathspecs = []string{
+	":(exclude,glob)**/server-token.json",
+	":(exclude,glob)**/mcp-exports.json",
+}
+
+// Add adds all changes to the staging area except machine-local secret files
 func (m *Manager) Add() error {
 	return m.AddWithContext(context.Background())
 }
 
-// AddWithContext adds all changes to the staging area with context
+// AddWithContext adds all changes to the staging area, excluding machine-local
+// secret files (server token, MCP export ledger) via pathspec excludes. The
+// exclude is defense-in-depth on top of the generated .gitignore: `git add .`
+// at the repo root would otherwise stage anything under it.
 func (m *Manager) AddWithContext(ctx context.Context) (err error) {
 	defer func() { err = m.withDataDir(err) }()
-	_, err = m.runCommand(ctx, "add", ".")
+	args := append([]string{"add", "."}, machineLocalExcludePathspecs...)
+	_, err = m.runCommand(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("git add 失败: %w", err)
 	}

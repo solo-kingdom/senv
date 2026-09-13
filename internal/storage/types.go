@@ -30,12 +30,16 @@ type Settings struct {
 
 // ProviderConfig represents the remote sync provider configuration.
 // Type empty or "git" selects the default git provider; "server" selects
-// senv-server (requires Address and Token). Machine-local, never synced.
+// senv-server. Machine-local, never synced: the credential lives in the
+// separate server-token.json (see server_token.go); the Token field below is
+// legacy, read-only for migration, and MUST NOT be written by new code.
 type ProviderConfig struct {
 	Type    string `json:"type"`              // "git" (default) or "server"
 	Address string `json:"address,omitempty"` // senv-server address
-	Token   string `json:"token,omitempty"`   // senv-server credential
-	Vault   string `json:"vault,omitempty"`   // vault name on server (default "main")
+	// Token 仅为兼容旧版 settings.json 的只读字段：token 文件缺失时读取方
+	// 回退到这里并迁移到 server-token.json（git 同步永远排除该凭据文件）。
+	Token string `json:"token,omitempty"`
+	Vault string `json:"vault,omitempty"` // vault name on server (default "main")
 	// AutoSync 为 nil 时 server provider 默认开启自动同步；显式 false 关闭。
 	AutoSync *bool `json:"auto_sync,omitempty"`
 	// SyncThrottle 是自动 pull 的节流窗口，空值或非法值回退 30s。

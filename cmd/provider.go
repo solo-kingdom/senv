@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/wii/senv/internal/provider"
@@ -55,10 +57,12 @@ func getSyncProvider() (provider.Provider, error) {
 			cfg.Type = settings.Provider.Type
 		}
 		cfg.ServerAddress = settings.Provider.Address
-		cfg.ServerToken = settings.Provider.Token
 		cfg.Vault = settings.Provider.Vault
 		cfg.AutoSync = settings.Provider.AutoSync
 		cfg.SyncThrottle = settings.Provider.SyncThrottle
+	}
+	if cfg.Type == provider.TypeServer {
+		cfg.ServerToken = storedServerToken(store)
 	}
 
 	key := providerCacheKey{
@@ -87,6 +91,33 @@ func getSyncProvider() (provider.Provider, error) {
 	}
 	providerCache[key] = p
 	return p, nil
+}
+
+// storedServerToken 解析本机 server token：优先机器本地 server-token.json
+// （git 同步排除），缺失时回退到旧版 settings.json 内嵌 token 并顺手迁移
+// 出来。迁移 best-effort：失败时仍返回旧值保证命令可用，只向 stderr 提示。
+func storedServerToken(store *storage.Manager) string {
+	if token, err := store.LoadServerToken(); err == nil {
+		return token
+	} else if !errors.Is(err, storage.ErrServerTokenNotFound) {
+		fmt.Fprintf(os.Stderr, "⚠ 读取 %s 失败: %v\n", storage.ServerTokenFile, err)
+	}
+	// 旧版：token 内嵌在 settings.json（会被 git provider 同步）
+	moved, err := store.MigrateServerTokenFromSettings()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 迁移 server token 到 %s 失败: %v\n（token 仍留在 settings.json，注意不要提交到 git 远端）\n", storage.ServerTokenFile, err)
+	}
+	if token, err := store.LoadServerToken(); err == nil {
+		if moved {
+			fmt.Fprintf(os.Stderr, "✓ server token 已迁移到 %s（机器本地，git 同步已排除）\n", storage.ServerTokenFile)
+		}
+		return token
+	}
+	// 迁移没成或文件仍不可读：直接读 settings 兜底
+	if settings, serr := store.LoadSettings(); serr == nil {
+		return settings.Provider.Token
+	}
+	return ""
 }
 
 // getGitProvider 经统一入口构造 provider 并返回 git 适配层实例。

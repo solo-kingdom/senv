@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -80,7 +79,7 @@ var mcpListToolsCmd = &cobra.Command{
 // managers exists only for the lifetime of one authorized tool request.
 type managers struct {
 	env        *env.Manager
-	text       *text.Manager
+	text       mcpTextManager
 	config     *config.Manager
 	ssh        *ssh.Manager
 	llm        *llm.ProviderManager
@@ -88,6 +87,40 @@ type managers struct {
 	llmHome    string
 	mcpServer  *mcpserver.Manager
 	autoPull   func()
+}
+
+// mcpTextManager 在 MCP 暴露面包裹 text.Manager：值读写（Get/Set/Delete）
+// 一律拒绝保留组 llm-keys——该组存放 LLM API key 明文凭据，
+// llm_provider_list 的白名单视图刻意不暴露它们，senv_text_get 或
+// {{text:llm-keys/...}} 引用解析不得成为绕过面（CLI/TUI 仍可全权访问）。
+// 元数据（List/ListGroups）保持可用，暴露面与 llm_provider_list 的
+// credential_ref 一致。
+type mcpTextManager struct {
+	*text.Manager
+}
+
+// errLLMKeysReserved 是 MCP 侧访问 llm-keys 保留组的统一脱敏错误
+var errLLMKeysReserved = fmt.Errorf("text group %q is reserved for LLM credentials and not accessible via MCP; manage it with the senv CLI", llm.LLMKeysGroup)
+
+func (m mcpTextManager) Get(group, key string) (string, error) {
+	if group == llm.LLMKeysGroup {
+		return "", errLLMKeysReserved
+	}
+	return m.Manager.Get(group, key)
+}
+
+func (m mcpTextManager) Set(group, key, value string) error {
+	if group == llm.LLMKeysGroup {
+		return errLLMKeysReserved
+	}
+	return m.Manager.Set(group, key, value)
+}
+
+func (m mcpTextManager) Delete(group, key string) error {
+	if group == llm.LLMKeysGroup {
+		return errLLMKeysReserved
+	}
+	return m.Manager.Delete(group, key)
 }
 
 type mcpRequestAuthorizer func() (*managers, func(), error)
@@ -134,7 +167,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		}
 		requestManagers := &managers{
 			env:        env.NewManagerWithKey(store, key),
-			text:       text.NewManagerWithKey(store, key),
+			text:       mcpTextManager{text.NewManagerWithKey(store, key)},
 			config:     config.NewManagerWithKey(store, key),
 			ssh:        ssh.NewManagerWithKey(store, key),
 			llm:        llm.NewProviderManagerWithKey(store, key),
@@ -145,7 +178,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		release := func() {
 			session.ZeroKey(key)
 			requestManagers.env = nil
-			requestManagers.text = nil
+			requestManagers.text = mcpTextManager{}
 			requestManagers.config = nil
 			requestManagers.ssh = nil
 			requestManagers.llm = nil
@@ -161,15 +194,21 @@ func newAuthorizedMCPServer(authorize mcpRequestAuthorizer, autoPull func()) *mc
 	return srv
 }
 
-func guardMCPTool[Input any](authorize mcpRequestAuthorizer, autoPull func(), handler func(*managers, context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error)) func(context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error) {
+// guardMCPTool 是每个 MCP 工具的统一包裹层：会话鉴权 → 执行 → 审计。
+// 审计只记录工具名与结果（target "mcp:<tool>"），绝不包含任何输入值。
+func guardMCPTool[Input any](toolName string, authorize mcpRequestAuthorizer, autoPull func(), handler func(*managers, context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error)) func(context.Context, *mcp.CallToolRequest, Input) (*mcp.CallToolResult, emptyOut, error) {
 	return func(ctx context.Context, request *mcp.CallToolRequest, input Input) (*mcp.CallToolResult, emptyOut, error) {
 		requestManagers, release, err := authorize()
 		if err != nil {
+			// 鉴权拒绝由 mcp_auth 的吊销审计覆盖，这里不重复记录
 			return errResult(err)
 		}
 		defer release()
 		requestManagers.autoPull = autoPull
-		return handler(requestManagers, ctx, request, input)
+		result, out, err := handler(requestManagers, ctx, request, input)
+		success := err == nil && (result == nil || !result.IsError)
+		auditOp(session.AuditOpMCPTool, "mcp:"+toolName, success, "")
+		return result, out, err
 	}
 }
 
@@ -405,20 +444,9 @@ func (m *managers) configGet(_ context.Context, _ *mcp.CallToolRequest, in confi
 
 func (m *managers) configExport(_ context.Context, _ *mcp.CallToolRequest, in configNameInput) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
-	// Export to a temp file then read it back, so we never write to a
-	// user-specified path from within an MCP tool. The content is returned as
-	// text; callers that need a file can write it themselves.
-	tmp, err := os.CreateTemp("", "senv-mcp-config-*")
-	if err != nil {
-		return errResult(err)
-	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
-	if err := m.config.Export(in.Name, tmpPath); err != nil {
-		return errResult(err)
-	}
-	content, err := os.ReadFile(tmpPath)
+	// Decrypt in memory only: plaintext never lands in a temp file. Callers
+	// that need a file on disk can write the returned content themselves.
+	content, err := m.config.Content(in.Name)
 	if err != nil {
 		return errResult(err)
 	}
@@ -505,27 +533,27 @@ type toolDef struct {
 // registerMCPTools attaches every senv tool to the server. Keep this list in
 // sync with toolCatalogue below.
 func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull func()) {
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_get", Description: "Get an environment variable (secret). Set decode=true to resolve {{env:...}}/{{text:...}} references."}, guardMCPTool(authorize, autoPull, (*managers).envGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret."}, guardMCPTool(authorize, autoPull, (*managers).envSet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_delete", Description: "Delete an environment variable."}, guardMCPTool(authorize, autoPull, (*managers).envDelete))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables, optionally restricted to a group."}, guardMCPTool(authorize, autoPull, (*managers).envList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_export", Description: "Export active-group environment variables as shell export statements, with references resolved."}, guardMCPTool(authorize, autoPull, (*managers).envExport))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_get", Description: "Get a text block (key/cert/template). decode=true resolves references."}, guardMCPTool(authorize, autoPull, (*managers).textGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block."}, guardMCPTool(authorize, autoPull, (*managers).textSet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, guardMCPTool(authorize, autoPull, (*managers).textDelete))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, guardMCPTool(authorize, autoPull, (*managers).textList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, guardMCPTool(authorize, autoPull, (*managers).configList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, guardMCPTool(authorize, autoPull, (*managers).configGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, guardMCPTool(authorize, autoPull, (*managers).configExport))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, guardMCPTool(authorize, autoPull, (*managers).groupList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, guardMCPTool(authorize, autoPull, (*managers).groupAdd))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool(authorize, autoPull, (*managers).groupActivate))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool(authorize, autoPull, (*managers).groupDeactivate))
-	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostList))
-	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_get", Description: "Get one SSH host connection metadata record (read-only; no private keys)."}, guardMCPTool(authorize, autoPull, (*managers).sshHostGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool(authorize, autoPull, (*managers).llmProviderList))
-	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool(authorize, autoPull, (*managers).llmAgentStatus))
-	mcp.AddTool(s, &mcp.Tool{Name: "mcp_server_list", Description: "List stored MCP server profiles (read-only; alias/transport/description only, no env values)."}, guardMCPTool(authorize, autoPull, (*managers).mcpServerList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_get", Description: "Get an environment variable (secret). Set decode=true to resolve {{env:...}}/{{text:...}} references."}, guardMCPTool("senv_env_get", authorize, autoPull, (*managers).envGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret."}, guardMCPTool("senv_env_set", authorize, autoPull, (*managers).envSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_delete", Description: "Delete an environment variable."}, guardMCPTool("senv_env_delete", authorize, autoPull, (*managers).envDelete))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables, optionally restricted to a group."}, guardMCPTool("senv_env_list", authorize, autoPull, (*managers).envList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_export", Description: "Export active-group environment variables as shell export statements, with references resolved."}, guardMCPTool("senv_env_export", authorize, autoPull, (*managers).envExport))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_get", Description: "Get a text block (key/cert/template). decode=true resolves references."}, guardMCPTool("senv_text_get", authorize, autoPull, (*managers).textGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block."}, guardMCPTool("senv_text_set", authorize, autoPull, (*managers).textSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, guardMCPTool("senv_text_delete", authorize, autoPull, (*managers).textDelete))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, guardMCPTool("senv_text_list", authorize, autoPull, (*managers).textList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, guardMCPTool("senv_config_list", authorize, autoPull, (*managers).configList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, guardMCPTool("senv_config_get", authorize, autoPull, (*managers).configGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, guardMCPTool("senv_config_export", authorize, autoPull, (*managers).configExport))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, guardMCPTool("senv_group_list", authorize, autoPull, (*managers).groupList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, guardMCPTool("senv_group_add", authorize, autoPull, (*managers).groupAdd))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool("senv_group_activate", authorize, autoPull, (*managers).groupActivate))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool("senv_group_deactivate", authorize, autoPull, (*managers).groupDeactivate))
+	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool("ssh_host_list", authorize, autoPull, (*managers).sshHostList))
+	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_get", Description: "Get one SSH host connection metadata record (read-only; no private keys)."}, guardMCPTool("ssh_host_get", authorize, autoPull, (*managers).sshHostGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool("llm_provider_list", authorize, autoPull, (*managers).llmProviderList))
+	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool("llm_agent_status", authorize, autoPull, (*managers).llmAgentStatus))
+	mcp.AddTool(s, &mcp.Tool{Name: "mcp_server_list", Description: "List stored MCP server profiles (read-only; alias/transport/description only, no env values)."}, guardMCPTool("mcp_server_list", authorize, autoPull, (*managers).mcpServerList))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).

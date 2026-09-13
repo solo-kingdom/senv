@@ -35,7 +35,7 @@ func newManagersForTest(t *testing.T, password string) (*managers, string, strin
 	}
 	return &managers{
 		env:    env.NewManager(store, password),
-		text:   text.NewManager(store, password),
+		text:   mcpTextManager{text.NewManager(store, password)},
 		config: config.NewManager(store, password),
 	}, configPath, dataPath
 }

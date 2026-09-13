@@ -25,11 +25,12 @@ var serverRegisterCmd = &cobra.Command{
 	Use:   "register",
 	Short: "凭一次性注册码把本机注册为 server client",
 	Long: `向 senv-server 提交一次性注册码完成本机注册，取得 client 专属 token 并写入
-本机 settings.json（0600，永不同步）。明文 token 只在注册响应中出现一次。
+机器本地 server-token.json（0600，git 同步永远排除；settings.json 只保留
+provider 类型/地址/vault 等非敏感字段）。明文 token 只在注册响应中出现一次。
 
 注册后：
   - 本机已初始化过存储：立即生效，后续同步使用新 client 凭证
-  - 全新机器：执行 senv init --server 接入 vault（地址与 token 自动取自 settings）`,
+  - 全新机器：执行 senv init --server 接入 vault（地址与 token 自动取自本机）`,
 	RunE: runServerRegister,
 }
 
@@ -57,8 +58,9 @@ func runServerRegister(cmd *cobra.Command, args []string) error {
 	}
 	token, clientName := res.Token, res.ClientName
 
-	// token 写入本机 settings（机器本地，永不同步）；未初始化的全新机器
-	// 也可先注册——settings.json 与 metadata.json 相互独立，init 防呆不受影响
+	// token 写入机器本地 server-token.json（git 同步永远排除）；settings.json
+	// 只保留非敏感的 provider 类型/地址/vault。未初始化的全新机器也可先
+	// 注册——settings.json 与 metadata.json 相互独立，init 防呆不受影响
 	manager := getStorage()
 	settings, err := manager.LoadSettings()
 	if err != nil {
@@ -67,15 +69,17 @@ func runServerRegister(cmd *cobra.Command, args []string) error {
 	settings.Provider = storage.ProviderConfig{
 		Type:    provider.TypeServer,
 		Address: serverRegisterAddress,
-		Token:   token,
 		Vault:   serverRegisterVault,
 	}
 	if err := manager.SaveSettings(settings); err != nil {
 		return fmt.Errorf("保存 provider 配置失败: %w", err)
 	}
+	if err := manager.SaveServerToken(token); err != nil {
+		return fmt.Errorf("保存 server token 失败: %w", err)
+	}
 
 	fmt.Printf("✓ 本机已注册为 client %q（server: %s，vault: %s）\n", clientName, serverRegisterAddress, serverRegisterVault)
-	fmt.Println("  token 已写入 settings.json（明文不再展示，请勿泄露）")
+	fmt.Printf("  token 已写入 %s（机器本地文件，不入 git 同步，请勿泄露）\n", storage.ServerTokenFile)
 	if manager.IsInitialized() {
 		fmt.Println("  后续: senv sync 验证连通性")
 	} else {

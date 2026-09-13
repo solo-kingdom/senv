@@ -102,6 +102,9 @@ const (
 	AuditOpLLMSwitch   AuditEventType = "op_llm_switch"
 	AuditOpMCPServer   AuditEventType = "op_mcp_server"
 	AuditOpMCPExport   AuditEventType = "op_mcp_export"
+	// AuditOpMCPTool 记录一次经 MCP 暴露面的工具调用（target 为
+	// "mcp:<tool>"，不含任何输入值），使 LLM 批量读取机密等行为可审计。
+	AuditOpMCPTool AuditEventType = "op_mcp_tool"
 )
 
 // AuditEntry represents a single audit log entry
