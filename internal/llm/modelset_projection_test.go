@@ -721,7 +721,8 @@ func TestProjectionInputModalities(t *testing.T) {
 		t.Fatalf("pi Apply() error = %v", err)
 	}
 	piM1 := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)[0].(map[string]any)
-	if got := anySlice(piM1["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
+	// pi schema 仅允许 text/image，video 被过滤而不是透传。
+	if got := anySlice(piM1["input"]); !slices.Equal(got, []string{"text", "image"}) {
 		t.Fatalf("pi input = %v", piM1["input"])
 	}
 
@@ -735,5 +736,93 @@ func TestProjectionInputModalities(t *testing.T) {
 	mods := ocM1["modalities"].(map[string]any)
 	if got := anySlice(mods["input"]); !slices.Equal(got, []string{"text", "image", "video"}) {
 		t.Fatalf("opencode modalities.input = %v", mods["input"])
+	}
+}
+
+// TestProjectionFiltersUnsupportedModalities 覆盖 models.dev 声明超出 agent
+// schema 取值范围的模态（audio/pdf/video）时的收敛行为：pi 白名单 text/image、
+// codex 白名单 text/image/audio，过滤后为空各自回退省略/["text"]，opencode
+// 与 kimi 原样保留。
+func TestProjectionFiltersUnsupportedModalities(t *testing.T) {
+	home := t.TempDir()
+	meta := map[string]ModelMetadata{
+		// MiniMax-M3 真实目录形态：text/image/video。
+		"vision": {Name: "Vision", InputModalities: []string{"text", "image", "video"}},
+		// 纯视频模型：过滤后为空。
+		"video-only": {Name: "VideoOnly", InputModalities: []string{"video"}},
+		// Gemini 形态：audio/pdf 也不在 pi/codex 白名单内。
+		"omni": {Name: "Omni", InputModalities: []string{"text", "audio", "pdf"}},
+	}
+	models := []string{"vision", "video-only", "omni"}
+
+	pi := piAdapter()
+	preq := projectionRequest(t, pi, home, models, "vision")
+	preq.ModelMetadata = meta
+	if err := pi.Apply(preq); err != nil {
+		t.Fatalf("pi Apply() error = %v", err)
+	}
+	entries := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)
+	wantPi := [][]string{{"text", "image"}, nil, {"text"}}
+	for i, want := range wantPi {
+		entry := entries[i].(map[string]any)
+		got, ok := entry["input"]
+		if want == nil {
+			if ok {
+				t.Fatalf("pi models[%d] input = %v, want field omitted", i, got)
+			}
+			continue
+		}
+		if !ok || !slices.Equal(anySlice(got), want) {
+			t.Fatalf("pi models[%d] input = %v, want %v", i, got, want)
+		}
+	}
+
+	codex := codexAdapter()
+	creq := projectionRequest(t, codex, home, models, "vision")
+	creq.ModelMetadata = meta
+	if err := codex.Apply(creq); err != nil {
+		t.Fatalf("codex Apply() error = %v", err)
+	}
+	var catalog struct {
+		Models []struct {
+			Slug            string   `json:"slug"`
+			InputModalities []string `json:"input_modalities"`
+		} `json:"models"`
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "model-catalogs", "senv-main.json"))
+	if err != nil {
+		t.Fatalf("read codex catalog: %v", err)
+	}
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		t.Fatalf("parse codex catalog: %v", err)
+	}
+	wantCodex := map[string][]string{
+		"vision":     {"text", "image"},
+		"video-only": {"text"},
+		"omni":       {"text", "audio"},
+	}
+	for _, entry := range catalog.Models {
+		if !slices.Equal(entry.InputModalities, wantCodex[entry.Slug]) {
+			t.Fatalf("codex %s input_modalities = %v, want %v", entry.Slug, entry.InputModalities, wantCodex[entry.Slug])
+		}
+	}
+
+	opencode := opencodeAdapter()
+	oreq := projectionRequest(t, opencode, home, models, "vision")
+	oreq.ModelMetadata = meta
+	if err := opencode.Apply(oreq); err != nil {
+		t.Fatalf("opencode Apply() error = %v", err)
+	}
+	ocModels := readJSONFile(t, opencode.ConfigPath(home))["provider"].(map[string]any)["senv-main"].(map[string]any)["models"].(map[string]any)
+	wantOC := map[string][]string{
+		"vision":     {"text", "image", "video"},
+		"video-only": {"video"},
+		"omni":       {"text", "audio", "pdf"},
+	}
+	for slug, want := range wantOC {
+		mods := ocModels[slug].(map[string]any)["modalities"].(map[string]any)
+		if got := anySlice(mods["input"]); !slices.Equal(got, want) {
+			t.Fatalf("opencode %s modalities.input = %v, want %v", slug, got, want)
+		}
 	}
 }

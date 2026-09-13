@@ -144,11 +144,26 @@ func codexReasoningLevels(meta ModelMetadata) ([]codexReasoningLevel, string) {
 	return levels, meta.DefaultReasoning
 }
 
+// codexInputModalities 收敛到 codex catalog 枚举允许的 text/image/audio
+// （codex 解析器拒绝其他取值，会让整个 catalog 加载失败）；无声明或被全部
+// 过滤时回退 ["text"]——codex 要求该字段非空。
 func codexInputModalities(mods []string) []string {
-	if len(mods) == 0 {
+	filtered := filterModalities(mods, "text", "image", "audio")
+	if len(filtered) == 0 {
 		return []string{"text"}
 	}
-	return append([]string(nil), mods...)
+	return filtered
+}
+
+func validCodexModalities(mods []string) bool {
+	for _, mod := range mods {
+		switch mod {
+		case "text", "image", "audio":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateCodexCatalog 校验 codex 解析 catalog 时必须存在的字段；任一缺失或
@@ -179,6 +194,8 @@ func validateCodexCatalog(entries []codexModelEntry) error {
 			return fmt.Errorf("%s (%s): truncation_policy is missing or invalid", where, entry.Slug)
 		case entry.ExperimentalSupportedTools == nil:
 			return fmt.Errorf("%s (%s): experimental_supported_tools is missing", where, entry.Slug)
+		case !validCodexModalities(entry.InputModalities):
+			return fmt.Errorf("%s (%s): input_modalities has values outside text/image/audio", where, entry.Slug)
 		}
 		defaultOK := false
 		for _, level := range entry.SupportedReasoningLevels {

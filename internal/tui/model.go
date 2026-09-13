@@ -49,9 +49,13 @@ type Managers struct {
 	// Refresh 透传 `senv tui --refresh`：启动后台拉取绕过节流窗口。TUI 从不
 	// 因网络阻塞——本地数据先行渲染，拉取完成后自动更新界面。
 	Refresh bool
-	// snap 是 env vault 的进程内共享快照。由 New 注入；写操作与 pull 应用
-	// 变更后失效。nil 时消费方直接走 Manager.Snapshot。
+	// snap 是 env/text vault 的进程内共享快照。由 New 注入；写操作与 pull
+	// 应用变更后失效。nil 时消费方直接走 Manager.Snapshot。
 	snap *snapshotRegistry
+	// SnapshotCache 是首屏加密快照缓存（D4）：启动时预热 snap、退出与写
+	// 操作后重写。<dataPath>/tui-snapshot.enc，vault 主密钥 AES-256-GCM。
+	// nil（git 模式 / SENV_TUI_SNAPSHOT=off / 无密钥）时完全走直接解密路径。
+	SnapshotCache *SnapshotCache
 }
 
 // Model is the top-level bubbletea model. It owns the tab strip, the currently
@@ -64,14 +68,18 @@ type Model struct {
 	mgr    Managers
 	tabs   []Tab
 	active int
-	width  int
-	height int
-	err    string
-	warn   string
-	toast  string
-	level  toastLevel
-	search *searchTab // non-nil while the global search overlay is open
-	help   *helpTab   // non-nil while the keybinding overview overlay is open
+	// activated 记录哪些 tab 已被聚焦过（true lazy-loading：首次聚焦才触发
+	// 一次性加载）。pull 应用后的 reloadAllTabs 据此跳过未激活 tab，保持懒
+	// 加载语义。由 New 初始化并把初始聚焦 tab 置位。
+	activated []bool
+	width     int
+	height    int
+	err       string
+	warn      string
+	toast     string
+	level     toastLevel
+	search    *searchTab // non-nil while the global search overlay is open
+	help      *helpTab   // non-nil while the keybinding overview overlay is open
 	// sync 是自动同步数据源（可为 nil）；syncState 是该源的最近一次快照。
 	sync      SyncSource
 	syncState SyncState
@@ -80,6 +88,9 @@ type Model struct {
 	// toastSeq identifies the newest toast so an older expiry timer cannot
 	// clear a message that arrived after it.
 	toastSeq int
+	// cacheSeeded 报告启动时快照缓存是否命中并预热了 snap：命中则 Init
+	// 追加后台校验命令（真实解密完成后逐域比对，不一致即替换展示）。
+	cacheSeeded bool
 }
 
 // toastLevel distinguishes a transient success hint from a transient warning.
@@ -116,9 +127,17 @@ func warnToast(text string) tea.Cmd {
 // only when supplied; this keeps existing tests and limited integrations stable.
 func New(mgr Managers) Model {
 	if mgr.snap == nil {
-		mgr.snap = newSnapshotRegistry(mgr.Env)
+		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text)
 	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
+	// 首屏即时（D4）：首个 tab load 之前尝试快照缓存解密并预热 memo；未
+	// 命中（缺失/损坏/指纹不符/开关关闭）静默回退直接解密路径。
+	if c := mgr.SnapshotCache; c != nil {
+		if payload := c.TryLoad(); payload != nil {
+			mgr.snap.SeedFromCache(payload.Env, payload.Text)
+			m.cacheSeeded = true
+		}
+	}
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
@@ -139,19 +158,21 @@ func New(mgr Managers) Model {
 	if mgr.Audit != nil {
 		m.tabs = append(m.tabs, newAuditTab(mgr.Audit, mgr.Sync))
 	}
+	m.activated = make([]bool, len(m.tabs))
+	m.activated[m.active] = true
 	return m
 }
 
-// Init performs initial setup. Tabs load their data lazily on first focus,
-// and the server pull (when automatic sync is available) runs in the
-// background: local cached data renders immediately and the tabs reload once
-// the pull applies remote changes.
+// Init performs initial setup. Only the focused tab loads eagerly; every
+// other tab loads once on first focus (activateTab), and reloadAllTabs after
+// an applied pull skips tabs that were never focused. The server pull (when
+// automatic sync is available) runs in the background: local cached data
+// renders immediately and the focused tab reloads once the pull applies
+// remote changes.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	for _, t := range m.tabs {
-		if c := t.Init(); c != nil {
-			cmds = append(cmds, c)
-		}
+	if c := m.tabs[m.active].Init(); c != nil {
+		cmds = append(cmds, c)
 	}
 	if c := m.refreshSync(); c != nil {
 		cmds = append(cmds, c)
@@ -159,10 +180,45 @@ func (m Model) Init() tea.Cmd {
 	if c := pullSync(m.sync, m.mgr.Refresh); c != nil {
 		cmds = append(cmds, c)
 	}
+	if m.cacheSeeded {
+		// 快照缓存预热了首屏：后台做真实解密并与缓存逐域比对，不一致时
+		// 以真实数据替换展示（spec：快照过期窗口与后台 pull 更新窗口同级）。
+		cmds = append(cmds, snapshotVerifyCmd(m.mgr))
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+// snapshotVerifiedMsg 报告后台快照校验结果：changed=true 表示缓存与真实
+// vault 不一致（memo 已替换为真实数据），需要重载已激活 tab。
+type snapshotVerifiedMsg struct{ changed bool }
+
+// snapshotVerifyCmd 绕开缓存基线做一次真实解密并比对（见
+// snapshotRegistry.VerifyCache）。在后台运行，不阻塞首屏渲染。
+func snapshotVerifyCmd(mgr Managers) tea.Cmd {
+	return func() tea.Msg {
+		return snapshotVerifiedMsg{changed: mgr.snap.VerifyCache()}
+	}
+}
+
+// snapshotRewriteMsg 是一次快照缓存重写的完成信号（无可见效果，仅让
+// 重写命令走消息循环而不阻塞 Update）。
+type snapshotRewriteMsg struct{}
+
+// snapshotRewriteCmd 异步重写快照缓存（写操作/pull 应用后）：采集当前展示
+// 视图加密落盘，best-effort、失败静默。nil 缓存（开关关闭/无密钥）返回 nil。
+func (m Model) snapshotRewriteCmd() tea.Cmd {
+	c := m.mgr.SnapshotCache
+	if c == nil {
+		return nil
+	}
+	mgr := m.mgr
+	return func() tea.Msg {
+		c.Write(mgr)
+		return snapshotRewriteMsg{}
+	}
 }
 
 // errMsg carries an error from a tab/manager to be rendered in the error bar.
@@ -277,7 +333,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case syncPullMsg:
 		// 后台拉取结束：错误进错误栏（含被屏蔽提示，不退出进程）；应用了
-		// 变更则提示并让所有 Tab 重载本地（已更新的）工作副本；无变更或
+		// 变更则提示并让所有已激活 Tab 重载本地（已更新的）工作副本；无变更或
 		// 零网络跳过时只更新同步徽标。
 		if msg.out.Err != nil {
 			m.err = msg.out.Err.Error()
@@ -285,13 +341,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.out.Applied > 0 || msg.out.MetadataUpdated {
 			m.mgr.snap.Invalidate()
-			return m, tea.Batch(
+			var cmd tea.Cmd = tea.Batch(
 				okToast(fmt.Sprintf("updated %d entries from server", msg.out.Applied)),
 				reloadAllTabs(m),
 				m.refreshSync(),
 			)
+			if c := m.snapshotRewriteCmd(); c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
+			return m, cmd
 		}
 		return m, m.refreshSync()
+
+	case snapshotVerifiedMsg:
+		// 后台真实解密与缓存不一致：memo 已替换为真实数据，重载已激活 tab
+		// （未激活 tab 保持懒加载，首次聚焦时读到真实数据）。一致则无事发生。
+		if !msg.changed {
+			return m, nil
+		}
+		return m, tea.Batch(reloadAllTabs(m), m.refreshSync())
+
+	case snapshotRewriteMsg:
+		return m, nil
 
 	case tea.KeyMsg:
 		// If the active tab is capturing text input, forward ALL keys so global
@@ -314,7 +385,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = idx
-			return m, m.activateTab(idx)
+			return m.activateTab(idx)
 		}
 
 		switch msg.String() {
@@ -331,7 +402,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "ctrl+r":
 			// 刷新当前 Tab（grill D7：refresh 统一 Ctrl+R，腾出 r=rename）。
+			// 先作废进程内快照 memo：用户显式刷新须重新读 vault，而不是
+			// 命中写后/pull 前的缓存。
 			m.err = ""
+			m.mgr.snap.Invalidate()
 			return m, m.tabs[m.active].Reload()
 		case "S":
 			// Open the global cross-type search overlay (task 10.1).
@@ -347,12 +421,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active + 1) % len(m.tabs)
-			return m, m.activateTab(m.active)
+			return m.activateTab(m.active)
 		case "shift+tab":
 			m.err = ""
 			m.warn = ""
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
-			return m, m.activateTab(m.active)
+			return m.activateTab(m.active)
 		}
 
 		// Swallow the key that dismissed the banner so the user sees it clear
@@ -395,6 +469,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if c := m.pushSync(); c != nil {
 			cmd = tea.Batch(cmd, c)
 		}
+		// 写操作后立即失效并（异步）重写快照缓存：下次冷启动首屏仍即时。
+		if c := m.snapshotRewriteCmd(); c != nil {
+			cmd = tea.Batch(cmd, c)
+		}
 	}
 	return m, cmd
 }
@@ -423,13 +501,18 @@ func tabIndexFor(key string, tabs int) (int, bool) {
 	return idx, true
 }
 
-// activateTab 把 Tab 标记为已激活（History Tab 依赖它做首次激活延迟加载）
-// 并执行该 Tab 的 Init。
-func (m Model) activateTab(idx int) tea.Cmd {
+// activateTab 标记 Tab 为已激活（true lazy-loading：首次聚焦触发一次性
+// 加载；History Tab 依赖它做首次激活延迟加载）并执行该 Tab 的 Init。
+// 已加载 Tab 的 Init 自带 loaded 护栏，重聚焦不会重新全量加载。
+func (m Model) activateTab(idx int) (tea.Model, tea.Cmd) {
+	if m.activated == nil {
+		m.activated = make([]bool, len(m.tabs))
+	}
+	m.activated[idx] = true
 	if h, ok := m.tabs[idx].(*historyTab); ok {
 		h.visited = true
 	}
-	return m.tabs[idx].Init()
+	return m, m.tabs[idx].Init()
 }
 
 // applyJump closes the overlay and moves the cursor to the chosen entry across
@@ -448,7 +531,7 @@ func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 		if f, ok := t.(jumpFocuser); ok {
 			f.focusJump(j.group, j.key)
 		}
-		return m, m.activateTab(i)
+		return m.activateTab(i)
 	}
 	return m, nil
 }

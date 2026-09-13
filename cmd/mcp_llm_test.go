@@ -122,7 +122,7 @@ func TestMCPLLMProviderModelInfoNewFields(t *testing.T) {
 	}
 }
 
-func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
+func TestMCPLLMAgentStatusTwoStates(t *testing.T) {
 	requestManagers := setupLLMMCPTest(t)
 	// 先经 CLI 切换 claude-code，制造已切换状态。
 	t.Setenv("HOME", requestManagers.llmHome)
@@ -136,9 +136,8 @@ func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
 	}
 	var payload struct {
 		Agents []struct {
-			Agent     string `json:"agent"`
-			Supported bool   `json:"supported"`
-			Pointer   *struct {
+			Agent   string `json:"agent"`
+			Pointer *struct {
 				Provider     string `json:"provider"`
 				DefaultModel string `json:"default_model"`
 			} `json:"pointer"`
@@ -148,33 +147,22 @@ func TestMCPLLMAgentStatusThreeStates(t *testing.T) {
 	if err := json.Unmarshal([]byte(textOf(t, res)), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	byAgent := map[string]struct {
-		Supported bool
-		Pointer   *struct {
-			Provider     string `json:"provider"`
-			DefaultModel string `json:"default_model"`
-		}
+	byAgent := map[string]*struct {
+		Provider     string `json:"provider"`
+		DefaultModel string `json:"default_model"`
 	}{}
 	for _, a := range payload.Agents {
-		byAgent[a.Agent] = struct {
-			Supported bool
-			Pointer   *struct {
-				Provider     string `json:"provider"`
-				DefaultModel string `json:"default_model"`
-			}
-		}{a.Supported, a.Pointer}
+		byAgent[a.Agent] = a.Pointer
 	}
-	cc := byAgent["claude-code"]
-	if !cc.Supported || cc.Pointer == nil || cc.Pointer.Provider != "main" || cc.Pointer.DefaultModel != "m1" {
-		t.Fatalf("claude-code status = %+v", cc)
+	if p := byAgent["claude-code"]; p == nil || p.Provider != "main" || p.DefaultModel != "m1" {
+		t.Fatalf("claude-code status = %+v", p)
 	}
-	oc := byAgent["opencode"]
-	if !oc.Supported || oc.Pointer != nil {
-		t.Fatalf("opencode status = %+v", oc)
+	if p := byAgent["opencode"]; p != nil {
+		t.Fatalf("opencode status = %+v", p)
 	}
 	for _, id := range []string{"cursor", "zcode"} {
-		if st := byAgent[id]; st.Supported {
-			t.Fatalf("%s should be unsupported: %+v", id, st)
+		if _, ok := byAgent[id]; ok {
+			t.Fatalf("%s must not appear in agent status: %+v", id, payload.Agents)
 		}
 	}
 	// 确认指针文件真实存在且状态来自本机（不依赖 vault）。

@@ -113,14 +113,12 @@ func (s *searchTab) gather() tea.Cmd {
 			}
 		}
 		// Text: iterate groups, collect keys (preview = size, not content).
+		// 走单趟快照 memo：与 text tab 共享一次解密结果，避免逐组 List 的
+		// N 次排它锁；条目级失败的组天然跳过（与逐组 List 失败 continue 等价）。
 		if mgr.Text != nil {
-			if gs, err := mgr.Text.ListGroups(); err == nil {
-				for _, g := range gs {
-					infos, err := mgr.Text.List(g.Name)
-					if err != nil {
-						continue
-					}
-					for _, ti := range infos {
+			if snap, err := textSnapshot(mgr); err == nil {
+				for _, g := range snap.Groups {
+					for _, ti := range snap.Items[g.Name] {
 						all = append(all, searchResult{
 							resultType: typeText, group: g.Name, key: ti.Key,
 							preview: fmt.Sprintf("%db", ti.Size),

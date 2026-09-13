@@ -76,12 +76,18 @@ func (m Model) pushSync() tea.Cmd {
 	return func() tea.Msg { return syncStatusMsg{state: src.Push()} }
 }
 
-// reloadAllTabs asks every tab to drop its cached data and reload, so the UI
-// converges on the working copy after a background pull applies changes. Tabs
-// are held by pointer, so the reloads land on the live tab instances.
+// reloadAllTabs asks every activated tab to drop its cached data and reload,
+// so the UI converges on the working copy after a background pull applies
+// changes. Tabs that were never focused keep their lazy-loading semantics
+// (the pull must not trigger their first load); their snapshot memo was
+// invalidated, so the first focus rebuilds from fresh data. Tabs are held by
+// pointer, so the reloads land on the live tab instances.
 func reloadAllTabs(m Model) tea.Cmd {
 	var cmds []tea.Cmd
-	for _, t := range m.tabs {
+	for i, t := range m.tabs {
+		if i < len(m.activated) && !m.activated[i] {
+			continue
+		}
 		if c := t.Reload(); c != nil {
 			cmds = append(cmds, c)
 		}
@@ -124,10 +130,12 @@ func shortReason(err error) string {
 }
 
 // writeDoneMsg reports whether a message signals a completed write operation
-// (as opposed to a plain read/reload of the same tab).
+// (as opposed to a plain read/reload of the same tab). renameDoneMsg 也属写
+// 完成（重命名/导入）：必须作废快照 memo，否则 tab 随后的 reload 会命中
+// 改名前的缓存。
 func writeDoneMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case envReloadMsg, textReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg, mcpReloadMsg:
+	case envReloadMsg, textReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg, mcpReloadMsg, renameDoneMsg:
 		return true
 	}
 	return false

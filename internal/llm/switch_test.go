@@ -535,20 +535,17 @@ func TestStatusMixed(t *testing.T) {
 		byID[r.AgentID] = r
 	}
 	oc := byID["opencode"]
-	if !oc.Supported || oc.Pointer == nil || oc.Pointer.Provider != "main" {
+	if oc.Pointer == nil || oc.Pointer.Provider != "main" {
 		t.Fatalf("opencode row = %+v", oc)
 	}
 	cc := byID["claude-code"]
-	if !cc.Supported || cc.Pointer != nil {
+	if cc.Pointer != nil {
 		t.Fatalf("claude-code row = %+v", cc)
 	}
-	zc := byID["zcode"]
-	if zc.Supported {
-		t.Fatalf("zcode should be unsupported: %+v", zc)
-	}
-	cur := byID["cursor"]
-	if cur.Supported || cur.ConfigPath == "" {
-		t.Fatalf("cursor row = %+v", cur)
+	for _, id := range []string{"zcode", "cursor"} {
+		if r, ok := byID[id]; ok {
+			t.Fatalf("%s must not appear in status rows: %+v", id, r)
+		}
 	}
 }
 

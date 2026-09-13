@@ -118,9 +118,14 @@ func TestAISwitchClaudeCodeEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	for _, want := range []string{"claude-code", "已切换", "main / m1（2 个模型）", "cursor", "不支持", "未切换"} {
+	for _, want := range []string{"claude-code", "已切换", "main / m1（2 个模型）", "未切换"} {
 		if !strings.Contains(statusOut, want) {
 			t.Fatalf("status output missing %q:\n%s", want, statusOut)
+		}
+	}
+	for _, absent := range []string{"cursor", "不支持"} {
+		if strings.Contains(statusOut, absent) {
+			t.Fatalf("status output must not contain %q:\n%s", absent, statusOut)
 		}
 	}
 }

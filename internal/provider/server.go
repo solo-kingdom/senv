@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/syncschema"
@@ -410,44 +411,96 @@ type PullResult struct {
 	LatestRevision   int64
 }
 
-// pull 增量拉取并落盘；本地 dirty 的条目不被远端覆盖（留给 push 乐观锁判定）
+// pull 增量拉取并落盘，拆为三段执行（网络阶段移出 vault 锁，见 change
+// tui-startup-perf 的 D1）：
+//  1. 读锁收集本地 manifest（同步状态：增量游标 + 条目指纹快照）；
+//  2. 无锁执行 api.Pull/GetMetadata 网络请求——此阶段不持有 vault 锁，
+//     TUI 等本地读取可与慢网络并行，不再在锁上排队；
+//  3. 写锁应用响应落盘（单事务原子写，失败回滚）。
+//
+// 调用方仍全程持有同步锁（.senv-sync.lock）：throttle/push 串行语义不变，
+// 阶段 3 的状态基线不会被并发 sync 改写。本地 dirty 的条目不被远端覆盖
+// （留给 push 乐观锁判定）——语义与旧单锁实现一致。
 func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
-	var result *PullResult
-	err := p.withVaultMutation(func() error {
-		var err error
-		result, err = p.pullLocked(ctx)
-		return err
-	})
-	return result, err
-}
-
-func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
-	st, err := p.cache.loadState()
+	manifest, err := p.pullManifest()
 	if err != nil {
 		return nil, err
 	}
+	remote, latest, remoteMeta, err := p.pullFetch(ctx, manifest.LastSyncedRevision)
+	if err != nil {
+		return nil, err
+	}
+	return p.pullApply(manifest, remote, latest, remoteMeta)
+}
 
-	entries, latest, err := p.api.Pull(ctx, p.vault, st.LastSyncedRevision)
+// pullManifest 是 pull 阶段 1：短暂持有 vault 锁读取同步状态（版本/指纹），
+// LastSyncedRevision 作为增量请求游标，状态本体作为阶段 3 的推进基线。
+func (p *ServerProvider) pullManifest() (*syncState, error) {
+	t := perflog.Start("sync.pull-manifest")
+	var st *syncState
+	err := p.withVaultMutation(func() error {
+		var inner error
+		st, inner = p.cache.loadState()
+		return inner
+	})
+	t.End(err == nil)
+	if err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+// pullFetch 是 pull 阶段 2：不持有 vault 锁执行 api.Pull 与 api.GetMetadata，
+// 网络等待与本地 vault 读取/写入并行。返回的远端条目已在任何落盘前完成
+// 身份校验（含将被 dirty 跳过的条目）。
+func (p *ServerProvider) pullFetch(ctx context.Context, since int64) (entries []Entry, latest int64, remoteMeta []byte, err error) {
+	t := perflog.Start("sync.pull-net")
+	defer func() { t.End(err == nil) }()
+	entries, latest, err = p.api.Pull(ctx, p.vault, since)
 	if errors.Is(err, ErrVaultNotFound) {
-		entries, latest = nil, 0
-	} else if err != nil {
-		return nil, err
+		entries, latest, err = nil, 0, nil
 	}
-	// Validate every returned identity, including dirty entries that will be
-	// skipped, before any mutable filesystem operation.
+	if err != nil {
+		return nil, 0, nil, err
+	}
 	if err := validateRemoteEntries(entries); err != nil {
-		return nil, err
+		return nil, 0, nil, err
 	}
+	remoteMeta, err = p.api.GetMetadata(ctx, p.vault)
+	if err != nil && !errors.Is(err, ErrVaultNotFound) {
+		return nil, 0, nil, err
+	}
+	return entries, latest, remoteMeta, nil
+}
+
+// pullApply 是 pull 阶段 3：持有 vault 写锁把远端响应应用落盘。单事务写入
+// 条目 + metadata + 状态文件，任何同步失败整体回滚。
+func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, remoteMeta []byte) (*PullResult, error) {
+	t := perflog.Start("sync.pull-apply")
+	var res *PullResult
+	err := p.withVaultMutation(func() error {
+		var inner error
+		res, inner = p.pullApplyLocked(st, remote, latest, remoteMeta)
+		return inner
+	})
+	t.End(err == nil)
+	return res, err
+}
+
+// pullApplyLocked 在写锁内重算 dirty 并应用远端条目。阶段 2 不持锁，本地写
+// 可能已落入——这里重新对比快照与现状，dirty 条目（含网络窗口内新增的写）
+// 跳过不覆盖，保持 dirty 队列语义不变，交给后续 push 乐观锁判定。
+func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest int64, remoteMeta []byte) (*PullResult, error) {
 	current, err := p.cache.collect()
 	if err != nil {
 		return nil, err
 	}
 	dirty := dirtyIDs(p.collectDirty(st, current))
 	res := &PullResult{LatestRevision: latest}
-	toApply := make([]Entry, 0, len(entries))
+	toApply := make([]Entry, 0, len(remote))
 	// 本次合法消失的条目（远端 tombstone），供状态防退化护栏放行。
 	removed := make(map[string]bool)
-	for _, e := range entries {
+	for _, e := range remote {
 		id := entryID(e.Kind, e.Grp, e.Key)
 		if dirty[id] {
 			res.SkippedDirty++
@@ -466,10 +519,6 @@ func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 
 	localMeta, err := p.cache.readMetadata()
 	if err != nil {
-		return nil, err
-	}
-	remoteMeta, err := p.api.GetMetadata(ctx, p.vault)
-	if err != nil && !errors.Is(err, ErrVaultNotFound) {
 		return nil, err
 	}
 	localHash := hashBytes(localMeta)
@@ -493,7 +542,7 @@ func (p *ServerProvider) pullLocked(ctx context.Context) (*PullResult, error) {
 	st.LastSyncedRevision = latest
 	st.LastPullAt = p.now().Unix()
 	if err := p.cache.applyRemoteOpts(toApply, remoteMeta, updateMetadata, st, stateWriteOptions{
-		writerPath:     "pullLocked",
+		writerPath:     "pullApplyLocked",
 		removedEntries: removed,
 	}); err != nil {
 		return nil, err

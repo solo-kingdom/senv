@@ -183,7 +183,7 @@ func TestInitRunsBackgroundPullWithRefreshFlag(t *testing.T) {
 }
 
 // tabLoadedFlag reports the loaded flag of tabs that keep one; the second
-// return value is false for tabs without a loaded short-circuit (audit).
+// return value is false for tabs without a loaded short-circuit.
 func tabLoadedFlag(tab Tab) (loaded, hasFlag bool) {
 	switch tb := tab.(type) {
 	case *envTab:
@@ -197,6 +197,8 @@ func tabLoadedFlag(tab Tab) (loaded, hasFlag bool) {
 	case *aiTab:
 		return tb.loaded, true
 	case *historyTab:
+		return tb.loaded, true
+	case *auditTab:
 		return tb.loaded, true
 	default:
 		return false, false
@@ -223,6 +225,86 @@ func focusAllTabs(m Model) Model {
 		m = out.(Model)
 	}
 	return m
+}
+
+// TestInitLoadsOnlyFocusedTab 守住真懒加载（tui-startup-perf D3）：Init 只
+// 装载当前聚焦 tab（env），其余 tab 在首次聚焦前保持未加载；已加载 tab
+// 切回不得重新全量加载。
+func TestInitLoadsOnlyFocusedTab(t *testing.T) {
+	mgrs := newFullManagers(t)
+	m := New(mgrs)
+	for _, msg := range runCmd(m.Init()) {
+		out, _ := m.Update(msg)
+		m = out.(Model)
+	}
+	if loaded, _ := tabLoadedFlag(m.tabs[0]); !loaded {
+		t.Fatal("precondition: focused env tab must load at Init")
+	}
+	for i := 1; i < len(m.tabs); i++ {
+		if loaded, hasFlag := tabLoadedFlag(m.tabs[i]); hasFlag && loaded {
+			t.Fatalf("tabs[%d] (%s) loaded at Init, want lazy first-focus loading", i, m.tabs[i].Title())
+		}
+	}
+
+	// 首次聚焦 text tab（数字键 2）：触发一次性加载
+	out, cmd := m.Update(runeKey("2"))
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	textIdx := -1
+	for i, t := range m.tabs {
+		if t.Title() == "Text" {
+			textIdx = i
+		}
+	}
+	if textIdx < 0 || !m.activated[textIdx] {
+		t.Fatal("text tab must be marked activated after focus")
+	}
+	if loaded, _ := tabLoadedFlag(m.tabs[textIdx]); !loaded {
+		t.Fatal("text tab must load on first focus")
+	}
+
+	// 切回 env 再切回 text：均已加载，不得重新发装载命令
+	out, _ = m.Update(runeKey("1"))
+	m = out.(Model)
+	out, backCmd := m.Update(runeKey("2"))
+	m = out.(Model)
+	if backCmd != nil {
+		if _, textTab := m.tabs[textIdx].(*textTab); textTab {
+			t.Fatal("re-focusing a loaded tab must not re-issue a load command")
+		}
+	}
+}
+
+// TestReloadAllTabsSkipsNeverFocusedTabs 验证 pull 应用后的全量重载保持懒
+// 加载语义：从未聚焦的 tab 不被 reloadAllTabs 触发首次加载（其快照 memo
+// 已失效，首次聚焦时从新鲜数据重建）。
+func TestReloadAllTabsSkipsNeverFocusedTabs(t *testing.T) {
+	src := &fakeSyncSource{}
+	mgrs := newFullManagers(t)
+	mgrs.Sync = src
+	m := New(mgrs)
+	for _, msg := range runCmd(m.Init()) {
+		out, _ := m.Update(msg)
+		m = out.(Model)
+	}
+	// 只聚焦过 env（Init 激活项）
+	out, cmd := m.Update(syncPullMsg{out: PullOutcome{Applied: 2}})
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	if loaded, _ := tabLoadedFlag(m.tabs[0]); !loaded {
+		t.Fatal("focused tab must reload after an applied pull")
+	}
+	for i := 1; i < len(m.tabs); i++ {
+		if loaded, hasFlag := tabLoadedFlag(m.tabs[i]); hasFlag && loaded {
+			t.Fatalf("tabs[%d] (%s) loaded by reloadAllTabs without ever being focused", i, m.tabs[i].Title())
+		}
+	}
 }
 
 func TestSyncPullWithoutChangesKeepsTabsLoaded(t *testing.T) {

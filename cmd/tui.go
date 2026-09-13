@@ -30,8 +30,11 @@ SSH, LLM providers and MCP server profiles.
 Reuses a valid session cache when available; otherwise prompts for a one-time
 password (does not write session). Startup never waits on the network: local
 data renders first and the server sync completes in the background; --refresh
-forces that background pull past the throttle window. See "TUI mode" in the
-README for the keybinding reference.`,
+forces that background pull past the throttle window. Only the focused tab
+loads at startup; other tabs load on first focus. When available, an encrypted
+local snapshot (vault-key AES-256-GCM) renders instantly while the real
+decryption verifies in the background; set SENV_TUI_SNAPSHOT=off to disable.
+See "TUI mode" in the README for the keybinding reference.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		managersSt := perflog.Start("tui.managers")
@@ -42,6 +45,10 @@ README for the keybinding reference.`,
 		}
 		managersSt.End(true)
 		defer auditMgr.Close()
+		if mgrs.SnapshotCache != nil {
+			// 正常退出时重写首屏快照缓存（best-effort，失败静默）。
+			defer func() { mgrs.SnapshotCache.Write(mgrs) }()
+		}
 
 		m := tui.New(mgrs)
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -87,23 +94,39 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	sourcesSt.End(true)
 
 	return tui.Managers{
-		Env:         envMgr,
-		Text:        textMgr,
-		Config:      configMgr,
-		SSH:         sshMgr,
-		LLM:         llmMgr,
-		LLMPointer:  llmPointer,
-		LLMHome:     llmHome,
-		LLMCatalog:  catalogCachePath(),
-		MCP:         mcpMgr,
-		MCPHome:     mcpHome,
-		MCPLedger:   mcp.LedgerPathForConfigDir(getConfigPath()),
-		History:     historySource,
-		Audit:       tuiAuditSource{},
-		AuditWriter: newTUIAuditWriter(auditMgr),
-		Refresh:     refresh,
-		Sync:        syncSource,
+		Env:           envMgr,
+		Text:          textMgr,
+		Config:        configMgr,
+		SSH:           sshMgr,
+		LLM:           llmMgr,
+		LLMPointer:    llmPointer,
+		LLMHome:       llmHome,
+		LLMCatalog:    catalogCachePath(),
+		MCP:           mcpMgr,
+		MCPHome:       mcpHome,
+		MCPLedger:     mcp.LedgerPathForConfigDir(getConfigPath()),
+		History:       historySource,
+		Audit:         tuiAuditSource{},
+		AuditWriter:   newTUIAuditWriter(auditMgr),
+		Refresh:       refresh,
+		Sync:          syncSource,
+		SnapshotCache: tuiSnapshotCache(),
 	}, auditMgr, nil
+}
+
+// tuiSnapshotCache 用 vault 主密钥构造首屏快照缓存。resolveAuth 在进程内
+// 有记忆：getManagers 已成功解锁过一次，这里命中记忆零交互；任何一步失败
+// 只关闭缓存（回退直接解密路径），不影响 TUI 启动。
+func tuiSnapshotCache() *tui.SnapshotCache {
+	auth, err := resolveAuth(getConfigPath(), getDataPath(), authPrompt)
+	if err != nil {
+		return nil
+	}
+	key, err := resolveKeyForAuth(auth)
+	if err != nil {
+		return nil
+	}
+	return tui.NewSnapshotCache(getDataPath(), getConfigPath(), key)
 }
 
 // tuiHistorySource 把 server provider 与已认证 key 适配为 TUI 的 History

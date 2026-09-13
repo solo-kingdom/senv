@@ -87,9 +87,14 @@ func TestAITabBrowseNoSecretLeak(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 	view := tab.View()
-	for _, want := range []string{"main", "not switched", "unsupported", "zcode", "cursor", "current target"} {
+	for _, want := range []string{"main", "not switched", "current target"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+	for _, absent := range []string{"unsupported", "zcode", "cursor"} {
+		if strings.Contains(view, absent) {
+			t.Fatalf("view must not contain %q:\n%s", absent, view)
 		}
 	}
 	if strings.Contains(view, "sk-tui-secret") {
@@ -608,20 +613,13 @@ func TestAITabDeleteProviderConfirmAndAudit(t *testing.T) {
 	}
 }
 
-func TestAITabNotPointedModelChangeNoSwitchManager(t *testing.T) {
+func TestAITabExcludesUnsupportedAgents(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
-	// 让右栏选中 zcode（不支持）时按 s 也不进入流程。
 	runAITabLoad(t, tab)
-	for i, row := range tab.rows {
-		if !row.Supported {
-			tab.agentIndex = i
-			break
+	for _, row := range tab.rows {
+		if row.AgentID == "cursor" || row.AgentID == "zcode" {
+			t.Fatalf("unsupported agent %s must not be listed: %+v", row.AgentID, tab.rows)
 		}
-	}
-	tab.focusLeft = false
-	tab.Update(runeKey("s"))
-	if tab.flow != aiFlowNone {
-		t.Fatalf("unsupported agent must not start a flow, flow=%v", tab.flow)
 	}
 }
 

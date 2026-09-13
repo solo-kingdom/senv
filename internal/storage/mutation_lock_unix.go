@@ -6,10 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// vaultLockAcquires 统计 vault mutation 锁的成功获取次数。生产路径仅原子
+// 自增；测试在断言前复位，用于验证「单趟批量读取只获取一次锁」
+// （tui-startup-perf D2/D3 的排它锁次数不随条目数增长）。
+var vaultLockAcquires atomic.Int64
 
 type vaultMutationLock struct {
 	fd int
@@ -43,6 +49,7 @@ func acquireVaultMutationLock(configPath string, timeout time.Duration) (*vaultM
 	for {
 		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
+			vaultLockAcquires.Add(1)
 			return &vaultMutationLock{fd: fd}, nil
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {

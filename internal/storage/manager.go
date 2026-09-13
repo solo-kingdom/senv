@@ -1246,3 +1246,113 @@ func (m *Manager) ListTextGroups() ([]string, error) {
 	}
 	return groups, nil
 }
+
+// TextVaultFile 是单趟装载出的一个 text 条目：文件名解析出的 key 与解密后
+// 的条目内容（TextEntry 自身不记录 key）。
+type TextVaultFile struct {
+	Key   string
+	Entry *TextEntry
+}
+
+// TextVaultSnapshot 是单趟 vault 读内装载的全量 text 视图：全部分组（含空
+// 组，Groups 保持目录枚举序）及各组解密后的条目。校验与解密语义与逐组
+// ListTextGroups/ListTextFiles、逐条 LoadTextFileWithKey 完全一致（fail-closed）。
+//
+// 条目级失败（读取/解密/解析某个条目文件）按组降级：该组不计入 Entries、
+// 原因记入 Errors，但 KeyCount 保留列出的文件数——与逐组消费方「List 失败
+// → 该组置空、分组仍列出」的语义等价；目录枚举与身份校验失败仍然整体失败。
+type TextVaultSnapshot struct {
+	Groups   []string
+	KeyCount map[string]int
+	Entries  map[string][]TextVaultFile
+	Errors   map[string]error
+}
+
+// LoadTextVault 使用密码加载全部 text 分组与条目（单趟锁内批量装载）。
+func (m *Manager) LoadTextVault(password string) (*TextVaultSnapshot, error) {
+	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	return m.LoadTextVaultWithKey(cryptoKey)
+}
+
+// LoadTextVaultWithKey 在单次 vault 读锁内、共享单个 data root 加载全部
+// text 分组与条目——一次 flock、一次 rekey 清算、一次 root 开闭，替代
+// 「每组一次 ListTextFiles + 每条目一次 LoadTextFile」的 N 次锁路径
+// （与 LoadEnvVaultWithKey 同构，tui-startup-perf D2）。
+func (m *Manager) LoadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, error) {
+	return withVaultRead(m, func(locked *Manager) (*TextVaultSnapshot, error) {
+		return locked.loadTextVaultWithKey(cryptoKey)
+	})
+}
+
+func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, error) {
+	root, err := m.openDataRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	groupDirs, err := root.ReadDir(TextDirName)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("list text groups: %w", err)
+	}
+	snap := &TextVaultSnapshot{
+		KeyCount: make(map[string]int, len(groupDirs)),
+		Entries:  make(map[string][]TextVaultFile, len(groupDirs)),
+		Errors:   make(map[string]error),
+	}
+	for _, gd := range groupDirs {
+		if !gd.IsDir {
+			return nil, fmt.Errorf("invalid text group entry %q: expected directory", gd.Name)
+		}
+		if err := ValidateName(gd.Name); err != nil {
+			return nil, fmt.Errorf("invalid historical text group %q: %w", gd.Name, err)
+		}
+		snap.Groups = append(snap.Groups, gd.Name)
+
+		files, err := root.ReadDir(TextDirName, gd.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list text group %q: %w", gd.Name, err)
+		}
+		// 文件清单与身份校验沿用逐组路径的 fail-closed 语义：任何非法
+		// 历史条目使整个快照失败（对应 ListGroups 阶段失败）。
+		snap.KeyCount[gd.Name] = len(files)
+		var groupFiles []TextVaultFile
+		var groupErr error
+		for _, f := range files {
+			if f.IsDir || !strings.HasSuffix(f.Name, TextFileSuffix) {
+				return nil, fmt.Errorf("invalid historical text entry %q in group %q", f.Name, gd.Name)
+			}
+			key := strings.TrimSuffix(f.Name, TextFileSuffix)
+			if err := validateTextIdentity(gd.Name, key); err != nil {
+				return nil, fmt.Errorf("invalid historical text identity: %w", err)
+			}
+			encryptedData, err := root.Read(TextDirName, gd.Name, f.Name)
+			if err != nil {
+				groupErr = fmt.Errorf("failed to read text %q in group %q: %w", key, gd.Name, err)
+				break
+			}
+			decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+			if err != nil {
+				groupErr = fmt.Errorf("failed to decrypt text entry: %w", err)
+				break
+			}
+			var entry TextEntry
+			if err := FromJSON(decryptedData, &entry); err != nil {
+				groupErr = fmt.Errorf("failed to parse text entry: %w", err)
+				break
+			}
+			groupFiles = append(groupFiles, TextVaultFile{Key: key, Entry: &entry})
+		}
+		// 条目级失败按组降级（对应逐组 List 失败后消费方把该组置空）：分组
+		// 保留列出，仅该组条目缺失。
+		if groupErr != nil {
+			snap.Errors[gd.Name] = groupErr
+			continue
+		}
+		snap.Entries[gd.Name] = groupFiles
+	}
+	return snap, nil
+}

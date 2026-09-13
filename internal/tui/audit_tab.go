@@ -74,6 +74,9 @@ func (t *auditTab) Bindings() []KeyAction {
 func (t *auditTab) InputMode() bool { return t.filterBox.Active() }
 
 func (t *auditTab) Init() tea.Cmd {
+	if t.loaded {
+		return nil
+	}
 	return t.load()
 }
 

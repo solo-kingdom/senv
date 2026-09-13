@@ -149,23 +149,20 @@ func (t *textTab) load() tea.Cmd {
 			st.End(false)
 			return textLoadedMsg{err: fmt.Errorf("text manager unavailable")}
 		}
-		gs, err := mgr.ListGroups()
+		// 单趟快照：分组与全部条目一次批量装载（一次 vault 读锁），并与进程内
+		// memo 共享；写操作/pull 应用后由 model 层 Invalidate。
+		snap, err := textSnapshot(t.mgr)
 		if err != nil {
 			st.End(false)
 			return textLoadedMsg{err: err}
 		}
-		groups := make([]textGroupRow, 0, len(gs))
-		itemsByGroup := make(map[string][]textItemRow, len(gs))
+		groups := make([]textGroupRow, 0, len(snap.Groups))
+		itemsByGroup := make(map[string][]textItemRow, len(snap.Groups))
 		totalKeys := 0
-		for _, g := range gs {
+		for _, g := range snap.Groups {
 			// 侧栏范式：空分组也显示（计数 0），与过滤期行为一致
 			groups = append(groups, textGroupRow{name: g.Name, keyCount: g.KeyCount})
-			infos, err := mgr.List(g.Name)
-			if err != nil {
-				itemsByGroup[g.Name] = nil
-				continue
-			}
-			itemsByGroup[g.Name] = buildTextItems(g.Name, infos)
+			itemsByGroup[g.Name] = buildTextItems(g.Name, snap.Items[g.Name])
 			totalKeys += len(itemsByGroup[g.Name])
 		}
 		sort.SliceStable(groups, func(i, j int) bool {

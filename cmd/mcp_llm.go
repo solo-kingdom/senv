@@ -41,7 +41,6 @@ func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 type llmAgentStatusView struct {
 	Agent      string            `json:"agent"`
 	Name       string            `json:"name"`
-	Supported  bool              `json:"supported"`
 	Pointer    *llm.AgentPointer `json:"pointer"`
 	ConfigPath string            `json:"config_path"`
 }
@@ -71,7 +70,6 @@ func (m *managers) llmAgentStatus(_ context.Context, _ *mcp.CallToolRequest, _ s
 		view := llmAgentStatusView{
 			Agent:      r.AgentID,
 			Name:       r.AgentName,
-			Supported:  r.Supported,
 			Pointer:    r.Pointer,
 			ConfigPath: r.ConfigPath,
 		}

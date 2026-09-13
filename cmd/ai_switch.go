@@ -149,9 +149,7 @@ only — senv never parses agent config files to decide it.`,
 		for _, r := range rows {
 			state := "未切换"
 			pointer := "-"
-			if !r.Supported {
-				state = "不支持"
-			} else if r.Pointer != nil {
+			if r.Pointer != nil {
 				state = "已切换"
 				when := ""
 				if t, err := r.Pointer.SwitchedAtTime(); err == nil {

@@ -576,9 +576,6 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 		return t, warnToast("no agent to operate on")
 	}
 	row := t.rows[clamp(t.agentIndex, 0, len(t.rows)-1)]
-	if !row.Supported {
-		return t, warnToast("agent " + row.AgentID + " switching not supported yet")
-	}
 	var alias string
 	if onlyModel {
 		if row.Pointer == nil {
@@ -1127,23 +1124,15 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 
 func agentDetailLines(row llm.StatusRow) []string {
 	state := "not switched"
-	switch {
-	case !row.Supported:
-		state = "unsupported"
-	case row.Pointer != nil:
+	if row.Pointer != nil {
 		state = row.Pointer.Provider + " / " + row.Pointer.DefaultModel
 	}
-	lines := []string{
+	return []string{
 		"agent:       " + row.AgentID,
 		"name:        " + row.AgentName,
-		"supported:   " + fmt.Sprintf("%t", row.Supported),
 		"pointer:     " + state,
 		"config:      " + orDash(row.ConfigPath),
 	}
-	if !row.Supported {
-		lines = append(lines, "senv cannot write back this agent's config (no public schema)")
-	}
-	return lines
 }
 
 // --- lookups ---
@@ -1430,10 +1419,7 @@ func (t *aiTab) agentLines(width int) []string {
 	}
 	for i, r := range t.rows {
 		state := "not switched"
-		switch {
-		case !r.Supported:
-			state = "unsupported"
-		case r.Pointer != nil:
+		if r.Pointer != nil {
 			state = fmt.Sprintf("%s / %s (%d models)",
 				r.Pointer.Provider, r.Pointer.DefaultModel, len(r.Pointer.Models))
 			if r.Drift != "" {

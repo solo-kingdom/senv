@@ -478,6 +478,56 @@ func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
 	return result, nil
 }
 
+// Snapshot 聚合 text 全部分组与条目的元数据视图（单趟读取的产物）。
+// KeyCount 与分组列出沿用逐组语义：某组条目读取失败时该组仍列出（计数
+// 为列出的文件数）、Items 中缺失对应条目。
+type Snapshot struct {
+	Groups []GroupInfo           // 全部分组（含空分组）及 key 计数
+	Items  map[string][]TextInfo // group → 条目元数据（与 List 返回逐字段一致）
+}
+
+// Snapshot 单趟读取并解密全部分组与条目（一次 vault 读锁、共享单个 data
+// root，替代逐组 ListGroups+List 的 N 次排它锁），返回聚合视图供 TUI
+// 「分组列表 + 全部条目」一次取数。条目明文不留在返回结构里（tab 只渲染
+// 元数据），内容正确性与逐组 List 路径一致；条目级失败的组按组降级
+// （与逐组消费方 List 失败后置空该组等价）。
+func (m *Manager) Snapshot() (*Snapshot, error) {
+	st := perflog.Start("text.snapshot")
+	vault, err := m.loadTextVault()
+	if err != nil {
+		st.End(false)
+		return nil, err
+	}
+	out := &Snapshot{
+		Groups: make([]GroupInfo, 0, len(vault.Groups)),
+		Items:  make(map[string][]TextInfo, len(vault.Groups)),
+	}
+	total := 0
+	for _, name := range vault.Groups {
+		out.Groups = append(out.Groups, GroupInfo{Name: name, KeyCount: vault.KeyCount[name]})
+		entries, ok := vault.Entries[name]
+		if !ok {
+			continue // 条目级失败组：列出但无条目（vault.Errors[name] 有原因）
+		}
+		infos := make([]TextInfo, 0, len(entries))
+		for _, f := range entries {
+			infos = append(infos, TextInfo{Key: f.Key, Size: f.Entry.Size, UpdatedAt: f.Entry.UpdatedAt})
+		}
+		out.Items[name] = infos
+		total += len(infos)
+	}
+	st.With("groups", len(out.Groups), "items", total, "failed_groups", len(vault.Errors)).End(true)
+	return out, nil
+}
+
+// loadTextVault 是 Snapshot 的装载缝：key 与 password 两种认证同等待遇。
+func (m *Manager) loadTextVault() (*storage.TextVaultSnapshot, error) {
+	if m.key != nil {
+		return m.storage.LoadTextVaultWithKey(m.key)
+	}
+	return m.storage.LoadTextVault(m.password)
+}
+
 // getEditor returns the editor to use, checking $VISUAL, $EDITOR, then falling back
 func getEditor() string {
 	if editor := os.Getenv("VISUAL"); editor != "" {

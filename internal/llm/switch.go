@@ -75,10 +75,6 @@ type AgentAdapter struct {
 	Protocol ProtocolFamily
 }
 
-// unsupportedAgents 明确不支持的 agent：cursor 配置无法覆盖（D2），
-// zcode 的供应商 schema 由 GUI 写入且无公开文档（D-E 降级）。
-var unsupportedAgents = []string{"cursor", "zcode"}
-
 // senvProviderID 返回该档案在各 agent 配置中的供应商标识。alias 已经过
 // storage 身份校验，但仍可能含空格等字符，这里收敛为各配置格式安全的
 // 键字符（字母数字与连字符）。
@@ -115,13 +111,6 @@ func SupportedAgents() []AgentAdapter {
 		piAdapter(),
 		opencodeAdapter(),
 	}
-}
-
-// UnsupportedAgents 返回明确不支持、status 需要展示的 agent id。
-func UnsupportedAgents() []string {
-	out := make([]string, len(unsupportedAgents))
-	copy(out, unsupportedAgents)
-	return out
 }
 
 // LookupAgent 按 id 查找适配器。
@@ -511,6 +500,40 @@ func modelSupportsReasoning(meta ModelMetadata) bool {
 	return len(meta.ReasoningEfforts) > 0
 }
 
+// filterModalities 按目标 agent 支持的输入模态白名单收敛模态列表。models.dev
+// 目录声明的模态可能包含 audio/pdf/video 等，超出部分 agent 配置的 schema
+// 取值范围（pi 仅 text/image，codex 仅 text/image/audio），原样透传会让 agent
+// 启动时拒绝整个配置文件。保序去重，大小写不敏感，白名单外的值丢弃。
+func filterModalities(mods []string, allowed ...string) []string {
+	if len(mods) == 0 {
+		return nil
+	}
+	ok := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		ok[strings.ToLower(a)] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(mods))
+	out := make([]string, 0, len(mods))
+	for _, mod := range mods {
+		m := strings.ToLower(strings.TrimSpace(mod))
+		if _, in := ok[m]; !in {
+			continue
+		}
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	return out
+}
+
+// piInputModalities 收敛到 pi models.json schema 允许的 text/image；全被
+// 过滤时返回 nil，调用方省略 input 字段（pi 缺省即 text+image）。
+func piInputModalities(mods []string) []string {
+	return filterModalities(mods, "text", "image")
+}
+
 func kimiCapabilities(meta ModelMetadata) []string {
 	var caps []string
 	if modelSupportsReasoning(meta) {
@@ -571,8 +594,8 @@ func piAdapter() AgentAdapter {
 					if modelSupportsReasoning(meta) {
 						entry["reasoning"] = true
 					}
-					if len(meta.InputModalities) > 0 {
-						entry["input"] = append([]string(nil), meta.InputModalities...)
+					if input := piInputModalities(meta.InputModalities); len(input) > 0 {
+						entry["input"] = input
 					}
 					models = append(models, entry)
 				}
@@ -1038,7 +1061,6 @@ func metadataDeclarationWarnings(models []string, meta map[string]ModelMetadata)
 type StatusRow struct {
 	AgentID    string
 	AgentName  string
-	Supported  bool
 	Pointer    *AgentPointer
 	ConfigPath string
 	// Drift 非空表示指针里的 Agent 模型集已与档案不一致（档案缩集或改名）；
@@ -1059,7 +1081,7 @@ func (sm *SwitchManager) Status() (rows []StatusRow, warning string, err error) 
 		pf = &PointerFile{}
 	}
 	for _, a := range SupportedAgents() {
-		row := StatusRow{AgentID: a.ID, AgentName: a.Name, Supported: true, ConfigPath: a.ConfigPath(home)}
+		row := StatusRow{AgentID: a.ID, AgentName: a.Name, ConfigPath: a.ConfigPath(home)}
 		if p, ok := pf.Get(a.ID); ok {
 			p := p
 			row.Pointer = &p
@@ -1067,10 +1089,6 @@ func (sm *SwitchManager) Status() (rows []StatusRow, warning string, err error) 
 		}
 		rows = append(rows, row)
 	}
-	for _, id := range UnsupportedAgents() {
-		rows = append(rows, StatusRow{AgentID: id, AgentName: id, Supported: false, ConfigPath: unsupportedConfigPath(id, home)})
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].AgentID < rows[j].AgentID })
 	return rows, warning, nil
 }
 
@@ -1098,18 +1116,7 @@ func (sm *SwitchManager) driftDetail(p AgentPointer) string {
 		p.Provider, strings.Join(missing, ", "))
 }
 
-// unsupportedConfigPath 返回不支持 agent 的信息性路径（无写回用途）。
-func unsupportedConfigPath(id, home string) string {
-	switch id {
-	case "cursor":
-		return filepath.Join(home, ".cursor", "mcp.json")
-	case "zcode":
-		return filepath.Join(home, ".zcode", "v2", "config.json")
-	default:
-		return ""
-	}
-}
-
+// supportedAgentIDs 返回全部受支持 agent 的 id（报错信息用）。
 func supportedAgentIDs() []string {
 	var ids []string
 	for _, a := range SupportedAgents() {
