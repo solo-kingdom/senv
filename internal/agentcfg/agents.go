@@ -132,13 +132,16 @@ func Supported() []Target {
 			Remote:         RemoteRender{HTTP: true, Headers: true, TypeKey: true, Reason: "sse entries are not verified for zcode"},
 		},
 		{
+			// Kimi Code CLI reads ~/.kimi-code/mcp.json (verified against a live
+			// install); the old ~/.kimi/mcp.json path belongs to a retired
+			// product and is never read.
 			ID:             "kimi",
-			Name:           "Kimi CLI",
+			Name:           "Kimi Code",
 			Format:         FormatJSON,
-			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".kimi", "mcp.json") },
+			ConfigPath:     func(home, _ string) string { return filepath.Join(home, ".kimi-code", "mcp.json") },
 			JSONServersKey: "mcpServers",
-			Note:           "Restart Kimi CLI for the server to load.",
-			Remote:         RemoteRender{HTTP: true, Headers: true, Reason: "sse entry shape is not verified for Kimi CLI"},
+			Note:           "Restart Kimi Code for the server to load.",
+			Remote:         RemoteRender{HTTP: true, Headers: true, Reason: "sse entry shape is not verified for Kimi Code"},
 		},
 		{
 			ID:             "pi",

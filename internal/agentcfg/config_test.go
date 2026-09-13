@@ -246,3 +246,15 @@ func TestZCodeTargetPaths(t *testing.T) {
 		t.Fatalf("config path = %q", path)
 	}
 }
+
+func TestKimiTargetPaths(t *testing.T) {
+	target, ok := Find("kimi")
+	if !ok {
+		t.Fatal("kimi target missing")
+	}
+	// Verified against a live install: Kimi Code CLI reads
+	// ~/.kimi-code/mcp.json; the retired ~/.kimi/mcp.json is never read.
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/.kimi-code/mcp.json" {
+		t.Fatalf("config path = %q", path)
+	}
+}
