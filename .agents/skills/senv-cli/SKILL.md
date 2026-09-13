@@ -55,14 +55,15 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。TUI 界面语言为英文；底栏只显示当前 Tab 的键位分组名（如 `Navigate · Items · Groups · Filter · ? keys`），完整键位按分组列在 `?` 总览里。
 
-- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname、provider alias、MCP 档案 alias/command，不匹配值/私钥/凭据/MCP env 值）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname/group/tags、provider alias、MCP 档案 alias/command，不匹配值/私钥/凭据/MCP env 值）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
 - Env/Text/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。
 - 多选：条目栏 `space` 勾选/取消、`a` 全选当前过滤可见集（再按取消）；选择跨过滤持久，面板标题提示「已选 N（M 被过滤）」。批量安全动词（Env/Text/SSH `d`、Text/SSH `x`、Config `i`/`u`、MCP `x`/`u`/`X`/`U`）作用于多选集，走既有确认/计划流；选择集为空回落游标单条；`e`/`r`/`m`/详情需单选；提交后清空选择集。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；Env `n` 新建与 Config `n` 创建也走结构化表单（Config 收集名称/源路径/target/分组/描述；Env 的 value 为遮蔽输入），创建失败可在表单内修正。重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。
-- SSH Tab：两栏（host / keypair）。host 栏 `n` 新建、`e` 表单编辑、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段；keypair 栏 `n`/`i` 导入、`r` 重命名（自动联动 host `identityKey`）、`d` 删除、`m` materialize、`x` 导出全部；刷新统一 `Ctrl+R`；host 栏 `/` 过滤（匹配 alias/hostname，`esc` 清除）。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`。
+- SSH Tab：两栏（分组侧栏 / host）。侧栏：All 伪组置顶 → 组名字母序 → 「未分组」置底（仅在有未归类 host 时出现），选中组决定 host 栏集合，`←→/hl` 两栏切焦点（切入 host 栏定位该组第一条）。host 栏 `n` 新建、`e` 表单编辑（含 group 自由文本与 tags 字段）、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段（焦点在侧栏时导出全部），行尾内联 tags（`#tag` 最多 2 个、超出 `+n`），行内 `key:name(fp)` 内联引用 keypair 名称与指纹摘要；`/` 过滤匹配 alias/hostname/tags/group；刷新统一 `Ctrl+R`。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。
+- KeyPair Tab：独立 Tab（`mgr.SSH` 非空时紧随 SSH Tab），两栏（分组侧栏 / keypair 列表），组语义与 host 一致（All 置顶 → 字母序 → 「未分组」置底）。列表栏 `n`/`i` 导入（表单含 name/private key file/group）、`r` 重命名（自动联动 host `identityKey`）、`e` 编辑 group（仅 group 字段的小表单）、`d` 删除、`m` materialize、`enter` 详情，`/` 按名称过滤；行内 `被 N 个 Host 引用`、零引用灰显「未被引用」。被引用 keypair 默认拒绝删除并列出引用者，按 `F` 才强制删除并清空 host `identityKey`；materialize 确认后只提示落盘路径，私钥明文不进 TUI 状态或渲染。
 - AI Tab：两栏（provider / agent）。provider 栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除、`enter` 详情、`/` 过滤（匹配 alias）；agent 栏 `↑↓` 选择、`s` 以左栏选中 provider 切换（`space` 多选 Agent 模型集，进入默认全选 → 选定默认模型 → 确认；空集不可提交）、`M` 对已指向的 agent 仅换默认模型（与 `s` 成对，大写为变体），候选限定在该 agent 已写入的模型集内（未指向时提示先按 `s`）。agent 行展示 `provider / 默认模型（N 个模型）`，指针模型已不在档案中时附 `⚠` 漂移标记。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、模型上下文、模型输出、模型推理、默认推理档、输入模态、默认模型与凭据来源；模型上下文用 `<model>=<tokens>` 逗号分隔，默认推理档用 `<model>=<effort>` 或集合级单一档位，输入模态用 `<model>=<mod>[,<mod>...]`。凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态或渲染文本。枚举/引用字段聚焦时下方列出候选值。详情弹层展示各模型已保存的 context / output / reasoning / 默认推理档 / 输入模态。
-- MCP Tab：两栏（档案 / 导出目标 agent，agent 集合与 `senv mcp export` 相同，含 claude-desktop/cursor）。档案栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除（不自动撤回）、`enter` 详情、`/` 过滤（匹配 alias/command）；`x`/`u` 当前档案 × 当前 agent，`X`/`U` 当前档案 × 全部 agent。表单含 transport 选择（stdio/http/sse）：stdio 下填 command/args/env，http/sse 下只出现 url/headers（headers 经 `$EDITOR` 按 `Name: Value` 行编辑）。计划页 `y` 确认 / `esc` 取消 / `F` 覆盖漂移；撤回被改过的条目逐条 `y/n`。列表/详情/计划不渲染 env 字面量、header 值与 url query（remote 只显示 `scheme://host` 与 header 键名）；`$EDITOR` 是 TUI 内唯一解密面。`mcp install` / `serve` / `list-tools`、`import`、`--print`、`--scope project` 仍走 CLI。
-- 只读详情：Config/SSH/AI/MCP 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
+- MCP Tab：两栏（档案 / 导出目标 agent，agent 集合与 `senv mcp export` 相同，含 claude-desktop/cursor）。档案栏 `n` 新建、`e` 编辑（别名只读）、`d` 删除（不自动撤回）、`enter` 详情、`/` 过滤（匹配 alias/command）；`x`/`u` 当前档案 × 当前 agent，`X`/`U` 当前档案 × 全部 agent。表单含 transport 选择（stdio/http/sse）：stdio 下填 command/args/env，http/sse 下只出现 url/headers（headers 经 `$EDITOR` 按 `Name: Value` 行编辑）。计划页 `y` 确认 / `esc` 取消 / `F` 覆盖漂移；撤回被改过的条目逐条 `y/n`。列表/计划是摘要，不渲染值（remote 列表只显示 `scheme://host` 与 env 键数）；详情弹层完整渲染字段：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单预览只显示键名，值仅在 `$EDITOR` 内可见。`mcp install` / `serve` / `list-tools`、`import`、`--print`、`--scope project` 仍走 CLI。
+- 只读详情：Config/SSH/KeyPair/AI/MCP 列表按 `enter` 打开详情弹层（长 `base_url`、模型列表、路径在列表里截断显示）。
 - 同步状态：server 模式且未关闭 `auto_sync` 时底部常驻「N 条待推送 / 已同步 时间」；启动不等待网络——本地数据先行渲染，远端拉取在后台完成（2 秒预算，`--refresh` 绕过节流窗口），应用了变更会提示「已从 server 更新 N 条」并自动更新各标签；写操作后后台异步推送（2 秒预算）；git 模式不显示也不拉取。
 - TUI 写操作会进本机操作审计（`senv audit` 可见），target 只含 group/key/name 等标识，不含值。
 
@@ -77,10 +78,10 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## SSH 资产
 
-- `keypair` 只导入既有 private key，不生成新密钥：`senv keypair import <name> --file <private-key>`；`list` 只看指纹/元数据。
+- `keypair` 只导入既有 private key，不生成新密钥：`senv keypair import <name> --file <private-key>`；`--group` 设单值归属分组（空 = 未分组，TUI KeyPair Tab 按组侧栏浏览）；`list` 只看指纹/元数据，有值时行尾展示 `group:<name>`。
 - `senv keypair rename <old> <new>` 在同一次 mutation 内原子改写引用它的 host `identityKey`；目标名已存在时拒绝且不写入。
 - `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/<name>`（目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件。
-- `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
+- `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--group` 设单值归属分组（空 = 未分组，TUI 按组侧栏浏览）、`--tag` 加多值标注（可重复）；`senv host edit <alias> --group <g>` 免编辑器单字段改分组；`host list` 行尾展示 `group:<name>`（有值时），`host get` 展示 Group/Tags。`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
 - `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。片段中 `IdentityFile` 指向的 keypair 不在本机 vault 时（如 host 档案先同步到、keypair 还没到），stderr 逐条 `warning: host <alias> 引用的 keypair <name> 不在本机 vault（可能尚未同步）`，片段照常生成；keypair 同步到并 materialize 后即可用。
 
 ## LLM Provider 与 coding agent

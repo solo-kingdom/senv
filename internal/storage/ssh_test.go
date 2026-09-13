@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,74 @@ import (
 	"testing"
 	"time"
 )
+
+// Hosts written before the group field existed carry no "group" key; they
+// must load as ungrouped and re-save in the legacy shape (group omitted).
+func TestHostEntryLegacyJSONWithoutGroup(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	legacy := `{"alias":"web","hostname":"10.0.0.1","user":"deploy","port":2222,"identity_key":"web-key","tags":["prod"],"extra":{"ForwardAgent":"yes"},"updated_at":"2024-01-01T00:00:00Z"}`
+	var host HostEntry
+	if err := json.Unmarshal([]byte(legacy), &host); err != nil {
+		t.Fatal(err)
+	}
+	if host.Group != "" {
+		t.Fatalf("legacy host group = %q, want empty", host.Group)
+	}
+	if host.Alias != "web" || host.Hostname != "10.0.0.1" || host.Port != 2222 || host.IdentityKey != "web-key" || host.Extra["ForwardAgent"] != "yes" {
+		t.Fatalf("legacy fields lost: %+v", host)
+	}
+	if err := mgr.SaveHost("web", &host, "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := mgr.LoadHost("web", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Group != "" {
+		t.Fatalf("round-trip group = %q, want empty", loaded.Group)
+	}
+	raw, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("group")) {
+		t.Fatalf("empty group must be omitted, got: %s", raw)
+	}
+}
+
+// Keypairs written before the group field existed carry no "group" key; they
+// must load as ungrouped and re-save in the legacy shape (group omitted).
+func TestKeyPairEntryLegacyJSONWithoutGroup(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	legacy := `{"name":"web-key","private_key":"PRIVATE","public_key":"ssh-ed25519 AAA","fingerprint":"SHA256:test","comment":"web","imported_at":"2024-01-01T00:00:00Z"}`
+	var keyPair KeyPairEntry
+	if err := json.Unmarshal([]byte(legacy), &keyPair); err != nil {
+		t.Fatal(err)
+	}
+	if keyPair.Group != "" {
+		t.Fatalf("legacy keypair group = %q, want empty", keyPair.Group)
+	}
+	if keyPair.Name != "web-key" || keyPair.Fingerprint != "SHA256:test" || keyPair.Comment != "web" {
+		t.Fatalf("legacy fields lost: %+v", keyPair)
+	}
+	if err := mgr.SaveKeyPair("web-key", &keyPair, "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := mgr.LoadKeyPair("web-key", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Group != "" {
+		t.Fatalf("round-trip group = %q, want empty", loaded.Group)
+	}
+	raw, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("group")) {
+		t.Fatalf("empty group must be omitted, got: %s", raw)
+	}
+}
 
 func TestSaveAndLoadSSHAssets(t *testing.T) {
 	mgr, _ := setupTestManager(t)

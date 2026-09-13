@@ -117,6 +117,62 @@ func TestImportValidatesFileAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestKeyPairGroupImportAndUpdate(t *testing.T) {
+	mgr, _ := newTestSSHManager(t)
+	path := writePrivateKey(t, t.TempDir(), ed25519Private(t), "group@test", "")
+	summary, err := mgr.ImportKeyPairWithGroup("group-key", path, "prod", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Group != "prod" {
+		t.Fatalf("summary group = %q, want prod", summary.Group)
+	}
+	summaries, err := mgr.ListKeyPairs()
+	if err != nil || len(summaries) != 1 || summaries[0].Group != "prod" {
+		t.Fatalf("list summaries = %v, %v", summaries, err)
+	}
+
+	// UpdateKeyPair 修改 group；空值回退未分组。
+	if err := mgr.UpdateKeyPair("group-key", func(entry *storage.KeyPairEntry) error {
+		entry.Group = "staging"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if summary, err := mgr.GetKeyPairSummary("group-key"); err != nil || summary.Group != "staging" {
+		t.Fatalf("updated group = %+v, %v", summary, err)
+	}
+	if err := mgr.UpdateKeyPair("group-key", func(entry *storage.KeyPairEntry) error {
+		entry.Group = ""
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if summary, err := mgr.GetKeyPairSummary("group-key"); err != nil || summary.Group != "" {
+		t.Fatalf("cleared group = %+v, %v", summary, err)
+	}
+
+	// 改名被禁止；含行分隔符的 group 被拒绝。
+	if err := mgr.UpdateKeyPair("group-key", func(entry *storage.KeyPairEntry) error {
+		entry.Name = "other"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "cannot be renamed") {
+		t.Fatalf("rename error = %v", err)
+	}
+	if _, err := mgr.ImportKeyPairWithGroup("bad", path, "a\nb", false); err == nil || !strings.Contains(err.Error(), "group must not contain") {
+		t.Fatalf("newline group error = %v", err)
+	}
+	if err := mgr.UpdateKeyPair("group-key", func(entry *storage.KeyPairEntry) error {
+		entry.Group = "x\x00y"
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "group must not contain") {
+		t.Fatalf("NUL group error = %v", err)
+	}
+	if err := mgr.UpdateKeyPair("missing", func(entry *storage.KeyPairEntry) error { return nil }); err == nil {
+		t.Fatal("update of missing keypair accepted")
+	}
+}
+
 func TestKeyPairSummariesAndDeleteProtection(t *testing.T) {
 	mgr, _ := newTestSSHManager(t)
 	path := writePrivateKey(t, t.TempDir(), ed25519Private(t), "delete@test", "")

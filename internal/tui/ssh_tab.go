@@ -16,46 +16,41 @@ import (
 	"github.com/wii/senv/internal/storage"
 )
 
-// sshTab is the editable browser for host records and keypair metadata. Hosts
-// support create/edit/delete/export; keypairs support import/rename/delete/
-// materialize. Private-key content is never loaded into the tab model: only the
-// file path and the derived fingerprint/public key are ever read.
+// sshTab is the editable browser for host records. Hosts support create/edit/
+// delete/export; keypair metadata (name/fingerprint) is loaded only to render
+// the host rows' inline `key:name(fp)` reference and the host form's keypair
+// selector — keypair management lives in the KeyPair Tab. Private-key content
+// is never loaded into the tab model.
 type sshTab struct {
 	mgr           Managers
 	width, height int
 	loaded        bool
 
 	hosts     []storage.HostEntry
-	keyPairs  []ssh.KeyPairSummary
-	filterBox Filter // `/` 过滤左栏主列表（alias/hostname 标识）
-	sel       List   // 仅承载 host 多选集（space 勾选 / a 全选可见）
+	keyPairs  []ssh.KeyPairSummary // 仅用于 host 行内 key: 片段与表单选择器
+	filterBox Filter               // `/` 过滤 Host 栏（alias/hostname/tags/group 标识）
+	sel       List                 // 仅承载 host 多选集（space 勾选 / a 全选可见）
 
 	// pendingBatchHosts 批量删除确认页暂存的 host 别名列表。
 	pendingBatchHosts []string
-	focusLeft         bool
+	focus             sshPane // 两栏焦点：分组侧栏 / Host 栏
+	groupIndex        int     // 侧栏选中组（groups() 的下标）
 	hostIndex         int
-	keyIndex          int
 	loadErr           string
 	detail            *detailOverlay
 	// pendingJump holds a host alias requested by the global search before the
 	// tab finished loading, since there is nothing to point at yet.
 	pendingJump string
-	// pendingKeyJump parks the cursor on a keypair after a rename/import reload.
-	pendingKeyJump string
 
-	// form 非 nil 时表示打开了一个结构化表单（host 编辑、keypair 导入/重命名、
-	// 导出路径）；formSubmit 是提交后的动作。
+	// form 非 nil 时表示打开了一个结构化表单（host 编辑、导出路径）；
+	// formSubmit 是提交后的动作。
 	form       *form
 	formSubmit func(values map[string]string) tea.Cmd
 
-	mode            sshMode
-	pendingHost     string   // host staged for delete
-	pendingKey      string   // keypair staged for delete/materialize
-	pendingForce    bool     // materialize overwrite confirmed
-	keyRefs         []string // hosts referencing pendingKey
-	materializePath string
-	exportLabel     string
-	exportContent   string
+	mode          sshMode
+	pendingHost   string // host staged for delete
+	exportLabel   string
+	exportContent string
 }
 
 // sshMode is the tab's confirmation/preview state. Every non-normal mode owns
@@ -65,10 +60,32 @@ type sshMode int
 const (
 	sshModeNormal sshMode = iota
 	sshModeDeleteHost
-	sshModeDeleteKey
-	sshModeMaterialize
 	sshModeExportPreview
 	sshModeBatchDeleteHost
+)
+
+// sshPane 是 SSH Tab 两栏的焦点栏位。左右键（h/l）在
+// 侧栏 ↔ Host 之间移动，与 env/config 的侧栏范式一致
+// （切组/切入条目栏时重置条目光标）。
+type sshPane int
+
+const (
+	paneGroup sshPane = iota
+	paneHost
+)
+
+// sshGroupRow 是分组侧栏一行的数据。组排序：All 伪组置顶 →
+// 组名字母序 → 「未分组」置底（仅在有未归类 host 时出现）。
+type sshGroupRow struct {
+	name        string
+	isAll       bool
+	isUngrouped bool
+	count       int
+}
+
+const (
+	sshAllLabel       = "All"
+	sshUngroupedLabel = "未分组"
 )
 
 type sshLoadedMsg struct {
@@ -78,11 +95,10 @@ type sshLoadedMsg struct {
 }
 
 // sshReloadMsg reports a successful vault write; the tab reloads and parks the
-// cursor on the named entry so the effect of the write is visible.
+// cursor on the named host so the effect of the write is visible.
 type sshReloadMsg struct {
 	toast     string
 	hostAlias string
-	keyName   string
 }
 
 // sshExportMsg carries a rendered OpenSSH fragment for preview before writing.
@@ -93,7 +109,7 @@ type sshExportMsg struct {
 }
 
 func newSSHTab(mgr Managers) *sshTab {
-	return &sshTab{mgr: mgr, focusLeft: true}
+	return &sshTab{mgr: mgr, focus: paneHost}
 }
 
 func (t *sshTab) Title() string { return "SSH" }
@@ -107,67 +123,137 @@ func (t *sshTab) Bindings() []KeyAction {
 		}
 	}
 	switch t.mode {
-	case sshModeDeleteHost, sshModeDeleteKey, sshModeMaterialize, sshModeBatchDeleteHost:
+	case sshModeDeleteHost, sshModeBatchDeleteHost:
 		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	case sshModeExportPreview:
 		return []KeyAction{{[]string{"w"}, "write file", grpConfirm}, {[]string{"esc"}, "cancel", grpConfirm}}
 	}
 	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
 		actTop, actBottom, actPageUp, actPageDn}
-	if t.focusLeft {
+	if t.focus == paneHost {
 		return append(append(nav, actNew, actEdit, actDelete, actExport), actRefresh, actFilter)
 	}
-	return append(append(nav,
-		KeyAction{[]string{"i"}, "import keypair", grpItem},
-		KeyAction{[]string{"r"}, "rename keypair", grpItem},
-		KeyAction{[]string{"m"}, "materialize", grpItem},
-		KeyAction{[]string{"d"}, "delete", grpItem},
-		KeyAction{[]string{"x"}, "export OpenSSH fragment", grpItem},
-	), actRefresh, actFilter)
+	return append(nav, actRefresh, actFilter)
 }
 
 func (t *sshTab) InputMode() bool {
 	return t.form != nil || t.mode != sshModeNormal || t.filterBox.Active()
 }
 
-// visibleHosts 返回过滤后的左栏可见列表（空词 = 全量）。
-func (t *sshTab) visibleHosts() []storage.HostEntry {
-	if t.filterBox.Term() == "" {
-		return t.hosts
-	}
-	out := make([]storage.HostEntry, 0, len(t.hosts))
+// groups 由当前 host 集合派生侧栏行（数据单一来源，渲染/导航共用）。
+// 排序：All 伪组置顶 → 组名字母序 → 「未分组」置底（仅在有未归类 host 时）。
+func (t *sshTab) groups() []sshGroupRow {
+	counts := map[string]int{}
+	ungrouped := 0
 	for _, h := range t.hosts {
-		if t.filterBox.Matches(h.Alias + " " + h.Hostname) {
+		if h.Group == "" {
+			ungrouped++
+		} else {
+			counts[h.Group]++
+		}
+	}
+	rows := make([]sshGroupRow, 0, len(counts)+2)
+	rows = append(rows, sshGroupRow{name: sshAllLabel, isAll: true, count: len(t.hosts)})
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		rows = append(rows, sshGroupRow{name: name, count: counts[name]})
+	}
+	if ungrouped > 0 {
+		rows = append(rows, sshGroupRow{name: sshUngroupedLabel, isUngrouped: true, count: ungrouped})
+	}
+	return rows
+}
+
+// currentGroupRow 返回侧栏当前选中的组行。
+func (t *sshTab) currentGroupRow() (sshGroupRow, bool) {
+	groups := t.groups()
+	if t.groupIndex < 0 || t.groupIndex >= len(groups) {
+		return sshGroupRow{}, false
+	}
+	return groups[t.groupIndex], true
+}
+
+// selectGroupName 把侧栏选中组切到指定组名（"" = 未分组）；组不存在时
+// 保持现状（调用方用于搜索 jump 等跨组定位）。
+func (t *sshTab) selectGroupName(name string) {
+	for i, g := range t.groups() {
+		if g.isUngrouped && name == "" {
+			t.groupIndex = i
+			return
+		}
+		if !g.isAll && !g.isUngrouped && g.name == name {
+			t.groupIndex = i
+			return
+		}
+	}
+}
+
+// visibleHosts 返回选中组内、再经 `/` 过滤后的 Host 栏可见列表（组内按
+// 别名字典序）。空词 = 全量；All 伪组 = 全部 host。
+func (t *sshTab) visibleHosts() []storage.HostEntry {
+	row, ok := t.currentGroupRow()
+	hosts := t.hosts
+	if ok && !row.isAll {
+		want := row.name
+		if row.isUngrouped {
+			want = ""
+		}
+		hosts = make([]storage.HostEntry, 0, len(t.hosts))
+		for _, h := range t.hosts {
+			if h.Group == want {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	// 组内（及 All 视图）按别名字典序；拷贝排序不触碰 t.hosts。
+	sorted := make([]storage.HostEntry, len(hosts))
+	copy(sorted, hosts)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Alias < sorted[j].Alias })
+	if t.filterBox.Term() == "" {
+		return sorted
+	}
+	out := make([]storage.HostEntry, 0, len(sorted))
+	for _, h := range sorted {
+		if t.filterBox.Matches(h.Alias + " " + h.Hostname + " " + h.Group + " " + strings.Join(h.Tags, " ")) {
 			out = append(out, h)
 		}
 	}
 	return out
 }
 
-// enterFilter 进入 `/` 过滤（清词重新开始，与 env/text/config 一致）。
+// enterFilter 进入 `/` 过滤：清词重新开始，与 env/text/config 一致。
 func (t *sshTab) enterFilter() {
-	t.focusLeft = true
 	t.filterBox.EnterFresh()
 }
 
 // handleFilterKeys 处理过滤输入态按键；返回 true 表示按键已被消费。
 func (t *sshTab) handleFilterKeys(msg tea.KeyMsg) bool {
+	clamp := func() {
+		t.hostIndex = clamp(t.hostIndex, 0, len(t.visibleHosts())-1)
+		if t.hostIndex < 0 {
+			t.hostIndex = 0
+		}
+	}
 	switch msg.String() {
 	case "esc":
 		t.filterBox.Clear()
-		t.clampFocus()
+		clamp()
 		return true
 	case "enter":
 		t.filterBox.Confirm()
 		return true
 	case "backspace":
 		t.filterBox.Backspace()
-		t.clampFocus()
+		clamp()
 		return true
 	}
 	if isPrintable(msg) {
 		t.filterBox.Append(msg.String())
-		t.clampFocus()
+		clamp()
 		return true
 	}
 	return false
@@ -183,11 +269,11 @@ func (t *sshTab) visibleHostAliases() []string {
 	return out
 }
 
-// clampFocus 把两栏游标都收回可见范围。
+// clampFocus 把 Host 栏条目光标收回可见范围（组光标在 clamp 处理）。
 func (t *sshTab) clampFocus() {
-	n := len(t.visibleHosts())
-	if t.hostIndex >= n {
-		t.hostIndex = maxInt(n-1, 0)
+	t.hostIndex = clamp(t.hostIndex, 0, len(t.visibleHosts())-1)
+	if t.hostIndex < 0 {
+		t.hostIndex = 0
 	}
 }
 
@@ -237,7 +323,7 @@ func (t *sshTab) load() tea.Cmd {
 }
 
 func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok && t.filterBox.Active() && t.form == nil && t.mode == sshModeNormal {
+	if key, ok := msg.(tea.KeyMsg); ok && t.form == nil && t.mode == sshModeNormal && t.filterBox.Active() {
 		if t.handleFilterKeys(key) {
 			return t, nil
 		}
@@ -284,9 +370,6 @@ func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		if msg.hostAlias != "" {
 			t.pendingJump = msg.hostAlias
 		}
-		if msg.keyName != "" {
-			t.pendingKeyJump = msg.keyName
-		}
 		cmd := t.load()
 		if msg.toast != "" {
 			return t, tea.Batch(okToast(msg.toast), cmd)
@@ -325,57 +408,42 @@ func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if t.focusLeft && t.hostIndex > 0 {
-			t.hostIndex--
-		} else if !t.focusLeft && t.keyIndex > 0 {
-			t.keyIndex--
-		}
+		t.moveCursor(-1)
 	case "down", "j":
-		if t.focusLeft && t.hostIndex < len(t.visibleHosts())-1 {
-			t.hostIndex++
-		} else if !t.focusLeft && t.keyIndex < len(t.keyPairs)-1 {
-			t.keyIndex++
-		}
+		t.moveCursor(1)
 	case "left", "h":
-		t.focusLeft = true
-	case "right", "l":
-		t.focusLeft = false
-	case "/":
-		if t.focusLeft {
-			t.enterFilter()
-			return t, nil
+		if t.focus == paneHost {
+			t.focus = paneGroup
 		}
+	case "right", "l":
+		if t.focus == paneGroup {
+			// env 侧栏范式：切入条目栏定位该组第一条。
+			t.focus = paneHost
+			t.hostIndex = 0
+		}
+	case "/":
+		t.enterFilter()
+		return t, nil
 	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
 	case "enter":
+		if t.focus == paneGroup {
+			return t, nil
+		}
 		return t, t.openDetail()
 	case "n":
-		if t.focusLeft {
+		if t.focus == paneHost {
 			return t.enterHostForm(nil)
 		}
-		return t.enterImportKeyPair()
-	case "i":
-		if !t.focusLeft {
-			return t.enterImportKeyPair()
-		}
-	case "r":
-		// r=重命名全局唯一：keypair 重命名从 R 迁到 r（host 重命名走 e 表单）
-		if !t.focusLeft {
-			return t.enterRenameKeyPair()
-		}
-	case "m":
-		if !t.focusLeft {
-			return t.enterMaterialize()
-		}
 	case " ", "space":
-		if t.focusLeft {
+		if t.focus == paneHost {
 			if host, ok := t.currentHost(); ok {
 				t.sel.Toggle(host.Alias)
 			}
 		}
 	case "a":
-		if t.focusLeft {
+		if t.focus == paneHost {
 			keys := make([]string, 0, len(t.visibleHosts()))
 			for _, h := range t.visibleHosts() {
 				keys = append(keys, h.Alias)
@@ -383,20 +451,20 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.sel.SelectVisible(keys)
 		}
 	case "x":
-		if t.focusLeft && t.sel.SelectionCount() > 1 {
+		if t.focus == paneHost && t.sel.SelectionCount() > 1 {
 			return t.enterBatchHostExport()
 		}
 		return t.enterExport()
 	case "d":
-		if t.focusLeft && t.sel.SelectionCount() > 1 {
+		if t.focus == paneHost && t.sel.SelectionCount() > 1 {
 			return t.enterBatchDeleteHosts()
 		}
 		return t.enterDelete()
 	case "e":
-		if t.focusLeft && t.sel.SelectionCount() > 1 {
-			return t, warnToast("multiple hosts selected: narrow to a single selection to edit")
-		}
-		if t.focusLeft {
+		if t.focus == paneHost {
+			if t.sel.SelectionCount() > 1 {
+				return t, warnToast("multiple hosts selected: narrow to a single selection to edit")
+			}
 			host, ok := t.currentHost()
 			if !ok {
 				return t, warnToast("no host selected")
@@ -415,20 +483,31 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	return t, nil
 }
 
+// moveCursor 在焦点栏内移动条目光标；侧栏移动同时重置 Host 栏光标
+// （切组后条目从头开始，与 env/config 的侧栏交互一致）。
+func (t *sshTab) moveCursor(delta int) {
+	if t.focus == paneGroup {
+		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups())-1)
+		t.hostIndex = 0
+		return
+	}
+	t.hostIndex = clamp(t.hostIndex+delta, 0, len(t.visibleHosts())-1)
+}
+
 // cursorForFocus / jumpFocus / focusListLen 支撑翻页与跳顶底。
 func (t *sshTab) cursorForFocus() int {
-	if t.focusLeft {
-		return t.hostIndex
+	if t.focus == paneGroup {
+		return t.groupIndex
 	}
-	return t.keyIndex
+	return t.hostIndex
 }
 
 func (t *sshTab) focusListLen() int {
-	if t.focusLeft {
-		// 游标语义 = 过滤可见列表上的位置（与 hostListLines/currentHost 一致）。
-		return len(t.visibleHosts())
+	if t.focus == paneGroup {
+		return len(t.groups())
 	}
-	return len(t.keyPairs)
+	// 游标语义 = 过滤可见列表上的位置（与 hostListLines/currentHost 一致）。
+	return len(t.visibleHosts())
 }
 
 func (t *sshTab) jumpFocus(idx int) {
@@ -438,14 +517,15 @@ func (t *sshTab) jumpFocus(idx int) {
 	} else if idx > n-1 {
 		idx = n - 1
 	}
-	if t.focusLeft {
-		t.hostIndex = idx
-	} else {
-		t.keyIndex = idx
+	if t.focus == paneGroup {
+		t.groupIndex = idx
+		t.hostIndex = 0
+		return
 	}
+	t.hostIndex = idx
 }
 
-// updateMode handles the delete/materialize/export confirmation modals.
+// updateMode handles the delete/export confirmation modals.
 func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch t.mode {
 	case sshModeDeleteHost:
@@ -462,22 +542,6 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.cancelMode()
 			t.sel.ClearSelection() // 提交即清空多选集
 			return t, t.doBatchDeleteHosts(targets)
-		case "esc", "n":
-			t.cancelMode()
-		}
-	case sshModeDeleteKey:
-		switch {
-		case len(t.keyRefs) == 0 && (msg.String() == "enter" || msg.String() == "y"):
-			return t.doDeleteKey(t.pendingKey, false)
-		case len(t.keyRefs) > 0 && msg.String() == "F":
-			return t.doDeleteKey(t.pendingKey, true)
-		case msg.String() == "esc" || msg.String() == "n":
-			t.cancelMode()
-		}
-	case sshModeMaterialize:
-		switch msg.String() {
-		case "enter", "y":
-			return t.doMaterialize(t.pendingKey, t.pendingForce)
 		case "esc", "n":
 			t.cancelMode()
 		}
@@ -498,10 +562,6 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 func (t *sshTab) cancelMode() {
 	t.mode = sshModeNormal
 	t.pendingHost = ""
-	t.pendingKey = ""
-	t.pendingForce = false
-	t.keyRefs = nil
-	t.materializePath = ""
 	t.exportLabel = ""
 	t.exportContent = ""
 }
@@ -604,55 +664,25 @@ func (t *sshTab) doBatchExportHosts(dir string, aliases []string) tea.Cmd {
 }
 
 func (t *sshTab) enterDelete() (Tab, tea.Cmd) {
-	if t.focusLeft {
-		host, ok := t.currentHost()
-		if !ok {
-			return t, warnToast("no host to delete")
-		}
-		t.pendingHost = host.Alias
-		t.mode = sshModeDeleteHost
+	if t.focus != paneHost {
 		return t, nil
 	}
-	key, ok := t.currentKey()
+	host, ok := t.currentHost()
 	if !ok {
-		return t, warnToast("no keypair to delete")
+		return t, warnToast("no host to delete")
 	}
-	t.pendingKey = key.Name
-	t.keyRefs = t.hostRefs(key.Name)
-	t.mode = sshModeDeleteKey
-	return t, nil
-}
-
-// enterMaterialize stages a materialize, pre-computing whether the target file
-// already exists so an overwrite needs the extra confirmation.
-func (t *sshTab) enterMaterialize() (Tab, tea.Cmd) {
-	key, ok := t.currentKey()
-	if !ok {
-		return t, warnToast("no keypair to materialize")
-	}
-	path, err := ssh.MaterializePath(key.Name)
-	if err != nil {
-		err := err
-		return t, func() tea.Msg { return errMsg{err: err} }
-	}
-	force := false
-	if _, statErr := os.Lstat(path); statErr == nil {
-		force = true
-	}
-	t.pendingKey = key.Name
-	t.pendingForce = force
-	t.materializePath = path
-	t.mode = sshModeMaterialize
+	t.pendingHost = host.Alias
+	t.mode = sshModeDeleteHost
 	return t, nil
 }
 
 // enterExport renders the selected host fragment (or every host when the
-// keypair pane is focused) and shows it for preview before any write.
+// group sidebar is focused) and shows it for preview before any write.
 func (t *sshTab) enterExport() (Tab, tea.Cmd) {
 	mgr := t.mgr.SSH
 	alias := ""
 	label := "all hosts"
-	if t.focusLeft {
+	if t.focus == paneHost {
 		host, ok := t.currentHost()
 		if !ok {
 			return t, warnToast("no host to export")
@@ -665,18 +695,6 @@ func (t *sshTab) enterExport() (Tab, tea.Cmd) {
 		content, _, err := mgr.Export(alias)
 		return sshExportMsg{label: label, content: content, err: err}
 	}
-}
-
-// hostRefs returns the aliases of hosts whose identityKey is name.
-func (t *sshTab) hostRefs(name string) []string {
-	var refs []string
-	for _, host := range t.hosts {
-		if host.IdentityKey == name {
-			refs = append(refs, host.Alias)
-		}
-	}
-	sort.Strings(refs)
-	return refs
 }
 
 func (t *sshTab) openForm(f *form, onSubmit func(values map[string]string) tea.Cmd) {
@@ -812,6 +830,11 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 			},
 		},
 		formField{
+			// group 是自由文本归属字段：失焦不校验（与 tags 同等），由侧栏
+			// 按值聚合；空值 = 未分组。
+			key: "group", label: "group", kind: formText, value: base.Group, placeholder: "prod",
+		},
+		formField{
 			key: "tags", label: "tags", kind: formText, value: strings.Join(base.Tags, ", "), placeholder: "prod, web",
 		},
 		formField{
@@ -853,6 +876,7 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 		Port:        port,
 		ProxyJump:   strings.TrimSpace(values["proxyJump"]),
 		IdentityKey: strings.TrimSpace(values["identityKey"]),
+		Group:       strings.TrimSpace(values["group"]),
 		Tags:        parseTagsText(values["tags"]),
 		Extra:       extra,
 	}
@@ -878,6 +902,7 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 			h.Port = entry.Port
 			h.ProxyJump = entry.ProxyJump
 			h.IdentityKey = entry.IdentityKey
+			h.Group = entry.Group
 			h.Tags = entry.Tags
 			h.Extra = entry.Extra
 			return nil
@@ -902,155 +927,6 @@ func (t *sshTab) doDeleteHost(alias string) (Tab, tea.Cmd) {
 		}
 		recordAudit(mgrs, session.AuditOpSSHHost, "host:"+alias, true, "delete")
 		return sshReloadMsg{toast: "deleted host " + alias}
-	}
-}
-
-// --- keypair write flows ---
-
-func (t *sshTab) enterImportKeyPair() (Tab, tea.Cmd) {
-	siblings := make([]string, 0, len(t.keyPairs))
-	for _, k := range t.keyPairs {
-		siblings = append(siblings, k.Name)
-	}
-	f := newForm("import keypair",
-		formField{
-			key: "name", label: "name", kind: formText, placeholder: "web-key",
-			validate: func(v string) error {
-				v = strings.TrimSpace(v)
-				if v == "" {
-					return fmt.Errorf("name cannot be empty")
-				}
-				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("invalid name")
-				}
-				for _, name := range siblings {
-					if name == v {
-						return fmt.Errorf("keypair %s already exists", v)
-					}
-				}
-				return nil
-			},
-		},
-		formField{
-			key: "path", label: "private key file", kind: formPath, placeholder: "~/.ssh/id_ed25519",
-		},
-	)
-	t.openForm(f, func(values map[string]string) tea.Cmd {
-		return t.doImportKeyPair(strings.TrimSpace(values["name"]), strings.TrimSpace(values["path"]))
-	})
-	return t, nil
-}
-
-func (t *sshTab) doImportKeyPair(name, path string) tea.Cmd {
-	if path == "" {
-		return warnToast("private key file path cannot be empty")
-	}
-	mgr := t.mgr.SSH
-	mgrs := t.mgr
-	return func() tea.Msg {
-		if _, err := mgr.ImportKeyPair(name, expandHome(path), false); err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "import failed")
-			return errMsg{err: err}
-		}
-		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "import")
-		return sshReloadMsg{toast: "imported keypair " + name, keyName: name}
-	}
-}
-
-func (t *sshTab) enterRenameKeyPair() (Tab, tea.Cmd) {
-	key, ok := t.currentKey()
-	if !ok {
-		return t, warnToast("no keypair to rename")
-	}
-	siblings := make([]string, 0, len(t.keyPairs))
-	for _, k := range t.keyPairs {
-		siblings = append(siblings, k.Name)
-	}
-	old := key.Name
-	f := newForm("rename keypair "+old,
-		formField{
-			key: "name", label: "new name", kind: formText, value: old, placeholder: "prod-key",
-			validate: func(v string) error {
-				v = strings.TrimSpace(v)
-				if v == "" {
-					return fmt.Errorf("name cannot be empty")
-				}
-				if err := storage.ValidateName(v); err != nil {
-					return fmt.Errorf("invalid name")
-				}
-				if v != old {
-					for _, name := range siblings {
-						if name == v {
-							return fmt.Errorf("keypair %s already exists", v)
-						}
-					}
-				}
-				return nil
-			},
-		},
-	)
-	t.openForm(f, func(values map[string]string) tea.Cmd {
-		return t.doRenameKeyPair(old, strings.TrimSpace(values["name"]))
-	})
-	return t, nil
-}
-
-func (t *sshTab) doRenameKeyPair(oldName, newName string) tea.Cmd {
-	if oldName == newName {
-		return warnToast("name unchanged")
-	}
-	mgr := t.mgr.SSH
-	mgrs := t.mgr
-	return func() tea.Msg {
-		updated, err := mgr.RenameKeyPair(oldName, newName)
-		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+oldName, false, "rename failed")
-			return errMsg{err: err}
-		}
-		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+newName, true, "rename "+oldName)
-		toast := "renamed to " + newName
-		if len(updated) > 0 {
-			toast += fmt.Sprintf(" (updated %d host references)", len(updated))
-		}
-		return sshReloadMsg{toast: toast, keyName: newName}
-	}
-}
-
-func (t *sshTab) doDeleteKey(name string, force bool) (Tab, tea.Cmd) {
-	mgr := t.mgr.SSH
-	mgrs := t.mgr
-	refs := append([]string(nil), t.keyRefs...)
-	t.cancelMode()
-	return t, func() tea.Msg {
-		cleared, err := mgr.DeleteKeyPair(name, force)
-		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "delete failed")
-			return errMsg{err: err}
-		}
-		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "delete")
-		toast := "deleted keypair " + name
-		if force && len(cleared) > 0 {
-			toast += fmt.Sprintf(" (cleared %d host references)", len(cleared))
-		} else if force && len(refs) > 0 {
-			toast += fmt.Sprintf(" (cleared %d host references)", len(refs))
-		}
-		return sshReloadMsg{toast: toast}
-	}
-}
-
-func (t *sshTab) doMaterialize(name string, force bool) (Tab, tea.Cmd) {
-	mgr := t.mgr.SSH
-	mgrs := t.mgr
-	t.cancelMode()
-	return t, func() tea.Msg {
-		path, err := mgr.Materialize(name, force)
-		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "materialize failed")
-			return errMsg{err: err}
-		}
-		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "materialize")
-		// Only the落盘路径 is surfaced; the private key body never reaches the UI.
-		return toastMsg{text: "written to " + path, level: toastSuccess}
 	}
 }
 
@@ -1087,17 +963,11 @@ func doWriteExport(path, content string) tea.Cmd {
 // --- lookups ---
 
 func (t *sshTab) currentHost() (storage.HostEntry, bool) {
-	if t.hostIndex < 0 || t.hostIndex >= len(t.hosts) {
+	hosts := t.visibleHosts()
+	if t.hostIndex < 0 || t.hostIndex >= len(hosts) {
 		return storage.HostEntry{}, false
 	}
-	return t.hosts[t.hostIndex], true
-}
-
-func (t *sshTab) currentKey() (ssh.KeyPairSummary, bool) {
-	if t.keyIndex < 0 || t.keyIndex >= len(t.keyPairs) {
-		return ssh.KeyPairSummary{}, false
-	}
-	return t.keyPairs[t.keyIndex], true
+	return hosts[t.hostIndex], true
 }
 
 func (t *sshTab) hostByAlias(alias string) (storage.HostEntry, bool) {
@@ -1180,21 +1050,16 @@ func expandHome(path string) string {
 
 // --- detail ---
 
-// openDetail shows the full record for the focused entry (panes truncate).
+// openDetail shows the full host record (panes truncate).
 func (t *sshTab) openDetail() tea.Cmd {
-	if t.focusLeft {
-		host, ok := t.currentHost()
-		if !ok {
-			return warnToast("no host selected")
-		}
-		t.detail = newDetailOverlay("Host "+host.Alias, t.hostDetailLines(host))
-	} else {
-		key, ok := t.currentKey()
-		if !ok {
-			return warnToast("no keypair selected")
-		}
-		t.detail = newDetailOverlay("KeyPair "+key.Name, keyPairDetailLines(key))
+	if t.focus == paneGroup {
+		return nil
 	}
+	host, ok := t.currentHost()
+	if !ok {
+		return warnToast("no host selected")
+	}
+	t.detail = newDetailOverlay("Host "+host.Alias, t.hostDetailLines(host))
 	t.detail.SetSize(t.width, t.height)
 	return nil
 }
@@ -1213,6 +1078,7 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 	lines = append(lines,
 		"proxyJump:   "+orDash(h.ProxyJump),
 		"identityKey: "+orDash(h.IdentityKey),
+		"group:       "+orDash(h.Group),
 	)
 	if h.IdentityKey != "" {
 		summary := ""
@@ -1241,26 +1107,6 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 	return append(lines, "updated:     "+h.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 }
 
-// keyPairDetailLines renders keypair metadata. The private key body is never
-// loaded into the tab, and only the public half is shown.
-func keyPairDetailLines(k ssh.KeyPairSummary) []string {
-	fp := k.Fingerprint
-	if fp == "" {
-		fp = " (not derived; may be a passphrase-encrypted private key)"
-	}
-	lines := []string{
-		"name:        " + k.Name,
-		"fingerprint: " + fp,
-		"comment:     " + orDash(k.Comment),
-		"imported:    " + k.ImportedAt.Local().Format("2006-01-02 15:04:05"),
-		"public key:",
-	}
-	if k.PublicKey == "" {
-		return append(lines, "  -")
-	}
-	return append(lines, "  "+k.PublicKey)
-}
-
 // --- cursor ---
 
 // focusJump positions the cursor on a host alias (global search target).
@@ -1269,45 +1115,38 @@ func (t *sshTab) focusJump(group, alias string) {
 	t.applyPendingJump()
 }
 
-// applyPendingJump resolves a pending host or keypair name once the data is
-// available (global search target or a just-finished write). 按过滤契约
-// （tui-ux-filter）先清过滤保证目标可见，再在可见列表上定位。
+// applyPendingJump resolves a pending host alias once the data is available
+// (global search target or a just-finished write). 按过滤契约
+// （tui-ux-filter）先清过滤保证目标可见，选中目标所在组，再在可见列表上定位。
 func (t *sshTab) applyPendingJump() {
-	if t.pendingJump != "" {
-		t.filterBox.Clear()
-		for i, h := range t.visibleHosts() {
-			if h.Alias == t.pendingJump {
-				t.hostIndex = i
-				t.focusLeft = true
-				t.pendingJump = ""
-				break
-			}
-		}
+	if t.pendingJump == "" {
+		return
 	}
-	if t.pendingKeyJump != "" {
-		for i, k := range t.keyPairs {
-			if k.Name == t.pendingKeyJump {
-				t.keyIndex = i
-				t.focusLeft = false
-				t.pendingKeyJump = ""
-				break
-			}
+	t.filterBox.Clear()
+	if host, ok := t.hostByAlias(t.pendingJump); ok {
+		t.selectGroupName(host.Group)
+	}
+	for i, h := range t.visibleHosts() {
+		if h.Alias == t.pendingJump {
+			t.hostIndex = i
+			t.focus = paneHost
+			t.pendingJump = ""
+			break
 		}
 	}
 }
 
 func (t *sshTab) clamp() {
-	if t.hostIndex >= len(t.hosts) {
-		t.hostIndex = len(t.hosts) - 1
+	groups := t.groups()
+	if t.groupIndex >= len(groups) {
+		t.groupIndex = len(groups) - 1
 	}
+	if t.groupIndex < 0 {
+		t.groupIndex = 0
+	}
+	t.hostIndex = clamp(t.hostIndex, 0, len(t.visibleHosts())-1)
 	if t.hostIndex < 0 {
 		t.hostIndex = 0
-	}
-	if t.keyIndex >= len(t.keyPairs) {
-		t.keyIndex = len(t.keyPairs) - 1
-	}
-	if t.keyIndex < 0 {
-		t.keyIndex = 0
 	}
 }
 
@@ -1323,7 +1162,7 @@ func (t *sshTab) View() string {
 	if t.loaded && len(t.hosts) == 0 && len(t.keyPairs) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("SSH"),
-			emptyStateStyle.Render("no SSH assets yet; press n to create a host or import a keypair, then Ctrl+R to refresh"))
+			emptyStateStyle.Render("no SSH assets yet; press n to create a host (keypairs live in the KeyPair tab), then Ctrl+R to refresh"))
 	}
 	overlay := ""
 	if t.form != nil {
@@ -1337,55 +1176,77 @@ func (t *sshTab) View() string {
 	return stackWithOverlay(t.height, overlay, t.viewBaseAt)
 }
 
+// viewBaseAt renders the two panes: 分组侧栏 → Host 列表。宽度分配与
+// env/config 同构：侧栏 width/4（cap 26，min 16），Host 栏吃剩余（预留
+// 5 列栏间 chrome：1 间隙 + 两栏各 2 列边框）。
 func (t *sshTab) viewBaseAt(height int) string {
-	leftW := t.width * 11 / 20
-	if leftW < 20 {
-		leftW = 20
+	sideW := t.width / 4
+	if sideW > 26 {
+		sideW = 26
 	}
-	if leftW > t.width-24 {
-		leftW = t.width - 24
+	if sideW < 16 {
+		sideW = 16
 	}
-	if leftW < 8 {
-		leftW = 8
-	}
-	rightW := t.width - leftW - 5
-	if rightW < 4 {
-		rightW = 4
+	hostW := t.width - sideW - 5
+	if hostW < 4 {
+		hostW = 4
 	}
 
 	// 加载态（env 范式）：几何常驻、框内提示，避免装载期布局跳动或误显空态。
 	if !t.loaded {
-		left := emptyStateStyle.Render("loading SSH assets…")
-		right := emptyStateStyle.Render("loading SSH assets…")
-		if t.focusLeft {
-			left = activePaneStyle.Width(leftW).Height(height).Render(left)
-			right = paneStyle.Width(rightW).Height(height).Render(right)
+		side := emptyStateStyle.Render("loading SSH assets…")
+		host := emptyStateStyle.Render("loading SSH assets…")
+		if t.focus == paneGroup {
+			side = activePaneStyle.Width(sideW).Height(height).Render(side)
+			host = paneStyle.Width(hostW).Height(height).Render(host)
 		} else {
-			left = paneStyle.Width(leftW).Height(height).Render(left)
-			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+			side = paneStyle.Width(sideW).Height(height).Render(side)
+			host = activePaneStyle.Width(hostW).Height(height).Render(host)
 		}
-		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
+		return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), host)
 	}
 
-	hostLines := t.hostListLines(maxInt(leftW-4, 8))
-	keyLines := t.keyPairListLines(maxInt(rightW-4, 8))
+	hostLines := t.hostListLines(maxInt(hostW-4, 8))
 
-	leftTitle := fmt.Sprintf("Hosts (%d)", len(t.visibleHosts()))
+	side := t.renderSidebarPane(sideW, height, "")
+	hostTitle := fmt.Sprintf("Hosts (%d)", len(t.visibleHosts()))
 	if t.filterBox.Active() {
-		leftTitle += "  " + t.filterBox.Prompt()
+		hostTitle += "  " + t.filterBox.Prompt()
 	}
-	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleHostAliases()))
-	left := windowedPane(leftTitle, hostLines, t.hostIndex, height, leftW)
-	right := windowedPane(fmt.Sprintf("KeyPairs (%d) · private keys masked", len(t.keyPairs)), keyLines, t.keyIndex, height, rightW)
+	hostTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleHostAliases()))
+	host := windowedPane(hostTitle, hostLines, t.hostIndex, height, hostW)
 
-	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(height).Render(left)
-		right = paneStyle.Width(rightW).Height(height).Render(right)
+	if t.focus == paneGroup {
+		side = activePaneStyle.Width(sideW).Height(height).Render(side)
+		host = paneStyle.Width(hostW).Height(height).Render(host)
 	} else {
-		left = paneStyle.Width(leftW).Height(height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		side = paneStyle.Width(sideW).Height(height).Render(side)
+		host = activePaneStyle.Width(hostW).Height(height).Render(host)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), host)
+}
+
+// renderSidebarPane 渲染分组侧栏（复用共享 renderSidebar/SidebarRow，
+// 与 env/config 视觉一致）；loadingHint 非空时渲染加载态占位。
+func (t *sshTab) renderSidebarPane(width, height int, loadingHint string) string {
+	if loadingHint != "" {
+		return loadingHint
+	}
+	groups := t.groups()
+	rows := make([]SidebarRow, 0, len(groups))
+	for i, g := range groups {
+		marker := " "
+		if g.isAll {
+			marker = "◯"
+		}
+		rows = append(rows, SidebarRow{
+			Marker:   marker,
+			Name:     g.name,
+			Count:    g.count,
+			Selected: i == t.groupIndex && t.focus == paneGroup,
+		})
+	}
+	return renderSidebar(rows, t.groupIndex, height, width)
 }
 
 // hostListLines renders one row per host: `alias → user@host:port` plus the
@@ -1404,6 +1265,9 @@ func (t *sshTab) hostListLines(width int) []string {
 	return lines
 }
 
+// hostListLabel 拼装一行 Host：`alias → user@host:port  key:name(fp)`，行尾
+// 追加 tags 片段（`#tag` 前缀、最多 2 个、超出 `+n`）；group 不在行内渲染
+// （由侧栏表达）。截断由调用方 truncateWidth 统一处理。
 func hostListLabel(host storage.HostEntry, keys map[string]ssh.KeyPairSummary) string {
 	target := orDash(host.Hostname)
 	if host.User != "" {
@@ -1413,30 +1277,33 @@ func hostListLabel(host storage.HostEntry, keys map[string]ssh.KeyPairSummary) s
 		target += ":" + strconv.Itoa(host.Port)
 	}
 	line := host.Alias + " → " + target
-	if host.IdentityKey == "" {
-		return line
-	}
-	summary, ok := keys[host.IdentityKey]
-	if !ok {
-		return line + "  key:" + host.IdentityKey + " ⚠missing"
-	}
-	if fp := shortFingerprint(summary.Fingerprint); fp != "" {
-		return line + "  key:" + host.IdentityKey + "(" + fp + ")"
-	}
-	return line + "  key:" + host.IdentityKey
-}
-
-func (t *sshTab) keyPairListLines(width int) []string {
-	lines := make([]string, 0, len(t.keyPairs))
-	for i, key := range t.keyPairs {
-		label := key.Fingerprint
-		if label == "" {
-			label = "pubkey: none"
+	if host.IdentityKey != "" {
+		summary, ok := keys[host.IdentityKey]
+		if !ok {
+			line += "  key:" + host.IdentityKey + " ⚠missing"
+		} else if fp := shortFingerprint(summary.Fingerprint); fp != "" {
+			line += "  key:" + host.IdentityKey + "(" + fp + ")"
+		} else {
+			line += "  key:" + host.IdentityKey
 		}
-		line := truncateWidth(key.Name+" · "+label, width)
-		lines = append(lines, cursorLine(line, i == t.keyIndex))
 	}
-	return lines
+	if len(host.Tags) > 0 {
+		shown := host.Tags
+		extra := 0
+		if len(shown) > 2 {
+			extra = len(shown) - 2
+			shown = shown[:2]
+		}
+		parts := make([]string, 0, len(shown)+1)
+		for _, tag := range shown {
+			parts = append(parts, "#"+tag)
+		}
+		if extra > 0 {
+			parts = append(parts, fmt.Sprintf("+%d", extra))
+		}
+		line += "  " + strings.Join(parts, " ")
+	}
+	return line
 }
 
 // shortFingerprint condenses a SHA256 fingerprint for inline display.
@@ -1462,23 +1329,6 @@ func (t *sshTab) renderModal() string {
 			body = "hostname: " + orDash(host.Hostname) + "\ncannot be undone after deletion."
 		}
 		return modalBox(t.width, t.height, "delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
-	case sshModeDeleteKey:
-		if len(t.keyRefs) == 0 {
-			return modalBox(t.width, t.height, "delete keypair "+t.pendingKey+"?", "the private key cannot be recovered after deletion.", "enter/y confirm · esc/n cancel")
-		}
-		var b strings.Builder
-		b.WriteString("these hosts still reference the keypair:\n")
-		for _, alias := range t.keyRefs {
-			b.WriteString("  · " + alias + "\n")
-		}
-		b.WriteString("\ndeletion is refused by default. press F to force delete and clear identityKey on these hosts.")
-		return modalBox(t.width, t.height, "keypair "+t.pendingKey+" still referenced", b.String(), "F force delete · esc cancel")
-	case sshModeMaterialize:
-		body := "will write the private key in plaintext to:\n" + t.materializePath + " (0600)."
-		if t.pendingForce {
-			body += "\n⚠ target file exists and will be overwritten."
-		}
-		return modalBox(t.width, t.height, "materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
 	case sshModeExportPreview:
 		return modalBox(t.width, t.height, "export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
 	}

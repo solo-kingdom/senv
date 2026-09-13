@@ -117,4 +117,9 @@ var (
 			Italic(true).
 			Foreground(lipgloss.Color(colorMuted)).
 			Padding(1, 2)
+
+	// faintTextStyle 灰显弱化信息（如零引用 KeyPair 的「未被引用」），
+	// 与 emptyStateStyle/tabStyle 同一 muted 色系。
+	faintTextStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colorMuted))
 )

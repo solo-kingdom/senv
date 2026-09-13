@@ -41,10 +41,10 @@ func newFullManagers(t *testing.T) Managers {
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 8 {
-		t.Fatalf("tabs = %d, want 8", len(m.tabs))
+	if len(m.tabs) != 9 {
+		t.Fatalf("tabs = %d, want 9", len(m.tabs))
 	}
-	for i := 1; i <= 8; i++ {
+	for i := 1; i <= 9; i++ {
 		key := string(rune('0' + i))
 		out, _ := m.Update(runeKey(key))
 		m = out.(Model)

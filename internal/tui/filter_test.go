@@ -60,7 +60,7 @@ func runeKeys(s string) []tea.KeyMsg {
 }
 
 func TestSSHTabFilterPrimaryList(t *testing.T) {
-	tab := &sshTab{mgr: Managers{}, focusLeft: true}
+	tab := &sshTab{mgr: Managers{}, focus: paneHost}
 	tab.SetSize(80, 20)
 	tab.Update(sshLoadedMsg{hosts: []storage.HostEntry{
 		{Alias: "web-1", Hostname: "web1.example.com"},

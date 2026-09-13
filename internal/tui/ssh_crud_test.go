@@ -48,6 +48,35 @@ func newSSHCrudTab(t *testing.T) (*sshTab, *fakeAuditWriter) {
 	return flushTab(tab, tab.load()).(*sshTab), w
 }
 
+// newKeyPairCrudTab 构造已装载的 KeyPair Tab，与 newSSHCrudTab 共用同一
+// 类 store 初始化（keypair 动作已迁至 KeyPair Tab）。
+func newKeyPairCrudTab(t *testing.T) (*keyPairTab, *fakeAuditWriter) {
+	t.Helper()
+	dir := t.TempDir()
+	sm := storage.NewManager(filepath.Join(dir, "cfg"), filepath.Join(dir, "data"))
+	if err := sm.Initialize("pw"); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	w := &fakeAuditWriter{}
+	tab := newKeyPairTab(Managers{SSH: ssh.NewManager(sm, "pw"), AuditWriter: w})
+	tab.SetSize(100, 24)
+	return flushTab(tab, tab.load()).(*keyPairTab), w
+}
+
+// submitKPForm fills a keypair form's fields by key and presses enter, returning
+// the settled tab (the form stays open when validation fails).
+func submitKPForm(t *testing.T, tab *keyPairTab, values map[string]string) *keyPairTab {
+	t.Helper()
+	if tab.form == nil {
+		t.Fatal("expected an open form")
+	}
+	for key, value := range values {
+		tab.form.SetValue(key, value)
+	}
+	out, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return flushTab(out, cmd).(*keyPairTab)
+}
+
 // submitSSHForm fills a form's fields by key and presses enter, returning the
 // settled tab (the form stays open when validation fails).
 func submitSSHForm(t *testing.T, tab *sshTab, values map[string]string) *sshTab {
@@ -105,7 +134,7 @@ func TestSSHHostEditFormKeepsAliasAndRejectsUnknownKey(t *testing.T) {
 		t.Fatalf("add host: %v", err)
 	}
 	tab = flushTab(tab, tab.load()).(*sshTab)
-	tab.focusLeft = true
+	tab.focus = paneHost
 	tab.hostIndex = 0
 
 	out, _ := tab.Update(runeKey("e"))
@@ -222,17 +251,16 @@ func TestSSHExportPreviewThenWrite(t *testing.T) {
 }
 
 func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
-	tab, w := newSSHCrudTab(t)
+	tab, w := newKeyPairCrudTab(t)
 	keyPath := writeSSHTUIKey(t, "id_ed25519")
 
-	// Import via the form (keypair pane).
-	tab.focusLeft = false
+	// Import via the form (KeyPair Tab list pane).
 	out, _ := tab.Update(runeKey("i"))
-	tab = out.(*sshTab)
+	tab = out.(*keyPairTab)
 	if tab.form == nil {
 		t.Fatal("i should open the keypair import form")
 	}
-	tab = submitSSHForm(t, tab, map[string]string{"name": "web-key", "path": keyPath})
+	tab = submitKPForm(t, tab, map[string]string{"name": "web-key", "path": keyPath})
 	if tab.form != nil {
 		t.Fatalf("import form still open: %#v", tab.form.errs)
 	}
@@ -244,31 +272,27 @@ func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 	if err := tab.mgr.SSH.AddHost(&storage.HostEntry{Alias: "web", Hostname: "web.example", IdentityKey: "web-key"}); err != nil {
 		t.Fatalf("add host: %v", err)
 	}
-	tab = flushTab(tab, tab.load()).(*sshTab)
-	tab.focusLeft = false
-	tab.keyIndex = 0
-	assertHostKey(t, tab, "web", "web-key")
+	tab = flushTab(tab, tab.load()).(*keyPairTab)
+	assertMgrHostKey(t, tab.mgr.SSH, "web", "web-key")
 
 	out, _ = tab.Update(runeKey("r"))
-	tab = out.(*sshTab)
+	tab = out.(*keyPairTab)
 	if tab.form == nil {
 		t.Fatal("r should open the keypair rename form")
 	}
-	tab = submitSSHForm(t, tab, map[string]string{"name": "prod-key"})
+	tab = submitKPForm(t, tab, map[string]string{"name": "prod-key"})
 	if tab.form != nil {
 		t.Fatalf("rename form still open: %#v", tab.form.errs)
 	}
 	if len(tab.keyPairs) != 1 || tab.keyPairs[0].Name != "prod-key" {
 		t.Fatalf("keypair not renamed: %#v", tab.keyPairs)
 	}
-	assertHostKey(t, tab, "web", "prod-key")
+	assertMgrHostKey(t, tab.mgr.SSH, "web", "prod-key")
 
 	// Delete while referenced: refuse and list the referencer.
-	tab.focusLeft = false
-	tab.keyIndex = 0
 	out, _ = tab.Update(runeKey("d"))
-	tab = out.(*sshTab)
-	if tab.mode != sshModeDeleteKey {
+	tab = out.(*keyPairTab)
+	if tab.mode != kpModeDeleteKey {
 		t.Fatalf("d should stage the keypair delete, mode=%v", tab.mode)
 	}
 	view := tab.View()
@@ -276,21 +300,21 @@ func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 		t.Fatalf("referencer list missing:\n%s", view)
 	}
 	out, cmd := tab.Update(runeKey("y"))
-	tab = flushTab(out, cmd).(*sshTab)
+	tab = flushTab(out, cmd).(*keyPairTab)
 	if len(tab.keyPairs) != 1 {
 		t.Fatal("plain confirm must not delete a referenced keypair")
 	}
-	assertHostKey(t, tab, "web", "prod-key")
+	assertMgrHostKey(t, tab.mgr.SSH, "web", "prod-key")
 
 	// Force delete clears the host reference.
 	out, _ = tab.Update(runeKey("d"))
-	tab = out.(*sshTab)
+	tab = out.(*keyPairTab)
 	out, cmd = tab.Update(runeKey("F"))
-	tab = flushTab(out, cmd).(*sshTab)
+	tab = flushTab(out, cmd).(*keyPairTab)
 	if len(tab.keyPairs) != 0 {
 		t.Fatalf("force delete left keypairs: %#v", tab.keyPairs)
 	}
-	assertHostKey(t, tab, "web", "")
+	assertMgrHostKey(t, tab.mgr.SSH, "web", "")
 
 	var sawForce bool
 	for _, c := range w.calls {
@@ -306,18 +330,16 @@ func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	tab, _ := newSSHCrudTab(t)
+	tab, _ := newKeyPairCrudTab(t)
 	keyPath := writeSSHTUIKey(t, "id_ed25519")
 	if _, err := tab.mgr.SSH.ImportKeyPair("web-key", keyPath, false); err != nil {
 		t.Fatalf("import keypair: %v", err)
 	}
-	tab = flushTab(tab, tab.load()).(*sshTab)
-	tab.focusLeft = false
-	tab.keyIndex = 0
+	tab = flushTab(tab, tab.load()).(*keyPairTab)
 
 	out, _ := tab.Update(runeKey("m"))
-	tab = out.(*sshTab)
-	if tab.mode != sshModeMaterialize {
+	tab = out.(*keyPairTab)
+	if tab.mode != kpModeMaterialize {
 		t.Fatalf("m should stage materialize, mode=%v", tab.mode)
 	}
 	view := tab.View()
@@ -327,7 +349,7 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 		}
 	}
 	out, cmd := tab.Update(runeKey("y"))
-	tab = flushTab(out, cmd).(*sshTab)
+	tab = flushTab(out, cmd).(*keyPairTab)
 	target := filepath.Join(home, ".ssh", "senv", "web-key")
 	info, err := os.Stat(target)
 	if err != nil {
@@ -364,11 +386,13 @@ func TestSSHHostFormPrefillsFromSelection(t *testing.T) {
 	}
 }
 
-func assertHostKey(t *testing.T, tab *sshTab, alias, want string) {
+// assertMgrHostKey asserts a host's identityKey straight from the manager
+// (keypair flows live on keyPairTab, which does not index hosts by alias).
+func assertMgrHostKey(t *testing.T, mgr *ssh.Manager, alias, want string) {
 	t.Helper()
-	host, ok := tab.hostByAlias(alias)
-	if !ok {
-		t.Fatalf("host %s missing", alias)
+	host, err := mgr.GetHost(alias)
+	if err != nil {
+		t.Fatalf("get host %s: %v", alias, err)
 	}
 	if host.IdentityKey != want {
 		t.Fatalf("host %s identityKey = %q, want %q", alias, host.IdentityKey, want)

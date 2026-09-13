@@ -26,6 +26,7 @@ func TestHostValidationBranches(t *testing.T) {
 		{"bad alias", &storage.HostEntry{Alias: "../a", Hostname: "a"}, `invalid SSH host "../a"`},
 		{"bad port", &storage.HostEntry{Alias: "a", Hostname: "a", Port: 70000}, "invalid SSH port"},
 		{"blank tag", &storage.HostEntry{Alias: "a", Hostname: "a", Tags: []string{" "}}, "invalid SSH tag"},
+		{"newline group", &storage.HostEntry{Alias: "a", Hostname: "a", Group: "prod\nwest"}, "group must not contain"},
 		{"blank attr key", &storage.HostEntry{Alias: "a", Hostname: "a", Extra: map[string]string{" ": "x"}}, "invalid SSH attribute key"},
 		{"newline attr", &storage.HostEntry{Alias: "a", Hostname: "a", Extra: map[string]string{"X": "a\nb"}}, "value must not contain"},
 	}

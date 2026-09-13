@@ -83,6 +83,16 @@ _Avoid_: 不安全缓存（正式行文）、insecure-cache（指旗标时除外
 **工作副本（Working Copy）**:
 client 本地目录中的加密数据文件，是唯一的编辑现场；同步通道只做 push/pull。
 
+### 数据组织
+
+**分组（Group）**:
+条目（env 变量组、text 块、config 文件、Host）的单值归属：组是 TUI 分组侧栏的组织单位，也是导出激活的作用域。空分组值表示该条目未归入任何组，TUI 归入「未分组」兜底组。
+_Avoid_: 目录、文件夹
+
+**标签（Tags）**:
+Host 的多值自由标注，与单值的 Group 正交：只用于列表行内展示与过滤，不参与分组侧栏。
+_Avoid_: 分组（指 Group 时）
+
 ### 日志与历史
 
 **操作审计（Operation Audit）**:

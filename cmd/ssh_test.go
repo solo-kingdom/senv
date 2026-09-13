@@ -160,6 +160,116 @@ func TestKeypairAndHostCLIFlow(t *testing.T) {
 	}
 }
 
+func TestHostGroupFlagFlow(t *testing.T) {
+	newSSHTestProject(t)
+	hostAddHostname = "10.0.0.1"
+	hostAddUser = "deploy"
+	hostAddGroup = "prod"
+	t.Cleanup(func() { hostAddHostname, hostAddUser, hostAddGroup = "", "", "" })
+	runSSHCommand(t, hostAddCmd.RunE(&cobra.Command{}, []string{"web"}))
+
+	mgr, err := getSSHManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := mgr.GetHost("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Group != "prod" {
+		t.Fatalf("group = %q, want prod", host.Group)
+	}
+
+	// get 与 list 输出在有 group 值时展示。
+	stdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	runSSHCommand(t, hostGetCmd.RunE(&cobra.Command{}, []string{"web"}))
+	runSSHCommand(t, hostListCmd.RunE(&cobra.Command{}, nil))
+	writer.Close()
+	os.Stdout = stdout
+	captured, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(captured)
+	if !strings.Contains(out, "Group: prod") {
+		t.Fatalf("get output missing group: %s", out)
+	}
+	if !strings.Contains(out, "group:prod") {
+		t.Fatalf("list output missing group: %s", out)
+	}
+
+	// edit --group 修改分组。
+	runSSHCommand(t, hostEditCmd.RunE(newHostEditGroupCmd(t, "staging"), []string{"web"}))
+	host, err = mgr.GetHost("web")
+	if err != nil || host.Group != "staging" {
+		t.Fatalf("edited group = %+v, %v", host, err)
+	}
+
+	// edit --group "" 回退为未分组。
+	runSSHCommand(t, hostEditCmd.RunE(newHostEditGroupCmd(t, ""), []string{"web"}))
+	host, err = mgr.GetHost("web")
+	if err != nil || host.Group != "" {
+		t.Fatalf("cleared group = %+v, %v", host, err)
+	}
+}
+
+// newHostEditGroupCmd builds a throwaway command whose --group flag is bound
+// to hostEditGroup and explicitly set, mirroring `senv host edit --group v`.
+func newHostEditGroupCmd(t *testing.T, value string) *cobra.Command {
+	t.Helper()
+	t.Cleanup(func() { hostEditGroup = "" })
+	cmd := &cobra.Command{}
+	cmd.Flags().StringVar(&hostEditGroup, "group", "", "")
+	if err := cmd.Flags().Set("group", value); err != nil {
+		t.Fatal(err)
+	}
+	return cmd
+}
+
+func TestKeypairGroupFlagFlow(t *testing.T) {
+	newSSHTestProject(t)
+	keyPath := writeTestEd25519Key(t, t.TempDir(), "id_group", "group@test")
+	keypairImportFile = keyPath
+	keypairImportGroup = "prod"
+	t.Cleanup(func() { keypairImportFile, keypairImportGroup = "", "" })
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"group-key", "--file", keyPath}))
+
+	mgr, err := getSSHManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := mgr.GetKeyPairSummary("group-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Group != "prod" {
+		t.Fatalf("group = %q, want prod", summary.Group)
+	}
+
+	// list 输出在有 group 值时行尾追加。
+	stdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	runSSHCommand(t, keypairListCmd.RunE(&cobra.Command{}, nil))
+	writer.Close()
+	os.Stdout = stdout
+	captured, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := string(captured); !strings.Contains(out, "group:prod") {
+		t.Fatalf("list output missing group: %s", out)
+	}
+}
+
 func TestHostAddInvalidReferences(t *testing.T) {
 	dir := newSSHTestProject(t)
 	keyPath := writeTestEd25519Key(t, dir, "id_test", "bad@test")

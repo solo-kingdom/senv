@@ -139,14 +139,14 @@ func TestMCPTabRegistration(t *testing.T) {
 	}
 
 	full := New(newFullManagers(t))
-	if len(full.tabs) != 8 {
-		t.Fatalf("full tabs = %d, want 8", len(full.tabs))
+	if len(full.tabs) != 9 {
+		t.Fatalf("full tabs = %d, want 9", len(full.tabs))
 	}
 	titles := make([]string, len(full.tabs))
 	for i, tab := range full.tabs {
 		titles[i] = tab.Title()
 	}
-	want := []string{"Env", "Text", "Config", "SSH", "AI", "MCP", "History", "Audit"}
+	want := []string{"Env", "Text", "Config", "SSH", "KeyPair", "AI", "MCP", "History", "Audit"}
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("tab order = %v, want %v", titles, want)
 	}
@@ -212,7 +212,7 @@ func TestMCPTwoPanesStatusAndFocus(t *testing.T) {
 	}
 }
 
-func TestMCPDetailMasksLiteralEnv(t *testing.T) {
+func TestMCPDetailShowsFullEnv(t *testing.T) {
 	tab, _, _ := newMCPTestTab(t)
 	addMCPProfile(t, tab, "github", "npx", map[string]string{
 		"GITHUB_TOKEN": mcpSecret,
@@ -222,13 +222,10 @@ func TestMCPDetailMasksLiteralEnv(t *testing.T) {
 	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab = out.(*mcpTab)
 	view := tab.View()
-	for _, want := range []string{"github", "npx", "GITHUB_TOKEN=***", "REF={{env:secrets:GH_TOKEN}}"} {
+	for _, want := range []string{"github", "npx", "GITHUB_TOKEN=" + mcpSecret, "REF={{env:secrets:GH_TOKEN}}"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail missing %q:\n%s", want, view)
 		}
-	}
-	if strings.Contains(view, mcpSecret) {
-		t.Fatalf("detail leaked env value:\n%s", view)
 	}
 }
 
@@ -673,7 +670,7 @@ func TestMCPFormRemoteTransportSwitchesFields(t *testing.T) {
 	}
 }
 
-func TestMCPDetailRemoteMasksHeadersAndQuery(t *testing.T) {
+func TestMCPDetailRemoteShowsFullFields(t *testing.T) {
 	tab, _, _ := newMCPTestTab(t)
 	if err := tab.mgr.MCP.Add(&storage.MCPServerEntry{
 		Alias:     "web",
@@ -687,14 +684,14 @@ func TestMCPDetailRemoteMasksHeadersAndQuery(t *testing.T) {
 	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab = out.(*mcpTab)
 	view := tab.View()
-	for _, want := range []string{"web", "https://api.example.com", "Authorization", "X-Api-Key"} {
+	for _, want := range []string{
+		"web",
+		"url:         https://api.example.com/mcp?key=" + mcpSecret,
+		"Authorization: Bearer " + mcpSecret,
+		"X-Api-Key: k1",
+	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("remote detail missing %q:\n%s", want, view)
-		}
-	}
-	for _, leaked := range []string{"key=" + mcpSecret, mcpSecret, "Bearer"} {
-		if strings.Contains(view, leaked) {
-			t.Fatalf("remote detail leaked %q:\n%s", leaked, view)
 		}
 	}
 }

@@ -32,12 +32,17 @@ func TestSSHTabMasksPrivateKey(t *testing.T) {
 	}
 
 	model := New(Managers{SSH: mgr})
-	if model.tabs[len(model.tabs)-1].Title() != "SSH" {
+	var tab *sshTab
+	for _, t := range model.tabs {
+		if st, ok := t.(*sshTab); ok {
+			tab = st
+		}
+	}
+	if tab == nil {
 		t.Fatalf("SSH tab not registered: %d tabs", len(model.tabs))
 	}
-	tab := model.tabs[len(model.tabs)-1].(*sshTab)
-	tab.SetSize(80, 20)
-	next, cmd := tab.Update(sshLoadedMsg{hosts: []storage.HostEntry{{Alias: "web", Hostname: "web.example"}}, keyPairs: []ssh.KeyPairSummary{{Name: "secret", Fingerprint: "SHA256:tui-test"}}})
+	tab.SetSize(100, 20)
+	next, cmd := tab.Update(sshLoadedMsg{hosts: []storage.HostEntry{{Alias: "web", Hostname: "web.example", IdentityKey: "secret"}}, keyPairs: []ssh.KeyPairSummary{{Name: "secret", Fingerprint: "SHA256:tui-test"}}})
 	tab = next.(*sshTab)
 	if cmd != nil {
 		t.Fatal("loaded update unexpectedly returned a command")
@@ -73,8 +78,9 @@ func TestSSHTabShowsSelectedRows(t *testing.T) {
 	})
 	tab = next.(*sshTab)
 	view := tab.View()
-	if !strings.Contains(view, "▸ web") || !strings.Contains(view, "▸ old") {
-		t.Fatalf("selected rows missing markers:\n%s", view)
+	// Host 栏按别名字典序，游标（index 0）落在 db 上；KeyPair 栏已迁出本 Tab。
+	if !strings.Contains(view, "▸ db") {
+		t.Fatalf("selected row missing marker:\n%s", view)
 	}
 }
 
@@ -99,7 +105,7 @@ func TestSSHTabLoadingStateBeforeLoad(t *testing.T) {
 		t.Fatal("empty-state guidance shown while loading")
 	}
 	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 100 || h != 26 {
-		t.Fatalf("loading view size = %dx%d, want 100x26 (persistent two-pane geometry)", w, h)
+		t.Fatalf("loading view size = %dx%d, want 100x26 (persistent three-pane geometry)", w, h)
 	}
 
 	next, _ := tab.Update(sshLoadedMsg{})

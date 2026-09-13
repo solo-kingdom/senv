@@ -140,6 +140,9 @@ func validateHost(host *storage.HostEntry) error {
 	if strings.ContainsAny(host.User, "\r\n\x00") {
 		return fmt.Errorf("host %q: user must not contain line separators or NUL", host.Alias)
 	}
+	if strings.ContainsAny(host.Group, "\r\n\x00") {
+		return fmt.Errorf("host %q: group must not contain line separators or NUL", host.Alias)
+	}
 	if err := validatePort(host.Port); err != nil {
 		return err
 	}

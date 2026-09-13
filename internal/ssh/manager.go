@@ -25,6 +25,7 @@ type KeyPairSummary struct {
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	PublicKey   string    `json:"public_key,omitempty"`
 	Comment     string    `json:"comment,omitempty"`
+	Group       string    `json:"group,omitempty"`
 	ImportedAt  time.Time `json:"imported_at"`
 	HasPubKey   bool      `json:"has_pubkey"`
 }
@@ -85,11 +86,28 @@ func validateTags(tags []string) error {
 	return nil
 }
 
+// validateGroup rejects group values that could break the single-line JSON
+// record format. Empty (ungrouped) is valid.
+func validateGroup(group string) error {
+	if strings.ContainsAny(group, "\r\n\x00") {
+		return fmt.Errorf("group must not contain line separators or NUL")
+	}
+	return nil
+}
+
 // ImportKeyPair reads and validates a private key file before encrypting it.
 // A passphrase-protected key still imports, but no public key can be derived.
 func (m *Manager) ImportKeyPair(name, path string, force bool) (*KeyPairSummary, error) {
+	return m.ImportKeyPairWithGroup(name, path, "", force)
+}
+
+// ImportKeyPairWithGroup is ImportKeyPair plus the initial group membership.
+func (m *Manager) ImportKeyPairWithGroup(name, path, group string, force bool) (*KeyPairSummary, error) {
 	if err := storage.ValidateName(name); err != nil {
 		return nil, fmt.Errorf("invalid keypair name %q: %w", name, err)
+	}
+	if err := validateGroup(group); err != nil {
+		return nil, fmt.Errorf("keypair %q: %w", name, err)
 	}
 	privateKey, err := os.ReadFile(path) //nolint:gosec // the user explicitly supplies this path
 	if err != nil {
@@ -106,6 +124,7 @@ func (m *Manager) ImportKeyPair(name, path string, force bool) (*KeyPairSummary,
 		PublicKey:   publicKey,
 		Fingerprint: fingerprint,
 		Comment:     comment,
+		Group:       group,
 		ImportedAt:  now,
 	}
 	var summary *KeyPairSummary
@@ -184,6 +203,33 @@ func (m *Manager) GetKeyPairSummary(name string) (*KeyPairSummary, error) {
 	}
 	summary := keyPairSummary(entry)
 	return &summary, nil
+}
+
+// UpdateKeyPair applies a callback to an existing keypair record and saves the
+// result after validating it, mirroring UpdateHost. Name must not change; key
+// material is edited at the caller's own risk.
+func (m *Manager) UpdateKeyPair(name string, update func(*storage.KeyPairEntry) error) error {
+	if err := storage.ValidateName(name); err != nil {
+		return fmt.Errorf("invalid keypair name %q: %w", name, err)
+	}
+	return m.mutate(func(locked *Manager) error {
+		entry, err := locked.loadKeyPair(name)
+		if err != nil {
+			return err
+		}
+		if update != nil {
+			if err := update(entry); err != nil {
+				return err
+			}
+		}
+		if entry.Name != name {
+			return fmt.Errorf("keypair name cannot be renamed from %q to %q", name, entry.Name)
+		}
+		if err := validateGroup(entry.Group); err != nil {
+			return fmt.Errorf("keypair %q: %w", name, err)
+		}
+		return locked.saveKeyPair(entry)
+	})
 }
 
 // RenameKeyPair renames a keypair and rewrites every host reference in the
@@ -380,6 +426,7 @@ func keyPairSummary(entry *storage.KeyPairEntry) KeyPairSummary {
 		Fingerprint: entry.Fingerprint,
 		PublicKey:   entry.PublicKey,
 		Comment:     entry.Comment,
+		Group:       entry.Group,
 		ImportedAt:  entry.ImportedAt,
 		HasPubKey:   entry.PublicKey != "",
 	}

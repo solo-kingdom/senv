@@ -87,27 +87,34 @@ type TextEntry struct {
 // stored only inside an encrypted entry; PublicKey/Fingerprint are optional
 // display material derived on import.
 type KeyPairEntry struct {
-	Name        string    `json:"name"`
-	PrivateKey  string    `json:"private_key"`
-	PublicKey   string    `json:"public_key,omitempty"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Comment     string    `json:"comment,omitempty"`
-	ImportedAt  time.Time `json:"imported_at"`
+	Name        string `json:"name"`
+	PrivateKey  string `json:"private_key"`
+	PublicKey   string `json:"public_key,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Comment     string `json:"comment,omitempty"`
+	// Group is the single-value group membership (empty = ungrouped),
+	// semantically identical to HostEntry.Group. It is a pure organization
+	// dimension: not part of materialized files or exports.
+	Group      string    `json:"group,omitempty"`
+	ImportedAt time.Time `json:"imported_at"`
 }
 
 // HostEntry represents an OpenSSH connection profile. IdentityKey names a
 // KeyPairEntry; Extra is intentionally free-form so OpenSSH keywords can be
 // passed through without senv understanding every option.
 type HostEntry struct {
-	Alias       string            `json:"alias"`
-	Hostname    string            `json:"hostname,omitempty"`
-	User        string            `json:"user,omitempty"`
-	Port        int               `json:"port,omitempty"`
-	ProxyJump   string            `json:"proxy_jump,omitempty"`
-	IdentityKey string            `json:"identity_key,omitempty"`
-	Tags        []string          `json:"tags,omitempty"`
-	Extra       map[string]string `json:"extra,omitempty"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	Alias       string `json:"alias"`
+	Hostname    string `json:"hostname,omitempty"`
+	User        string `json:"user,omitempty"`
+	Port        int    `json:"port,omitempty"`
+	ProxyJump   string `json:"proxy_jump,omitempty"`
+	IdentityKey string `json:"identity_key,omitempty"`
+	// Group is the single-value group membership (empty = ungrouped). It is
+	// not rendered into ssh config exports or materialized files.
+	Group     string            `json:"group,omitempty"`
+	Tags      []string          `json:"tags,omitempty"`
+	Extra     map[string]string `json:"extra,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 // LLMProviderEntry represents a saved LLM provider profile. The credential is

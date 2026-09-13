@@ -125,7 +125,7 @@ func New(mgr Managers) Model {
 		newConfigTab(mgr),
 	}
 	if mgr.SSH != nil {
-		m.tabs = append(m.tabs, newSSHTab(mgr))
+		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
 	}
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))

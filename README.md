@@ -285,7 +285,7 @@ senv keypair materialize web-key
 
 ### 9. TUI 模式（全屏界面）
 
-通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host/keypair（导入、重命名、删除、materialize、导出 OpenSSH 片段），浏览 LLM provider 档案并切换各 coding agent 的指向，以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
+通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host 与 keypair（host 增删改与导出 OpenSSH 片段；keypair 导入、重命名、分组、删除、materialize），浏览 LLM provider 档案并切换各 coding agent 的指向，以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -300,22 +300,21 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
-| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略；8 Tab 时 `6`=MCP、`7`=History、`8`=Audit） |
+| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略；9 Tab 时 `5`=KeyPair、`6`=AI、`7`=MCP、`8`=History、`9`=Audit） |
 | `↑` `↓` / `j` `k` | 列表导航 |
-| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / AI / MCP Tab） |
+| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / AI / MCP Tab） |
 | `enter` | 打开详情弹层（Config / SSH / AI / MCP）／解开当前 env 明文 |
 | `v` | 单条切换当前 env 值明文/遮蔽（光标移开自动重新遮蔽） |
-| `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，AI=provider 表单，MCP=档案表单） |
-| `n` | 新建条目（SSH 主机栏=新建 host，keypair 栏=导入 keypair；AI=新建 provider；MCP=新建档案） |
-| `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；SSH 被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
-| `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config，default 分组不可改名） |
-| `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；SSH keypair 栏：materialize 落盘（确认后写到 `~/.ssh/senv/<name>`，0600） |
-| `R` | SSH keypair 栏：重命名 keypair（同一次 mutation 内联动 host `identityKey`） |
-| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，keypair 栏=全部），先预览，`w` 后再填目标文件写入；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
+| `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，KeyPair=keypair 分组，AI=provider 表单，MCP=档案表单） |
+| `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；AI=新建 provider；MCP=新建档案） |
+| `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
+| `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
+| `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；KeyPair Tab：materialize 落盘（确认后写到 `~/.ssh/senv/<name>`，0600） |
+| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览，`w` 后再填目标文件写入；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
 | `a` / `x` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
 | `+` | 新建分组（Env / Text Tab） |
-| `i` | 从文件导入（Text=文本块，写 `group`/`key`/源文件路径；SSH keypair 栏=导入 keypair 名称 + 私钥路径） |
+| `i` | 从文件导入（Text=文本块，写 `group`/`key`/源文件路径；KeyPair Tab=导入 keypair 名称 + 私钥路径 + 分组） |
 | `i` / `u` | 安装/卸载 config（`I`/`U` 为批量，需在计划页确认） |
 | `D` | 切换解引用视图（Env Tab；Text 列表仅元数据） |
 | `y` | 复制值到剪贴板 |
@@ -330,11 +329,13 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `esc` | 关闭 overlay / 取消操作 |
 | `q` | 退出 TUI（仍有待推送时会先提示一次，再按一次才退出） |
 
-SSH Tab 把 host 与 keypair 作为两栏：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、tags，`extra` 走 `$EDITOR`），`i/R/d/m` 管理 keypair。host 列表内联显示所用 keypair 名称与指纹摘要；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
+SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、group、tags，`extra` 走 `$EDITOR`），`x` 导出 OpenSSH 片段；host 列表内联显示所用 keypair 名称与指纹摘要（`key:name(fp)`）；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。
+
+KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`m` materialize 落盘（确认后写到 `~/.ssh/senv/<name>`，0600）、`enter` 详情；行内展示指纹摘要与被引用计数（`被 N 个 Host 引用`），零引用灰显「未被引用」。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
 AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
-MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表/详情只显示 env 键名与引用模板；字面量只在 `$EDITOR` 编辑 env 时出现。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
+MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
 重命名与分组管理走存储层的原子重命名（一次 `renameat`，不是「新建 + 删除」）：值/内容、权限与时间戳原样保留，重命名冲突在表单内联报错且不写入。多字段编辑（重命名、元信息、分组名）统一走可复用表单：`tab`/`↑↓` 切换字段、`enter` 提交、`esc` 取消（无副作用），校验失败保持表单打开且不丢已填内容；`$EDITOR` 闭环仍用于多行/自由属性字段。
 
@@ -344,7 +345,7 @@ TUI 内的写操作（env/text/config/SSH/AI/MCP）会写入本机操作审计�
 
 #### 安全设计
 
-- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH Tab 只显示指纹和元数据，不加载或渲染 private key。
+- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH/KeyPair Tab 只显示指纹和元数据，不加载或渲染 private key。
 - **搜索不泄漏**：全局搜索（`S`，含 SSH host alias/hostname、provider alias 与 MCP 档案 alias/command）与 Tab 内过滤（`/`）**只匹配标识字段，绝不匹配值、私钥内容、凭据或 MCP env 值**，避免结果列表批量暴露秘密。
 - **vim 闭环复用**：text/config 的编辑复用现有「解密 → 临时文件(600) → 编辑 → 重新加密 → 删除临时文件」流程，无新攻击面。
 

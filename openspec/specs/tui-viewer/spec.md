@@ -42,20 +42,21 @@ TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 - **WHEN** 用户运行 `senv tui --refresh`
 - **THEN** 启动后台拉取绕过节流窗口强制执行，界面同样先以本地数据渲染
 
+
 ### Requirement: Tab 切换
 
-TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、AI、MCP、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
+TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、KeyPair、AI、MCP、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
 
 #### Scenario: 切换标签
 - **WHEN** 用户在 Env Tab 按下 `Tab` 键或 `2` 键
 - **THEN** 界面切换到 Text Tab，显示 text 分组与文本块列表
 
 #### Scenario: 数字键直达全部 Tab
-- **WHEN** 8 个 Tab 均已注册，用户按 `6`
-- **THEN** 界面切换到 MCP Tab
+- **WHEN** 全部 Tab 已注册（注册顺序 Env、Text、Config、SSH、KeyPair、AI、MCP、History、Audit），用户按 `6`
+- **THEN** 界面切换到 AI Tab
 
 #### Scenario: 越界数字不生效
-- **WHEN** 仅注册 3 个 Tab（git 模式），用户按 `7`
+- **WHEN** 仅注册 4 个 Tab，用户按 `7`
 - **THEN** 当前 Tab 不变，界面不报错
 
 #### Scenario: 保留导航状态

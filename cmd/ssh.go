@@ -37,6 +37,7 @@ var keypairCmd = &cobra.Command{
 
 var (
 	keypairImportFile    string
+	keypairImportGroup   string
 	keypairImportForce   bool
 	keypairDeleteForce   bool
 	keypairMaterialForce bool
@@ -54,7 +55,7 @@ var keypairImportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		summary, err := mgr.ImportKeyPair(args[0], keypairImportFile, keypairImportForce)
+		summary, err := mgr.ImportKeyPairWithGroup(args[0], keypairImportFile, keypairImportGroup, keypairImportForce)
 		detail := "import"
 		if keypairImportForce {
 			detail = "import --force"
@@ -98,7 +99,11 @@ var keypairListCmd = &cobra.Command{
 			} else {
 				publicKey = strings.Fields(publicKey)[0] + " " + s.Fingerprint
 			}
-			fmt.Printf("  %-24s %s  imported %s\n", s.Name, publicKey, s.ImportedAt.Format("2006-01-02 15:04"))
+			line := fmt.Sprintf("  %-24s %s  imported %s", s.Name, publicKey, s.ImportedAt.Format("2006-01-02 15:04"))
+			if s.Group != "" {
+				line += fmt.Sprintf(" group:%s", s.Group)
+			}
+			fmt.Println(line)
 		}
 		return nil
 	},
@@ -199,9 +204,11 @@ var (
 	hostAddKeypair     string
 	hostAddKeyFile     string
 	hostAddKeypairName string
+	hostAddGroup       string
 	hostAddTags        []string
 	hostAddAttrs       []string
 	hostForce          bool
+	hostEditGroup      string
 )
 
 var hostAddCmd = &cobra.Command{
@@ -228,6 +235,7 @@ var hostAddCmd = &cobra.Command{
 			Port:        hostAddPort,
 			ProxyJump:   hostAddProxyJump,
 			IdentityKey: identityKey,
+			Group:       hostAddGroup,
 			Tags:        hostAddTags,
 			Extra:       extra,
 		}
@@ -269,6 +277,9 @@ var hostGetCmd = &cobra.Command{
 		if host.IdentityKey != "" {
 			fmt.Printf("  IdentityKey: %s\n", host.IdentityKey)
 		}
+		if host.Group != "" {
+			fmt.Printf("  Group: %s\n", host.Group)
+		}
 		if len(host.Tags) > 0 {
 			fmt.Printf("  Tags: %s\n", strings.Join(host.Tags, ", "))
 		}
@@ -288,6 +299,20 @@ var hostEditCmd = &cobra.Command{
 		mgr, err := getSSHManager()
 		if err != nil {
 			return err
+		}
+		// --group set explicitly applies a single-field update without
+		// launching the editor; other fields keep their current values.
+		if cmd.Flags().Changed("group") {
+			if err := mgr.UpdateHost(args[0], func(host *storage.HostEntry) error {
+				host.Group = hostEditGroup
+				return nil
+			}); err != nil {
+				auditOp(session.AuditOpSSHHost, "host:"+args[0], false, "edit 失败")
+				return err
+			}
+			auditOp(session.AuditOpSSHHost, "host:"+args[0], true, "edit --group")
+			fmt.Printf("✓ Updated host %s\n", args[0])
+			return nil
 		}
 		editorSession, err := mgr.PrepareHostEditor(args[0])
 		if err != nil {
@@ -336,7 +361,11 @@ var hostListCmd = &cobra.Command{
 			if host.IdentityKey != "" {
 				identity = host.IdentityKey
 			}
-			fmt.Printf("  %-24s %-30s %-16s key:%s\n", host.Alias, host.Hostname, host.User, identity)
+			line := fmt.Sprintf("  %-24s %-30s %-16s key:%s", host.Alias, host.Hostname, host.User, identity)
+			if host.Group != "" {
+				line += fmt.Sprintf(" group:%s", host.Group)
+			}
+			fmt.Println(line)
 		}
 		return nil
 	},
@@ -457,6 +486,7 @@ func init() {
 	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd)
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")
+	keypairImportCmd.Flags().StringVar(&keypairImportGroup, "group", "", "keypair group (single value, empty = ungrouped)")
 	keypairImportCmd.Flags().BoolVar(&keypairImportForce, "force", false, "overwrite an existing keypair")
 	keypairMaterializeCmd.Flags().BoolVar(&keypairMaterialForce, "force", false, "overwrite an existing materialized file")
 	keypairDeleteCmd.Flags().BoolVar(&keypairDeleteForce, "force", false, "delete even if referenced and clear references")
@@ -468,8 +498,10 @@ func init() {
 	hostAddCmd.Flags().StringVar(&hostAddKeypair, "keypair", "", "existing keypair name")
 	hostAddCmd.Flags().StringVar(&hostAddKeyFile, "key-file", "", "import this private key before creating the host")
 	hostAddCmd.Flags().StringVar(&hostAddKeypairName, "keypair-name", "", "name for the key imported from --key-file")
+	hostAddCmd.Flags().StringVar(&hostAddGroup, "group", "", "host group (single value, empty = ungrouped)")
 	hostAddCmd.Flags().StringSliceVar(&hostAddTags, "tag", nil, "host tag (repeatable)")
 	hostAddCmd.Flags().StringSliceVar(&hostAddAttrs, "attr", nil, "extra OpenSSH key=value (repeatable)")
+	hostEditCmd.Flags().StringVar(&hostEditGroup, "group", "", "set the host group without launching the editor")
 	hostDeleteCmd.Flags().BoolVar(&hostForce, "force", false, "acknowledge deletion")
 	hostExportCmd.Flags().StringVar(&hostExportAlias, "host", "", "export only this host alias")
 	hostExportCmd.Flags().StringVar(&hostExportOut, "output", "", "write to a private file instead of stdout")

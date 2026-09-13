@@ -638,12 +638,10 @@ func (t *mcpTab) openDetail() tea.Cmd {
 
 func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 	if entry.URL != "" {
-		// Remote profiles: only the url origin and header key names are
-		// rendered — query strings and header values carry credentials.
 		lines := []string{
 			"alias:       " + entry.Alias,
 			"transport:   " + entry.Transport,
-			"url:         " + mcp.URLOrigin(entry.URL),
+			"url:         " + entry.URL,
 			"description: " + orDash(entry.Description),
 			"headers:",
 		}
@@ -656,7 +654,7 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 			lines = append(lines, "  (none)")
 		} else {
 			for _, key := range keys {
-				lines = append(lines, "  "+key)
+				lines = append(lines, "  "+key+": "+entry.Headers[key])
 			}
 		}
 		return lines
@@ -685,24 +683,10 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 		lines = append(lines, "  (none)")
 	} else {
 		for _, key := range keys {
-			lines = append(lines, "  "+key+"="+maskEnvValue(entry.Env[key]))
+			lines = append(lines, "  "+key+"="+entry.Env[key])
 		}
 	}
 	return lines
-}
-
-func maskEnvValue(value string) string {
-	if isRefTemplate(value) {
-		return value
-	}
-	if value == "" {
-		return ""
-	}
-	return "***"
-}
-
-func isRefTemplate(value string) bool {
-	return strings.Contains(value, "{{env:") || strings.Contains(value, "{{text:")
 }
 
 // isRemoteTransport reports whether a form transport value addresses a remote

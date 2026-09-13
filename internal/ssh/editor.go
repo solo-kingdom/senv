@@ -99,6 +99,7 @@ func renderHostForEditor(host *storage.HostEntry) string {
 	}
 	fmt.Fprintf(&b, "proxy-jump %s\n", host.ProxyJump)
 	fmt.Fprintf(&b, "identity-key %s\n", host.IdentityKey)
+	fmt.Fprintf(&b, "group %s\n", host.Group)
 	fmt.Fprintf(&b, "tags %s\n", strings.Join(host.Tags, ","))
 	keys := make([]string, 0, len(host.Extra))
 	for key := range host.Extra {
@@ -146,6 +147,8 @@ func parseHostEditor(alias, content string) (*storage.HostEntry, error) {
 			host.ProxyJump = value
 		case "identity-key", "identitykey":
 			host.IdentityKey = value
+		case "group":
+			host.Group = value
 		case "tags":
 			if value != "" {
 				for _, tag := range strings.Split(value, ",") {

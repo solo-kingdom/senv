@@ -312,8 +312,8 @@ func TestSSHPendingJumpClearsFilter(t *testing.T) {
 	if tab.filterBox.Term() != "" {
 		t.Fatal("filter should be cleared before jump (tui-ux-filter contract)")
 	}
-	if tab.hostIndex != 0 || !tab.focusLeft {
-		t.Fatalf("jump landed wrong: hostIndex=%d focusLeft=%v", tab.hostIndex, tab.focusLeft)
+	if tab.hostIndex != 0 || tab.focus != paneHost {
+		t.Fatalf("jump landed wrong: hostIndex=%d focus=%v", tab.hostIndex, tab.focus)
 	}
 }
 

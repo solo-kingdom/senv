@@ -140,13 +140,21 @@ func (s *searchTab) gather() tea.Cmd {
 				}
 			}
 		}
-		// SSH: host aliases and hostnames are identifiers; keypair material is
-		// never loaded by this path (ListHosts returns metadata only).
+		// SSH: host aliases and hostnames are identifiers; group and tags are
+		// matched the same way (D5 四维匹配). Keypair material is never loaded
+		// by this path (ListHosts returns metadata only).
 		if mgr.SSH != nil {
 			if hosts, err := mgr.SSH.ListHosts(); err == nil {
 				for _, h := range hosts {
+					extra := h.Hostname
+					if h.Group != "" {
+						extra += " " + h.Group
+					}
+					if len(h.Tags) > 0 {
+						extra += " " + strings.Join(h.Tags, " ")
+					}
 					all = append(all, searchResult{
-						resultType: typeSSH, key: h.Alias, extra: h.Hostname,
+						resultType: typeSSH, key: h.Alias, extra: extra,
 						preview: sshPreview(h.User, h.Hostname, h.Port),
 					})
 				}
