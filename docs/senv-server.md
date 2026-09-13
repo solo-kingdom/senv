@@ -36,6 +36,10 @@ export SENV_SERVER_DSN="postgres://senv:****@db-host:5432/senv"
 # 3. 创建用户并签发 token（明文只展示一次，库中只存 SHA-256 哈希）
 ./senv-server-bin admin create-user alice
 
+# 新设备接入：为用户 alice 签发一次性注册码（默认有效期 30 分钟，明文只展示一次）
+./senv-server-bin admin create-registration alice
+# 客户端执行: senv server register --address <server> --code <注册码> --name <设备名>
+
 # 吊销 token（不影响同用户其他 token）
 ./senv-server-bin admin revoke-token <token>
 ```

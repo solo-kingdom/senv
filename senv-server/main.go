@@ -58,7 +58,7 @@ Commands:
   migrate                    应用数据库 schema 迁移
   admin create-user <name>   创建用户并签发 token（明文只展示一次）
   admin revoke-token <token> 吊销 token
-  admin create-registration <user> [--expires 24h]
+  admin create-registration <user> [--expires 30m]
                              为用户签发一次性注册码（明文只展示一次）
   admin list-clients [--user <name>]
                              列出已注册 client
@@ -257,7 +257,7 @@ func runAdmin(args []string) {
 	dsn := dsnFrom(args[1:], fs)
 	// 子命令私有 flag 必须在 Parse 前定义（Go flag 遇位置参数即停止），
 	// 各子命令按需读取；未用到的定义无副作用
-	expires := fs.String("expires", "24h", "注册码有效期（Go duration，如 24h、30m）")
+	expires := fs.String("expires", "30m", "注册码有效期（Go duration，如 30m、2h）")
 	clientName := fs.String("client", "", "client 设备名")
 	userFilter := fs.String("user", "", "限定用户名（缺省作用于全部用户）")
 	outcome := fs.String("outcome", "", "访问日志结果过滤（OK/AUTH-FAILED/BLOCKED/RATE-LIMITED）")
@@ -270,7 +270,7 @@ func runAdmin(args []string) {
 	switch sub {
 	case "create-registration":
 		if fs.NArg() < 1 {
-			fmt.Fprintln(os.Stderr, "用法: senv-server admin create-registration <username> [--expires 24h] [--dsn ...]")
+			fmt.Fprintln(os.Stderr, "用法: senv-server admin create-registration <username> [--expires 30m] [--dsn ...]")
 			os.Exit(1)
 		}
 		requireDSN(*dsn)

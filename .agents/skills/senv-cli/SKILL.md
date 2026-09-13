@@ -118,10 +118,18 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 git provider 之外，vault 可托管在 senv-server 上：
 
-- 接入：管理员签发一次性注册码 → `senv server register --address <url> --code <code>`；或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
+- 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
 - 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步；`~/.ssh/senv/` 下已 materialize 的落盘文件也是本机状态，需在新机器显式 materialize。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
+- senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：
+  - `admin create-user <name>`：建用户并签发一次性明文 token（只打印一次，库存 SHA-256）。
+  - `admin create-registration <user> [--expires 30m]`：签发一次性注册码（默认 30 分钟）。
+  - `admin revoke-token <token>`：按明文吊销单个 token（不可逆，不影响同用户其他 token）。
+  - `admin list-clients [--user <name>]`：列出已注册设备（缺省全部用户）。
+  - `admin block-client` / `unblock-client --client <名> [--user <user>]`：屏蔽/解封设备——屏蔽是其名下 token 立即失效的**可逆**状态，数据归属 user 不受影响；区别于按凭证的不可逆吊销。
+  - `admin logs [--user u] [--client c] [--since d] [--until d] [--outcome OK|AUTH-FAILED|BLOCKED|RATE-LIMITED] [--limit n]`：查访问日志；`admin logs-prune --before <YYYY-MM-DD>` 清理旧日志。
+  - `serve` / `migrate`：启动服务（启动前校验 schema 版本）与应用迁移；flags 与构建发布流程见 `docs/senv-server.md`。
 
 ## 常用命令速查
 
