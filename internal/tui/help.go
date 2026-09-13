@@ -24,10 +24,12 @@ var globalKeys = []KeyAction{
 //
 // Unlike the search overlay it renders as a floating window on top of the
 // active tab's content: while open it captures every key, and `?`/`esc` close
-// it. Rows are truncated to the overlay's inner width, laid out in multiple
-// columns when the terminal is wide enough (binding lists are sparse,
-// one-per-line wastes most of the screen), with a visible divider between
-// columns, and scrollable when the laid-out rows still exceed the box height.
+// it. Layout is height-first: bindings flow down a single column until the
+// rows exceed the box height, then a second column takes the remainder (at
+// most two columns, however wide the terminal is), with a visible divider
+// between columns. A description longer than its column wraps at word
+// boundaries, continuation lines aligned under the description; the laid-out
+// rows scroll when they still exceed the box height.
 type helpTab struct {
 	title    string
 	bindings []KeyAction
@@ -89,11 +91,13 @@ const (
 	helpMarginY     = 2
 )
 
-// helpCell 是布局网格里的一个单元：一段纯文本加渲染样式。text 在入格前
-// 已按目标宽度截断，因此样式化后显示宽度可控。
+// helpCell 是布局网格里的一个单元：一段纯文本加渲染样式。indent 是续行
+// 缩进（显示列数）——键位单元把续行对齐到描述列，超宽条目按词折行而不是
+// 中途截断。
 type helpCell struct {
-	text  string
-	style lipgloss.Style
+	text   string
+	style  lipgloss.Style
+	indent int
 }
 
 func (h *helpTab) View() string {
@@ -124,26 +128,37 @@ func (h *helpTab) maxScroll() int {
 	return maxInt(len(rows)-h.visibleRows(), 0)
 }
 
-// layout 生成全部内容行（多列网格拼好的整行）与底栏。View 与 Update
+// layout 生成全部内容行（最多两列拼好的整行）与底栏。View 与 Update
 // 共用同一份计算，保证滚动窗口与实际渲染一致。
 func (h *helpTab) layout() (rows []string, footer string) {
 	// 框内文本区：外框 2 列 + 浮窗左右留白 + overlay 边框/内边距 6 列。
 	contentW := maxInt(h.width-overlayCols-2-helpMarginX, 10)
 	items := h.items()
 
-	// 列数：内容区能放下几列 34 列宽的格子；剩余宽度均摊到各列。
-	cols := (contentW + helpColDividerW) / helpColTarget
-	if cols < 1 {
-		cols = 1
+	// 高度优先：先按单列布局，行数放得下就保持一列；放不下再均分两列。
+	// 至多两列——宽终端不会碎成更多列；宽度只决定列宽下限（单列不足 14
+	// 列宽即终端极窄时退化为单列，溢出部分走滚动）。
+	maxCols := minInt((contentW+helpColDividerW)/helpColTarget, 2)
+	if maxCols < 1 {
+		maxCols = 1
 	}
-	colW := (contentW - (cols-1)*helpColDividerW) / cols
-	if colW < 14 {
-		cols = 1
-		colW = contentW
+	if maxCols > len(items) {
+		maxCols = len(items)
 	}
-	colW = maxInt(colW, 8)
-
-	rows = gridRows(items, cols, colW, contentW)
+	visible := h.visibleRows()
+	for c := 1; c <= maxCols; c++ {
+		colW := contentW
+		if c > 1 {
+			colW = (contentW - (c-1)*helpColDividerW) / c
+		}
+		if c > 1 && colW < 14 {
+			break
+		}
+		rows = gridRows(items, c, maxInt(colW, 8))
+		if len(rows) <= visible {
+			break
+		}
+	}
 	// statusBarStyle 自带 Padding(0,1)：footer 截断到内容区宽 -2。
 	foot := "? / esc close"
 	if len(rows) > h.visibleRows() {
@@ -153,20 +168,21 @@ func (h *helpTab) layout() (rows []string, footer string) {
 	return rows, footer
 }
 
-// items 把 global 与 tab 专属键位整理成单元列表（纯文本，未按列截断；
-// 超长行在 gridRows 里截断并可能独占整行）。
+// items 把 global 与 tab 专属键位整理成单元列表（纯文本；超宽条目由
+// gridRows 按词折行，续行缩进对齐到描述列）。分类标题（Global、Tab 名、
+// 分组名）用 accent 色加粗，与键位行区分。
 func (h *helpTab) items() []helpCell {
-	heading := lipgloss.NewStyle().Bold(true)
+	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	kw := h.keyWidth()
-	blank := helpCell{"", lipgloss.NewStyle()}
-	items := []helpCell{{"Global", heading}}
+	blank := helpCell{"", lipgloss.NewStyle(), 0}
+	items := []helpCell{{"Global", heading, 0}}
 	for _, b := range globalKeys {
 		items = append(items, bindingCell(b, kw))
 	}
 	if h.title != "" {
-		items = append(items, blank, helpCell{h.title, heading})
+		items = append(items, blank, helpCell{h.title, heading, 1})
 		if len(h.bindings) == 0 {
-			items = append(items, helpCell{"  (no tab-specific keys)", lipgloss.NewStyle()})
+			items = append(items, helpCell{"  (no tab-specific keys)", lipgloss.NewStyle(), 2})
 		}
 		// Group headings on first appearance, so sections stay contiguous
 		// even when a tab interleaves groups in Bindings().
@@ -178,7 +194,7 @@ func (h *helpTab) items() []helpCell {
 			}
 			if !seen[g] {
 				seen[g] = true
-				items = append(items, helpCell{" " + g, heading})
+				items = append(items, helpCell{" " + g, heading, 1})
 			}
 			items = append(items, bindingCell(b, kw))
 		}
@@ -186,7 +202,7 @@ func (h *helpTab) items() []helpCell {
 	return items
 }
 
-// keyWidth 是键名列宽：取全部键位显示宽度的最大值，夹在 [6,14]。
+// keyWidth 是键名列宽：取全部键位显示宽度的最大值，夹在 [6,15]。
 func (h *helpTab) keyWidth() int {
 	w := 6
 	for _, b := range globalKeys {
@@ -199,41 +215,125 @@ func (h *helpTab) keyWidth() int {
 			w = x
 		}
 	}
-	return minInt(w, 14)
+	return minInt(w, 15)
 }
 
-// bindingCell 渲染一条键位为单元：键名左对齐占 kw 列，描述随后。
+// bindingCell 渲染一条键位为单元：键名左对齐占 kw 列，描述随后；续行
+// 缩进到 kw+3 列对齐描述起始。
 func bindingCell(b KeyAction, kw int) helpCell {
-	return helpCell{fmt.Sprintf("  %-*s %s", kw, strings.Join(b.Keys, "/"), b.Desc), lipgloss.NewStyle()}
+	return helpCell{fmt.Sprintf("  %-*s %s", kw, strings.Join(b.Keys, "/"), b.Desc), lipgloss.NewStyle(), kw + 3}
 }
 
-// gridRows 把单元按行优先填入 cols 列网格：普通单元占一格并左对齐补齐到
-// 列宽，列与列之间用 muted 竖线隔开；超过列宽的单元独占整行（截断到内容
-// 区宽），避免长描述被硬折行。
-func gridRows(items []helpCell, cols, colW, contentW int) []string {
-	gutter := " " + mutedStyle().Render("│") + " "
-	var rows []string
-	var cells []string
-	flush := func() {
-		if len(cells) == 0 {
-			return
-		}
-		rows = append(rows, strings.Join(cells, gutter))
-		cells = cells[:0]
+// gridRows 把单元按列优先填入 cols 列网格（先填满一列再开下一列），列高
+// 按总可视行数均分——调用方按"高度不够再加列"的策略选定 cols。单元右补齐
+// 到列宽，列间用 muted 竖线隔开；超宽单元按词折行，每个可视行单独占
+// rows 的一项，滚动按可视行计数。
+func gridRows(items []helpCell, cols, colW int) []string {
+	cells := make([][]string, len(items))
+	total := 0
+	for i, it := range items {
+		cells[i] = cellLines(it, colW)
+		total += len(cells[i])
 	}
-	for _, it := range items {
-		if lipgloss.Width(it.text) > colW {
-			flush()
-			rows = append(rows, truncateWidth(it.text, contentW))
+	// 每列的目标行数：总行数均分。当前列装不下下一个单元时开新列，但只
+	// 在还没开满 cols 列时——超限的大单元连同剩余都收进最后一列，保证物
+	// 理列数不超过 cols（调用方按"最多两列"依赖这个上限）。
+	target := (total + cols - 1) / cols
+	var columns [][]string
+	var cur []string
+	curLines := 0
+	for i := range cells {
+		if len(cur) > 0 && curLines+len(cells[i]) > target && len(columns) < cols-1 {
+			columns = append(columns, cur)
+			cur, curLines = nil, 0
+		}
+		cur = append(cur, cells[i]...)
+		curLines += len(cells[i])
+	}
+	columns = append(columns, cur)
+
+	gutter := " " + mutedStyle().Render("│") + " "
+	height := 0
+	for _, col := range columns {
+		height = maxInt(height, len(col))
+	}
+	var rows []string
+	for r := 0; r < height; r++ {
+		parts := make([]string, 0, len(columns))
+		for _, col := range columns {
+			if r < len(col) {
+				parts = append(parts, col[r])
+			} else {
+				parts = append(parts, strings.Repeat(" ", colW))
+			}
+		}
+		rows = append(rows, strings.Join(parts, gutter))
+	}
+	return rows
+}
+
+// cellLines 渲染一个单元为补齐到列宽的行列表：超宽单元按词折行（续行
+// 缩进到 indent 列对齐描述起始）。
+func cellLines(it helpCell, colW int) []string {
+	if lipgloss.Width(it.text) <= colW {
+		return []string{it.style.Render(padRight(it.text, colW))}
+	}
+	var out []string
+	for _, l := range wrapCell(it.text, colW, it.indent) {
+		out = append(out, it.style.Render(l))
+	}
+	return out
+}
+
+// wrapCell 把超宽单元按词折行到 colW：首行保留键名列（indent 列），续行
+// 缩进到 indent 列让描述对齐；超长单词按宽硬切（键位描述均为 ASCII）。
+func wrapCell(text string, colW, indent int) []string {
+	rs := []rune(text)
+	if len(rs) <= indent {
+		return []string{padRight(text, colW)}
+	}
+	width := colW - indent
+	if width < 4 {
+		width = 4
+	}
+	chunks := wrapWords(string(rs[indent:]), width)
+	lines := make([]string, 0, len(chunks))
+	lines = append(lines, padRight(string(rs[:indent])+chunks[0], colW))
+	for _, c := range chunks[1:] {
+		lines = append(lines, padRight(strings.Repeat(" ", indent)+c, colW))
+	}
+	return lines
+}
+
+// wrapWords 按空格贪心折行到 width；仍超宽的单个单词按 width 硬切。
+func wrapWords(s string, width int) []string {
+	var wrapped []string
+	cur := ""
+	flush := func() {
+		rs := []rune(cur)
+		for len(rs) > width {
+			wrapped = append(wrapped, string(rs[:width]))
+			rs = rs[width:]
+		}
+		if len(rs) > 0 {
+			wrapped = append(wrapped, string(rs))
+		}
+		cur = ""
+	}
+	for _, w := range strings.Fields(s) {
+		if cur == "" {
+			cur = w
 			continue
 		}
-		cells = append(cells, it.style.Render(padRight(it.text, colW)))
-		if len(cells) == cols {
-			flush()
+		if len(cur)+1+len(w) <= width {
+			cur += " " + w
+			continue
 		}
+		flush()
+		cur = w
 	}
 	flush()
-	return rows
+	return wrapped
 }
 
 // padRight 把 s 用空格右补齐到 n 个显示列；超过则原样返回（调用方已截断）。

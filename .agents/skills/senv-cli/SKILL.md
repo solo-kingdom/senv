@@ -81,7 +81,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - `senv keypair rename <old> <new>` 在同一次 mutation 内原子改写引用它的 host `identityKey`；目标名已存在时拒绝且不写入。
 - `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/<name>`（目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件。
 - `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
-- `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。
+- `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。片段中 `IdentityFile` 指向的 keypair 不在本机 vault 时（如 host 档案先同步到、keypair 还没到），stderr 逐条 `warning: host <alias> 引用的 keypair <name> 不在本机 vault（可能尚未同步）`，片段照常生成；keypair 同步到并 materialize 后即可用。
 
 ## LLM Provider 与 coding agent
 
@@ -118,7 +118,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入：管理员签发一次性注册码 → `senv server register --address <url> --code <code>`；或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
-- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config 与 LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）——新机器首次同步即拉到全部档案，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对。
+- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步；`~/.ssh/senv/` 下已 materialize 的落盘文件也是本机状态，需在新机器显式 materialize。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
 

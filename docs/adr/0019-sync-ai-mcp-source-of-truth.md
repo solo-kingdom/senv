@@ -14,3 +14,5 @@ senv 的同步通道（`internal/syncschema`）此前只覆盖 env/env_meta/text
 - 配置源条目的冲突走既有 revision 乐观锁与冲突解决流程，报告对这两个 kind 追加"本地/远端 alias+revision 对照"提示——双端人工修改配置源更可能是有意义的分歧，需要人裁决而不是自动覆盖。
 - 凭据引用在本机解析失败是常态而非异常（新机器先到档案、后补凭据）：ai switch 保持 fail-closed + 指明缺失条目；mcp export 宽松写入让档案先落地，凭据补齐后重跑导出即收敛。
 - `ssh_host`/`ssh_keypair` 接入通道是低风险后续项，但需独立评审（密钥资产的同步半径与 ADR-0001/0002 的相互作用）。
+
+部分由 [ADR-0020](./0020-ssh-assets-in-sync-channel.md) 落地：`ssh_host`/`ssh_keypair` 已裁决接入，白名单现为九 kind，私钥随档案 blob 跨机。本文「凭据本体不出机」修正为「档案 blob 不内嵌凭据」——`llm-keys` 凭据与被 `{{text:...}}`/`{{env:...}}` 引用的条目本就随 text/env 通道同步，延后项的评审结论见 ADR-0020。

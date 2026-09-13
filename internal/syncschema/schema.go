@@ -19,6 +19,8 @@ const (
 	KindConfigIndex = "config_index"
 	KindLLMProvider = "llm_provider"
 	KindMCPServer   = "mcp_server"
+	KindSSHHost     = "ssh_host"
+	KindSSHKeypair  = "ssh_keypair"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -91,7 +93,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if grp != "" || key != "" {
 			return invalid("config_index requires empty grp and key")
 		}
-	case KindLLMProvider, KindMCPServer:
+	case KindLLMProvider, KindMCPServer, KindSSHHost, KindSSHKeypair:
 		if grp != "" || key == "" {
 			return invalid("kind requires empty grp and key (alias)")
 		}

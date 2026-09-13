@@ -107,6 +107,46 @@ func TestRenderConfigIndexDiff(t *testing.T) {
 	}
 }
 
+func TestRenderSSHAssetsMetadataOnly(t *testing.T) {
+	key := bytes.Repeat([]byte{9}, 32)
+	localKP := encrypted(t, key, storage.KeyPairEntry{Name: "deploy-key", PrivateKey: "LOCAL-PRIVATE-KEY-MATERIAL"})
+	remoteKP := encrypted(t, key, storage.KeyPairEntry{Name: "deploy-key", PrivateKey: "REMOTE-PRIVATE-KEY-MATERIAL"})
+	detail := provider.ConflictDetail{
+		Kind: provider.KindSSHKeypair, Key: "deploy-key",
+		Local:  provider.ConflictSide{Revision: 3, Size: len(localKP), Ciphertext: localKP},
+		Remote: provider.ConflictSide{Revision: 4, Size: len(remoteKP), Ciphertext: remoteKP},
+	}
+	auth := Auth{Key: key, RemoteKeyCompatible: true}
+	for _, reveal := range []bool{false, true} {
+		got := RenderDetail(detail, auth, reveal)
+		for _, secret := range []string{"LOCAL-PRIVATE-KEY-MATERIAL", "REMOTE-PRIVATE-KEY-MATERIAL", "private_key"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("reveal=%v: keypair conflict report leaked %q:\n%s", reveal, secret, got)
+			}
+		}
+		if !strings.Contains(got, "metadata only") {
+			t.Errorf("reveal=%v: keypair conflict report missing metadata-only marker:\n%s", reveal, got)
+		}
+	}
+
+	localHost := encrypted(t, key, storage.HostEntry{Alias: "web", Hostname: "web.local", IdentityKey: "deploy-key"})
+	remoteHost := encrypted(t, key, storage.HostEntry{Alias: "web", Hostname: "web.remote", IdentityKey: "deploy-key"})
+	detail = provider.ConflictDetail{
+		Kind: provider.KindSSHHost, Key: "web",
+		Local:  provider.ConflictSide{Revision: 5, Size: len(localHost), Ciphertext: localHost},
+		Remote: provider.ConflictSide{Revision: 6, Size: len(remoteHost), Ciphertext: remoteHost},
+	}
+	for _, reveal := range []bool{false, true} {
+		got := RenderDetail(detail, auth, reveal)
+		if strings.Contains(got, "web.local") || strings.Contains(got, "web.remote") {
+			t.Errorf("reveal=%v: host conflict report leaked entry fields:\n%s", reveal, got)
+		}
+		if !strings.Contains(got, "metadata only") {
+			t.Errorf("reveal=%v: host conflict report missing metadata-only marker:\n%s", reveal, got)
+		}
+	}
+}
+
 func TestRenderMetadataSafety(t *testing.T) {
 	key := bytes.Repeat([]byte{5}, 32)
 	passwordKey, err := crypto.Encrypt(key, []byte("verification"))

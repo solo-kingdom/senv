@@ -51,6 +51,10 @@ func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSid
 	if side.Deleted {
 		return decodedSide{}, nil
 	}
+	if kind == provider.KindSSHHost || kind == provider.KindSSHKeypair {
+		// SSH 档案含私钥本体：冲突对比不解密、不产出明文，只保留元数据（ADR-0020）。
+		return decodedSide{Size: side.Size}, nil
+	}
 	if kind == provider.KindConfigIndex {
 		var index storage.ConfigIndex
 		if err := storage.FromJSON(side.Ciphertext, &index); err != nil {
@@ -141,6 +145,9 @@ func renderSide(label, kind string, side provider.ConflictSide, decoded decodedS
 			value = entry.Value
 		}
 		fmt.Fprintf(&b, "    value=%s plaintext=%dB\n", value, len(entry.Value))
+	case kind == provider.KindSSHHost || kind == provider.KindSSHKeypair:
+		// SSH 档案含私钥本体：无论是否 reveal 都只渲染元数据（ADR-0005/0020）。
+		b.WriteString("    content=<metadata only> plaintext not decoded\n")
 	case kind == provider.KindConfigIndex:
 		b.WriteString("    semantic differences are listed below\n")
 	default:

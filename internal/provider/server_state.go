@@ -28,6 +28,8 @@ const (
 	KindConfigIndex = syncschema.KindConfigIndex
 	KindLLMProvider = syncschema.KindLLMProvider
 	KindMCPServer   = syncschema.KindMCPServer
+	KindSSHHost     = syncschema.KindSSHHost
+	KindSSHKeypair  = syncschema.KindSSHKeypair
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -148,10 +150,15 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{key + storage.ConfigFileSuffix}}, nil
 	case KindConfigIndex:
 		return cacheLocation{root: cacheConfigRoot, segments: []string{storage.ConfigIndexFile}}, nil
-	case KindLLMProvider, KindMCPServer:
+	case KindLLMProvider, KindMCPServer, KindSSHHost, KindSSHKeypair:
 		dir := storage.LLMProviderDirName
-		if kind == KindMCPServer {
+		switch kind {
+		case KindMCPServer:
 			dir = storage.MCPServerDirName
+		case KindSSHHost:
+			dir = storage.HostDirName
+		case KindSSHKeypair:
+			dir = storage.KeypairDirName
 		}
 		return cacheLocation{root: cacheDataRoot, segments: []string{dir, key + storage.ConfigFileSuffix}}, nil
 	default:
@@ -329,14 +336,16 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 		}
 	}
 
-	// 人工添加的配置源档案目录（LLM Provider / MCP Server），与 env/text 同为
-	// SSH-style 加密 blob；目录不存在（vault 从未添加过该类档案）时静默跳过。
+	// 人工添加的配置源档案目录（LLM Provider / MCP Server / SSH 资产），与
+	// env/text 同为 SSH-style 加密 blob；目录不存在（vault 从未添加过该类档案）时静默跳过。
 	for _, collection := range []struct {
 		dir  string
 		kind string
 	}{
 		{storage.LLMProviderDirName, KindLLMProvider},
 		{storage.MCPServerDirName, KindMCPServer},
+		{storage.HostDirName, KindSSHHost},
+		{storage.KeypairDirName, KindSSHKeypair},
 	} {
 		profileFiles, err := dataRoot.ReadDir(collection.dir)
 		if err != nil {

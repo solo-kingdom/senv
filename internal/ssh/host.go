@@ -150,10 +150,15 @@ func validateHost(host *storage.HostEntry) error {
 }
 
 // Export renders an OpenSSH config fragment in a deterministic alias order.
-func (m *Manager) Export(alias string) (string, error) {
+// The returned warnings list each IdentityKey reference whose target keypair
+// is not present in the local vault (per ADR-0020 D4, e.g. the host archive
+// has synced but the keypair has not); dangling references do not abort the
+// export. A failure to list local keypairs is a hard error, mirroring how
+// host listing failures are handled.
+func (m *Manager) Export(alias string) (string, []string, error) {
 	hosts, err := m.ListHosts()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	selected := make([]*storage.HostEntry, 0, len(hosts))
 	aliases := make(map[string]bool, len(hosts))
@@ -164,16 +169,30 @@ func (m *Manager) Export(alias string) (string, error) {
 		}
 	}
 	if alias != "" && !aliases[alias] {
-		return "", fmt.Errorf("host %q not found", alias)
+		return "", nil, fmt.Errorf("host %q not found", alias)
 	}
+	// keypair 名单来自目录列表，不逐 host 解密 keypair。
+	names, err := m.listKeyPairs()
+	if err != nil {
+		return "", nil, err
+	}
+	keypairNames := make(map[string]bool, len(names))
+	for _, name := range names {
+		keypairNames[name] = true
+	}
+	var warnings []string
 	var b strings.Builder
 	for _, host := range selected {
 		if host.ProxyJump != "" && !aliases[host.ProxyJump] {
-			return "", fmt.Errorf("host %q has dangling proxyJump %q", host.Alias, host.ProxyJump)
+			return "", nil, fmt.Errorf("host %q has dangling proxyJump %q", host.Alias, host.ProxyJump)
+		}
+		if host.IdentityKey != "" && !keypairNames[host.IdentityKey] {
+			warnings = append(warnings, fmt.Sprintf("host %s 引用的 keypair %s 不在本机 vault（可能尚未同步）",
+				host.Alias, host.IdentityKey))
 		}
 		renderHost(&b, host)
 	}
-	return b.String(), nil
+	return b.String(), warnings, nil
 }
 
 func renderHost(b *strings.Builder, host *storage.HostEntry) {

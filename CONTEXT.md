@@ -29,7 +29,7 @@ _Avoid_: 登录/登出（会话含义）
 ### 本地状态
 
 **配置源（Config Source）**:
-人工添加进 vault、可随 vault 跨机分发的数据：env/text/config 条目与 LLM Provider、MCP Server 档案（SSH-style 加密 blob）。与它相对的是**本机状态（同步边界语境）**——仅在单一机器上有意义、刻意不随 vault 同步的派生状态（当前指向、导出状态、agent 配置文件）。"配置源同步、本机状态不同步"是同步通道的边界。
+人工添加进 vault、可随 vault 跨机分发的数据：env/text/config 条目、LLM Provider 与 MCP Server 档案、SSH 资产档案（Host 与 KeyPair，含私钥本体）——均为 SSH-style 加密 blob。与它相对的是**本机状态（同步边界语境）**——仅在单一机器上有意义、刻意不随 vault 同步的派生状态（当前指向、导出状态、落盘私钥、agent 配置文件）。"配置源同步、本机状态不同步"是同步通道的边界。
 _Avoid_: 配置项（泛指 env 时）、同步数据（指协议载荷时）
 
 **解锁缓存（Session Cache）**:
@@ -114,6 +114,10 @@ _Avoid_: 展示名、备注名
 **KeyPair（密钥对）**:
 从既有私钥文件导入的 SSH 密钥资产：私钥是机密本体，公钥仅用于辨识（指纹/展示）；senv 不生成新密钥。
 _Avoid_: identity 文件（指盘上路径时）、钥匙（单指私钥时）
+
+**落盘（Materialize）**:
+把 vault 内 KeyPair 的私钥写到 `~/.ssh/senv/` 的导出动作及其产物；落盘文件属本机状态，不同步、不被同步触碰。
+_Avoid_: 导出（指 host config 导出时）、解密（泛指时）
 
 **ProxyJump（跳板）**:
 经另一台 Host 中转连接目标 Host；其值必须引用已存在的 Host 别名。
