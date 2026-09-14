@@ -124,6 +124,8 @@ func TestKeypairAndHostCLIFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = writer
+	hostExportOut = "-"
+	t.Cleanup(func() { hostExportOut = "" })
 	getErr := hostExportCmd.RunE(&cobra.Command{}, nil)
 	writer.Close()
 	os.Stdout = stdout
@@ -301,7 +303,7 @@ func TestKeypairMaterializePermissionsAndOverwrite(t *testing.T) {
 
 	t.Setenv("HOME", dir)
 	runSSHCommand(t, keypairMaterializeCmd.RunE(&cobra.Command{}, []string{"material-key"}))
-	target := filepath.Join(dir, ".ssh", "senv", "material-key")
+	target := filepath.Join(dir, ".ssh", "senv", "keys", "_ungrouped", "material-key")
 	info, err := os.Stat(target)
 	if err != nil {
 		t.Fatal(err)
@@ -429,5 +431,86 @@ func TestKeypairRenameCLIFlow(t *testing.T) {
 	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"other-key", "--file", keyPath}))
 	if err := keypairRenameCmd.RunE(&cobra.Command{}, []string{"prod-key", "other-key"}); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("conflicting rename error = %v", err)
+	}
+}
+
+func TestHostExportApplyUnexportAndPruneFlow(t *testing.T) {
+	dir := newSSHTestProject(t)
+	t.Setenv("HOME", dir)
+	keyPath := writeTestEd25519Key(t, dir, "id_apply", "apply@test")
+	keypairImportFile = keyPath
+	t.Cleanup(func() { keypairImportFile = "" })
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"apply-key", "--file", keyPath}))
+
+	hostAddHostname = "10.0.0.1"
+	hostAddKeypair = "apply-key"
+	t.Cleanup(func() { hostAddHostname, hostAddKeypair = "", "" })
+	runSSHCommand(t, hostAddCmd.RunE(&cobra.Command{}, []string{"apply-web"}))
+
+	// 默认导出 = 应用模式：组片段 + 落盘 + 注册，ssh 直接可用。
+	runSSHCommand(t, hostExportCmd.RunE(&cobra.Command{}, nil))
+	fragment := filepath.Join(dir, ".ssh", "senv", "groups", "_ungrouped.conf")
+	data, err := os.ReadFile(fragment)
+	if err != nil || !strings.Contains(string(data), "Host apply-web\n") {
+		t.Fatalf("group fragment:\n%s, %v", data, err)
+	}
+	keyFile := filepath.Join(dir, ".ssh", "senv", "keys", "_ungrouped", "apply-key")
+	if info, err := os.Stat(keyFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("materialized key: %v", err)
+	}
+	cfg, err := os.ReadFile(filepath.Join(dir, ".ssh", "config"))
+	if err != nil || !strings.Contains(string(cfg), "Include ~/.ssh/senv/groups/*.conf") {
+		t.Fatalf("ssh config:\n%s, %v", cfg, err)
+	}
+	if sshPath, err := exec.LookPath("ssh"); err == nil {
+		output, err := exec.Command(sshPath, "-G", "-F", filepath.Join(dir, ".ssh", "config"), "apply-web").Output()
+		if err != nil {
+			t.Fatalf("ssh -G: %v\n%s", err, output)
+		}
+		if !strings.Contains(string(output), "identityfile "+keyFile) {
+			t.Fatalf("ssh -G identityfile missing %q:\n%s", keyFile, output)
+		}
+	}
+	if log := readAuditLogForTest(t); !strings.Contains(log, `"target":"host:export"`) {
+		t.Fatalf("audit missing host:export: %s", log)
+	}
+
+	// 撤回：注册行与组片段消失，落盘私钥保留。
+	runSSHCommand(t, hostUnexportCmd.RunE(&cobra.Command{}, nil))
+	if _, err := os.Stat(fragment); !os.IsNotExist(err) {
+		t.Fatalf("fragment must be removed: %v", err)
+	}
+	cfg, _ = os.ReadFile(filepath.Join(dir, ".ssh", "config"))
+	if strings.Contains(string(cfg), "Include ~/.ssh/senv/groups/*.conf") {
+		t.Fatalf("include line must be removed:\n%s", cfg)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		t.Fatalf("materialized key must survive unexport: %v", err)
+	}
+
+	// prune：未被引用的文件被清理，被引用私钥不动。
+	orphan := filepath.Join(dir, ".ssh", "senv", "keys", "_ungrouped", "orphan-key")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keypairPruneForce = true
+	t.Cleanup(func() { keypairPruneForce = false })
+	runSSHCommand(t, keypairPruneCmd.RunE(&cobra.Command{}, nil))
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan must be pruned: %v", err)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		t.Fatalf("referenced key must survive prune: %v", err)
+	}
+}
+
+func TestHostExportRejectsHostAndGroupTogether(t *testing.T) {
+	newSSHTestProject(t)
+	hostExportAlias = "web"
+	hostExportGroup = "prod"
+	t.Cleanup(func() { hostExportAlias, hostExportGroup = "", "" })
+	if err := hostExportCmd.RunE(&cobra.Command{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("mutual exclusion error = %v", err)
 	}
 }

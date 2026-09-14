@@ -343,14 +343,14 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 		t.Fatalf("m should stage materialize, mode=%v", tab.mode)
 	}
 	view := tab.View()
-	for _, want := range []string{filepath.Join(home, ".ssh", "senv", "web-key"), "0600"} {
+	for _, want := range []string{filepath.Join(home, ".ssh", "senv", "keys", "_ungrouped", "web-key"), "0600"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("materialize confirm missing %q:\n%s", want, view)
 		}
 	}
 	out, cmd := tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*keyPairTab)
-	target := filepath.Join(home, ".ssh", "senv", "web-key")
+	target := filepath.Join(home, ".ssh", "senv", "keys", "_ungrouped", "web-key")
 	info, err := os.Stat(target)
 	if err != nil {
 		t.Fatalf("materialized file missing: %v", err)

@@ -689,7 +689,7 @@ func (t *keyPairTab) enterMaterialize() (Tab, tea.Cmd) {
 	if !ok {
 		return t, warnToast("no keypair to materialize")
 	}
-	path, err := ssh.MaterializePath(key.Name)
+	path, err := ssh.MaterializePath(key.Group, key.Name)
 	if err != nil {
 		err := err
 		return t, func() tea.Msg { return errMsg{err: err} }

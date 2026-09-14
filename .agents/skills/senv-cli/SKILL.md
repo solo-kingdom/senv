@@ -31,7 +31,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
 - Linux 无安全内存存储时：交互式（TTY）`senv session start` 在检测失败后先弹 y/N 确认，同意即写磁盘逃生舱（密钥明文 0600，附一次警告）完成初始化，拒绝才报错；无 TTY（管道/CI）仍直接报错，须显式 `senv session start --insecure-cache`（密钥落盘 0600）。落盘仅在用户明确要求/确认时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
-- `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv keypair materialize`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
+- `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv host export`（应用模式）、`senv host unexport`、`senv keypair materialize`、`senv keypair prune`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
 ## 会话（session）
 
@@ -81,9 +81,9 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - `keypair` 只导入既有 private key，不生成新密钥：`senv keypair import <name> --file <private-key>`；`--group` 设单值归属分组（空 = 未分组，TUI KeyPair Tab 按组侧栏浏览）；`list` 只看指纹/元数据，有值时行尾展示 `group:<name>`。
 - `senv keypair rename <old> <new>` 在同一次 mutation 内原子改写引用它的 host `identityKey`；目标名已存在时拒绝且不写入。
-- `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/<name>`（目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件。
-- `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--group` 设单值归属分组（空 = 未分组，TUI 按组侧栏浏览）、`--tag` 加多值标注（可重复）；`senv host edit <alias> --group <g>` 免编辑器单字段改分组；`host list` 行尾展示 `group:<name>`（有值时），`host get` 展示 Group/Tags。`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
-- `senv host export [--host web] [--output <file>]` 渲染 OpenSSH config 片段，不输出 private key。写文件前先向用户确认目标路径。片段中 `IdentityFile` 指向的 keypair 不在本机 vault 时（如 host 档案先同步到、keypair 还没到），stderr 逐条 `warning: host <alias> 引用的 keypair <name> 不在本机 vault（可能尚未同步）`，片段照常生成；keypair 同步到并 materialize 后即可用。
+- `keypair materialize <name>` 会把 private key 明文写到 `~/.ssh/senv/keys/<分组>/<名>`（未分组入 `_ungrouped`；目录 0700、文件 0600）。仅在用户明确要求时使用；删除 vault 记录不会自动删除已落盘文件（用 `keypair prune` 清理未引用文件）。
+- `host` 管理结构化连接档案，可引用 keypair：`senv host add web --hostname ... --user ... --port ... --keypair web-key`；`--group` 设单值归属分组（空 = 未分组，TUI 按组侧栏浏览；组名禁止含 `/`）、`--tag` 加多值标注（可重复）；`senv host edit <alias> --group <g>` 免编辑器单字段改分组；`host list` 行尾展示 `group:<name>`（有值时），`host get` 展示 Group/Tags。`--attr`/host `extra` 按 OpenSSH 原样直传，不要接受不可信值。
+- `senv host export` 默认是**应用模式**：按分组整树维护 `~/.ssh/senv/`（`groups/<组>.conf` 组片段 + `keys/<组>/<名>` 落盘私钥），自动落盘缺失的被引用 keypair（已存在跳过不覆盖），并幂等注册 `~/.ssh/config` 顶部一行 `Include ~/.ssh/senv/groups/*.conf`——导出后 ssh 直接可用，无需手工接线。`--group <名>` 只重建该组片段；`--host <别名>` 重建其所在组整文件；组在 vault 消失时仅全量导出清理对应组片段。`--output <file>|-` 是纯渲染模式（stdout/文件片段，零副作用）。`senv host unexport` 摘除注册行并删除组片段（不碰 vault 与落盘私钥）；`senv keypair prune [--force]` 列出并清理未被任何 host 引用的落盘私钥（非交互终端必须 `--force`）。写文件类操作执行前先向用户确认。片段中 `IdentityFile` 指向的 keypair 不在本机 vault 时（如 host 档案先同步到、keypair 还没到），stderr 逐条 `warning: host <alias> 引用的 keypair <name> 不在本机 vault（可能尚未同步）`，片段照常生成（按未分组占位路径渲染），keypair 同步到后的下一次导出自动收敛。
 
 ## LLM Provider 与 coding agent
 
@@ -121,7 +121,7 @@ git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
 - token 存储：server token 存 `<configPath>/server-token.json`（0600，机器本地），**不在 settings.json**——settings.json 会被 git provider 同步，token 绝不能进 git 远端；`.gitignore`（覆盖 `server-token.json`、`mcp-exports.json`）自动生成，`git add` 亦有排除路径规格兜底。旧版 settings 内嵌 token 在下次读取时自动迁移。
-- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步；`~/.ssh/senv/` 下已 materialize 的落盘文件也是本机状态，需在新机器显式 materialize。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
+- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针与 MCP 导出台账是本机状态，不同步；`~/.ssh/senv/` 下已 materialize 的落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
 - senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：

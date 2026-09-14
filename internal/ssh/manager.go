@@ -87,10 +87,11 @@ func validateTags(tags []string) error {
 }
 
 // validateGroup rejects group values that could break the single-line JSON
-// record format. Empty (ungrouped) is valid.
+// record format or the grouped directory layout (ADR-0023): path separators
+// would escape keys/<组>/ and groups/<组>.conf. Empty (ungrouped) is valid.
 func validateGroup(group string) error {
-	if strings.ContainsAny(group, "\r\n\x00") {
-		return fmt.Errorf("group must not contain line separators or NUL")
+	if strings.ContainsAny(group, "\r\n\x00/") {
+		return fmt.Errorf("group must not contain line separators, NUL or '/'")
 	}
 	return nil
 }
@@ -310,23 +311,15 @@ func (m *Manager) RenameKeyPair(oldName, newName string) ([]string, error) {
 	return updated, nil
 }
 
-// MaterializePath is the stable public convention documented by ADR-0001.
-func MaterializePath(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".ssh", "senv", name), nil
-}
-
-// Materialize decrypts one private key into ~/.ssh/senv/<name>. Existing
-// files require force; the parent directory and file are created 0700/0600.
+// Materialize decrypts one private key into ~/.ssh/senv/keys/<分组>/<名>
+// (see MaterializePath). Existing files require force; the parent directory
+// and file are created 0700/0600.
 func (m *Manager) Materialize(name string, force bool) (string, error) {
 	entry, err := m.loadKeyPair(name)
 	if err != nil {
 		return "", err
 	}
-	target, err := MaterializePath(name)
+	target, err := MaterializePath(entry.Group, entry.Name)
 	if err != nil {
 		return "", err
 	}

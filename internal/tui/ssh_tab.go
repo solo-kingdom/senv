@@ -646,7 +646,13 @@ func (t *sshTab) doBatchExportHosts(dir string, aliases []string) tea.Cmd {
 		failed := 0
 		for _, alias := range aliases {
 			// TUI 不呈现缺失 keypair 的 warning（design Non-goal）
-			content, _, err := mgr.Export(alias)
+			rr, err := mgr.Render(ssh.RenderFilter{Host: alias})
+			var content string
+			if err == nil {
+				for _, g := range rr.Order {
+					content += rr.Fragments[g]
+				}
+			}
 			if err != nil {
 				failed++
 				continue
@@ -692,7 +698,13 @@ func (t *sshTab) enterExport() (Tab, tea.Cmd) {
 	}
 	return t, func() tea.Msg {
 		// TUI 预览不呈现缺失 keypair 的 warning（design Non-goal）
-		content, _, err := mgr.Export(alias)
+		rr, err := mgr.Render(ssh.RenderFilter{Host: alias})
+		var content string
+		if err == nil {
+			for _, g := range rr.Order {
+				content += rr.Fragments[g]
+			}
+		}
 		return sshExportMsg{label: label, content: content, err: err}
 	}
 }

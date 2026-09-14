@@ -126,8 +126,20 @@ _Avoid_: 展示名、备注名
 _Avoid_: identity 文件（指盘上路径时）、钥匙（单指私钥时）
 
 **落盘（Materialize）**:
-把 vault 内 KeyPair 的私钥写到 `~/.ssh/senv/` 的导出动作及其产物；落盘文件属本机状态，不同步、不被同步触碰。
+把 vault 内 KeyPair 的私钥按分组组织形式写到 `~/.ssh/senv/` 下的动作及其产物（分组目录布局取代 ADR-0001 的扁平 `~/.ssh/senv/<名>` 约定，见 ADR-0023）；落盘文件属本机状态，不同步、不被同步触碰。
 _Avoid_: 导出（指 host config 导出时）、解密（泛指时）
+
+**导出（Export）**:
+Host 配置离开 vault、进入本机 OpenSSH 配置体系的动作总称：默认应用模式写组片段、自动落盘被引用密钥、注册 Include；`--output -` 的 stdout 预览是其纯渲染子模式。
+_Avoid_: 落盘（指私钥写出时）、同步（指 vault 同步时）
+
+**组片段（Group Fragment）**:
+一个分组的 Host 渲染产物：一组一文件落于 `~/.ssh/senv/groups/`（未分组入 `_ungrouped.conf`），senv 完全拥有、不回读合并的派生产物。
+_Avoid_: 配置文件（泛指 `~/.ssh/config` 时）
+
+**撤回（Unexport）**:
+导出的逆动作：移除 `~/.ssh/config` 中的 senv 注册行并删除组片段；不删 vault 档案、不删落盘私钥。
+_Avoid_: 卸载（指 senv 自身或 MCP 安装时）、删除（指删档案/私钥时）
 
 **ProxyJump（跳板）**:
 经另一台 Host 中转连接目标 Host；其值必须引用已存在的 Host 别名。

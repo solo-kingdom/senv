@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -392,32 +393,207 @@ var hostDeleteCmd = &cobra.Command{
 
 var (
 	hostExportAlias string
+	hostExportGroup string
 	hostExportOut   string
 )
 
 var hostExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Render an OpenSSH config fragment",
-	Args:  cobra.NoArgs,
+	Short: "Apply host profiles to ~/.ssh/senv (render-only via --output)",
+	Long: `Export SSH host profiles into the local OpenSSH setup.
+
+By default (apply mode) export maintains the grouped layout under
+~/.ssh/senv/: per-group fragments in groups/, missing referenced private
+keys materialized into keys/<group>/, and a single glob Include line
+registered at the top of ~/.ssh/config. After it runs, ssh resolves the
+exported aliases directly — no manual wiring.
+
+  senv host export                # rebuild all group fragments
+  senv host export --group prod   # rebuild only groups/prod.conf
+  senv host export --host web     # rebuild the group fragment hosting web
+  senv host export --output -     # pure render to stdout, no side effects
+  senv host unexport              # withdraw: remove Include + group fragments`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if hostExportAlias != "" && hostExportGroup != "" {
+			return fmt.Errorf("--host and --group are mutually exclusive")
+		}
 		autoPull(cmd, refreshRequested(cmd))
 		mgr, err := getSSHManager()
 		if err != nil {
 			return err
 		}
-		config, warnings, err := mgr.Export(hostExportAlias)
+		filter := ssh.RenderFilter{Host: hostExportAlias, Group: hostExportGroup}
+		detail := "export"
+		switch {
+		case hostExportGroup != "":
+			detail = "export --group " + hostExportGroup
+		case hostExportAlias != "":
+			detail = "export --host " + hostExportAlias
+		}
+		if hostExportOut != "" {
+			// 纯渲染模式：片段到 stdout 或指定文件，零文件副作用。
+			rr, err := mgr.Render(filter)
+			if err != nil {
+				auditOp(session.AuditOpSSHHost, "host:export", false, detail+" --output 失败")
+				return err
+			}
+			var b strings.Builder
+			for _, group := range rr.Order {
+				fragment := rr.Fragments[group]
+				b.WriteString(fragment)
+				if !strings.HasSuffix(fragment, "\n") {
+					b.WriteString("\n")
+				}
+			}
+			if hostExportOut == "-" {
+				fmt.Print(b.String())
+			} else if err := storage.WriteSensitiveFile(hostExportOut, []byte(b.String()), 0o700, 0o600); err != nil {
+				auditOp(session.AuditOpSSHHost, "host:export", false, detail+" --output 失败")
+				return err
+			}
+			auditOp(session.AuditOpSSHHost, "host:export", true, detail+" --output")
+			return nil
+		}
+		res, applyErr := mgr.Apply(filter)
+		if res != nil {
+			printApplySummary(res)
+			for _, w := range res.Warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+			}
+		}
+		if applyErr != nil {
+			auditOp(session.AuditOpSSHHost, "host:export", false, detail+" 失败")
+			return applyErr
+		}
+		auditOp(session.AuditOpSSHHost, "host:export", true, detail)
+		return nil
+	},
+}
+
+var hostUnexportCmd = &cobra.Command{
+	Use:   "unexport",
+	Short: "Withdraw the export: remove the senv Include line and group fragments",
+	Long: `Remove the senv Include line from ~/.ssh/config and delete the group
+fragments under ~/.ssh/senv/groups/. Vault archives and materialized
+private keys under keys/ are left untouched (use keypair prune for those).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := getSSHManager()
 		if err != nil {
 			return err
 		}
-		for _, w := range warnings {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+		unregistered, groupsRemoved, err := mgr.Unexport()
+		if err != nil {
+			auditOp(session.AuditOpSSHHost, "host:unexport", false, "unexport 失败")
+			return err
 		}
-		if hostExportOut == "" {
-			fmt.Print(config)
+		if unregistered {
+			fmt.Println("✓ removed senv Include from ~/.ssh/config")
+		}
+		if groupsRemoved {
+			fmt.Println("✓ deleted group fragments under ~/.ssh/senv/groups")
+		}
+		if !unregistered && !groupsRemoved {
+			fmt.Println("nothing to unexport")
+		}
+		auditOp(session.AuditOpSSHHost, "host:unexport", true, "unexport")
+		return nil
+	},
+}
+
+var keypairPruneForce bool
+
+var keypairPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Delete materialized private keys that no host references",
+	Long: `List materialized private keys under ~/.ssh/senv/ that no host's
+identityKey references (including leftovers at old paths after a keypair
+changed groups) and delete them after confirmation.
+
+Files are only deleted after an explicit confirmation; in a non-interactive
+terminal re-run with --force. Vault archives are never touched.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := getSSHManager()
+		if err != nil {
+			return err
+		}
+		candidates, err := mgr.PruneCandidates()
+		if err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:prune", false, "prune 失败")
+			return err
+		}
+		if len(candidates) == 0 {
+			fmt.Println("no unreferenced materialized keys")
 			return nil
 		}
-		return storage.WriteSensitiveFile(hostExportOut, []byte(config), 0o700, 0o600)
+		for _, c := range candidates {
+			line := "  " + c.Path
+			if c.InVault {
+				line += " (keypair still in vault)"
+			}
+			fmt.Println(line)
+		}
+		if !keypairPruneForce {
+			if !stdinIsTerminal() {
+				err := fmt.Errorf("non-interactive terminal: re-run with --force to delete %d file(s)", len(candidates))
+				auditOp(session.AuditOpSSHKey, "keypair:prune", false, "prune 需 --force")
+				return err
+			}
+			fmt.Printf("delete %d file(s)? [y/N]: ", len(candidates))
+			var answer string
+			if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+				fmt.Println("aborted")
+				return nil
+			}
+			if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+				fmt.Println("aborted")
+				return nil
+			}
+		}
+		paths := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			paths = append(paths, c.Path)
+		}
+		deleted, err := ssh.DeletePrunedFiles(paths)
+		if err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:prune", false, "prune 失败")
+			return err
+		}
+		auditOp(session.AuditOpSSHKey, "keypair:prune", true, fmt.Sprintf("prune %d 个文件", len(deleted)))
+		fmt.Printf("✓ deleted %d file(s)\n", len(deleted))
+		return nil
 	},
+}
+
+// printApplySummary 输出应用导出的结果摘要（各节仅在有内容时出现）。
+func printApplySummary(res *ssh.ApplyResult) {
+	baseNames := func(paths []string) string {
+		names := make([]string, 0, len(paths))
+		for _, p := range paths {
+			names = append(names, filepath.Base(p))
+		}
+		return strings.Join(names, ", ")
+	}
+	if len(res.Written) > 0 {
+		fmt.Printf("✓ groups rewritten: %s\n", baseNames(res.Written))
+	}
+	if len(res.Pruned) > 0 {
+		fmt.Printf("✓ pruned stale fragments: %s\n", baseNames(res.Pruned))
+	}
+	if len(res.Materialized) > 0 {
+		fmt.Printf("✓ materialized keys: %s\n", strings.Join(res.Materialized, ", "))
+	}
+	if len(res.KeysSkipped) > 0 {
+		fmt.Printf("· skipped (already materialized): %s\n", strings.Join(res.KeysSkipped, ", "))
+	}
+	switch {
+	case res.Registered:
+		fmt.Println("✓ registered Include in ~/.ssh/config")
+	case res.IncludeExisted:
+		fmt.Println("· Include already registered in ~/.ssh/config")
+	}
 }
 
 func resolveHostKeypair(mgr *ssh.Manager, keypairName, keyFile, importName string) (string, error) {
@@ -482,8 +658,8 @@ func parseAttrs(values []string) (map[string]string, error) {
 
 func init() {
 	rootCmd.AddCommand(keypairCmd, hostCmd)
-	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairDeleteCmd)
-	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd)
+	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairPruneCmd, keypairDeleteCmd)
+	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd, hostUnexportCmd)
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")
 	keypairImportCmd.Flags().StringVar(&keypairImportGroup, "group", "", "keypair group (single value, empty = ungrouped)")
@@ -503,8 +679,10 @@ func init() {
 	hostAddCmd.Flags().StringSliceVar(&hostAddAttrs, "attr", nil, "extra OpenSSH key=value (repeatable)")
 	hostEditCmd.Flags().StringVar(&hostEditGroup, "group", "", "set the host group without launching the editor")
 	hostDeleteCmd.Flags().BoolVar(&hostForce, "force", false, "acknowledge deletion")
-	hostExportCmd.Flags().StringVar(&hostExportAlias, "host", "", "export only this host alias")
-	hostExportCmd.Flags().StringVar(&hostExportOut, "output", "", "write to a private file instead of stdout")
+	hostExportCmd.Flags().StringVar(&hostExportAlias, "host", "", "export only this host alias (apply mode: rebuild its group fragment)")
+	hostExportCmd.Flags().StringVar(&hostExportGroup, "group", "", "export only this host group (apply mode: rebuild only this group fragment)")
+	hostExportCmd.Flags().StringVar(&hostExportOut, "output", "", "render-only mode: write the fragment to this file ('-' for stdout), no side effects")
+	keypairPruneCmd.Flags().BoolVar(&keypairPruneForce, "force", false, "delete without interactive confirmation (required in non-interactive terminals)")
 	addRefreshFlag(keypairListCmd)
 	addRefreshFlag(hostListCmd)
 	addRefreshFlag(hostGetCmd)

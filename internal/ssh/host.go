@@ -140,8 +140,8 @@ func validateHost(host *storage.HostEntry) error {
 	if strings.ContainsAny(host.User, "\r\n\x00") {
 		return fmt.Errorf("host %q: user must not contain line separators or NUL", host.Alias)
 	}
-	if strings.ContainsAny(host.Group, "\r\n\x00") {
-		return fmt.Errorf("host %q: group must not contain line separators or NUL", host.Alias)
+	if err := validateGroup(host.Group); err != nil {
+		return fmt.Errorf("host %q: %w", host.Alias, err)
 	}
 	if err := validatePort(host.Port); err != nil {
 		return err
@@ -152,53 +152,9 @@ func validateHost(host *storage.HostEntry) error {
 	return validateExtra(host.Extra)
 }
 
-// Export renders an OpenSSH config fragment in a deterministic alias order.
-// The returned warnings list each IdentityKey reference whose target keypair
-// is not present in the local vault (per ADR-0020 D4, e.g. the host archive
-// has synced but the keypair has not); dangling references do not abort the
-// export. A failure to list local keypairs is a hard error, mirroring how
-// host listing failures are handled.
-func (m *Manager) Export(alias string) (string, []string, error) {
-	hosts, err := m.ListHosts()
-	if err != nil {
-		return "", nil, err
-	}
-	selected := make([]*storage.HostEntry, 0, len(hosts))
-	aliases := make(map[string]bool, len(hosts))
-	for _, host := range hosts {
-		aliases[host.Alias] = true
-		if alias == "" || host.Alias == alias {
-			selected = append(selected, host)
-		}
-	}
-	if alias != "" && !aliases[alias] {
-		return "", nil, fmt.Errorf("host %q not found", alias)
-	}
-	// keypair 名单来自目录列表，不逐 host 解密 keypair。
-	names, err := m.listKeyPairs()
-	if err != nil {
-		return "", nil, err
-	}
-	keypairNames := make(map[string]bool, len(names))
-	for _, name := range names {
-		keypairNames[name] = true
-	}
-	var warnings []string
-	var b strings.Builder
-	for _, host := range selected {
-		if host.ProxyJump != "" && !aliases[host.ProxyJump] {
-			return "", nil, fmt.Errorf("host %q has dangling proxyJump %q", host.Alias, host.ProxyJump)
-		}
-		if host.IdentityKey != "" && !keypairNames[host.IdentityKey] {
-			warnings = append(warnings, fmt.Sprintf("host %s 引用的 keypair %s 不在本机 vault（可能尚未同步）",
-				host.Alias, host.IdentityKey))
-		}
-		renderHost(&b, host)
-	}
-	return b.String(), warnings, nil
-}
-
-func renderHost(b *strings.Builder, host *storage.HostEntry) {
+// renderHost writes one Host block; identityPath is the precomputed
+// MaterializePath of the host's keypair ("" when the host has none).
+func renderHost(b *strings.Builder, host *storage.HostEntry, identityPath string) {
 	fmt.Fprintf(b, "Host %s\n", host.Alias)
 	if host.Hostname != "" {
 		fmt.Fprintf(b, "  HostName %s\n", host.Hostname)
@@ -212,10 +168,8 @@ func renderHost(b *strings.Builder, host *storage.HostEntry) {
 	if host.ProxyJump != "" {
 		fmt.Fprintf(b, "  ProxyJump %s\n", host.ProxyJump)
 	}
-	if host.IdentityKey != "" {
-		if path, err := MaterializePath(host.IdentityKey); err == nil {
-			fmt.Fprintf(b, "  IdentityFile %s\n", path)
-		}
+	if identityPath != "" {
+		fmt.Fprintf(b, "  IdentityFile %s\n", identityPath)
 	}
 	keys := make([]string, 0, len(host.Extra))
 	for key := range host.Extra {
