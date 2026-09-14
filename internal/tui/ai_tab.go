@@ -394,8 +394,10 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		if out.CredentialEnv != "" {
 			notice += fmt.Sprintf("; %s reads credentials from env %s", out.AgentName, out.CredentialEnv)
 		}
+		// 全部 warning 都要可见：凭据组未激活、名字被占用、模型元数据缺失等提示
+		// 被截断等于静默坏状态。
 		if len(out.Warnings) > 0 {
-			notice += "; " + out.Warnings[0]
+			notice += "; " + strings.Join(out.Warnings, "; ")
 		}
 		return t, tea.Batch(okToast(notice), t.load())
 

@@ -45,7 +45,12 @@ native config files are merged in one transaction, rewritten with temporary
 backups, and backups are removed after the pointer is committed.
 
 Supported agents: claude-code, codex, kimi, pi, opencode. Codex reads its
-credential from an environment variable, so the key never touches its config.
+credential from an environment variable whose name senv picks so that
+"senv env export" already provides it: an env:<group>/<key> credential reuses
+<key> unchanged; a text:<group>/<key> credential gets SENV_<ALIAS>_API_KEY
+plus a reference entry in the default env group. The key itself never touches
+the codex config, and the credential must still exist locally (switch fails
+closed otherwise).
 
 --models picks the Agent model set (= the subset the agent's own model picker
 offers); it accepts a comma-separated list and may be repeated, and defaults to
@@ -80,14 +85,16 @@ OpenAI-compatible agents with it.`,
 			fmt.Sprintf("default:%s models:%d", out.DefaultModel, len(out.Models)))
 		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（默认模型 %s，共 %d 个模型）\n  接入地址：%s\n  配置：%s\n",
 			out.AgentName, out.Provider, out.DefaultModel, len(out.Models), out.BaseURL, out.ConfigPath)
+		// 凭据环境变量名是切换结果的确定性事实（env: 引用复用被引用 key 名，
+		// text: 引用由默认组引用条目兜底），因此走 stdout 的普通信息行；需要用户
+		// 动作的情形（组未激活、名字被占用）在下方 warnings 里逐条提示。
+		if out.CredentialEnv != "" {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"  凭据环境变量：%s（由 `senv env export` 提供，配置文件不含明文）\n", out.CredentialEnv)
+		}
 		if len(out.Models) > aiSwitchModelSetHint {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  提示：模型集有 %d 个模型，可用 --models m1,m2 只写入需要的子集\n", len(out.Models))
-		}
-		if out.CredentialEnv != "" {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"⚠ %s 从环境变量读取凭据（不写入配置文件）：请确保 %s 已设置，可用 senv env 能力在启动该 agent 的环境中暴露\n",
-				out.AgentName, out.CredentialEnv)
 		}
 		for _, w := range out.Warnings {
 			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ %s\n", w)

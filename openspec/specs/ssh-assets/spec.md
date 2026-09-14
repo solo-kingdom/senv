@@ -214,6 +214,70 @@
 #### Scenario: 未确认不删除
 - **WHEN** 用户执行 `senv keypair prune` 后未确认
 - **THEN** 系统 MUST NOT 删除任何文件
+### Requirement: TUI 导出撤回与私钥清理
+
+TUI SHALL 为两条 CLI 管理命令补齐入口，语义与 CLI 逐一等价。SSH Tab SHALL 提供 `u`（unexport）键：按键后系统 SHALL 先只读预检（`~/.ssh/config` 的 senv 注册行是否在位、`~/.ssh/senv/groups/` 下组片段数），无可撤回项时 toast 告知且不进确认框；否则 SHALL 弹确认框，逐项列出将发生的动作——移除 senv Include 注册行（仅在位时）、删除 N 个组片段（仅 fragments>0 时，N 实填）、并明示「`~/.ssh/senv/keys/` 下落盘私钥保留」；`enter/y` 确认后异步执行与 CLI `senv host unexport` 同一 `Manager.Unexport` 编排，`esc/n` 取消且零副作用。KeyPair Tab SHALL 提供 `p`（prune）键：按键后异步取候选清单，非空时 SHALL 先弹列表（逐条路径，vault 中仍有对应 keypair 的标注 `(keypair still in vault)`）再于同屏请求确认；`enter/y` 确认后异步删除与 CLI `senv keypair prune` 同一 `PruneCandidates`/`DeletePrunedFiles` 白名单集合，`esc/n` 取消且 MUST NOT 删除任何文件。两操作 MUST NOT 触碰 vault 档案；prune 的删除集合 MUST NOT 包含被任何 host 引用的落盘私钥。两入口执行后 SHALL 以 toast 报告实际结果（撤回了几项/删除了几个文件）并记录本机操作审计。
+
+#### Scenario: SSH Tab 撤回已应用的导出
+- **WHEN** 已应用导出（注册行在位、`groups/` 有 3 个片段），用户在 SSH Tab 按 `u`，确认框按 `y`
+- **THEN** 系统 SHALL 异步执行 unexport：`~/.ssh/config` 的 senv Include 行被移除（其余内容不动并留 `.senv-bak`），3 个组片段被删除，`keys/` 下落盘私钥与 vault 档案原样保留，toast 报告实际撤回项并记 `op_ssh_host` 审计
+
+#### Scenario: SSH Tab 无可撤回项
+- **WHEN** 本无注册行且 `groups/` 无片段，用户在 SSH Tab 按 `u`
+- **THEN** 系统 SHALL toast 告知 nothing to unexport，不弹确认框、不产生任何文件副作用
+
+#### Scenario: SSH Tab 取消撤回
+- **WHEN** 用户在 unexport 确认框按 `esc`/`n`
+- **THEN** 系统 MUST NOT 改动 `~/.ssh/config` 与 `groups/`，返回 normal mode
+
+#### Scenario: KeyPair Tab 清理未引用私钥
+- **WHEN** `keys/` 下存在 2 个未被任何 host 引用的落盘私钥（其中 1 个对应 keypair 仍在 vault），用户在 KeyPair Tab 按 `p`，列表逐条展示路径与 `(keypair still in vault)` 标注，用户按 `y` 确认
+- **THEN** 系统 SHALL 异步删除该 2 个文件并 toast `deleted 2 file(s)`，被引用 keypair 的落盘文件与 vault 均无变化，记 `op_ssh_keypair` 审计
+
+#### Scenario: KeyPair Tab 无候选可清理
+- **WHEN** 所有落盘私钥均被 host 引用，用户按 `p`
+- **THEN** 系统 SHALL toast 提示无可清理项，不弹列表、不删除任何文件
+
+#### Scenario: KeyPair Tab 取消清理
+- **WHEN** 用户在 prune 列表确认屏按 `esc`/`n`
+- **THEN** 系统 MUST NOT 删除任何文件，返回 normal mode
+
+#### Scenario: prune 部分删除失败
+- **WHEN** 确认删除后其中 1 个文件因权限缺失删除失败
+- **THEN** 系统 SHALL 保留已删结果不回滚，以警告呈现 `deleted N-1 of N` 与错误原因，列表刷新反映实际删除并记失败审计
+
+### Requirement: TUI 应用导出（Apply）
+
+SSH Tab SHALL 提供 `A`（apply）键执行应用导出，与 CLI `senv host export` 同一 `Manager.Apply` 编排：host 栏聚焦时重建当前 host 所在组的整组片段；分组侧栏聚焦时重建选中组（「All」伪组 = 全量重建并清理幽灵组片段）。执行前 SHALL 弹确认框，列出将写入的组片段数、待落盘私钥数、Include 注册状态与 warning 计数；`enter/y` 确认执行，`esc/n` 取消且不产生任何副作用。结果 SHALL 以摘要 toast 呈现（重建/落盘/跳过/注册各项计数）。批量导出（`x` 多选）的输出目录表单与单条导出（预览后 `w`）的目标文件表单 MUST 拒绝 `~/.ssh/senv/` 内部路径（含 `groups/` 与 `keys/`），报错提示改用 `A` 应用导出——该目录树由 apply 全权拥有，外来文件会被幽灵清理删除。
+
+#### Scenario: host 栏 apply 重建所在组
+- **WHEN** 用户在 host 栏选中 host `web`（属组 `prod`）按 `A`，确认框列出 1 个组片段与待落盘密钥数，用户按 `y`
+- **THEN** 系统 SHALL 调 `Apply({Host: "web"})` 重建 `groups/prod.conf`、落盘缺失私钥并保证 Include 注册，toast 展示摘要
+
+#### Scenario: 侧栏按组 apply
+- **WHEN** 用户在分组侧栏选中组 `prod` 按 `A` 并确认
+- **THEN** 系统 SHALL 调 `Apply({Group: "prod"})` 只重建 `groups/prod.conf`，其余组片段不动
+
+#### Scenario: 侧栏 All 全量 apply
+- **WHEN** 用户在侧栏选中「All」按 `A` 并确认
+- **THEN** 系统 SHALL 调 `Apply({})` 全量重建全部组片段并清理 vault 中已消失组的幽灵片段
+
+#### Scenario: 取消无副作用
+- **WHEN** 用户在确认框按 `esc`/`n`
+- **THEN** 系统 MUST NOT 写任何组片段、私钥或 ssh config
+
+#### Scenario: 批量导出目录防护
+- **WHEN** 用户在批量导出表单的输出目录填入 `~/.ssh/senv/groups` 或 `~/.ssh/senv` 下任意路径并提交
+- **THEN** 表单 SHALL 内联报错拒绝，提示该目录由 `A` 应用导出维护，应改用用户自有目录
+
+#### Scenario: 单条导出目标文件防护
+- **WHEN** 用户在单条导出的写文件表单中把目标文件填进 `~/.ssh/senv/` 内任意位置
+- **THEN** 表单 SHALL 内联报错拒绝，提示改用 `A` 应用导出或另选用户自有路径
+
+#### Scenario: 确认框呈现 warning 计数
+- **WHEN** 待导出的 host 引用了本机 vault 缺失的 keypair，或落盘上存在未引用私钥
+- **THEN** 确认框 SHALL 显示 warning 计数（明细在 CLI `senv host export` 可见），执行后 toast 保留该计数
+
 ### Requirement: TUI 编辑与 MCP 只读集成
 
 TUI SHALL 提供 host 与 keypair 的完整编辑板块，分属两个 Tab：SSH Tab 负责浏览、新建、编辑、删除 host 与导出 OpenSSH 片段；KeyPair Tab（独立 Tab，紧随 SSH Tab）负责导入、重命名、删除、materialize keypair 及分组管理。私钥内容 SHALL 始终遮蔽（仅展示指纹/公钥摘要），明文 MUST NOT 进入 TUI 状态或渲染输出。host 列表 SHALL 显示其关联的 keypair 名称与指纹摘要。编辑 host 时关联 keypair SHALL 通过选择器完成，引用的 keypair 不存在时 MUST 拒绝保存。MCP SHALL 保持只读：提供 host 列表/详情工具，MUST NOT 提供返回私钥明文的工具。
@@ -331,7 +395,7 @@ SSH Tab 的 `/` 过滤 SHALL 匹配 alias、hostname、tags 与 group 四个维�
 - **THEN** SSH 类目的结果 SHALL 包含 tags 含 `gpu` 的 Host
 
 ### Requirement: KeyPair 分组字段
-`KeyPairEntry` SHALL 包含单值 `group` 字段（空 = 未分组），语义与 Host 的 `group` 一致：组织维度，同时参与落盘与导出 `IdentityFile` 路径推导（`~/.ssh/senv/keys/<group>/<名>`）；group 值禁止包含 `/`，写入与编辑时校验。既有数据（无 `group` 字段）SHALL 按未分组处理，读写兼容。
+`KeyPairEntry` SHALL 包含单值 `group` 字段（空 = 未分组），语义与 Host 的 `group` 一致：组织维度，同时参与落盘与导出 `IdentityFile` 路径推导（`~/.ssh/senv/keys/<group>/<名>`）；group 值禁止包含 `/`，写入与编辑时校验。既有数据（无 `group` 字段）SHALL 按未分组处理，读写兼容。CLI SHALL 提供 `senv keypair edit <name> --group <group>` 作为分组编辑入口（`--group` 显式变更时单字段更新、不启编辑器；空值 = 清除分组），与 TUI KeyPair Tab `e` 等价；未显式变更 `--group` 时命令 SHALL 报错拒绝执行。
 
 #### Scenario: 既有 keypair 无 group 字段
 - **WHEN** 读取旧版本写入的 keypair（无 `group` 字段）
@@ -340,6 +404,26 @@ SSH Tab 的 `/` 过滤 SHALL 匹配 alias、hostname、tags 与 group 四个维�
 #### Scenario: 分组名含路径分隔符
 - **WHEN** `senv keypair import web-key --file ... --group a/b` 或编辑为含 `/` 的组名
 - **THEN** 系统 SHALL 报错拒绝写入
+
+#### Scenario: CLI 编辑 keypair 分组
+- **WHEN** 用户执行 `senv keypair edit web-key --group prod`
+- **THEN** keypair `web-key` 的 group SHALL 更新为 `prod`，`senv keypair list` 输出展示该分组，私钥与公钥材料 MUST NOT 变动
+
+#### Scenario: CLI 清除 keypair 分组
+- **WHEN** 用户执行 `senv keypair edit web-key --group ""`
+- **THEN** group SHALL 置空（未分组），后续 materialize 落盘路径按 `_ungrouped` 推导
+
+#### Scenario: CLI 编辑为非法分组名
+- **WHEN** 用户执行 `senv keypair edit web-key --group a/b`
+- **THEN** 系统 SHALL 报错拒绝写入，原 group 保持不变
+
+#### Scenario: CLI 编辑不存在的 keypair
+- **WHEN** 用户执行 `senv keypair edit nope --group prod`，keypair `nope` 不存在
+- **THEN** 系统 SHALL 报错且不产生任何存储变更
+
+#### Scenario: CLI 未指定 --group
+- **WHEN** 用户执行 `senv keypair edit web-key`（未显式变更 `--group`）
+- **THEN** 系统 SHALL 报错提示用法，不进入编辑器、不产生任何存储变更
 
 ### Requirement: TUI KeyPair Tab 分组侧栏
 TUI SHALL 提供独立 KeyPair Tab（`mgr.SSH` 非空时注册，紧随 SSH Tab），布局为「分组侧栏 → KeyPair 列表」两栏，与 Env/Text/Config 分组交互一致。侧栏 SHALL 包含「All」伪组置顶、各组按组名字母序展示条目数、空 group 的 KeyPair 归入「未分组」组置底且仅在有未归类 KeyPair 时出现。列表内 KeyPair 按名字典序排列，行内 SHALL 展示指纹摘要与被 Host 引用计数（`被 N 个 Host 引用`）；零引用的 KeyPair SHALL 灰显「未被引用」，引用计数 MUST NOT 改变排序。`/` SHALL 按名称过滤。

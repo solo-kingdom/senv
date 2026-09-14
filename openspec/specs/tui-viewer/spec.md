@@ -358,6 +358,14 @@ TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与�
 - **WHEN** 任一 Tab 的键位总览列出某按键与动作
 - **THEN** 在该 Tab 按下该键执行所述动作；同一动作（如重命名、刷新）在所有列表 Tab 使用同一按键
 
+#### Scenario: 多选键全部列出
+- **WHEN** 用户在 Env/Text/Config/SSH/MCP 列表 Tab 打开键位总览
+- **THEN** 总览与底栏列出 `space`（勾选/取消）与 `a`（全选当前过滤可见集），与这些 Tab 分发处理的多选按键一致
+
+#### Scenario: 确认态强制键列出
+- **WHEN** 用户在 KeyPair Tab 对仍被引用的 keypair 按 `d` 进入删除确认页后打开键位总览
+- **THEN** 总览列出 `F`（强制删除并清除 host 引用），与确认页内提示的按键一致
+
 ### Requirement: 面板内容截断与详情
 
 TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与详情行 SHALL 在面板宽度内截断（超长以 `…` 结尾），完整内容 SHALL 通过 `enter` 打开的详情弹层查看。任何面板 MUST NOT 因长值（base_url、模型列表、hostname、路径）而撑高或折行。

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -244,7 +245,7 @@ func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
-	if len(out.Warnings) == 0 || !strings.Contains(out.Warnings[0], "edit") {
+	if len(out.Warnings) == 0 || !anyWarningContains(out.Warnings, "edit") {
 		t.Fatalf("warnings = %v, want edit hint", out.Warnings)
 	}
 
@@ -471,13 +472,27 @@ func TestSwitchValidationFailures(t *testing.T) {
 }
 
 func TestSwitchCodexGuidesEnvVar(t *testing.T) {
-	sm, _ := newTestSwitchManager(t)
-	out, err := sm.Switch("codex", "main", []string{"m2"}, "m2")
+	pm, store, _ := newTestProviderManager(t)
+	addTestProvider(t, pm, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com",
+		APIKey: "sk-secret", Models: []string{"m1", "m2"}, DefaultModel: "m1",
+	})
+	home := t.TempDir()
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", []string{"m2"}, "m2")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	if out.CredentialEnv != "SENV_MAIN_API_KEY" {
 		t.Fatalf("CredentialEnv = %q", out.CredentialEnv)
+	}
+	// env_key 必须等于切换输出的确切名字（ADR-0024）。
+	if got := codexEnvKeyIn(t, out.ConfigPath, "main"); got != out.CredentialEnv {
+		t.Fatalf("env_key = %q, CredentialEnv = %q", got, out.CredentialEnv)
+	}
+	// 自有凭据（text:）场景必须留下可被导出的兜底条目。
+	seed, err := env.NewManager(store, "test-password").Get(storage.ConfigDefaultGroup, out.CredentialEnv)
+	if err != nil || seed != "{{text:llm-keys:main}}" {
+		t.Fatalf("seed = %q, err = %v", seed, err)
 	}
 	if strings.Contains(string(mustRead(t, out.ConfigPath)), "sk-secret") {
 		t.Fatal("codex config contains plaintext key")

@@ -1,7 +1,10 @@
-## ADDED Requirements
+# text-storage Specification
 
+## Purpose
+提供以分组为目录的多类型加密文本存储，涵盖 set/get/delete/list/import/export 子命令、文件落盘安全、引用模板与 key/group 命名规则，并与 env 一致地拒绝 `:` 字符的 key/group 名。
+## Requirements
 ### Requirement: Text CRUD with group support
-系统 SHALL 提供 `senv text` 命令组，通过 `-g` flag 指定 group（默认 `default`），支持以下子命令：`set`、`get`、`delete`、`list`。group SHALL 作为目录名（`dataPath/texts/{group}/`），每个 text 条目 SHALL 存储为独立加密文件（`{key}.enc`）。
+系统 SHALL 提供 `senv text` 命令组，通过 `-g` flag 指定 group（默认 `default`），支持以下子命令：`set`、`get`、`delete`、`list`、`import`、`export`。group SHALL 作为目录名（`dataPath/texts/{group}/`），每个 text 条目 SHALL 存储为独立加密文件（`{key}.enc`）。`import` SHALL 从 `--file` 读取文件内容加密入库（源文件保持不动）；目标 key 已存在时 SHALL 覆盖现有值并刷新 `updated_at`（与 TUI 文件导入同语义）；`--file` 为必填项，缺失时 MUST 报错且不回落 stdin/编辑器。
 
 #### Scenario: Set text with inline value
 - **WHEN** 用户执行 `senv text -g notes set README "hello world"`
@@ -42,6 +45,18 @@
 #### Scenario: List texts in group
 - **WHEN** 用户执行 `senv text -g notes list`
 - **THEN** 系统 SHALL 显示该 group 下所有 key 的元信息（key 名、大小、更新时间）
+
+#### Scenario: Import text from file
+- **WHEN** 用户执行 `senv text import notes:README --file ./README.md`
+- **THEN** 系统 SHALL 读取文件内容加密存储到 `dataPath/texts/notes/README.enc`，源文件保持不动
+
+#### Scenario: Import over existing key
+- **WHEN** `notes:README` 已存在，用户执行 `senv text import notes:README --file ./README.md`
+- **THEN** 系统 SHALL 覆盖现有值为文件内容并刷新 `updated_at`，不提示确认
+
+#### Scenario: Import with nonexistent file
+- **WHEN** 用户执行 `senv text import notes:README --file /no/such/file.md`
+- **THEN** 系统 SHALL 报错且不产生任何存储变更
 
 ### Requirement: Text value size limit
 系统 SHALL 限制单个 text 值不超过 512KB。超过限制时 MUST 报错并拒绝存储。
@@ -134,7 +149,7 @@
 
 ### Requirement: Text 明文文件导出安全
 
-`text get -o` 与 TUI text 导出 SHALL 在写入前展开 `~`，使用平台路径语义解析 basename、相对子目录和绝对路径，并以安全原子写输出明文。默认 mode MUST 为 0600；覆盖既有普通文件时 MUST 收紧至 0600，除非用户在该次 CLI 操作中显式指定其他受支持 mode。
+`text get -o`、`text export` 与 TUI text 导出 SHALL 在写入前展开 `~`，使用平台路径语义解析 basename、相对子目录和绝对路径，并以安全原子写输出明文。默认 mode MUST 为 0600；覆盖既有普通文件时 MUST 收紧至 0600，除非用户在该次 CLI 操作中显式指定其他受支持 mode。
 
 #### Scenario: basename 导出
 - **WHEN** 用户执行 `senv text get secrets:PRIVATE_KEY -o key.pem`
@@ -155,6 +170,14 @@
 #### Scenario: 目标或父目录是符号链接
 - **WHEN** 输出目标或从可信父目录到目标的路径包含符号链接
 - **THEN** 导出被拒绝，链接目标内容保持不变
+
+#### Scenario: CLI export 命令导出明文
+- **WHEN** 用户执行 `senv text export secrets:PRIVATE_KEY --path key.pem`
+- **THEN** 系统 SHALL 在当前目录原子写入 0600 的 `key.pem`，内容 SHALL 为 vault 解密值的逐字节原文（不经引用解析），输出仅提示路径、MUST NOT 回显明文内容
+
+#### Scenario: CLI export 不存在的 key
+- **WHEN** 用户执行 `senv text export notes:NOPE --path out.txt`，key `NOPE` 不存在
+- **THEN** 系统 SHALL 报错且不创建 `out.txt`
 
 ### Requirement: Text 导出 mode 必须显式且有效
 

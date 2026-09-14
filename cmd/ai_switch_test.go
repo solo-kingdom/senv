@@ -11,7 +11,9 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
+	"github.com/wii/senv/internal/storage"
 )
 
 // setAISwitchFlags 模拟一次命令行解析结果：直接设置 flag 变量与 Changed
@@ -178,12 +180,17 @@ func TestAISwitchCodexNoSecretAndGuidance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	_, errOut, err := runAISwitchCmd(t, aiSwitchCmd, []string{"codex", "main"})
+	stdout, errOut, err := runAISwitchCmd(t, aiSwitchCmd, []string{"codex", "main"})
 	if err != nil {
 		t.Fatalf("switch: %v", err)
 	}
-	if !strings.Contains(errOut, "SENV_MAIN_API_KEY") {
-		t.Fatalf("stderr guidance missing env var name: %q", errOut)
+	// 名字走 stdout 信息行（不再要求用户手工设置）。
+	if !strings.Contains(stdout, "凭据环境变量：SENV_MAIN_API_KEY") {
+		t.Fatalf("stdout missing credential env name: %q", stdout)
+	}
+	// 自有凭据场景的兑底写入在 stderr 告知（vault 变更可见）。
+	if !strings.Contains(errOut, "SENV_MAIN_API_KEY") || !strings.Contains(errOut, "senv env export") {
+		t.Fatalf("stderr missing seed notice: %q", errOut)
 	}
 	cfg, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
 	if err != nil {
@@ -380,4 +387,99 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return data
+}
+
+// addAIProviderWithKeyRefForSwitchTest 建一个以外部引用（env:/text:）取凭据的
+// 档案，复用 provider add 的既有测试脚手架。
+func addAIProviderWithKeyRefForSwitchTest(t *testing.T, alias, keyRef string) {
+	t.Helper()
+	writeAIProviderTestCatalog(t)
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddCatalog = "p1"
+		providerAddDefault = "m1"
+		providerAddKeyRef = keyRef
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{alias}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+}
+
+// codexEnvKeyOf 读取 codex 配置里 senv provider 的 env_key。
+func codexEnvKeyOf(t *testing.T, configPath, alias string) string {
+	t.Helper()
+	var config map[string]any
+	if err := toml.Unmarshal(mustReadFile(t, configPath), &config); err != nil {
+		t.Fatalf("parse codex TOML: %v", err)
+	}
+	providers, _ := config["model_providers"].(map[string]any)
+	provider, _ := providers["senv-"+alias].(map[string]any)
+	key, _ := provider["env_key"].(string)
+	return key
+}
+
+// TestAISwitchCodexReusesReferencedEnvName 覆盖 ADR-0024 的主路径：env: 引用
+// 复用被引用 key 名，切换不写 vault、不产生 warning，`senv env export` 已提供。
+func TestAISwitchCodexReusesReferencedEnvName(t *testing.T) {
+	cfg, data := newAuditTestProject(t)
+	em := env.NewManager(storage.NewManager(cfg, data), "audit-password")
+	if err := em.Set("ai", "DEEPSEEK_API_KEY", "sk-env-value"); err != nil {
+		t.Fatalf("env set: %v", err)
+	}
+	if err := em.ActivateGroup("ai"); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	addAIProviderWithKeyRefForSwitchTest(t, "deepseek", "env:ai/DEEPSEEK_API_KEY")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	stdout, errOut, err := runAISwitchCmd(t, aiSwitchCmd, []string{"codex", "deepseek"})
+	if err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if !strings.Contains(stdout, "凭据环境变量：DEEPSEEK_API_KEY") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if strings.TrimSpace(errOut) != "" {
+		t.Fatalf("unexpected warning: %q", errOut)
+	}
+	if got := codexEnvKeyOf(t, filepath.Join(home, ".codex", "config.toml"), "deepseek"); got != "DEEPSEEK_API_KEY" {
+		t.Fatalf("env_key = %q", got)
+	}
+	vars, _, err := em.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if _, ok := vars["default"]["DEEPSEEK_API_KEY"]; ok {
+		t.Fatal("switch added an env entry although the referenced name is already exported")
+	}
+}
+
+// TestAISwitchCodexWarnsOnInactiveCredentialGroup：引用组未激活时给出可操作的
+// 激活命令，而不是含糊提示。
+func TestAISwitchCodexWarnsOnInactiveCredentialGroup(t *testing.T) {
+	cfg, data := newAuditTestProject(t)
+	em := env.NewManager(storage.NewManager(cfg, data), "audit-password")
+	if err := em.Set("dev", "APP_KEY", "sk-dev"); err != nil {
+		t.Fatalf("env set: %v", err)
+	}
+	addAIProviderWithKeyRefForSwitchTest(t, "stag", "env:dev/APP_KEY")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	stdout, errOut, err := runAISwitchCmd(t, aiSwitchCmd, []string{"codex", "stag"})
+	if err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if !strings.Contains(stdout, "凭据环境变量：APP_KEY") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if !strings.Contains(errOut, "senv env group activate dev") {
+		t.Fatalf("stderr = %q, want the activation command", errOut)
+	}
+	if got := codexEnvKeyOf(t, filepath.Join(home, ".codex", "config.toml"), "stag"); got != "APP_KEY" {
+		t.Fatalf("env_key = %q", got)
+	}
 }

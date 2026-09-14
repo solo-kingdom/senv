@@ -15,7 +15,10 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/wii/senv/internal/agentcfg"
+	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/storage"
+	"github.com/wii/senv/internal/text"
 )
 
 // CredentialMode 描述该 agent 凭据的归宿。
@@ -83,7 +86,8 @@ func senvProviderID(alias string) string {
 	return "senv-" + sanitizeKey(alias)
 }
 
-// senvEnvKeyName 返回 senv 管理的凭据环境变量名（codex 等需要 env 的 agent）。
+// senvEnvKeyName 返回 senv 派生的凭据环境变量名：只在凭据没有可复用的
+// 环境变量名时使用（`text:` 引用，见 codexEnvPlanFor）。
 func senvEnvKeyName(alias string) string {
 	return "SENV_" + strings.ToUpper(strings.ReplaceAll(sanitizeKey(alias), "-", "_")) + "_API_KEY"
 }
@@ -101,6 +105,49 @@ func sanitizeKey(alias string) string {
 		}
 	}
 	return b.String()
+}
+
+// parseCredentialRef 把档案凭据引用拆解为 kind/group/key（env:<g>/<k> 或
+// text:<g>/<k>）；解析失败返回档案引用不支持的同一类错误。
+func parseCredentialRef(ref string) (kind, group, key string, err error) {
+	kind, rest, ok := strings.Cut(ref, ":")
+	if !ok {
+		return "", "", "", fmt.Errorf("unsupported credential ref %q", ref)
+	}
+	group, key, ok = strings.Cut(rest, "/")
+	if !ok || group == "" || key == "" {
+		return "", "", "", fmt.Errorf("unsupported credential ref %q", ref)
+	}
+	return kind, group, key, nil
+}
+
+// codexEnvPlan 描述 codex 的 env_key 名决议结果（ADR-0024）。
+type codexEnvPlan struct {
+	// Name 是写进 env_key 的环境变量名。
+	Name string
+	// SeedRef 非空表示该名字默认不由 vault 提供，需要在默认 env 组补一条值为
+	// SeedRef 的引用条目，使 `senv env export` 能提供该名字。
+	SeedRef string
+}
+
+// codexEnvPlanFor 决定 codex 的 env_key 名：
+//   - env:<g>/<k> → <k>：这正是 `senv env export` 已经提供给 shell 的名字，
+//     切换无需写任何 vault 条目；
+//   - text:<g>/<k>（含 alias 规范引用 text:llm-keys/<alias>）→ alias 派生名，
+//     由 ensureCodexEnvName 在默认组补一条指向该条目的引用条目。
+func codexEnvPlanFor(entry *storage.LLMProviderEntry, alias string) (codexEnvPlan, error) {
+	kind, group, key, err := parseCredentialRef(entry.CredentialRef)
+	if err != nil {
+		return codexEnvPlan{}, err
+	}
+	switch kind {
+	case "env":
+		return codexEnvPlan{Name: key}, nil
+	case "text":
+		return codexEnvPlan{Name: senvEnvKeyName(alias), SeedRef: "{{text:" + group + ":" + key + "}}"}, nil
+	default:
+		return codexEnvPlan{}, fmt.Errorf("unsupported credential ref %q", entry.CredentialRef)
+	}
 }
 
 // SupportedAgents 返回全部受支持的 agent 适配器（稳定顺序）。
@@ -853,8 +900,10 @@ func (sm *SwitchManager) resolvePaths() (string, string, error) {
 // 后（凭据本体不出机），引用指向的条目可能尚未在本机——缺失时错误需指明
 // 完整引用名与修复指引，而不是笼统的解密失败。
 func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (string, error) {
-	kind, rest, _ := strings.Cut(entry.CredentialRef, ":")
-	group, key, _ := strings.Cut(rest, "/")
+	kind, group, key, err := parseCredentialRef(entry.CredentialRef)
+	if err != nil {
+		return "", err
+	}
 	switch kind {
 	case "text":
 		tm := pm.textManager()
@@ -938,11 +987,28 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		}
 	}
 
-	credential := reqCredential(adapter, providerAlias)
+	// 凭据决议先于任何写回：Inline 族取明文，EnvVar 族（codex）取 env_key 名并
+	// 保证该名字可由 `senv env export` 提供（ADR-0024）。两族都必须解密凭据以
+	// 校验条目在本机存在（ADR-0019 fail-closed），EnvVar 族不落任何明文。
+	var credentialWarnings []string
+	credential := ""
 	if adapter.Credential == CredentialInline {
 		if credential, err = resolveCredential(entry, sm.providerManager); err != nil {
 			return nil, err
 		}
+	} else {
+		plain, err := resolveCredential(entry, sm.providerManager)
+		if err != nil {
+			return nil, err
+		}
+		plan, err := codexEnvPlanFor(entry, providerAlias)
+		if err != nil {
+			return nil, err
+		}
+		if credentialWarnings, err = sm.ensureCodexEnvName(plan, plain); err != nil {
+			return nil, err
+		}
+		credential = plan.Name
 	}
 
 	// 档案接入地址统一按 OpenAI 兼容形态落库，写进配置前按该 agent 的协议族
@@ -1039,7 +1105,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	if adapter.Credential == CredentialEnvVar {
 		out.CredentialEnv = credential
 	}
-	out.Warnings = metadataDeclarationWarnings(agentModels, req.ModelMetadata)
+	out.Warnings = append(credentialWarnings, metadataDeclarationWarnings(agentModels, req.ModelMetadata)...)
 	return out, nil
 }
 
@@ -1169,12 +1235,99 @@ func stalePointerAliases(pf *PointerFile, agentID, providerAlias string) []strin
 	return stale
 }
 
-// reqCredential 计算 EnvVar 模式下的环境变量名（不解密档案）。
-func reqCredential(adapter AgentAdapter, alias string) string {
-	if adapter.Credential == CredentialEnvVar {
-		return senvEnvKeyName(alias)
+// ensureCodexEnvName 保证 codex 的 env_key 名可由 `senv env export` 提供，并把
+// 需要用户动作的情形作为 warning 返回（ADR-0024）。名字无法落地时返回错误，
+// 调用方据此保持「零配置写入」。
+func (sm *SwitchManager) ensureCodexEnvName(plan codexEnvPlan, credential string) ([]string, error) {
+	envMgr := sm.providerManager.envManager()
+	settings, err := sm.providerManager.storage.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("load env settings for codex credential %s: %w", plan.Name, err)
 	}
-	return ""
+	defaultGroup := settings.DefaultGroup
+	if defaultGroup == "" {
+		defaultGroup = storage.ConfigDefaultGroup
+	}
+	// Snapshot 一次取全部分组与变量：GroupInfo.IsActive 已含默认组，等价于
+	// `senv env export` 的导出集合（internal/env 的 Export 语义）。
+	vars, groups, err := envMgr.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("read env groups for codex credential %s: %w", plan.Name, err)
+	}
+	var (
+		exportedValue string
+		exported      bool
+		inactive      []string
+	)
+	for _, g := range groups {
+		value, ok := vars[g.Name][plan.Name]
+		if !ok {
+			continue
+		}
+		if g.IsActive {
+			exportedValue, exported = value, true
+			continue
+		}
+		inactive = append(inactive, g.Name)
+	}
+
+	switch {
+	case exported:
+		// 名字已由导出集合里的条目提供：不写 vault；只有该条目的解析结果不是
+		// 本次凭据时才提示，避免静默取到别的凭据。
+		if plan.SeedRef == "" || envValueMatchesCredential(exportedValue, credential, sm.providerManager) {
+			return nil, nil
+		}
+		return []string{fmt.Sprintf(
+			"环境变量 %s 已存在且不指向本次凭据：codex 会取到该条目当前的值，认证可能失败；如需改用本次凭据请核对 `senv env set %s <value>`",
+			plan.Name, plan.Name)}, nil
+	case len(inactive) > 0:
+		// 名字只存在于未激活组：导出不会包含它，补写默认组会与用户既有条目
+		// 重复，因此只提示激活。
+		return []string{fmt.Sprintf(
+			"环境变量 %s 所在组 %s 未激活：`senv env export` 不会提供该名字，codex 会报 Missing environment variable；请执行 `senv env group activate %s`",
+			plan.Name, strings.Join(inactive, "、"), inactive[0])}, nil
+	case plan.SeedRef == "":
+		return nil, fmt.Errorf(
+			"codex credential env %s is not provided by any env group; set it with `senv env set %s <value>`", plan.Name, plan.Name)
+	default:
+		if err := envMgr.Set(defaultGroup, plan.Name, plan.SeedRef); err != nil {
+			return nil, fmt.Errorf("write codex credential env %s to group %s: %w", plan.Name, defaultGroup, err)
+		}
+		return []string{fmt.Sprintf(
+			"已在组 %s 写入环境变量 %s = %s：`senv env export` 会把它解析为本次凭据",
+			defaultGroup, plan.Name, plan.SeedRef)}, nil
+	}
+}
+
+// envValueMatchesCredential 用既有引用解析器判断既有 env 条目是否解析为本次
+// 凭据明文（宽松模式：未知引用保留字面量，按不相等处理）。
+func envValueMatchesCredential(value, credential string, pm *ProviderManager) bool {
+	if value == credential {
+		return true
+	}
+	if !ref.HasReferences(value) {
+		return false
+	}
+	resolved, err := ref.Resolve(value, providerRefGetter{env: pm.envManager(), text: pm.textManager()}, ref.ResolveOptions{Loose: true})
+	if err != nil {
+		return false
+	}
+	return resolved == credential
+}
+
+// providerRefGetter 是 internal/ref 的 ValueGetter 在 LLM 包内的最小实现。
+type providerRefGetter struct {
+	env  *env.Manager
+	text *text.Manager
+}
+
+func (g providerRefGetter) GetEnvValue(group, key string) (string, error) {
+	return g.env.Get(group, key)
+}
+
+func (g providerRefGetter) GetTextValue(group, key string) (string, error) {
+	return g.text.Get(group, key)
 }
 
 func sortedContains(sorted []string, want string) bool {
