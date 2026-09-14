@@ -131,38 +131,43 @@ func newAITab(mgr Managers) *aiTab {
 func (t *aiTab) Title() string { return "AI" }
 
 func (t *aiTab) Bindings() []KeyAction {
+	if t.detail != nil {
+		return detailBindings()
+	}
 	if t.form != nil {
-		return []KeyAction{
-			{[]string{"tab/↑↓"}, "switch field", grpForm},
-			{[]string{"←→"}, "pick candidate", grpForm},
-			{[]string{"enter"}, "submit", grpForm},
-			{[]string{"esc"}, "cancel", grpForm},
-		}
+		return formBindings(KeyAction{[]string{"←→"}, "pick candidate", grpForm, false})
+	}
+	if t.filterBox.Active() {
+		return filterBindings(true)
 	}
 	switch t.flow {
 	case aiFlowSelectModel:
 		return []KeyAction{
-			{[]string{"space"}, "toggle", grpWizard},
+			{[]string{"space"}, "toggle", grpWizard, false},
 			actUp, actDown,
-			{[]string{"enter"}, "next", grpWizard},
-			{[]string{"esc"}, "cancel", grpWizard},
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "cancel", grpWizard, false},
 		}
 	case aiFlowSelectDefault:
-		return []KeyAction{actUp, actDown, {[]string{"enter"}, "next", grpWizard}, {[]string{"esc"}, "back", grpWizard}}
+		return []KeyAction{
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "back", grpWizard, false},
+		}
 	case aiFlowConfirm:
-		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return confirmBindings()
 	}
 	if t.mode == aiModeDeleteProvider {
-		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return confirmBindings()
 	}
-	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
-		actTop, actBottom, actPageUp, actPageDn},
-		KeyAction{[]string{"n"}, "new provider", grpItem},
-		KeyAction{[]string{"e"}, "edit provider", grpItem},
-		KeyAction{[]string{"d"}, "delete provider", grpItem},
-		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem},
-		KeyAction{[]string{"M"}, "default model only", grpItem},
-		KeyAction{[]string{"R"}, "refresh catalog (network)", grpItem},
+	return append(navBindings(true),
+		actDetail,
+		KeyAction{[]string{"n"}, "new provider", grpItem, false},
+		KeyAction{[]string{"e"}, "edit provider", grpItem, false},
+		KeyAction{[]string{"d"}, "delete provider", grpItem, false},
+		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem, false},
+		KeyAction{[]string{"M"}, "default model only", grpItem, false},
+		KeyAction{[]string{"R"}, "refresh catalog (network)", grpItem, false},
 		actFilter, actRefresh,
 	)
 }

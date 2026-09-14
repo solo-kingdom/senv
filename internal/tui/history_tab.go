@@ -63,15 +63,26 @@ func (t *historyTab) Title() string { return "History" }
 func (t *historyTab) Bindings() []KeyAction {
 	switch t.mode {
 	case historyModeEntry:
-		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
-			{[]string{"enter"}, "view revisions", grpItem}, {[]string{"R"}, "restore", grpItem}, actEsc}
+		return append(navBindings(false),
+			KeyAction{[]string{"enter"}, "view revisions", grpItem, false},
+			KeyAction{[]string{"R"}, "restore", grpItem, false},
+			actEsc,
+		)
 	case historyModeDetail:
-		return []KeyAction{{[]string{"R"}, "restore", grpItem}, actEsc}
+		return []KeyAction{
+			{[]string{"R"}, "restore", grpItem, false},
+			actEsc,
+		}
 	case historyModeConfirm:
-		return []KeyAction{{[]string{"enter/y"}, "confirm restore", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return []KeyAction{
+			{[]string{"enter/y"}, "confirm restore", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
+		}
 	default:
-		return []KeyAction{actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
-			{[]string{"enter"}, "entry history", grpItem}, {[]string{"R"}, "restore", grpItem}}
+		return append(navBindings(false),
+			KeyAction{[]string{"enter"}, "entry history", grpItem, false},
+			KeyAction{[]string{"R"}, "restore", grpItem, false},
+		)
 	}
 }
 

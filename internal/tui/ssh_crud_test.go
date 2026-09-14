@@ -250,6 +250,56 @@ func TestSSHExportPreviewThenWrite(t *testing.T) {
 	}
 }
 
+// TestSSHExportPreviewScroll：预览超高时窗口化显示并可滚动，不被 clip 裁掉；
+// 滚动后仍可按 w 进入写文件表单。
+func TestSSHExportPreviewScroll(t *testing.T) {
+	tab, _ := newSSHCrudTab(t)
+	var b strings.Builder
+	b.WriteString("Host head\n")
+	for i := 0; i < 40; i++ {
+		b.WriteString(strings.Repeat("x", 8) + "\n")
+	}
+	b.WriteString("Host tail\n")
+	tab.exportLabel = "host head"
+	tab.exportContent = b.String()
+	tab.exportScroll = 0
+	tab.mode = sshModeExportPreview
+	tab.SetSize(80, 10) // pageSize = height-4 = 6
+
+	view := tab.View()
+	if !strings.Contains(view, "Host head") {
+		t.Fatalf("top of preview should show Host head:\n%s", view)
+	}
+	if strings.Contains(view, "Host tail") {
+		t.Fatalf("short viewport must not show Host tail yet:\n%s", view)
+	}
+	if !strings.Contains(view, "scroll") {
+		t.Fatalf("scrollable preview should mention scroll keys:\n%s", view)
+	}
+	if !strings.Contains(view, "1–") {
+		t.Fatalf("scrollable title should show line range:\n%s", view)
+	}
+
+	out, _ := tab.Update(runeKey("G"))
+	tab = out.(*sshTab)
+	if tab.exportScroll != tab.exportPreviewMaxScroll() {
+		t.Fatalf("end should jump to max scroll, got %d want %d", tab.exportScroll, tab.exportPreviewMaxScroll())
+	}
+	view = tab.View()
+	if !strings.Contains(view, "Host tail") {
+		t.Fatalf("scrolled preview should show Host tail:\n%s", view)
+	}
+	if strings.Contains(view, "Host head") {
+		t.Fatalf("scrolled preview should hide Host head:\n%s", view)
+	}
+
+	out, _ = tab.Update(runeKey("w"))
+	tab = out.(*sshTab)
+	if tab.form == nil {
+		t.Fatal("w should still open the export path form after scrolling")
+	}
+}
+
 func TestSSHKeyPairImportRenameAndProtectedDelete(t *testing.T) {
 	tab, w := newKeyPairCrudTab(t)
 	keyPath := writeSSHTUIKey(t, "id_ed25519")

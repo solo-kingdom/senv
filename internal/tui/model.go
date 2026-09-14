@@ -631,7 +631,16 @@ func (m Model) View() string {
 		}
 		bottom = m.bottomBar(prefix+m.toast, style)
 	default:
-		bottom = m.bottomBar(groupBar(m.tabs[m.active].Bindings()), statusBarStyle)
+		var bs []KeyAction
+		switch {
+		case m.search != nil:
+			bs = m.search.Bindings()
+		case m.help != nil:
+			bs = m.help.Bindings()
+		default:
+			bs = m.tabs[m.active].Bindings()
+		}
+		bottom = m.bottomBar(groupBar(bs), statusBarStyle)
 	}
 
 	// Stack the chrome inside the frame. lipgloss v1.x draws borders

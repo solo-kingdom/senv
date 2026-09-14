@@ -82,17 +82,62 @@ func newTextTab(mgr Managers) *textTab {
 func (t *textTab) Title() string { return "Text" }
 
 func (t *textTab) Bindings() []KeyAction {
-	return []KeyAction{
-		actUp, actDown, actLeft, actRight,
-		actTop, actBottom, actPageUp, actPageDn,
+	if t.form != nil {
+		return formBindings()
+	}
+	switch t.mode {
+	case textModeFilter:
+		return filterBindings(false)
+	case textModeExportPath, textModeBatchExportPath:
+		return []KeyAction{
+			{[]string{"enter"}, "export", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case textModeNewKey:
+		return []KeyAction{
+			{[]string{"enter"}, "open vim", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case textModeAddGroup:
+		return []KeyAction{
+			{[]string{"enter"}, "create", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case textModeDeleteConfirm, textModeDeleteGroupConfirm:
+		return confirmBindings()
+	case textModeBatchDeleteConfirm:
+		return []KeyAction{
+			{[]string{"enter/y"}, "delete all", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
+		}
+	}
+	nav := navBindings(true)
+	if t.focusLeft {
+		groupOps := []KeyAction{actRename, actDelete, {[]string{"+"}, "new group", grpGroup, false}}
+		if row, ok := t.currentGroupRow(); ok && row.isAll {
+			for i := range groupOps {
+				groupOps[i].NoBar = true
+			}
+		}
+		return append(append(nav, groupOps...),
+			KeyAction{[]string{"n"}, "new", grpItem, true},
+			KeyAction{[]string{"e"}, "edit", grpItem, true},
+			KeyAction{[]string{"i"}, "import", grpItem, true},
+			KeyAction{[]string{"y"}, "copy", grpItem, true},
+			KeyAction{[]string{"x"}, "export", grpItem, true},
+			KeyAction{[]string{"D"}, "deref on/off", grpGroup, true},
+			actFilter, actRefresh,
+		)
+	}
+	return append(nav,
 		actEdit, actNew, actDelete, actRename, actImport,
 		actSelect, actSelectAll,
-		{[]string{"y"}, "copy", grpItem},
+		KeyAction{[]string{"y"}, "copy", grpItem, false},
 		actExport,
-		{[]string{"+"}, "new group", grpGroup},
-		{[]string{"D"}, "deref on/off", grpGroup},
+		KeyAction{[]string{"D"}, "deref on/off", grpGroup, false},
+		KeyAction{[]string{"+"}, "new group", grpGroup, true},
 		actFilter, actRefresh,
-	}
+	)
 }
 
 // cursorForFocus 返回当前焦点栏的游标位置（翻页用）。

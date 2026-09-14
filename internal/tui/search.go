@@ -62,8 +62,8 @@ func (s *searchTab) Title() string { return "Search" }
 func (s *searchTab) Bindings() []KeyAction {
 	return []KeyAction{
 		actUp, actDown,
-		{[]string{"enter"}, "jump", grpSearch},
-		{[]string{"esc"}, "close", grpSearch},
+		{[]string{"enter"}, "jump", grpSearch, false},
+		{[]string{"esc"}, "close", grpSearch, false},
 	}
 }
 

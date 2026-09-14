@@ -81,18 +81,61 @@ func newEnvTab(mgr Managers) *envTab {
 func (t *envTab) Title() string { return "Env" }
 
 func (t *envTab) Bindings() []KeyAction {
-	return []KeyAction{
-		actUp, actDown, actLeft, actRight,
-		actTop, actBottom, actPageUp, actPageDn,
+	if t.form != nil {
+		return formBindings()
+	}
+	switch t.mode {
+	case envModeFilter:
+		return filterBindings(false)
+	case envModeEditValue:
+		return []KeyAction{
+			{[]string{"enter"}, "save", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case envModeAddGroup:
+		return []KeyAction{
+			{[]string{"enter"}, "create", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case envModeDeleteConfirm, envModeDeleteGroupConfirm:
+		return confirmBindings()
+	case envModeBatchDeleteConfirm:
+		return []KeyAction{
+			{[]string{"enter/y"}, "delete all", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
+		}
+	}
+	nav := navBindings(true)
+	if t.focusLeft {
+		// 侧栏：组操作进底栏；仍可从侧栏触发的条目动词只进 `?`
+		groupOps := []KeyAction{
+			{[]string{"t"}, "toggle group active", grpGroup, false},
+			actRename, actDelete,
+			{[]string{"+"}, "new group", grpGroup, false},
+		}
+		if row, ok := t.currentGroupRow(); ok && row.isAll {
+			for i := range groupOps {
+				groupOps[i].NoBar = true
+			}
+		}
+		return append(append(nav, groupOps...),
+			KeyAction{[]string{"n"}, "new", grpItem, true},
+			KeyAction{[]string{"e"}, "edit", grpItem, true},
+			KeyAction{[]string{"y"}, "copy", grpItem, true},
+			KeyAction{[]string{"D"}, "deref on/off", grpGroup, true},
+			actFilter, actRefresh,
+		)
+	}
+	return append(nav,
 		actEdit, actNew, actDelete, actRename,
 		actSelect, actSelectAll,
-		{[]string{"v"}, "toggle value visibility", grpItem},
-		{[]string{"y"}, "copy", grpItem},
-		{[]string{"t"}, "toggle group active", grpGroup},
-		{[]string{"+"}, "new group", grpGroup},
-		{[]string{"D"}, "deref on/off", grpGroup},
+		KeyAction{[]string{"v"}, "toggle value visibility", grpItem, false},
+		KeyAction{[]string{"y"}, "copy", grpItem, false},
+		KeyAction{[]string{"D"}, "deref on/off", grpGroup, false},
+		KeyAction{[]string{"t"}, "toggle group active", grpGroup, true},
+		KeyAction{[]string{"+"}, "new group", grpGroup, true},
 		actFilter, actRefresh,
-	}
+	)
 }
 
 // cursorForFocus 返回当前焦点栏的游标位置（翻页用）。

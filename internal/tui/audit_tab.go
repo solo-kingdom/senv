@@ -64,11 +64,14 @@ func newAuditTab(source AuditSource, sync SyncSource) *auditTab {
 func (t *auditTab) Title() string { return "Audit" }
 
 func (t *auditTab) Bindings() []KeyAction {
-	return []KeyAction{
-		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
-		{[]string{"f"}, "preset filter (" + auditFilterPresets[t.filterIdx].label + ")", grpFilter},
-		actFilter, actRefresh,
+	if t.filterBox.Active() {
+		return filterBindings(true)
 	}
+	return append(navBindings(false),
+		KeyAction{[]string{"f"}, "preset filter (" + auditFilterPresets[t.filterIdx].label + ")", grpFilter, false},
+		actFilter,
+		KeyAction{[]string{"ctrl+r"}, "refresh", grpFilter, false},
+	)
 }
 
 func (t *auditTab) InputMode() bool { return t.filterBox.Active() }

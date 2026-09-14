@@ -108,17 +108,60 @@ func newConfigTab(mgr Managers) *configTab {
 func (t *configTab) Title() string { return "Config" }
 
 func (t *configTab) Bindings() []KeyAction {
-	return []KeyAction{
-		actUp, actDown, actLeft, actRight,
-		actTop, actBottom, actPageUp, actPageDn,
-		actDetail, actEdit, actRename,
-		{[]string{"m"}, "metadata", grpItem},
-		actNew, actSelect, actSelectAll,
-		{[]string{"i/I"}, "install (one/all)", grpItem},
-		{[]string{"u/U"}, "uninstall (one/all)", grpItem},
-		actExport, actDelete,
-		actFilter, actRefresh,
+	if t.form != nil {
+		return formBindings()
 	}
+	switch t.mode {
+	case configModeFilter:
+		return filterBindings(false)
+	case configModeExportPath:
+		return []KeyAction{
+			{[]string{"enter"}, "export", grpForm, false},
+			{[]string{"esc"}, "cancel", grpForm, false},
+		}
+	case configModeDeleteConfirm:
+		return confirmBindings()
+	case configModePlan:
+		return []KeyAction{
+			{[]string{"y/enter"}, "confirm", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
+		}
+	case configModeChangedConfirm:
+		return []KeyAction{
+			{[]string{"y"}, "delete", grpConfirm, false},
+			{[]string{"n"}, "keep", grpConfirm, false},
+		}
+	case configModeDetail:
+		return []KeyAction{{[]string{"esc/any"}, "close", grpConfirm, false}}
+	}
+	nav := navBindings(true)
+	if t.focusLeft {
+		return append(nav,
+			KeyAction{[]string{"I/U"}, "install/uninstall group", grpGroup, false},
+			// 侧栏仍可触发的条目动词：只进 `?`
+			KeyAction{[]string{"enter"}, "view", grpItem, true},
+			KeyAction{[]string{"e"}, "edit", grpItem, true},
+			KeyAction{[]string{"r"}, "rename", grpItem, true},
+			KeyAction{[]string{"n"}, "new", grpItem, true},
+			KeyAction{[]string{"x"}, "export", grpItem, true},
+			KeyAction{[]string{"d"}, "delete", grpItem, true},
+			KeyAction{[]string{"m"}, "metadata", grpItem, true},
+			KeyAction{[]string{"i"}, "install", grpItem, true},
+			KeyAction{[]string{"u"}, "uninstall", grpItem, true},
+			actFilter, actRefresh,
+		)
+	}
+	// 条目栏：底栏优先 CRUD + install/export；m/space/a 留给 `?`
+	return append(nav,
+		actDetail, actEdit, actNew, actRename,
+		KeyAction{[]string{"m"}, "metadata", grpItem, true},
+		KeyAction{[]string{"i/I"}, "install (one/all)", grpItem, false},
+		KeyAction{[]string{"u/U"}, "uninstall (one/all)", grpItem, false},
+		actExport, actDelete,
+		KeyAction{[]string{"space"}, "toggle select", grpItem, true},
+		KeyAction{[]string{"a"}, "select all visible", grpItem, true},
+		actFilter, actRefresh,
+	)
 }
 
 // cursorForFocus 返回当前焦点栏的游标位置（翻页用）。

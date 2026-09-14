@@ -122,42 +122,43 @@ func newMCPTab(mgr Managers) *mcpTab {
 func (t *mcpTab) Title() string { return "MCP" }
 
 func (t *mcpTab) Bindings() []KeyAction {
+	if t.detail != nil {
+		return detailBindings()
+	}
 	if t.form != nil {
-		return []KeyAction{
-			{[]string{"tab/↑↓"}, "switch field", grpForm},
-			{[]string{"e"}, "edit multiline", grpForm},
-			{[]string{"enter"}, "submit", grpForm},
-			{[]string{"esc"}, "cancel", grpForm},
-		}
+		return formBindings(KeyAction{[]string{"e"}, "edit multiline", grpForm, false})
+	}
+	if t.filterBox.Active() {
+		return filterBindings(true)
 	}
 	switch t.mode {
 	case mcpModeDelete:
-		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return confirmBindings()
 	case mcpModePlan:
 		return []KeyAction{
-			{[]string{"enter/y"}, "confirm", grpConfirm},
-			{[]string{"F"}, "force overwrite drift", grpConfirm},
-			{[]string{"esc/n"}, "cancel", grpConfirm},
+			{[]string{"enter/y"}, "confirm", grpConfirm, false},
+			{[]string{"F"}, "force overwrite drift", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
 		}
 	case mcpModeChangedConfirm:
 		return []KeyAction{
-			{[]string{"y"}, "delete this one", grpConfirm},
-			{[]string{"n"}, "skip", grpConfirm},
-			{[]string{"esc"}, "cancel entire revert", grpConfirm},
+			{[]string{"y"}, "delete this one", grpConfirm, false},
+			{[]string{"n"}, "skip", grpConfirm, false},
+			{[]string{"esc"}, "cancel entire revert", grpConfirm, false},
 		}
 	case mcpModeImportReport:
-		return []KeyAction{{[]string{"esc/enter"}, "close", grpConfirm}}
+		return []KeyAction{{[]string{"esc/enter"}, "close", grpConfirm, false}}
 	}
-	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
-		actTop, actBottom, actPageUp, actPageDn},
-		KeyAction{[]string{"n"}, "new profile", grpItem},
-		KeyAction{[]string{"e"}, "edit profile", grpItem},
-		KeyAction{[]string{"d"}, "delete profile", grpItem},
+	return append(navBindings(true),
+		actDetail,
+		KeyAction{[]string{"n"}, "new profile", grpItem, false},
+		KeyAction{[]string{"e"}, "edit profile", grpItem, false},
+		KeyAction{[]string{"d"}, "delete profile", grpItem, false},
 		actSelect, actSelectAll,
-		KeyAction{[]string{"i"}, "import", grpItem},
-		KeyAction{[]string{"s"}, "switch export scope (project only honored by some agents)", grpItem},
-		KeyAction{[]string{"x/X"}, "export (current/all agents)", grpItem},
-		KeyAction{[]string{"u/U"}, "revert (current/all agents)", grpItem},
+		KeyAction{[]string{"i"}, "import", grpItem, false},
+		KeyAction{[]string{"s"}, "switch export scope", grpItem, false},
+		KeyAction{[]string{"x/X"}, "export (current/all agents)", grpItem, false},
+		KeyAction{[]string{"u/U"}, "revert (current/all agents)", grpItem, false},
 		actFilter, actRefresh,
 	)
 }

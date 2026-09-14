@@ -318,6 +318,8 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 #### 快捷键
 
+底栏展示当前场景的操作快捷键（随焦点栏 / 表单 / 确认 / 向导 / 过滤切换；Search 与 `?` overlay 打开时改用 overlay 键位）。导航与次要动词不进底栏，完整列表见 `?`。
+
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
@@ -331,7 +333,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
 | `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；KeyPair Tab：materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600） |
-| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览，`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
+| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览（超高可 ↑↓/PgUp/PgDn 滚动），`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
 | `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要 |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
 | `t` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |

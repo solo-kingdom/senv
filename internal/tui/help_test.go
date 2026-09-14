@@ -161,8 +161,8 @@ func TestHelpOverlayScrolls(t *testing.T) {
 func TestHelpOverlayWrapsLongDescriptions(t *testing.T) {
 	items := []helpCell{
 		{"Global", lipgloss.NewStyle().Bold(true), 0},
-		bindingCell(KeyAction{[]string{"esc"}, "back: clear filter / close overlay / wizard back", ""}, 13),
-		bindingCell(KeyAction{[]string{"q"}, "quit", ""}, 13),
+		bindingCell(KeyAction{Keys: []string{"esc"}, Desc: "back: clear filter / close overlay / wizard back"}, 13),
+		bindingCell(KeyAction{Keys: []string{"q"}, Desc: "quit"}, 13),
 	}
 	rows := gridRows(items, 2, 33)
 	joined := stripANSI(strings.Join(rows, "\n"))

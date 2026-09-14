@@ -52,6 +52,7 @@ type sshTab struct {
 	pendingHost   string // host staged for delete
 	exportLabel   string
 	exportContent string
+	exportScroll  int // 预览正文行偏移（超高片段可 ↑↓ 滚动，不裁切丢失）
 
 	// pendingApply 暂存 apply 导出确认框的数据：交给 Manager.Apply 的
 	// 过滤条件、审计 detail（与 CLI 同口径）与按键时 Render 预算出的计数。
@@ -151,22 +152,28 @@ func newSSHTab(mgr Managers) *sshTab {
 func (t *sshTab) Title() string { return "SSH" }
 
 func (t *sshTab) Bindings() []KeyAction {
+	if t.detail != nil {
+		return detailBindings()
+	}
 	if t.form != nil {
-		return []KeyAction{
-			{[]string{"tab/↑↓"}, "switch field", grpForm},
-			{[]string{"enter"}, "submit", grpForm},
-			{[]string{"esc"}, "cancel", grpForm},
-		}
+		return formBindings()
+	}
+	if t.filterBox.Active() {
+		return filterBindings(true)
 	}
 	switch t.mode {
 	case sshModeDeleteHost, sshModeBatchDeleteHost, sshModeApplyConfirm, sshModeUnexport:
-		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return confirmBindings()
 	case sshModeExportPreview:
-		return []KeyAction{{[]string{"w"}, "write file", grpConfirm}, {[]string{"esc"}, "cancel", grpConfirm}}
+		return []KeyAction{
+			actUp, actDown, actTop, actBottom, actPageUp, actPageDn,
+			{[]string{"w"}, "write file", grpConfirm, false},
+			{[]string{"esc"}, "cancel", grpConfirm, false},
+		}
 	}
-	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
-		actTop, actBottom, actPageUp, actPageDn}
-	unexport := KeyAction{[]string{"u"}, "unexport", grpItem}
+	nav := navBindings(true)
+	nav = append(nav, actDetail)
+	unexport := KeyAction{[]string{"u"}, "unexport", grpItem, false}
 	if t.focus == paneHost {
 		return append(append(nav, actNew, actEdit, actDelete, actSelect, actSelectAll, actExport, actApply, unexport), actRefresh, actFilter)
 	}
@@ -316,6 +323,9 @@ func (t *sshTab) clampFocus() {
 
 func (t *sshTab) SetSize(width, height int) {
 	t.width, t.height = width, height
+	if t.mode == sshModeExportPreview {
+		t.exportScroll = clamp(t.exportScroll, 0, t.exportPreviewMaxScroll())
+	}
 }
 
 func (t *sshTab) Init() tea.Cmd {
@@ -420,6 +430,7 @@ func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		t.exportLabel = msg.label
 		t.exportContent = msg.content
+		t.exportScroll = 0
 		t.mode = sshModeExportPreview
 		return t, nil
 
@@ -606,7 +617,20 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t.enterExportPathForm(content)
 		case "esc":
 			t.cancelMode()
+		case "up", "k":
+			t.exportScroll--
+		case "down", "j":
+			t.exportScroll++
+		case "pgup":
+			t.exportScroll -= t.exportPreviewPageSize()
+		case "pgdown":
+			t.exportScroll += t.exportPreviewPageSize()
+		case "g", "home":
+			t.exportScroll = 0
+		case "G", "end":
+			t.exportScroll = t.exportPreviewMaxScroll()
 		}
+		t.exportScroll = clamp(t.exportScroll, 0, t.exportPreviewMaxScroll())
 	case sshModeApplyConfirm:
 		switch msg.String() {
 		case "enter", "y":
@@ -632,8 +656,34 @@ func (t *sshTab) cancelMode() {
 	t.pendingHost = ""
 	t.exportLabel = ""
 	t.exportContent = ""
+	t.exportScroll = 0
 	t.pendingApply = nil
 	t.pendingUnexport = nil
+}
+
+// exportPreviewLines 把预览正文拆成行（末尾空行保留，与片段字节一致）。
+func (t *sshTab) exportPreviewLines() []string {
+	if t.exportContent == "" {
+		return nil
+	}
+	return strings.Split(t.exportContent, "\n")
+}
+
+// exportPreviewPageSize 是预览弹层正文可见行数：扣掉标题与底栏 hint。
+func (t *sshTab) exportPreviewPageSize() int {
+	if t.height <= 4 {
+		return 1
+	}
+	return t.height - 4
+}
+
+func (t *sshTab) exportPreviewMaxScroll() int {
+	n := len(t.exportPreviewLines())
+	page := t.exportPreviewPageSize()
+	if n <= page {
+		return 0
+	}
+	return n - page
 }
 
 // --- host write flows ---
@@ -1612,7 +1662,26 @@ func (t *sshTab) renderModal() string {
 		}
 		return modalBox(t.width, t.height, "delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
 	case sshModeExportPreview:
-		return modalBox(t.width, t.height, "export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
+		lines := t.exportPreviewLines()
+		page := t.exportPreviewPageSize()
+		start := clamp(t.exportScroll, 0, t.exportPreviewMaxScroll())
+		end := start + page
+		if end > len(lines) {
+			end = len(lines)
+		}
+		body := ""
+		if end > start {
+			body = strings.Join(lines[start:end], "\n")
+		}
+		title := "export OpenSSH snippet — " + t.exportLabel
+		if len(lines) > page && page > 0 {
+			title = fmt.Sprintf("%s  %d–%d/%d", title, start+1, end, len(lines))
+		}
+		hint := "w write file · esc cancel"
+		if len(lines) > page {
+			hint = "↑↓/jk/pgup/pgdn scroll · " + hint
+		}
+		return modalBox(t.width, t.height, title, body, hint)
 	case sshModeApplyConfirm:
 		st := t.pendingApply
 		include := "registered"

@@ -11,13 +11,13 @@ import (
 // globalKeys 是顶层 model 处理的键，对每个 Tab 生效；Tab 专属键位来自该
 // Tab 的 Bindings()（keymap 注册表），因此总览与实际行为同源、不可能漂移。
 var globalKeys = []KeyAction{
-	{[]string{"1–9"}, "jump to tab", ""},
-	{[]string{"Tab / Shift+Tab"}, "cycle tabs", ""},
-	{[]string{"S"}, "global search", ""},
-	{[]string{"ctrl+r"}, "refresh current tab", ""},
-	{[]string{"?"}, "keybinding overview", ""},
-	{[]string{"esc"}, "back: clear filter / close overlay / wizard back", ""},
-	{[]string{"q / ctrl+c"}, "quit (q warns once with pending pushes)", ""},
+	{Keys: []string{"1–9"}, Desc: "jump to tab"},
+	{Keys: []string{"Tab / Shift+Tab"}, Desc: "cycle tabs"},
+	{Keys: []string{"S"}, Desc: "global search"},
+	{Keys: []string{"ctrl+r"}, Desc: "refresh current tab"},
+	{Keys: []string{"?"}, Desc: "keybinding overview"},
+	{Keys: []string{"esc"}, Desc: "back: clear filter / close overlay / wizard back"},
+	{Keys: []string{"q / ctrl+c"}, Desc: "quit (q warns once with pending pushes)"},
 }
 
 // helpTab is the keybinding overview overlay (triggered by `?`).
@@ -49,7 +49,12 @@ func newHelpTab(title string, tab Tab) *helpTab {
 }
 
 func (h *helpTab) Title() string         { return "Help" }
-func (h *helpTab) Bindings() []KeyAction { return nil }
+func (h *helpTab) Bindings() []KeyAction {
+	return []KeyAction{
+		{[]string{"?/esc"}, "close", grpSearch, false},
+		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
+	}
+}
 func (h *helpTab) InputMode() bool       { return true }
 func (h *helpTab) Init() tea.Cmd         { return nil }
 func (h *helpTab) Reload() tea.Cmd       { return nil }

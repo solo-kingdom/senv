@@ -101,33 +101,34 @@ func newKeyPairTab(mgr Managers) *keyPairTab {
 func (t *keyPairTab) Title() string { return "KeyPair" }
 
 func (t *keyPairTab) Bindings() []KeyAction {
+	if t.detail != nil {
+		return detailBindings()
+	}
 	if t.form != nil {
-		return []KeyAction{
-			{[]string{"tab/↑↓"}, "switch field", grpForm},
-			{[]string{"enter"}, "submit", grpForm},
-			{[]string{"esc"}, "cancel", grpForm},
-		}
+		return formBindings()
+	}
+	if t.filterBox.Active() {
+		return filterBindings(true)
 	}
 	switch t.mode {
 	case kpModeDeleteKey:
 		return []KeyAction{
-			{[]string{"enter/y"}, "confirm", grpConfirm},
-			{[]string{"esc/n"}, "cancel", grpConfirm},
-			{[]string{"F"}, "force delete (clear host identityKey)", grpConfirm},
+			{[]string{"enter/y"}, "confirm", grpConfirm, false},
+			{[]string{"esc/n"}, "cancel", grpConfirm, false},
+			{[]string{"F"}, "force delete (clear host identityKey)", grpConfirm, false},
 		}
 	case kpModeMaterialize, kpModePrune:
-		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
+		return confirmBindings()
 	}
-	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
-		actTop, actBottom, actPageUp, actPageDn}
-	prune := KeyAction{[]string{"p"}, "prune", grpItem}
+	nav := append(navBindings(true), actDetail)
+	prune := KeyAction{[]string{"p"}, "prune", grpItem, false}
 	if t.focus == kpPaneList {
 		return append(append(nav,
-			KeyAction{[]string{"n", "i"}, "import keypair", grpItem},
-			KeyAction{[]string{"r"}, "rename keypair", grpItem},
-			KeyAction{[]string{"e"}, "edit group", grpItem},
-			KeyAction{[]string{"d"}, "delete", grpItem},
-			KeyAction{[]string{"m"}, "materialize", grpItem},
+			KeyAction{[]string{"n", "i"}, "import keypair", grpItem, false},
+			KeyAction{[]string{"r"}, "rename keypair", grpItem, false},
+			KeyAction{[]string{"e"}, "edit group", grpItem, false},
+			KeyAction{[]string{"d"}, "delete", grpItem, false},
+			KeyAction{[]string{"m"}, "materialize", grpItem, false},
 			prune,
 		), actRefresh, actFilter)
 	}

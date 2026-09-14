@@ -2,20 +2,27 @@ package tui
 
 import "testing"
 
-// TestGroupBarCollapsesGroups 验证底栏提示按组名首现顺序去重，且尾部固定
-// `? keys` 指向完整键位总览；空 Group 回落到 "Keys"。
-func TestGroupBarCollapsesGroups(t *testing.T) {
+// TestGroupBarExpandsHints 验证底栏展开非 NoBar 的 Hint，跳过导航键，尾部固定 `?`。
+func TestGroupBarExpandsHints(t *testing.T) {
 	bindings := []KeyAction{
-		actUp, actDown, // Navigate
-		{[]string{"e"}, "edit", grpItem},
-		{[]string{"t"}, "toggle group active", grpGroup},
-		actFilter, // Filter
-		{[]string{"e"}, "edit", grpItem},
-		{[]string{"?"}, "misc", ""}, // 空 Group → Keys
+		actUp, actDown, // Navigate · NoBar
+		{[]string{"e"}, "edit", grpItem, false},
+		{[]string{"t"}, "toggle group active", grpGroup, false},
+		actFilter,
+		{[]string{"m"}, "metadata", grpItem, true}, // NoBar 次要键
+		actRefresh, // NoBar
 	}
 	got := groupBar(bindings)
-	want := "Navigate · Items · Groups · Filter · Keys · ? keys"
+	want := "e edit · t toggle group active · / filter · ?"
 	if got != want {
 		t.Fatalf("groupBar() = %q, want %q", got, want)
+	}
+}
+
+func TestGroupBarEmptyBindings(t *testing.T) {
+	got := groupBar(nil)
+	want := "?"
+	if got != want {
+		t.Fatalf("groupBar(nil) = %q, want %q", got, want)
 	}
 }

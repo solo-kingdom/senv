@@ -7,10 +7,10 @@ import (
 
 // keymapConsistencyContract 是「Tab 的 Update 分发处理的键 ⊆ Bindings() 注册
 // 的键」的显式契约表（design D3）：`?` 总览（help.go newHelpTab）与底栏
-// （model.go groupBar）都消费 Bindings()，注册缺失即帮助失明。每行是一个
-// Tab 状态；want 里的每个键都必须能在该状态 Bindings() 中找到（同义键按
-// "/" 切分后任一命中即可），absent 里的键必须不出现（无对应分发语义的状态
-// 防止误注册）。新增按键时须同步维护本表——漏登记会让这里的断言变红。
+// （model.go groupBar，跳过 NoBar）都消费 Bindings()，注册缺失即帮助失明。
+// 每行是一个 Tab 状态（含焦点栏/mode）；want 里的每个键都必须能在该状态
+// Bindings() 中找到（同义键按 "/" 切分后任一命中即可），absent 里的键必须
+// 不出现。新增按键时须同步维护本表——漏登记会让这里的断言变红。
 var keymapConsistencyContract = []struct {
 	name   string
 	new    func() Tab
@@ -69,25 +69,76 @@ var keymapConsistencyContract = []struct {
 		want: []string{"enter", "y", "esc", "n"},
 	},
 	{
-		name: "env",
+		name: "env/group",
 		new:  func() Tab { return newEnvTab(Managers{}) },
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "t", "r", "d", "+", "n", "e", "y", "D", "/", "ctrl+r"},
+		absent: []string{"space", "a", "v"},
+	},
+	{
+		name: "env/items",
+		new: func() Tab {
+			t := newEnvTab(Managers{})
+			t.focusLeft = false
+			return t
+		},
 		want: []string{"up", "down", "left", "right", "v", "g", "G",
 			"pgup", "pgdown", "space", "a", "e", "n", "d", "r", "t",
-			"+", "y", "D", "/"},
+			"+", "y", "D", "/", "ctrl+r"},
 	},
 	{
-		name: "text",
+		name: "env/delete-confirm",
+		new: func() Tab {
+			t := newEnvTab(Managers{})
+			t.mode = envModeDeleteConfirm
+			return t
+		},
+		want: []string{"enter", "y", "esc", "n"},
+	},
+	{
+		name: "text/group",
 		new:  func() Tab { return newTextTab(Managers{}) },
 		want: []string{"up", "down", "left", "right", "g", "G",
-			"pgup", "pgdown", "space", "a", "e", "n", "d", "r", "i",
-			"y", "x", "+", "D", "/"},
+			"pgup", "pgdown", "r", "d", "+", "n", "e", "i", "y", "x", "D", "/", "ctrl+r"},
+		absent: []string{"space", "a"},
 	},
 	{
-		name: "config",
+		name: "text/items",
+		new: func() Tab {
+			t := newTextTab(Managers{})
+			t.focusLeft = false
+			return t
+		},
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "space", "a", "e", "n", "d", "r", "i",
+			"y", "x", "+", "D", "/", "ctrl+r"},
+	},
+	{
+		name: "config/items",
 		new:  func() Tab { return newConfigTab(Managers{}) },
 		want: []string{"up", "down", "left", "right", "g", "G",
 			"pgup", "pgdown", "enter", "e", "r", "m", "n", "x",
-			"space", "a", "i", "I", "u", "U", "d", "/"},
+			"space", "a", "i", "I", "u", "U", "d", "/", "ctrl+r"},
+	},
+	{
+		name: "config/group",
+		new: func() Tab {
+			t := newConfigTab(Managers{})
+			t.focusLeft = true
+			return t
+		},
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "I", "U", "enter", "e", "r", "n", "x", "d", "m", "i", "u", "/", "ctrl+r"},
+		absent: []string{"space", "a"},
+	},
+	{
+		name: "config/plan",
+		new: func() Tab {
+			t := newConfigTab(Managers{})
+			t.mode = configModePlan
+			return t
+		},
+		want: []string{"y", "enter", "esc", "n"},
 	},
 	{
 		name: "ai",
@@ -121,6 +172,16 @@ var keymapConsistencyContract = []struct {
 			return t
 		},
 		want: []string{"enter", "y", "esc", "n"},
+	},
+	{
+		name: "ssh/export-preview",
+		new: func() Tab {
+			t := newSSHTab(Managers{})
+			t.mode = sshModeExportPreview
+			t.exportContent = "Host a\n"
+			return t
+		},
+		want: []string{"up", "down", "g", "G", "pgup", "pgdown", "w", "esc"},
 	},
 	{
 		name: "mcp",
