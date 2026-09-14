@@ -143,7 +143,7 @@ var keymapConsistencyContract = []struct {
 	{
 		name: "ai",
 		new:  func() Tab { return newAITab(Managers{}) },
-		want: []string{"up", "down", "left", "right", "enter", "n", "e", "d",
+		want: []string{"up", "down", "left", "right", "enter", "n", "e", "r", "d",
 			"s", "M", "R", "g", "G", "pgup", "pgdown", "/", "ctrl+r"},
 	},
 	{

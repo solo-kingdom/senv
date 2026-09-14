@@ -928,10 +928,142 @@ func (m *ProviderManager) ListProviders() ([]*storage.LLMProviderEntry, error) {
 	return entries, nil
 }
 
+// RenameProviderResult describes a successful provider rename for CLI/TUI.
+type RenameProviderResult struct {
+	Entry           *storage.LLMProviderEntry
+	PointersUpdated int
+	// PointerAgents lists agent ids whose provider field was rewritten.
+	PointerAgents []string
+}
+
 // RemoveProviderResult describes credential cleanup for CLI output.
 type RemoveProviderResult struct {
 	CredentialRemoved bool
 	CredentialMissing bool
+}
+
+// RenameProvider 将档案主键从 oldAlias 改为 newAlias，并在同一 vault mutation
+// 内联动规范自有凭据；随后更新本机 agent 指针中的 provider 字段。pointerPath
+// 为空时使用 DefaultPointerPath(home)。MUST NOT 改写 coding agent 原生配置。
+func (m *ProviderManager) RenameProvider(oldAlias, newAlias, pointerPath string) (*RenameProviderResult, error) {
+	oldAlias = strings.TrimSpace(oldAlias)
+	newAlias = strings.TrimSpace(newAlias)
+	if err := storage.ValidateName(oldAlias); err != nil {
+		return nil, fmt.Errorf("invalid provider alias %q: %w", oldAlias, err)
+	}
+	if err := storage.ValidateName(newAlias); err != nil {
+		return nil, fmt.Errorf("invalid provider alias %q: %w", newAlias, err)
+	}
+	if oldAlias == newAlias {
+		entry, err := m.GetProvider(oldAlias)
+		if err != nil {
+			return nil, err
+		}
+		return &RenameProviderResult{Entry: entry}, nil
+	}
+
+	var entry *storage.LLMProviderEntry
+	err := m.mutate(func(locked *ProviderManager) error {
+		current, loadErr := locked.load(oldAlias)
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return fmt.Errorf("provider %q not found", oldAlias)
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if _, err := locked.load(newAlias); err == nil {
+			return fmt.Errorf("provider %q already exists", newAlias)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+
+		renamed := *current
+		renamed.Alias = newAlias
+		renamed.UpdatedAt = time.Now().Truncate(time.Second).UTC()
+
+		tm := locked.textManager()
+		textRenamed := false
+		owned := current.CredentialRef == OwnedCredentialRef(oldAlias)
+		if owned {
+			if _, err := tm.Get(LLMKeysGroup, newAlias); err == nil {
+				return fmt.Errorf("credential text:%s/%s already exists", LLMKeysGroup, newAlias)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("check target credential: %w", err)
+			}
+			if _, err := tm.Get(LLMKeysGroup, oldAlias); err == nil {
+				if err := tm.RenameKey(LLMKeysGroup, oldAlias, newAlias); err != nil {
+					return fmt.Errorf("rename credential: %w", err)
+				}
+				textRenamed = true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read credential: %w", err)
+			}
+			renamed.CredentialRef = OwnedCredentialRef(newAlias)
+		}
+
+		rollbackText := func() {
+			if textRenamed {
+				_ = tm.RenameKey(LLMKeysGroup, newAlias, oldAlias)
+			}
+		}
+		if err := locked.save(newAlias, &renamed); err != nil {
+			rollbackText()
+			return fmt.Errorf("save renamed provider: %w", err)
+		}
+		if err := locked.storage.DeleteLLMProvider(oldAlias); err != nil {
+			_ = locked.storage.DeleteLLMProvider(newAlias)
+			rollbackText()
+			return fmt.Errorf("remove old provider %q: %w", oldAlias, err)
+		}
+		entry = &renamed
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	updated, agents, ptrErr := updateProviderPointers(pointerPath, oldAlias, newAlias)
+	if ptrErr != nil {
+		return &RenameProviderResult{Entry: entry, PointersUpdated: updated, PointerAgents: agents},
+			fmt.Errorf("provider renamed to %q but agent pointers were not updated: %w", newAlias, ptrErr)
+	}
+	return &RenameProviderResult{Entry: entry, PointersUpdated: updated, PointerAgents: agents}, nil
+}
+
+// updateProviderPointers rewrites every agent pointer whose provider matches
+// oldAlias. A missing pointer file is a no-op (0 updates).
+func updateProviderPointers(pointerPath, oldAlias, newAlias string) (int, []string, error) {
+	if pointerPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return 0, nil, fmt.Errorf("resolve home directory: %w", err)
+		}
+		pointerPath = DefaultPointerPath(home)
+	}
+	pf, err := LoadPointers(pointerPath)
+	if errors.Is(err, ErrPointerNotFound) {
+		return 0, nil, nil
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	var agents []string
+	for id, p := range pf.Agents {
+		if p.Provider != oldAlias {
+			continue
+		}
+		p.Provider = newAlias
+		pf.Agents[id] = p
+		agents = append(agents, id)
+	}
+	if len(agents) == 0 {
+		return 0, nil, nil
+	}
+	sort.Strings(agents)
+	if err := SavePointers(pointerPath, pf); err != nil {
+		return 0, nil, err
+	}
+	return len(agents), agents, nil
 }
 
 // RemoveProvider 先处理自有凭据，再删除档案；档案删除失败时用旧值补偿凭据。

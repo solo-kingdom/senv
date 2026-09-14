@@ -617,3 +617,75 @@ func TestAIProviderEditDefaultReasoning(t *testing.T) {
 		t.Fatalf("efforts changed: %v", entry.ModelInfo["m1"].ReasoningEfforts)
 	}
 }
+
+func TestAIProviderRenameCLI(t *testing.T) {
+	newAuditTestProject(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAIProviderTestCatalog(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddDefault = "m1"
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"acme"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	pointerPath := llm.DefaultPointerPath(home)
+	pf := &llm.PointerFile{Version: 1, Agents: map[string]llm.AgentPointer{}}
+	pf.Set("codex", "acme", []string{"m1"}, "m1")
+	if err := llm.SavePointers(pointerPath, pf); err != nil {
+		t.Fatalf("SavePointers: %v", err)
+	}
+
+	out, err := runAIProviderCmd(t, aiProviderRenameCmd, []string{"acme", "acme-prod"})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if !strings.Contains(out, "renamed acme → acme-prod") || !strings.Contains(out, "updated 1 agent pointer") {
+		t.Fatalf("rename output = %q", out)
+	}
+	if !strings.Contains(out, "senv ai switch") || strings.Contains(out, "sk-secret-value") {
+		t.Fatalf("rename output missing re-switch note or leaked secret: %q", out)
+	}
+
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("acme-prod")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.CredentialRef != "text:llm-keys/acme-prod" {
+		t.Fatalf("credential_ref = %q", entry.CredentialRef)
+	}
+	if _, err := mgr.GetProvider("acme"); err == nil {
+		t.Fatal("old alias still present")
+	}
+	loaded, err := llm.LoadPointers(pointerPath)
+	if err != nil {
+		t.Fatalf("LoadPointers: %v", err)
+	}
+	if loaded.Agents["codex"].Provider != "acme-prod" {
+		t.Fatalf("pointer = %+v", loaded.Agents["codex"])
+	}
+
+	if _, err := runAIProviderCmd(t, aiProviderRenameCmd, []string{"missing", "x"}); err == nil ||
+		!strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing old error = %v", err)
+	}
+
+	setProviderCredentialReader(t, "sk-other")
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"taken"}); err != nil {
+		t.Fatalf("add taken: %v", err)
+	}
+	if _, err := runAIProviderCmd(t, aiProviderRenameCmd, []string{"acme-prod", "taken"}); err == nil ||
+		!strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("conflict error = %v", err)
+	}
+}

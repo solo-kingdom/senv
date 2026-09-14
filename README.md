@@ -15,7 +15,7 @@
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/AI/MCP Server 档案，敏感值默认遮蔽防肩窥
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
-- ✅ **LLM Provider 管理** - `senv ai provider add/edit/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
+- ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
 
 ## 安装
 
@@ -357,7 +357,7 @@ SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host�
 
 KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`m` materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600）、`enter` 详情；行内展示指纹摘要与被引用计数（`被 N 个 Host 引用`），零引用灰显「未被引用」。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
-AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
+AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
 MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
@@ -602,6 +602,9 @@ senv ai provider add local \
 # 就地编辑（别名不可改；只改传入的字段，省略的保持原值）
 senv ai provider edit acme --base-url https://new.acme.com/v1 --default-model m2
 
+# 重命名（联动自有凭据与本机 agent 指针；不改写 agent 原生配置，需重跑 switch）
+senv ai provider rename acme acme-prod
+
 # 声明接口形态：留空表示不声明，切换时按目标 agent 协议族推断
 senv ai provider edit acme --api-shape anthropic
 senv ai provider edit acme --api-shape ""     # 清除该字段，回到推断
@@ -670,6 +673,7 @@ senv host unexport                 撤回注册与组片段
 senv keypair prune [--force]       清理未引用落盘私钥
 senv ai provider add <alias> [flags]      保存 LLM Provider 档案（凭据走 TTY/--api-key-stdin/--key-ref）
 senv ai provider edit <alias> [flags]     就地编辑档案（别名不可改；--api-shape 声明/清除接口形态）
+senv ai provider rename <old> <new>       重命名档案（联动自有凭据与指针；需重跑 switch）
 senv sync                          同步 git/server provider（server 冲突时进入 TTY 解决器）
 senv sync --no-interactive         输出冲突脱敏摘要，不进入交互 UI
 senv sync --accept-remote          server 冲突时采用远端

@@ -416,6 +416,38 @@ var aiProviderRemoveCmd = &cobra.Command{
 	},
 }
 
+var aiProviderRenameCmd = &cobra.Command{
+	Use:   "rename <old> <new>",
+	Short: "Rename an LLM provider profile (owned credential + agent pointers)",
+	Long: `Rename a provider profile alias. When the credential is the owned
+text:llm-keys/<old> entry it is renamed in the same vault mutation and the
+profile credential_ref is updated. Local agent pointers that reference the old
+alias are rewritten; coding agent native config files are NOT rewritten — re-run
+senv ai switch <agent> <new> so senv-<new> appears in those configs.`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := getAIProviderManager()
+		if err != nil {
+			return err
+		}
+		oldAlias, newAlias := args[0], args[1]
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home directory: %w", err)
+		}
+		res, err := mgr.RenameProvider(oldAlias, newAlias, llm.DefaultPointerPath(home))
+		if err != nil {
+			auditOp(session.AuditOpLLMProvider, "provider:"+oldAlias, false, "rename failed")
+			return err
+		}
+		auditOp(session.AuditOpLLMProvider, "provider:"+newAlias, true, "rename "+oldAlias)
+		out := cmd.OutOrStdout()
+		fmt.Fprintf(out, "✓ renamed %s → %s; updated %d agent pointer(s)\n", oldAlias, newAlias, res.PointersUpdated)
+		fmt.Fprintf(out, "note: coding agent configs still use senv-%s until you re-run: senv ai switch <agent> %s\n", oldAlias, newAlias)
+		return nil
+	},
+}
+
 // modelInfoDetails 把单条模型信息渲染成紧凑键值串（空字段跳过）。
 func modelInfoDetails(info storage.LLMModelInfo) string {
 	var parts []string
@@ -510,5 +542,5 @@ func init() {
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
-	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)
+	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderRenameCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)
 }

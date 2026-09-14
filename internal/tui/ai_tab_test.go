@@ -613,6 +613,69 @@ func TestAITabDeleteProviderConfirmAndAudit(t *testing.T) {
 	}
 }
 
+func TestAITabRenameProvider(t *testing.T) {
+	tab, _, w := newAITestTab(t)
+	runAITabLoad(t, tab)
+	if _, err := tab.mgr.LLM.AddProvider(llm.AddProviderOptions{
+		Alias: "taken", BaseURL: "https://api.example.com",
+		APIKey: "sk-taken", Models: []string{"m1"}, DefaultModel: "m1",
+	}); err != nil {
+		t.Fatalf("seed taken: %v", err)
+	}
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+	for i, p := range tab.visibleProviders() {
+		if p.Alias == "main" {
+			tab.providerIndex = i
+			break
+		}
+	}
+
+	out, _ := tab.Update(runeKey("r"))
+	tab = out.(*aiTab)
+	if tab.form == nil || !strings.Contains(tab.form.title, "rename provider main") {
+		t.Fatalf("r should open rename form, form=%v", tab.form)
+	}
+
+	// 冲突：表单内联报错，档案不变。
+	tab = submitAIForm(t, tab, map[string]string{"alias": "taken"})
+	if tab.form == nil {
+		t.Fatal("conflict should keep the form open")
+	}
+	if errs := tab.form.errs; len(errs) == 0 || !strings.Contains(errs[0], "already exists") {
+		t.Fatalf("inline error missing: %v", errs)
+	}
+	if tab.providerByAlias("main") == nil || tab.providerByAlias("taken") == nil {
+		t.Fatalf("conflict mutated providers: %#v", tab.providers)
+	}
+
+	out, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tab = out.(*aiTab)
+	out, _ = tab.Update(runeKey("r"))
+	tab = out.(*aiTab)
+	tab = submitAIForm(t, tab, map[string]string{"alias": "main-prod"})
+	if tab.form != nil {
+		t.Fatalf("successful rename should close form: %v", tab.form.errs)
+	}
+	if tab.providerByAlias("main") != nil || tab.providerByAlias("main-prod") == nil {
+		t.Fatalf("providers after rename: %#v", tab.providers)
+	}
+	entry, err := tab.mgr.LLM.GetProvider("main-prod")
+	if err != nil || entry.CredentialRef != "text:llm-keys/main-prod" {
+		t.Fatalf("renamed entry = %+v, %v", entry, err)
+	}
+	var sawRename bool
+	for _, c := range w.calls {
+		if c.target == "provider:main-prod" && c.detail == "rename main" && c.success {
+			sawRename = true
+		}
+	}
+	if !sawRename {
+		t.Fatalf("rename not audited: %#v", w.calls)
+	}
+}
+
 func TestAITabExcludesUnsupportedAgents(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)

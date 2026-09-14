@@ -164,6 +164,7 @@ func (t *aiTab) Bindings() []KeyAction {
 		actDetail,
 		KeyAction{[]string{"n"}, "new provider", grpItem, false},
 		KeyAction{[]string{"e"}, "edit provider", grpItem, false},
+		actRename,
 		KeyAction{[]string{"d"}, "delete provider", grpItem, false},
 		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem, false},
 		KeyAction{[]string{"M"}, "default model only", grpItem, false},
@@ -483,6 +484,10 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 				return t.enterProviderForm(p)
 			}
 			return t, warnToast("no provider selected")
+		}
+	case "r":
+		if t.focusLeft {
+			return t.enterRenameProvider()
 		}
 	case "d":
 		if t.focusLeft {
@@ -1054,6 +1059,65 @@ func (t *aiTab) enterDeleteProvider() (Tab, tea.Cmd) {
 	t.pendingProvider = p.Alias
 	t.mode = aiModeDeleteProvider
 	return t, nil
+}
+
+func (t *aiTab) enterRenameProvider() (Tab, tea.Cmd) {
+	p := t.currentProvider()
+	if p == nil {
+		return t, warnToast("no provider to rename")
+	}
+	siblings := make([]string, 0, len(t.providers))
+	for _, entry := range t.providers {
+		siblings = append(siblings, entry.Alias)
+	}
+	old := p.Alias
+	f := newForm("rename provider "+old,
+		formField{
+			key: "alias", label: "new alias", kind: formText, value: old, placeholder: "acme-prod",
+			validate: func(v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return fmt.Errorf("alias cannot be empty")
+				}
+				if err := storage.ValidateName(v); err != nil {
+					return fmt.Errorf("invalid alias")
+				}
+				if v != old {
+					for _, name := range siblings {
+						if name == v {
+							return fmt.Errorf("provider %s already exists", v)
+						}
+					}
+				}
+				return nil
+			},
+		},
+	)
+	var submit func(values map[string]string) tea.Cmd
+	submit = func(values map[string]string) tea.Cmd {
+		return t.doRenameProvider(f, submit, old, strings.TrimSpace(values["alias"]), values)
+	}
+	t.openForm(f, submit)
+	return t, nil
+}
+
+func (t *aiTab) doRenameProvider(f *form, submit func(map[string]string) tea.Cmd, oldAlias, newAlias string, values map[string]string) tea.Cmd {
+	if oldAlias == newAlias {
+		return warnToast("alias unchanged")
+	}
+	mgr := t.mgr.LLM
+	mgrs := t.mgr
+	pointerPath := t.mgr.LLMPointer
+	return func() tea.Msg {
+		res, err := mgr.RenameProvider(oldAlias, newAlias, pointerPath)
+		if err != nil {
+			recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+oldAlias, false, "rename failed")
+			return aiFormReopenMsg{form: f, submit: submit, values: values, field: "alias", err: err}
+		}
+		recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+newAlias, true, "rename "+oldAlias)
+		toast := fmt.Sprintf("renamed to %s (updated %d agent pointer(s); re-run senv ai switch)", newAlias, res.PointersUpdated)
+		return aiProviderReloadMsg{toast: toast, providerAlias: newAlias}
+	}
 }
 
 func (t *aiTab) doDeleteProvider(alias string) (Tab, tea.Cmd) {
