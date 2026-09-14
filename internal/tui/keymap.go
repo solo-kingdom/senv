@@ -62,24 +62,27 @@ func groupBar(bindings []KeyAction) string {
 // 共享动作：全局动词（grill D7 附录），所有列表 Tab 同义。Tab 的 Update 用
 // 它们分发按键，Bindings() 用它们声明键位，两侧共用同一常量。
 var (
-	actNew     = KeyAction{[]string{"n"}, "new", grpItem}
-	actEdit    = KeyAction{[]string{"e"}, "edit", grpItem}
-	actRename  = KeyAction{[]string{"r"}, "rename", grpItem}
-	actDelete  = KeyAction{[]string{"d"}, "delete", grpItem}
-	actExport  = KeyAction{[]string{"x"}, "export", grpItem}
-	actImport  = KeyAction{[]string{"i"}, "import", grpItem}
-	actRefresh = KeyAction{[]string{"ctrl+r"}, "refresh", grpFilter}
-	actFilter  = KeyAction{[]string{"/"}, "filter", grpFilter}
-	actDetail  = KeyAction{[]string{"enter"}, "view", grpItem}
-	actEsc     = KeyAction{[]string{"esc"}, "back/cancel", grpNav}
-	actUp      = KeyAction{[]string{"up", "k"}, "up", grpNav}
-	actDown    = KeyAction{[]string{"down", "j"}, "down", grpNav}
-	actLeft    = KeyAction{[]string{"left", "h"}, "left pane", grpNav}
-	actRight   = KeyAction{[]string{"right", "l"}, "right pane", grpNav}
-	actTop     = KeyAction{[]string{"g"}, "top", grpNav}
-	actBottom  = KeyAction{[]string{"G"}, "bottom", grpNav}
-	actPageUp  = KeyAction{[]string{"pgup"}, "page up", grpNav}
-	actPageDn  = KeyAction{[]string{"pgdown"}, "page down", grpNav}
+	actNew       = KeyAction{[]string{"n"}, "new", grpItem}
+	actEdit      = KeyAction{[]string{"e"}, "edit", grpItem}
+	actRename    = KeyAction{[]string{"r"}, "rename", grpItem}
+	actDelete    = KeyAction{[]string{"d"}, "delete", grpItem}
+	actExport    = KeyAction{[]string{"x"}, "export", grpItem}
+	actApply     = KeyAction{[]string{"A"}, "apply export", grpItem}
+	actImport    = KeyAction{[]string{"i"}, "import", grpItem}
+	actSelect    = KeyAction{[]string{"space"}, "toggle select", grpItem}
+	actSelectAll = KeyAction{[]string{"a"}, "select all visible", grpItem}
+	actRefresh   = KeyAction{[]string{"ctrl+r"}, "refresh", grpFilter}
+	actFilter    = KeyAction{[]string{"/"}, "filter", grpFilter}
+	actDetail    = KeyAction{[]string{"enter"}, "view", grpItem}
+	actEsc       = KeyAction{[]string{"esc"}, "back/cancel", grpNav}
+	actUp        = KeyAction{[]string{"up", "k"}, "up", grpNav}
+	actDown      = KeyAction{[]string{"down", "j"}, "down", grpNav}
+	actLeft      = KeyAction{[]string{"left", "h"}, "left pane", grpNav}
+	actRight     = KeyAction{[]string{"right", "l"}, "right pane", grpNav}
+	actTop       = KeyAction{[]string{"g"}, "top", grpNav}
+	actBottom    = KeyAction{[]string{"G"}, "bottom", grpNav}
+	actPageUp    = KeyAction{[]string{"pgup"}, "page up", grpNav}
+	actPageDn    = KeyAction{[]string{"pgdown"}, "page down", grpNav}
 )
 
 // overlay chrome 预算：search/help overlay 样式为圆角边框 + Padding(1,2)，

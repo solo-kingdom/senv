@@ -331,26 +331,27 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
 | `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；KeyPair Tab：materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600） |
-| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览，`w` 后再填目标文件写入；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
+| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览，`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
+| `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要 |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
-| `a` / `x` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
+| `t` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
 | `+` | 新建分组（Env / Text Tab） |
 | `i` | 从文件导入（Text=文本块，写 `group`/`key`/源文件路径；KeyPair Tab=导入 keypair 名称 + 私钥路径 + 分组） |
 | `i` / `u` | 安装/卸载 config（`I`/`U` 为批量，需在计划页确认） |
 | `D` | 切换解引用视图（Env Tab；Text 列表仅元数据） |
 | `y` | 复制值到剪贴板 |
-| `o` | 导出 text 到文件 |
+| `x` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
 | `f` | Audit Tab：循环预设过滤（全部 / 操作 / 会话） |
 | `s` | AI Tab：以左栏选中的 provider 对右栏选中的 agent 切换（多选 Agent 模型集，进入时默认全选 → 选定默认模型 → 确认；codex 凭据走环境变量，不写入配置） |
-| `m` | AI Tab：对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
-| `r` | 刷新当前 Tab（SSH / AI / Audit / History；Env/Text/Config 中是重命名） |
+| `M` | AI Tab：对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
+| `ctrl+r` | 刷新当前 Tab（条目栏 `r` = 重命名） |
 | `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/AI/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
 | `?` | 键位总览 overlay（全局键 + 当前 Tab 键位） |
 | `esc` | 关闭 overlay / 取消操作 |
 | `q` | 退出 TUI（仍有待推送时会先提示一次，再按一次才退出） |
 
-SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、group、tags，`extra` 走 `$EDITOR`），`x` 导出 OpenSSH 片段；host 列表内联显示所用 keypair 名称与指纹摘要（`key:name(fp)`）；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。
+SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、group、tags，`extra` 走 `$EDITOR`），`x` 导出 OpenSSH 片段，`A` 应用导出（与 CLI `senv host export` 同一编排，位置自动推断不再手填 target；host 栏=重建游标 host 所在组整组片段，分组栏=重建选中组、All=全量重建并清理幽灵组片段）。`A` 弹出确认框，列出将重建的组片段数、待落盘私钥数、Include 注册状态与 warning 计数，`enter`/`y` 执行、`esc`/`n` 取消（无副作用），执行后 toast 给出摘要（重建/落盘/跳过/注册/warning 计数）；批量导出目录与单条导出目标文件指向 `~/.ssh/senv/` 内部时被表单内联拒绝（该树由应用导出全权维护，外来文件会被幽灵清理），提示改用 `A` 或另选用户自有路径。host 列表内联显示所用 keypair 名称与指纹摘要（`key:name(fp)`）；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。
 
 KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`m` materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600）、`enter` 详情；行内展示指纹摘要与被引用计数（`被 N 个 Host 引用`），零引用灰显「未被引用」。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
 

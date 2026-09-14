@@ -272,6 +272,95 @@ func TestKeypairGroupFlagFlow(t *testing.T) {
 	}
 }
 
+func TestKeypairEditGroupFlow(t *testing.T) {
+	newSSHTestProject(t)
+	keyPath := writeTestEd25519Key(t, t.TempDir(), "id_edit", "edit@test")
+	keypairImportFile = keyPath
+	keypairImportGroup = "prod"
+	t.Cleanup(func() { keypairImportFile, keypairImportGroup = "", "" })
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"edit-key", "--file", keyPath}))
+
+	mgr, err := getSSHManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := mgr.GetKeyPairSummary("edit-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 缺 --group：参数错误提示用法，零变更。
+	if err := keypairEditCmd.RunE(&cobra.Command{}, []string{"edit-key"}); err == nil || !strings.Contains(err.Error(), "--group is required") {
+		t.Fatalf("missing --group error = %v", err)
+	}
+	summary, err := mgr.GetKeyPairSummary("edit-key")
+	if err != nil || summary.Group != "prod" {
+		t.Fatalf("group after missing flag = %+v, %v", summary, err)
+	}
+
+	// edit --group 改组生效，key 材料不动。
+	runSSHCommand(t, keypairEditCmd.RunE(newKeypairEditGroupCmd(t, "staging"), []string{"edit-key"}))
+	summary, err = mgr.GetKeyPairSummary("edit-key")
+	if err != nil || summary.Group != "staging" {
+		t.Fatalf("edited group = %+v, %v", summary, err)
+	}
+	if summary.Fingerprint != before.Fingerprint || summary.PublicKey != before.PublicKey {
+		t.Fatalf("key material changed: before=%+v after=%+v", before, summary)
+	}
+
+	// list 输出展示新组。
+	out := captureStdout(t, func() {
+		runSSHCommand(t, keypairListCmd.RunE(&cobra.Command{}, nil))
+	})
+	if !strings.Contains(out, "group:staging") {
+		t.Fatalf("list output missing group: %s", out)
+	}
+
+	// 非法组名（含 /）拒绝，原值不变。
+	if err := keypairEditCmd.RunE(newKeypairEditGroupCmd(t, "a/b"), []string{"edit-key"}); err == nil {
+		t.Fatal("edit --group a/b should fail")
+	}
+	summary, err = mgr.GetKeyPairSummary("edit-key")
+	if err != nil || summary.Group != "staging" {
+		t.Fatalf("group after invalid edit = %+v, %v", summary, err)
+	}
+
+	// edit --group "" 清除分组。
+	runSSHCommand(t, keypairEditCmd.RunE(newKeypairEditGroupCmd(t, ""), []string{"edit-key"}))
+	summary, err = mgr.GetKeyPairSummary("edit-key")
+	if err != nil || summary.Group != "" {
+		t.Fatalf("cleared group = %+v, %v", summary, err)
+	}
+
+	// 不存在的 keypair：报错且零副作用（vault 无新条目，审计记录失败）。
+	if err := keypairEditCmd.RunE(newKeypairEditGroupCmd(t, "prod"), []string{"nope"}); err == nil {
+		t.Fatal("edit nonexistent keypair should fail")
+	}
+	if _, err := mgr.GetKeyPairSummary("nope"); err == nil {
+		t.Fatal("failed edit must not create a keypair")
+	}
+	pairs, err := mgr.ListKeyPairs()
+	if err != nil || len(pairs) != 1 {
+		t.Fatalf("vault side effects: pairs=%v, %v", pairs, err)
+	}
+	if log := readAuditLogForTest(t); !strings.Contains(log, `"target":"keypair:nope"`) || !strings.Contains(log, `"success":false`) {
+		t.Fatalf("audit missing failed edit: %s", log)
+	}
+}
+
+// newKeypairEditGroupCmd builds a throwaway command whose --group flag is bound
+// to keypairEditGroup and explicitly set, mirroring `senv keypair edit --group v`.
+func newKeypairEditGroupCmd(t *testing.T, value string) *cobra.Command {
+	t.Helper()
+	t.Cleanup(func() { keypairEditGroup = "" })
+	cmd := &cobra.Command{}
+	cmd.Flags().StringVar(&keypairEditGroup, "group", "", "")
+	if err := cmd.Flags().Set("group", value); err != nil {
+		t.Fatal(err)
+	}
+	return cmd
+}
+
 func TestHostAddInvalidReferences(t *testing.T) {
 	dir := newSSHTestProject(t)
 	keyPath := writeTestEd25519Key(t, dir, "id_test", "bad@test")

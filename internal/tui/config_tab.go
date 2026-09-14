@@ -113,7 +113,7 @@ func (t *configTab) Bindings() []KeyAction {
 		actTop, actBottom, actPageUp, actPageDn,
 		actDetail, actEdit, actRename,
 		{[]string{"m"}, "metadata", grpItem},
-		actNew,
+		actNew, actSelect, actSelectAll,
 		{[]string{"i/I"}, "install (one/all)", grpItem},
 		{[]string{"u/U"}, "uninstall (one/all)", grpItem},
 		actExport, actDelete,

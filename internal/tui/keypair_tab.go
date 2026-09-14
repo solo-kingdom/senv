@@ -46,6 +46,7 @@ type keyPairTab struct {
 	pendingForce    bool     // materialize overwrite confirmed
 	keyRefs         []string // hosts referencing pendingKey
 	materializePath string
+	pendingPrune    []ssh.PruneCandidate
 }
 
 // kpMode is the tab's confirmation state. Every non-normal mode owns the
@@ -56,6 +57,7 @@ const (
 	kpModeNormal kpMode = iota
 	kpModeDeleteKey
 	kpModeMaterialize
+	kpModePrune
 )
 
 // kpPane 是 KeyPair Tab 两栏的焦点栏位：侧栏 ↔ 列表，`←→/hl` 切换。
@@ -79,6 +81,19 @@ type kpReloadMsg struct {
 	keyName string
 }
 
+// kpPruneMsg 是 PruneCandidates 的异步结果。
+type kpPruneMsg struct {
+	candidates []ssh.PruneCandidate
+	err        error
+}
+
+// kpPruneDoneMsg 是 DeletePrunedFiles 的异步结果。
+type kpPruneDoneMsg struct {
+	deleted int
+	total   int
+	err     error
+}
+
 func newKeyPairTab(mgr Managers) *keyPairTab {
 	return &keyPairTab{mgr: mgr, focus: kpPaneList}
 }
@@ -94,21 +109,29 @@ func (t *keyPairTab) Bindings() []KeyAction {
 		}
 	}
 	switch t.mode {
-	case kpModeDeleteKey, kpModeMaterialize:
+	case kpModeDeleteKey:
+		return []KeyAction{
+			{[]string{"enter/y"}, "confirm", grpConfirm},
+			{[]string{"esc/n"}, "cancel", grpConfirm},
+			{[]string{"F"}, "force delete (clear host identityKey)", grpConfirm},
+		}
+	case kpModeMaterialize, kpModePrune:
 		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	}
 	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
 		actTop, actBottom, actPageUp, actPageDn}
+	prune := KeyAction{[]string{"p"}, "prune", grpItem}
 	if t.focus == kpPaneList {
 		return append(append(nav,
-			KeyAction{[]string{"i"}, "import keypair", grpItem},
+			KeyAction{[]string{"n", "i"}, "import keypair", grpItem},
 			KeyAction{[]string{"r"}, "rename keypair", grpItem},
 			KeyAction{[]string{"e"}, "edit group", grpItem},
 			KeyAction{[]string{"d"}, "delete", grpItem},
 			KeyAction{[]string{"m"}, "materialize", grpItem},
+			prune,
 		), actRefresh, actFilter)
 	}
-	return append(nav, actRefresh, actFilter)
+	return append(nav, prune, actRefresh, actFilter)
 }
 
 func (t *keyPairTab) InputMode() bool {
@@ -336,6 +359,27 @@ func (t *keyPairTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		return t, cmd
 
+	case kpPruneMsg:
+		if msg.err != nil {
+			err := msg.err
+			return t, func() tea.Msg { return errMsg{err: err} }
+		}
+		if len(msg.candidates) == 0 {
+			return t, okToast("no unreferenced materialized keys")
+		}
+		t.pendingPrune = msg.candidates
+		t.mode = kpModePrune
+		return t, nil
+
+	case kpPruneDoneMsg:
+		t.cancelMode()
+		cmd := t.load()
+		if msg.err != nil {
+			text := fmt.Sprintf("prune: deleted %d of %d: %s", msg.deleted, msg.total, firstPruneError(msg.err))
+			return t, tea.Batch(func() tea.Msg { return warnMsg{text: text} }, cmd)
+		}
+		return t, tea.Batch(okToast(fmt.Sprintf("deleted %d file(s)", msg.deleted)), cmd)
+
 	case detailCloseMsg:
 		t.detail = nil
 		return t, nil
@@ -402,6 +446,8 @@ func (t *keyPairTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		if t.focus == kpPaneList {
 			return t.enterMaterialize()
 		}
+	case "p":
+		return t.enterPrune()
 	case "g":
 		t.jumpFocus(0)
 	case "G":
@@ -474,6 +520,14 @@ func (t *keyPairTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		case "esc", "n":
 			t.cancelMode()
 		}
+	case kpModePrune:
+		switch msg.String() {
+		case "enter", "y":
+			return t, t.doPrune()
+		case "esc", "n":
+			t.cancelMode()
+			return t, warnToast("cancelled")
+		}
 	}
 	return t, nil
 }
@@ -485,6 +539,7 @@ func (t *keyPairTab) cancelMode() {
 	t.pendingForce = false
 	t.keyRefs = nil
 	t.materializePath = ""
+	t.pendingPrune = nil
 }
 
 // --- write flows ---
@@ -721,6 +776,44 @@ func (t *keyPairTab) doMaterialize(name string, force bool) tea.Cmd {
 	}
 }
 
+// enterPrune 异步取 PruneCandidates（design D3）：空清单 toast 直达，非空
+// 进列表+确认同屏 modal。两栏均可用，不读游标。
+func (t *keyPairTab) enterPrune() (Tab, tea.Cmd) {
+	mgr := t.mgr.SSH
+	if mgr == nil {
+		return t, warnToast("SSH manager not available")
+	}
+	return t, func() tea.Msg {
+		candidates, err := mgr.PruneCandidates()
+		return kpPruneMsg{candidates: candidates, err: err}
+	}
+}
+
+func (t *keyPairTab) doPrune() tea.Cmd {
+	mgrs := t.mgr
+	candidates := append([]ssh.PruneCandidate(nil), t.pendingPrune...)
+	t.cancelMode()
+	return func() tea.Msg {
+		paths := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			paths = append(paths, c.Path)
+		}
+		deleted, err := ssh.DeletePrunedFiles(paths)
+		ok := err == nil
+		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:prune", ok, fmt.Sprintf("prune %d 个文件", len(deleted)))
+		return kpPruneDoneMsg{deleted: len(deleted), total: len(paths), err: err}
+	}
+}
+
+func firstPruneError(err error) string {
+	s := err.Error()
+	s = strings.TrimPrefix(s, "prune: ")
+	if i := strings.Index(s, "; "); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // --- lookups ---
 
 func (t *keyPairTab) currentKey() (ssh.KeyPairSummary, bool) {
@@ -817,7 +910,7 @@ func (t *keyPairTab) View() string {
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if t.loaded && len(t.keyPairs) == 0 {
+	if t.loaded && len(t.keyPairs) == 0 && t.mode == kpModeNormal && t.form == nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("KeyPair"),
 			emptyStateStyle.Render("no keypairs yet; press i to import a private key, then Ctrl+R to refresh"))
@@ -945,6 +1038,17 @@ func (t *keyPairTab) renderModal() string {
 			body += "\n⚠ target file exists and will be overwritten."
 		}
 		return modalBox(t.width, t.height, "materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
+	case kpModePrune:
+		var b strings.Builder
+		for _, c := range t.pendingPrune {
+			b.WriteString("  " + c.Path)
+			if c.InVault {
+				b.WriteString(" (keypair still in vault)")
+			}
+			b.WriteByte('\n')
+		}
+		return modalBox(t.width, t.height, "prune unreferenced keys?", strings.TrimRight(b.String(), "\n"),
+			fmt.Sprintf("enter/y delete %d file(s) · esc/n cancel", len(t.pendingPrune)))
 	}
 	return ""
 }

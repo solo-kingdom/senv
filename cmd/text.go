@@ -105,6 +105,40 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 	},
 }
 
+// --- text import ---
+
+var textImportFile string
+
+var textImportCmd = &cobra.Command{
+	Use:   "import <key|group:key>",
+	Short: "Import a text block from a file (upsert)",
+	Long: `Import a text block from a file, encrypting the content into the vault.
+The source file is left untouched. If the key already exists, its value is
+overwritten and updated_at refreshes (same semantics as the TUI import);
+there is no overwrite confirmation. --file is required: import never falls
+back to stdin or an editor.
+The key may be a group:key address (e.g. feg:ACCOUNT); address group takes precedence over -g/--group.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if textImportFile == "" {
+			return fmt.Errorf("--file is required")
+		}
+		textManager, err := getTextManager()
+		if err != nil {
+			return err
+		}
+
+		group, key := resolveAddressKey(args[0], textGroup)
+		if err := textManager.SetFromFile(group, key, textImportFile); err != nil {
+			auditOp(session.AuditOpText, "text:"+group+":"+key, false, "import 失败")
+			return err
+		}
+		auditOp(session.AuditOpText, "text:"+group+":"+key, true, "import "+textImportFile)
+		fmt.Printf("✓ Imported text %s into group %s\n", key, group)
+		return nil
+	},
+}
+
 // --- text get ---
 
 var (
@@ -160,6 +194,39 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 		}
 
 		fmt.Print(value)
+		return nil
+	},
+}
+
+// --- text export ---
+
+var textExportPath string
+
+var textExportCmd = &cobra.Command{
+	Use:   "export <key|group:key>",
+	Short: "Export a text block to a plaintext file (0600)",
+	Long: `Export a text block's plaintext value to a file. The file is written
+atomically with fixed 0600 permissions (overwriting an existing permissive
+file tightens it; symlinks are rejected). The value is exported byte-for-byte
+as stored — {{env:...}} references are NOT resolved (use "text get -d -o"
+for decoded export). On success only the path is printed, never the value.
+Export is a read-side operation and records no audit event.
+The key may be a group:key address (e.g. feg:ACCOUNT); address group takes precedence over -g/--group.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if textExportPath == "" {
+			return fmt.Errorf("--path is required")
+		}
+		textManager, err := getTextManager()
+		if err != nil {
+			return err
+		}
+
+		group, key := resolveAddressKey(args[0], textGroup)
+		if err := textManager.GetToFile(group, key, textExportPath); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Exported to %s\n", textExportPath)
 		return nil
 	},
 }
@@ -408,7 +475,15 @@ func init() {
 	textCmd.AddCommand(textGetCmd)
 	textCmd.AddCommand(textDeleteCmd)
 	textCmd.AddCommand(textListCmd)
+	textCmd.AddCommand(textImportCmd)
+	textCmd.AddCommand(textExportCmd)
 	textCmd.AddCommand(textGroupCmd)
+
+	// text import flags
+	textImportCmd.Flags().StringVar(&textImportFile, "file", "", "read the value from this file (required)")
+
+	// text export flags
+	textExportCmd.Flags().StringVar(&textExportPath, "path", "", "write the plaintext value to this file (required, fixed 0600)")
 
 	textGroupCmd.AddCommand(textGroupListCmd)
 	textGroupCmd.AddCommand(textGroupAddCmd)

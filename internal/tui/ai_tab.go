@@ -61,6 +61,10 @@ type aiTab struct {
 	flowCandidates []string
 	flowSelected   map[string]bool
 	flowCursor     int
+
+	// catalogURL 覆盖联网刷新的源；空则用 llm.DefaultCatalogURL。测试用
+	// httptest.Server 注入，生产路径保持零值。
+	catalogURL string
 }
 
 // aiMode is the destructive confirmation state.
@@ -113,6 +117,13 @@ type aiFormReopenMsg struct {
 	err    error
 }
 
+// aiCatalogRefreshedMsg 是联网刷新公开目录的异步结果。
+type aiCatalogRefreshedMsg struct {
+	providers int
+	models    int
+	err       error
+}
+
 func newAITab(mgr Managers) *aiTab {
 	return &aiTab{mgr: mgr, focusLeft: true}
 }
@@ -151,6 +162,7 @@ func (t *aiTab) Bindings() []KeyAction {
 		KeyAction{[]string{"d"}, "delete provider", grpItem},
 		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem},
 		KeyAction{[]string{"M"}, "default model only", grpItem},
+		KeyAction{[]string{"R"}, "refresh catalog (network)", grpItem},
 		actFilter, actRefresh,
 	)
 }
@@ -226,6 +238,33 @@ func (t *aiTab) load() tea.Cmd {
 			warning:        warning,
 			credentialRefs: gatherCredentialRefs(t.mgr),
 		}
+	}
+}
+
+// refreshCatalog 联网拉取公开模型目录并原子写入 LLMCatalog，与
+// `senv ai refresh` 同语义。失败路径不触碰旧缓存。
+func (t *aiTab) refreshCatalog() tea.Cmd {
+	path := t.mgr.LLMCatalog
+	if path == "" {
+		return warnToast("catalog path unset; use senv ai refresh")
+	}
+	source := llm.DefaultCatalogURL
+	if t.catalogURL != "" {
+		source = t.catalogURL
+	}
+	return func() tea.Msg {
+		cat, err := llm.Fetch(source, nil)
+		if err != nil {
+			return aiCatalogRefreshedMsg{err: err}
+		}
+		providers, models, err := cat.Counts()
+		if err != nil {
+			return aiCatalogRefreshedMsg{err: err}
+		}
+		if err := llm.Save(path, cat); err != nil {
+			return aiCatalogRefreshedMsg{err: err}
+		}
+		return aiCatalogRefreshedMsg{providers: providers, models: models}
 	}
 }
 
@@ -326,6 +365,16 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		return t, cmd
 
+	case aiCatalogRefreshedMsg:
+		if msg.err != nil {
+			err := msg.err
+			return t, func() tea.Msg { return errMsg{err: err} }
+		}
+		return t, tea.Batch(
+			okToast(fmt.Sprintf("catalog refreshed: %d providers, %d models", msg.providers, msg.models)),
+			t.load(),
+		)
+
 	case aiSwitchResultMsg:
 		if msg.err != nil {
 			err := msg.err
@@ -413,6 +462,8 @@ func (t *aiTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	case "ctrl+r":
 		t.loaded = false
 		return t, t.load()
+	case "R":
+		return t, t.refreshCatalog()
 	case "enter":
 		return t, t.openDetail()
 	case "n":
@@ -1322,7 +1373,7 @@ func (t *aiTab) View() string {
 	if t.loaded && len(t.providers) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("AI"),
-			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then r to refresh"))
+			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then R to refresh catalog"))
 	}
 	overlay := ""
 	switch {

@@ -85,6 +85,7 @@ func (t *envTab) Bindings() []KeyAction {
 		actUp, actDown, actLeft, actRight,
 		actTop, actBottom, actPageUp, actPageDn,
 		actEdit, actNew, actDelete, actRename,
+		actSelect, actSelectAll,
 		{[]string{"v"}, "toggle value visibility", grpItem},
 		{[]string{"y"}, "copy", grpItem},
 		{[]string{"t"}, "toggle group active", grpGroup},

@@ -122,6 +122,42 @@ func (m *Manager) Unexport() (unregistered bool, groupsRemoved bool, err error) 
 	return unregistered, groupsRemoved, nil
 }
 
+// UnexportState 是 Unexport 的只读预检：注册行是否在 ~/.ssh/config 中、
+// groups/ 下有多少 *.conf 片段。缺 config 或缺 groups 目录不是错误
+// （registered=false、fragments=0）；仅家目录解析或读取硬失败才返回 error。
+// 不改任何文件，也不改 Unexport 行为。
+func UnexportState() (registered bool, fragments int, err error) {
+	path, err := sshConfigPath()
+	if err != nil {
+		return false, 0, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, 0, fmt.Errorf("read ssh config: %w", err)
+	}
+	if err == nil {
+		registered = hasExactLine(data, IncludeLine)
+	}
+	gdir, err := groupsDir()
+	if err != nil {
+		return registered, 0, err
+	}
+	entries, err := os.ReadDir(gdir)
+	if errors.Is(err, os.ErrNotExist) {
+		return registered, 0, nil
+	}
+	if err != nil {
+		return registered, 0, fmt.Errorf("list group fragments: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+			continue
+		}
+		fragments++
+	}
+	return registered, fragments, nil
+}
+
 // pruneGhostFragments 删除 groups/ 下不属于当前渲染结果的 .conf 文件
 // （组已在 vault 中改名/删空）。调用方限定：仅全量导出。
 func pruneGhostFragments(gdir string, live map[string]bool) ([]string, error) {

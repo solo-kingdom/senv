@@ -39,6 +39,10 @@ type mcpTab struct {
 	pendingJump string
 	detail      *detailOverlay
 
+	// scope 是导出/撤回的目标范围（user/project），零值即 user；会话内
+	// 有效、不持久化，与 CLI 每次调用默认 user 一致。
+	scope string
+
 	form       *form
 	formSubmit func(values map[string]string) tea.Cmd
 
@@ -51,6 +55,7 @@ type mcpTab struct {
 	planForce      bool
 	changedIdx     int
 	changedAllowed map[string]bool
+	importReport   *mcpImportDoneMsg
 }
 
 type mcpMode int
@@ -60,6 +65,7 @@ const (
 	mcpModeDelete
 	mcpModePlan
 	mcpModeChangedConfirm
+	mcpModeImportReport
 )
 
 type mcpAgentStatus struct {
@@ -83,6 +89,22 @@ type mcpReloadMsg struct {
 	// warn renders the toast as a warning (e.g. a prerequisite install failed);
 	// the touch/reload itself still succeeded.
 	warn bool
+}
+
+type mcpImportItem struct {
+	Alias     string
+	Action    string // create / conflict / failed
+	Transport string
+	Reason    string
+}
+
+type mcpImportDoneMsg struct {
+	path      string
+	items     []mcpImportItem
+	created   int
+	conflicts int
+	failures  int
+	err       error
 }
 
 type mcpFormReopenMsg struct {
@@ -123,12 +145,17 @@ func (t *mcpTab) Bindings() []KeyAction {
 			{[]string{"n"}, "skip", grpConfirm},
 			{[]string{"esc"}, "cancel entire revert", grpConfirm},
 		}
+	case mcpModeImportReport:
+		return []KeyAction{{[]string{"esc/enter"}, "close", grpConfirm}}
 	}
 	return append([]KeyAction{actUp, actDown, actLeft, actRight, actDetail,
 		actTop, actBottom, actPageUp, actPageDn},
 		KeyAction{[]string{"n"}, "new profile", grpItem},
 		KeyAction{[]string{"e"}, "edit profile", grpItem},
 		KeyAction{[]string{"d"}, "delete profile", grpItem},
+		actSelect, actSelectAll,
+		KeyAction{[]string{"i"}, "import", grpItem},
+		KeyAction{[]string{"s"}, "switch export scope (project only honored by some agents)", grpItem},
 		KeyAction{[]string{"x/X"}, "export (current/all agents)", grpItem},
 		KeyAction{[]string{"u/U"}, "revert (current/all agents)", grpItem},
 		actFilter, actRefresh,
@@ -263,7 +290,7 @@ func (t *mcpTab) exporter(force bool) (*mcp.Exporter, error) {
 	}
 	opts := mcp.ExporterOptions{
 		Home:       t.mgr.MCPHome,
-		Scope:      "user",
+		Scope:      t.scopeOrDefault(),
 		Force:      force,
 		LedgerPath: t.mgr.MCPLedger,
 	}
@@ -274,6 +301,14 @@ func (t *mcpTab) exporter(force bool) (*mcp.Exporter, error) {
 		}
 	}
 	return t.mgr.MCP.NewExporter(opts)
+}
+
+// scopeOrDefault 归一化导出 scope：零值即 user。
+func (t *mcpTab) scopeOrDefault() string {
+	if t.scope == "" {
+		return "user"
+	}
+	return t.scope
 }
 
 func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
@@ -356,6 +391,20 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t, tea.Batch(okToast(msg.toast), cmd)
 		}
 		return t, cmd
+	case mcpImportDoneMsg:
+		if msg.err != nil {
+			err := msg.err
+			return t, func() tea.Msg { return errMsg{err: err} }
+		}
+		report := msg
+		t.importReport = &report
+		t.mode = mcpModeImportReport
+		toast := fmt.Sprintf("imported: %d created, %d conflict, %d failed", msg.created, msg.conflicts, msg.failures)
+		cmd := t.load()
+		if msg.failures > 0 {
+			return t, tea.Batch(warnToast(toast), cmd)
+		}
+		return t, tea.Batch(okToast(toast), cmd)
 	case detailCloseMsg:
 		t.detail = nil
 		return t, nil
@@ -403,6 +452,8 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t, t.openDetail()
 	case "n":
 		return t.enterForm(nil)
+	case "i":
+		return t.enterImportForm()
 	case "e":
 		if t.sel.SelectionCount() > 1 {
 			return t, warnToast("multiple profiles selected: narrow to a single selection to edit")
@@ -441,6 +492,15 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t, warnToast("selected profile differs from cursor: clear the selection or align the cursor to delete")
 		}
 		return t.enterDelete()
+	case "s":
+		// 导出 scope 在 user/project 间切换（纯内存状态 + 状态列重算，
+		// 零 I/O 副作用）；u/U 撤回与 x/X 导出共用 exporter()，天然同 scope。
+		if t.scope == "project" {
+			t.scope = "user"
+		} else {
+			t.scope = "project"
+		}
+		t.syncStatus()
 	case "x":
 		return t.startExport(false)
 	case "X":
@@ -547,6 +607,10 @@ func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t, warnToast("cancelled")
 		}
 		// 其余按键忽略：计划确认页不把未知键解释为取消或放行（grill D7）
+	case mcpModeImportReport:
+		if key == "esc" || key == "enter" {
+			t.cancelMode()
+		}
 	}
 	return t, nil
 }
@@ -561,6 +625,7 @@ func (t *mcpTab) cancelMode() {
 	t.planForce = false
 	t.changedIdx = 0
 	t.changedAllowed = nil
+	t.importReport = nil
 }
 
 func (t *mcpTab) currentServer() *mcp.Server {
@@ -753,6 +818,77 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 	t.form.SetSize(t.width, t.height)
 	t.formSubmit = t.submitForm(create, f)
 	return t, nil
+}
+
+func (t *mcpTab) enterImportForm() (Tab, tea.Cmd) {
+	f := newForm("import MCP servers",
+		formField{
+			key: "path", label: "agent config file", kind: formPath,
+			placeholder: "~/.claude.json | ~/.codex/config.toml",
+			validate: func(v string) error {
+				if strings.TrimSpace(v) == "" {
+					return fmt.Errorf("path cannot be empty")
+				}
+				return nil
+			},
+		},
+	)
+	t.form = f
+	t.form.SetSize(t.width, t.height)
+	t.formSubmit = func(values map[string]string) tea.Cmd {
+		return t.doImport(strings.TrimSpace(values["path"]))
+	}
+	return t, nil
+}
+
+func (t *mcpTab) doImport(path string) tea.Cmd {
+	mgr := t.mgr.MCP
+	mgrs := t.mgr
+	display := path
+	expanded := expandHome(path)
+	return func() tea.Msg {
+		entries, err := mcp.ParseImportFile(expanded)
+		if err != nil {
+			return mcpImportDoneMsg{path: display, err: err}
+		}
+		if len(entries) == 0 {
+			return mcpImportDoneMsg{path: display, err: fmt.Errorf("no MCP server entries found in %s", display)}
+		}
+		aliases := make([]string, 0, len(entries))
+		for alias := range entries {
+			aliases = append(aliases, alias)
+		}
+		sort.Strings(aliases)
+		items := make([]mcpImportItem, 0, len(aliases))
+		created, conflicts, failures := 0, 0, 0
+		for _, alias := range aliases {
+			if _, err := mgr.Get(alias); err == nil {
+				conflicts++
+				items = append(items, mcpImportItem{Alias: alias, Action: "conflict", Reason: "already exists"})
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				failures++
+				items = append(items, mcpImportItem{Alias: alias, Action: "failed", Reason: err.Error()})
+				continue
+			}
+			entry, err := mcp.BuildImportEntry(alias, entries[alias])
+			if err != nil {
+				failures++
+				items = append(items, mcpImportItem{Alias: alias, Action: "failed", Reason: err.Error()})
+				continue
+			}
+			if err := mgr.Add(entry); err != nil {
+				failures++
+				items = append(items, mcpImportItem{Alias: alias, Action: "failed", Reason: err.Error()})
+				continue
+			}
+			created++
+			items = append(items, mcpImportItem{Alias: alias, Action: "create", Transport: entry.Transport})
+		}
+		recordAudit(mgrs, session.AuditOpMCPServer, "mcp:import", failures == 0,
+			fmt.Sprintf("import %d 项 (%d created, %d conflict, %d failed)", len(aliases), created, conflicts, failures))
+		return mcpImportDoneMsg{path: display, items: items, created: created, conflicts: conflicts, failures: failures}
+	}
 }
 
 func (t *mcpTab) submitForm(create bool, f *form) func(map[string]string) tea.Cmd {
@@ -1211,6 +1347,8 @@ func (t *mcpTab) View() string {
 		overlay = t.form.View()
 	case t.mode == mcpModeDelete:
 		overlay = t.renderDelete()
+	case t.mode == mcpModeImportReport:
+		overlay = t.renderImportReport()
 	}
 	if t.width > 0 && overlay != "" {
 		overlay = lipgloss.NewStyle().MaxWidth(t.width).Render(overlay)
@@ -1252,7 +1390,8 @@ func (t *mcpTab) viewBaseAt(height int) string {
 	}
 	leftTitle += t.sel.SelectionHint(t.sel.SelectionCount() - t.sel.SelectedIn(t.visibleServerAliases()))
 	left := windowedPane(leftTitle, t.serverLines(maxInt(leftW-4, 8)), t.serverIndex, height, leftW)
-	right := windowedPane("Agents · export status", t.agentLines(maxInt(rightW-4, 8)), t.agentIndex, height, rightW)
+	right := windowedPane(fmt.Sprintf("Agents · export status (scope: %s)", t.scopeOrDefault()),
+		t.agentLines(maxInt(rightW-4, 8)), t.agentIndex, height, rightW)
 	if t.focusLeft {
 		left = activePaneStyle.Width(leftW).Height(height).Render(left)
 		right = paneStyle.Width(rightW).Height(height).Render(right)
@@ -1295,6 +1434,27 @@ func (t *mcpTab) renderDelete() string {
 		body += "\nexported to:" + strings.Join(t.pendingAgents, ", ") + "\npress u to unexport."
 	}
 	return modalBox(t.width, t.height, "delete "+t.pendingAlias+"?", body, "enter/y confirm · esc/n cancel")
+}
+
+func (t *mcpTab) renderImportReport() string {
+	rep := t.importReport
+	if rep == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, item := range rep.items {
+		extra := item.Transport
+		if extra == "" {
+			extra = item.Reason
+		}
+		fmt.Fprintf(&b, "  %-12s %-9s %s\n", item.Alias, item.Action, extra)
+	}
+	fmt.Fprintf(&b, "created %d · conflict %d · failed %d", rep.created, rep.conflicts, rep.failures)
+	if rep.failures > 0 {
+		b.WriteString("  see CLI for details")
+	}
+	return modalBox(t.width, t.height, "import report ("+rep.path+")", strings.TrimRight(b.String(), "\n"),
+		"esc/enter close")
 }
 
 func (t *mcpTab) renderPlan() string {

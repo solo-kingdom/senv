@@ -188,6 +188,41 @@ identityKey is rewritten in the same vault mutation. Key material is unchanged.
 	},
 }
 
+var keypairEditGroup string
+
+var keypairEditCmd = &cobra.Command{
+	Use:   "edit <name>",
+	Short: "Edit keypair metadata (group) without touching key material",
+	Long: `Edit an SSH keypair's group in place, without launching an editor.
+Group is the only keypair metadata editable in place; key material never
+changes. An empty value clears the group (ungrouped). Group changes only
+affect future materialize/export paths; already materialized files are not
+moved (use keypair prune to clean leftovers).
+
+  senv keypair edit web-key --group prod   # move to group prod
+  senv keypair edit web-key --group ""     # clear group`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !cmd.Flags().Changed("group") {
+			return fmt.Errorf("--group is required: senv keypair edit <name> --group <group> (empty value clears the group)")
+		}
+		mgr, err := getSSHManager()
+		if err != nil {
+			return err
+		}
+		if err := mgr.UpdateKeyPair(args[0], func(k *storage.KeyPairEntry) error {
+			k.Group = keypairEditGroup
+			return nil
+		}); err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:"+args[0], false, "edit 失败")
+			return err
+		}
+		auditOp(session.AuditOpSSHKey, "keypair:"+args[0], true, "edit --group")
+		fmt.Printf("✓ Updated keypair %s\n", args[0])
+		return nil
+	},
+}
+
 var hostCmd = &cobra.Command{
 	Use:   "host",
 	Short: "Manage encrypted SSH host profiles",
@@ -658,12 +693,13 @@ func parseAttrs(values []string) (map[string]string, error) {
 
 func init() {
 	rootCmd.AddCommand(keypairCmd, hostCmd)
-	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairPruneCmd, keypairDeleteCmd)
+	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairEditCmd, keypairPruneCmd, keypairDeleteCmd)
 	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd, hostUnexportCmd)
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")
 	keypairImportCmd.Flags().StringVar(&keypairImportGroup, "group", "", "keypair group (single value, empty = ungrouped)")
 	keypairImportCmd.Flags().BoolVar(&keypairImportForce, "force", false, "overwrite an existing keypair")
+	keypairEditCmd.Flags().StringVar(&keypairEditGroup, "group", "", "set the keypair group without launching an editor (empty = ungrouped)")
 	keypairMaterializeCmd.Flags().BoolVar(&keypairMaterialForce, "force", false, "overwrite an existing materialized file")
 	keypairDeleteCmd.Flags().BoolVar(&keypairDeleteForce, "force", false, "delete even if referenced and clear references")
 

@@ -86,6 +86,7 @@ func (t *textTab) Bindings() []KeyAction {
 		actUp, actDown, actLeft, actRight,
 		actTop, actBottom, actPageUp, actPageDn,
 		actEdit, actNew, actDelete, actRename, actImport,
+		actSelect, actSelectAll,
 		{[]string{"y"}, "copy", grpItem},
 		actExport,
 		{[]string{"+"}, "new group", grpGroup},

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,32 @@ type sshTab struct {
 	pendingHost   string // host staged for delete
 	exportLabel   string
 	exportContent string
+
+	// pendingApply 暂存 apply 导出确认框的数据：交给 Manager.Apply 的
+	// 过滤条件、审计 detail（与 CLI 同口径）与按键时 Render 预算出的计数。
+	pendingApply *applyConfirm
+
+	// pendingUnexport 暂存 unexport 确认框的预检结果（注册行 / 片段数）。
+	pendingUnexport *unexportConfirm
+}
+
+// unexportConfirm 是 unexport 确认框的预检状态（design D2）。
+type unexportConfirm struct {
+	registered bool
+	fragments  int
+}
+
+// applyConfirm 是 apply 导出确认框的全部状态（design D2）：执行前用
+// Render 预算组片段数/待落盘数/Include 状态/warning 计数，enter/y 确认后
+// 按 filter 调 Manager.Apply（design D3）。
+type applyConfirm struct {
+	filter      ssh.RenderFilter
+	label       string // 确认框标题的作用域描述
+	detail      string // 审计 detail，与 CLI `host export` 同口径
+	groups      int    // 将重建的组片段数（len(Render.Order)）
+	pendingKeys int    // Referenced 中落盘目标尚不存在的私钥数（Lstat 同规则）
+	warnings    int    // Render 级 warning 计数（明细指路 CLI）
+	include     bool   // ~/.ssh/config 已注册 senv Include 行
 }
 
 // sshMode is the tab's confirmation/preview state. Every non-normal mode owns
@@ -62,6 +89,8 @@ const (
 	sshModeDeleteHost
 	sshModeExportPreview
 	sshModeBatchDeleteHost
+	sshModeApplyConfirm
+	sshModeUnexport
 )
 
 // sshPane 是 SSH Tab 两栏的焦点栏位。左右键（h/l）在
@@ -108,6 +137,13 @@ type sshExportMsg struct {
 	err     error
 }
 
+// sshUnexportStateMsg 是 UnexportState 预检的异步结果。
+type sshUnexportStateMsg struct {
+	registered bool
+	fragments  int
+	err        error
+}
+
 func newSSHTab(mgr Managers) *sshTab {
 	return &sshTab{mgr: mgr, focus: paneHost}
 }
@@ -123,17 +159,18 @@ func (t *sshTab) Bindings() []KeyAction {
 		}
 	}
 	switch t.mode {
-	case sshModeDeleteHost, sshModeBatchDeleteHost:
+	case sshModeDeleteHost, sshModeBatchDeleteHost, sshModeApplyConfirm, sshModeUnexport:
 		return []KeyAction{{[]string{"enter/y"}, "confirm", grpConfirm}, {[]string{"esc/n"}, "cancel", grpConfirm}}
 	case sshModeExportPreview:
 		return []KeyAction{{[]string{"w"}, "write file", grpConfirm}, {[]string{"esc"}, "cancel", grpConfirm}}
 	}
 	nav := []KeyAction{actUp, actDown, actLeft, actRight, actDetail,
 		actTop, actBottom, actPageUp, actPageDn}
+	unexport := KeyAction{[]string{"u"}, "unexport", grpItem}
 	if t.focus == paneHost {
-		return append(append(nav, actNew, actEdit, actDelete, actExport), actRefresh, actFilter)
+		return append(append(nav, actNew, actEdit, actDelete, actSelect, actSelectAll, actExport, actApply, unexport), actRefresh, actFilter)
 	}
-	return append(nav, actRefresh, actFilter)
+	return append(nav, actExport, actApply, unexport, actRefresh, actFilter)
 }
 
 func (t *sshTab) InputMode() bool {
@@ -386,6 +423,18 @@ func (t *sshTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		t.mode = sshModeExportPreview
 		return t, nil
 
+	case sshUnexportStateMsg:
+		if msg.err != nil {
+			err := msg.err
+			return t, func() tea.Msg { return errMsg{err: err} }
+		}
+		if !msg.registered && msg.fragments == 0 {
+			return t, okToast("nothing to unexport")
+		}
+		t.pendingUnexport = &unexportConfirm{registered: msg.registered, fragments: msg.fragments}
+		t.mode = sshModeUnexport
+		return t, nil
+
 	case detailCloseMsg:
 		t.detail = nil
 		return t, nil
@@ -455,6 +504,10 @@ func (t *sshTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t.enterBatchHostExport()
 		}
 		return t.enterExport()
+	case "A":
+		return t.enterApply()
+	case "u":
+		return t.enterUnexport()
 	case "d":
 		if t.focus == paneHost && t.sel.SelectionCount() > 1 {
 			return t.enterBatchDeleteHosts()
@@ -554,6 +607,21 @@ func (t *sshTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		case "esc":
 			t.cancelMode()
 		}
+	case sshModeApplyConfirm:
+		switch msg.String() {
+		case "enter", "y":
+			return t, t.doApplyExport()
+		case "esc", "n":
+			t.cancelMode()
+		}
+	case sshModeUnexport:
+		switch msg.String() {
+		case "enter", "y":
+			return t, t.doUnexport()
+		case "esc", "n":
+			t.cancelMode()
+			return t, warnToast("cancelled")
+		}
 	}
 	return t, nil
 }
@@ -564,6 +632,8 @@ func (t *sshTab) cancelMode() {
 	t.pendingHost = ""
 	t.exportLabel = ""
 	t.exportContent = ""
+	t.pendingApply = nil
+	t.pendingUnexport = nil
 }
 
 // --- host write flows ---
@@ -621,12 +691,12 @@ func (t *sshTab) enterBatchHostExport() (Tab, tea.Cmd) {
 	}
 	f := newForm("batch export host snippets",
 		formField{
-			key: "dir", label: "output directory", kind: formPath, placeholder: "~/.ssh/config.d",
+			key: "dir", label: "output directory (your own)", kind: formPath, placeholder: "~/ssh-snippets",
 			validate: func(v string) error {
 				if strings.TrimSpace(v) == "" {
 					return fmt.Errorf("output directory cannot be empty")
 				}
-				return nil
+				return rejectSenvTreePath(v)
 			},
 		},
 	)
@@ -707,6 +777,206 @@ func (t *sshTab) enterExport() (Tab, tea.Cmd) {
 		}
 		return sshExportMsg{label: label, content: content, err: err}
 	}
+}
+
+// --- apply export flow (design D1–D3) ---
+
+// enterApply 把 `A` 键落到具体作用域并弹出确认框（design D1/D2）：host 栏
+// = 游标 host 所在组（Apply 的写入单元是整组片段，与 CLI 一致）；侧栏 =
+// 选中组，All = 全量重建。预算用 Render 同步计算——Render 失败（如
+// proxyJump 悬空）按键直接报错、不进确认框，零副作用（与 CLI 两阶段一致）。
+func (t *sshTab) enterApply() (Tab, tea.Cmd) {
+	mgr := t.mgr.SSH
+	if mgr == nil {
+		return t, warnToast("SSH manager not available")
+	}
+	var filter ssh.RenderFilter
+	var label, detail string
+	if t.focus == paneHost {
+		host, ok := t.currentHost()
+		if !ok {
+			return t, warnToast("no host selected")
+		}
+		filter = ssh.RenderFilter{Host: host.Alias}
+		detail = "export --host " + host.Alias
+		if host.Group == "" {
+			// Apply 对未分组 host 的 Host 过滤会归一化成空组过滤，即全量
+			// 渲染（internal/ssh 既有语义，消费方不改）：标题如实呈现。
+			label = fmt.Sprintf("all groups (host %s is ungrouped)", host.Alias)
+		} else {
+			label = fmt.Sprintf("group %s (host %s)", host.Group, host.Alias)
+		}
+	} else {
+		row, ok := t.currentGroupRow()
+		if !ok {
+			return t, warnToast("no group selected")
+		}
+		switch {
+		case row.isAll:
+			label = "all hosts"
+			detail = "export"
+		case row.isUngrouped:
+			// design D1 只定义 All/命名组两种作用域；空组在 RenderFilter
+			// 里与全量同义，直接映射会让「未分组」看起来像单组重建，拒止
+			// 并指引走 All（全量同样重建 _ungrouped 片段）。
+			return t, warnToast("ungrouped hosts rebuild via All (full apply)")
+		default:
+			filter = ssh.RenderFilter{Group: row.name}
+			label = "group " + row.name
+			detail = "export --group " + row.name
+		}
+	}
+
+	// 预算与 Apply 同一归一化规则：Host 过滤先映射到所在组再 Render。
+	eff := filter
+	if eff.Host != "" {
+		if host, ok := t.hostByAlias(eff.Host); ok {
+			eff = ssh.RenderFilter{Group: host.Group}
+		}
+	}
+	rr, err := mgr.Render(eff)
+	if err != nil {
+		return t, func() tea.Msg { return errMsg{err: err} }
+	}
+	pending := 0
+	for _, entry := range rr.Referenced {
+		target, err := ssh.MaterializePath(entry.Group, entry.Name)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Lstat(target); errors.Is(err, os.ErrNotExist) {
+			pending++
+		}
+	}
+	t.pendingApply = &applyConfirm{
+		filter:      filter,
+		label:       label,
+		detail:      detail,
+		groups:      len(rr.Order),
+		pendingKeys: pending,
+		warnings:    len(rr.Warnings),
+		include:     includeRegistered(),
+	}
+	t.mode = sshModeApplyConfirm
+	return t, nil
+}
+
+// doApplyExport 异步执行 Manager.Apply（design D3，同 doBatchExportHosts
+// 的 tea.Cmd 模式）；结果以摘要 toast 呈现，部分失败走红色错误条 + 首条
+// 错误，已成功项不回滚（与 CLI 语义一致）。
+func (t *sshTab) doApplyExport() tea.Cmd {
+	mgr := t.mgr.SSH
+	mgrs := t.mgr
+	st := t.pendingApply
+	t.cancelMode()
+	return func() tea.Msg {
+		res, err := mgr.Apply(st.filter)
+		if err != nil {
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:export", false, st.detail+" 失败")
+			return errMsg{err: fmt.Errorf("apply export failed: %s", firstApplyError(res, err))}
+		}
+		recordAudit(mgrs, session.AuditOpSSHHost, "host:export", true, st.detail)
+		return toastMsg{text: applySummary(res), level: toastSuccess}
+	}
+}
+
+// enterUnexport 异步预检 UnexportState（design D2）：无可撤回项直接 toast，
+// 否则进入确认框。两栏均可用，不读游标。
+func (t *sshTab) enterUnexport() (Tab, tea.Cmd) {
+	if t.mgr.SSH == nil {
+		return t, warnToast("SSH manager not available")
+	}
+	return t, func() tea.Msg {
+		registered, fragments, err := ssh.UnexportState()
+		return sshUnexportStateMsg{registered: registered, fragments: fragments, err: err}
+	}
+}
+
+// doUnexport 异步执行 Manager.Unexport，与 CLI 同一编排；结果 toast 实报。
+func (t *sshTab) doUnexport() tea.Cmd {
+	mgr := t.mgr.SSH
+	mgrs := t.mgr
+	t.cancelMode()
+	return func() tea.Msg {
+		unregistered, groupsRemoved, err := mgr.Unexport()
+		if err != nil {
+			recordAudit(mgrs, session.AuditOpSSHHost, "host:unexport", false, "unexport 失败")
+			return errMsg{err: err}
+		}
+		recordAudit(mgrs, session.AuditOpSSHHost, "host:unexport", true, "unexport")
+		return toastMsg{text: unexportSummary(unregistered, groupsRemoved), level: toastSuccess}
+	}
+}
+
+func unexportSummary(unregistered, groupsRemoved bool) string {
+	if !unregistered && !groupsRemoved {
+		return "nothing to unexport"
+	}
+	var parts []string
+	if unregistered {
+		parts = append(parts, "include removed")
+	}
+	if groupsRemoved {
+		parts = append(parts, "group fragments deleted")
+	}
+	return "unexported: " + strings.Join(parts, ", ")
+}
+
+// applySummary 把 ApplyResult 折叠成单行摘要（design D3 固定格式）。
+func applySummary(res *ssh.ApplyResult) string {
+	include := "include existed"
+	if res.Registered {
+		include = "include registered"
+	}
+	return fmt.Sprintf("applied: %d groups, %d keys materialized, %d skipped, %s, %d warnings",
+		len(res.Written), len(res.Materialized), len(res.KeysSkipped), include, len(res.Warnings))
+}
+
+// firstApplyError 取 Apply 部分失败汇总的首条错误（res 缺失时退回 err 本身）。
+func firstApplyError(res *ssh.ApplyResult, err error) string {
+	if res != nil && len(res.Errors) > 0 {
+		return res.Errors[0]
+	}
+	return err.Error()
+}
+
+// includeRegistered 报告 ~/.ssh/config 是否已含 senv 的 Include 行（逐行
+// 精确匹配，与 ssh.RegisterInclude 的判定同规则；只读，不创建文件）。
+func includeRegistered() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".ssh", "config"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == ssh.IncludeLine {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectSenvTreePath 校验导出目标不得落在 senv 自有的 ~/.ssh/senv 树内
+// （design D4）：该树由 apply 导出（`A` / `senv host export`）全权维护，
+// 外来文件会被幽灵清理删除。展开 `~` 后做前缀判定；纯前端校验，不挡
+// CLI --output（CLI 纯渲染是用户显式意图）。
+func rejectSenvTreePath(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil // 空值交给各表单的非空校验
+	}
+	root, err := ssh.SenvDir()
+	if err != nil {
+		return nil // 定位不到 senv 树时不误判，交给写入阶段报错
+	}
+	target := expandHome(v)
+	if target == root || strings.HasPrefix(target, root+string(os.PathSeparator)) {
+		return fmt.Errorf("~/.ssh/senv is owned by apply export (press A); foreign files there are cleaned as ghosts — pick your own path")
+	}
+	return nil
 }
 
 func (t *sshTab) openForm(f *form, onSubmit func(values map[string]string) tea.Cmd) {
@@ -945,12 +1215,12 @@ func (t *sshTab) doDeleteHost(alias string) (Tab, tea.Cmd) {
 func (t *sshTab) enterExportPathForm(content string) (Tab, tea.Cmd) {
 	f := newForm("export to file",
 		formField{
-			key: "path", label: "target file", kind: formPath, placeholder: "~/.ssh/config.d/senv",
+			key: "path", label: "target file (your own)", kind: formPath, placeholder: "~/ssh-snippets/web.conf",
 			validate: func(v string) error {
 				if strings.TrimSpace(v) == "" {
 					return fmt.Errorf("target path cannot be empty")
 				}
-				return nil
+				return rejectSenvTreePath(v)
 			},
 		},
 	)
@@ -1171,7 +1441,7 @@ func (t *sshTab) View() string {
 	if t.detail != nil {
 		return t.detail.View()
 	}
-	if t.loaded && len(t.hosts) == 0 && len(t.keyPairs) == 0 {
+	if t.loaded && len(t.hosts) == 0 && len(t.keyPairs) == 0 && t.mode == sshModeNormal && t.form == nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			paneTitleStyle.Render("SSH"),
 			emptyStateStyle.Render("no SSH assets yet; press n to create a host (keypairs live in the KeyPair tab), then Ctrl+R to refresh"))
@@ -1343,6 +1613,30 @@ func (t *sshTab) renderModal() string {
 		return modalBox(t.width, t.height, "delete host "+t.pendingHost+"?", body, "enter/y confirm · esc/n cancel")
 	case sshModeExportPreview:
 		return modalBox(t.width, t.height, "export OpenSSH snippet — "+t.exportLabel, t.exportContent, "w write file · esc cancel")
+	case sshModeApplyConfirm:
+		st := t.pendingApply
+		include := "registered"
+		if !st.include {
+			include = "not registered (will be added)"
+		}
+		body := fmt.Sprintf("rebuild group fragments: %d\nmaterialize missing keys: %d\ninclude: %s\nwarnings: %d (details via CLI: senv host export)",
+			st.groups, st.pendingKeys, include, st.warnings)
+		return modalBox(t.width, t.height, "apply export — "+st.label, body, "enter/y apply · esc/n cancel")
+	case sshModeUnexport:
+		st := t.pendingUnexport
+		if st == nil {
+			return ""
+		}
+		var b strings.Builder
+		if st.registered {
+			b.WriteString("  - remove senv Include line from ~/.ssh/config\n")
+		}
+		if st.fragments > 0 {
+			fmt.Fprintf(&b, "  - delete %d group fragment(s) under ~/.ssh/senv/groups/\n", st.fragments)
+		}
+		b.WriteString("  - materialized private keys under ~/.ssh/senv/keys/ are kept")
+		return modalBox(t.width, t.height, "unexport senv ssh export?", strings.TrimRight(b.String(), "\n"),
+			"enter/y confirm · esc/n cancel")
 	}
 	return ""
 }
