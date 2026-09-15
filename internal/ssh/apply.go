@@ -173,7 +173,7 @@ func pruneGhostFragments(gdir string, live map[string]bool) ([]string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
 			continue
 		}
-		if live[entry.Name()] {
+		if live[entry.Name()] || entry.Name() == defaultFragmentFile {
 			continue
 		}
 		path := filepath.Join(gdir, entry.Name())
@@ -231,13 +231,16 @@ func materializeReferenced(rr *RenderResult, res *ApplyResult) {
 // 对未被任何 host 引用的逐条 warning——它们可能仍被你手写 ssh config
 // 引用，只提示、绝不自动删除（清理是显式 `keypair prune`）。
 func unreferencedKeyWarnings(rr *RenderResult) []string {
-	referenced := make(map[string]bool, len(rr.Referenced))
+	referenced := make(map[string]bool, len(rr.Referenced)+1)
 	for _, entry := range rr.Referenced {
 		path, err := MaterializePath(entry.Group, entry.Name)
 		if err != nil {
 			continue
 		}
 		referenced[path] = true
+	}
+	if identity, err := DefaultIdentityFile(); err == nil && identity != "" {
+		referenced[identity] = true
 	}
 	var paths []string
 	root, err := SenvDir()

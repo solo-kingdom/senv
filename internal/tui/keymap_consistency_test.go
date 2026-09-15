@@ -24,8 +24,8 @@ var keymapConsistencyContract = []struct {
 		name: "keypair/list",
 		new:  func() Tab { return newKeyPairTab(Managers{}) },
 		want: []string{"up", "down", "left", "right", "enter", "g", "G",
-			"pgup", "pgdown", "/", "ctrl+r", "n", "i", "r", "e", "d", "m", "p"},
-		absent: []string{"space", "a"},
+			"pgup", "pgdown", "/", "ctrl+r", "n", "i", "r", "e", "d", "A", "D", "v", "p"},
+		absent: []string{"space", "a", "m"},
 	},
 	{
 		name: "keypair/group",
@@ -36,7 +36,7 @@ var keymapConsistencyContract = []struct {
 		},
 		want: []string{"up", "down", "left", "right", "enter", "g", "G",
 			"pgup", "pgdown", "/", "ctrl+r", "p"},
-		absent: []string{"space", "a"},
+		absent: []string{"space", "a", "v"},
 	},
 	{
 		name: "keypair/delete-confirm",

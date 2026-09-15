@@ -391,7 +391,7 @@ func TestKeypairMaterializePermissionsAndOverwrite(t *testing.T) {
 	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"material-key", "--file", keyPath}))
 
 	t.Setenv("HOME", dir)
-	runSSHCommand(t, keypairMaterializeCmd.RunE(&cobra.Command{}, []string{"material-key"}))
+	runSSHCommand(t, keypairExportCmd.RunE(&cobra.Command{}, []string{"material-key"}))
 	target := filepath.Join(dir, ".ssh", "senv", "keys", "_ungrouped", "material-key")
 	info, err := os.Stat(target)
 	if err != nil {
@@ -407,8 +407,31 @@ func TestKeypairMaterializePermissionsAndOverwrite(t *testing.T) {
 	if dirInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("materialize dir mode = %o, want 700", dirInfo.Mode().Perm())
 	}
-	if err := keypairMaterializeCmd.RunE(&cobra.Command{}, []string{"material-key"}); err == nil || !strings.Contains(err.Error(), "already exists") {
+	if err := keypairExportCmd.RunE(&cobra.Command{}, []string{"material-key"}); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("overwrite error = %v", err)
+	}
+}
+
+func TestKeypairSetDefaultAndClear(t *testing.T) {
+	dir := newSSHTestProject(t)
+	keyPath := writeTestEd25519Key(t, dir, "id_test", "default@test")
+	keypairImportFile = keyPath
+	t.Cleanup(func() { keypairImportFile = "" })
+	runSSHCommand(t, keypairImportCmd.RunE(&cobra.Command{}, []string{"home-key", "--file", keyPath}))
+	t.Setenv("HOME", dir)
+
+	runSSHCommand(t, keypairSetDefaultCmd.RunE(&cobra.Command{}, []string{"home-key"}))
+	frag := filepath.Join(dir, ".ssh", "senv", "groups", "_default.conf")
+	data, err := os.ReadFile(frag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Host *") || !strings.Contains(string(data), "home-key") {
+		t.Fatalf("default fragment:\n%s", data)
+	}
+	runSSHCommand(t, keypairClearDefaultCmd.RunE(&cobra.Command{}, nil))
+	if _, err := os.Stat(frag); !os.IsNotExist(err) {
+		t.Fatalf("cleared fragment still present: %v", err)
 	}
 }
 

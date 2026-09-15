@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // 本文件锁定 keypair-tab-grouping change 的 KeyPair Tab 行为（openspec
@@ -159,8 +161,8 @@ func TestKeyPairTabEditGroup(t *testing.T) {
 	}
 }
 
-// TestKeyPairTabMasksPrivateKey：私钥明文绝不进入 Tab 状态或渲染（既有
-// 安全语义的 KeyPair Tab 侧锁定；MODIFIED「TUI 编辑与 MCP 只读集成」）。
+// TestKeyPairTabMasksPrivateKey：列表与 enter 公钥详情不渲染私钥；私钥只在
+// 按 v 的按需预览弹层出现（关闭即丢弃）。
 func TestKeyPairTabMasksPrivateKey(t *testing.T) {
 	tab, _ := newKeyPairCrudTab(t)
 	if _, err := tab.mgr.SSH.ImportKeyPair("web-key", writeSSHTUIKey(t, "id_ed25519"), false); err != nil {
@@ -175,7 +177,7 @@ func TestKeyPairTabMasksPrivateKey(t *testing.T) {
 	if strings.Contains(view, "PRIVATE KEY") || strings.Contains(view, tab.keyPairs[0].PublicKey) {
 		t.Fatalf("list view must stay metadata-only:\n%s", view)
 	}
-	// 详情浮层展示公钥与指纹，但不展示私钥。
+	// 详情浮层展示公钥与指纹，但不展示私钥；公钥无前导缩进，comment 为邮箱。
 	out, _ := tab.Update(runeKey("enter"))
 	tab = out.(*keyPairTab)
 	if tab.detail == nil {
@@ -187,5 +189,34 @@ func TestKeyPairTabMasksPrivateKey(t *testing.T) {
 	}
 	if strings.Contains(detail, "PRIVATE KEY") {
 		t.Fatalf("detail leaked private key material:\n%s", detail)
+	}
+	pub := tab.keyPairs[0].PublicKey
+	joined := strings.Join(tab.detail.lines, "\n")
+	if !strings.Contains(joined, pub) {
+		t.Fatalf("detail lines missing public key:\n%s", joined)
+	}
+	for _, line := range tab.detail.lines {
+		if strings.HasPrefix(line, "  ssh-") {
+			t.Fatalf("public key must not be indented: %q", line)
+		}
+	}
+	if tab.keyPairs[0].Comment == "" || !strings.Contains(joined, "comment:     "+tab.keyPairs[0].Comment) {
+		t.Fatalf("detail should show comment/email %q:\n%s", tab.keyPairs[0].Comment, joined)
+	}
+
+	out, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	tab = flushTab(out, cmd).(*keyPairTab)
+	if tab.detail != nil {
+		t.Fatal("esc should close detail")
+	}
+
+	out, cmd = tab.Update(runeKey("v"))
+	tab = flushTab(out, cmd).(*keyPairTab)
+	if tab.detail == nil {
+		t.Fatal("v should open the private key overlay")
+	}
+	priv := tab.detail.View()
+	if !strings.Contains(priv, "PRIVATE KEY") {
+		t.Fatalf("v preview missing private key:\n%s", priv)
 	}
 }

@@ -93,6 +93,10 @@ var keypairListCmd = &cobra.Command{
 			fmt.Println("No SSH keypairs found")
 			return nil
 		}
+		defaultName, err := mgr.DefaultKeyPairName()
+		if err != nil {
+			return err
+		}
 		for _, s := range summaries {
 			publicKey := s.PublicKey
 			if publicKey == "" {
@@ -104,32 +108,78 @@ var keypairListCmd = &cobra.Command{
 			if s.Group != "" {
 				line += fmt.Sprintf(" group:%s", s.Group)
 			}
+			if s.Name == defaultName {
+				line += " default"
+			}
 			fmt.Println(line)
 		}
 		return nil
 	},
 }
 
-var keypairMaterializeCmd = &cobra.Command{
-	Use:   "materialize <name>",
-	Short: "Decrypt a private key to ~/.ssh/senv/<name>",
-	Args:  cobra.ExactArgs(1),
+var keypairExportCmd = &cobra.Command{
+	Use:     "export <name>",
+	Aliases: []string{"materialize"},
+	Short:   "Write a private key to ~/.ssh/senv/keys/<group>/<name>",
+	Long: `Decrypt one keypair onto the same path host export uses:
+~/.ssh/senv/keys/<group>/<name> (ungrouped keys go in _ungrouped).
+materialize is a transitional alias for this command.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := getSSHManager()
 		if err != nil {
 			return err
 		}
 		path, err := mgr.Materialize(args[0], keypairMaterialForce)
-		detail := "materialize"
+		detail := "export"
 		if keypairMaterialForce {
-			detail = "materialize --force"
+			detail = "export --force"
 		}
 		if err != nil {
 			auditOp(session.AuditOpSSHKey, "keypair:"+args[0], false, detail+" 失败")
 			return err
 		}
 		auditOp(session.AuditOpSSHKey, "keypair:"+args[0], true, detail)
-		fmt.Printf("✓ Materialized %s to %s (0600)\n", args[0], path)
+		fmt.Printf("✓ Exported %s to %s (0600)\n", args[0], path)
+		return nil
+	},
+}
+
+var keypairSetDefaultCmd = &cobra.Command{
+	Use:   "set-default <name>",
+	Short: "Use a keypair as the local OpenSSH Host * fallback",
+	Long: `Write ~/.ssh/senv/groups/_default.conf with Host * IdentityFile
+pointing at this keypair (materializing it if needed) and register the
+senv Include line. Local only: not synced. host unexport removes the fragment.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := getSSHManager()
+		if err != nil {
+			return err
+		}
+		path, err := mgr.SetDefaultKeyPair(args[0])
+		if err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:"+args[0], false, "set-default 失败")
+			return err
+		}
+		auditOp(session.AuditOpSSHKey, "keypair:"+args[0], true, "set-default")
+		fmt.Printf("✓ Default keypair %s → %s (Host *)\n", args[0], path)
+		return nil
+	},
+}
+
+var keypairClearDefaultCmd = &cobra.Command{
+	Use:   "clear-default",
+	Short: "Remove the local OpenSSH Host * default keypair",
+	Long:  `Delete ~/.ssh/senv/groups/_default.conf. Materialized private keys and host fragments are left untouched.`,
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := ssh.ClearDefault(); err != nil {
+			auditOp(session.AuditOpSSHKey, "keypair:default", false, "clear-default 失败")
+			return err
+		}
+		auditOp(session.AuditOpSSHKey, "keypair:default", true, "clear-default")
+		fmt.Println("✓ Cleared local default keypair")
 		return nil
 	},
 }
@@ -510,8 +560,9 @@ var hostUnexportCmd = &cobra.Command{
 	Use:   "unexport",
 	Short: "Withdraw the export: remove the senv Include line and group fragments",
 	Long: `Remove the senv Include line from ~/.ssh/config and delete the group
-fragments under ~/.ssh/senv/groups/. Vault archives and materialized
-private keys under keys/ are left untouched (use keypair prune for those).`,
+fragments under ~/.ssh/senv/groups/ (including _default.conf). Vault
+archives and materialized private keys under keys/ are left untouched
+(use keypair prune for those).`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := getSSHManager()
@@ -693,14 +744,14 @@ func parseAttrs(values []string) (map[string]string, error) {
 
 func init() {
 	rootCmd.AddCommand(keypairCmd, hostCmd)
-	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairMaterializeCmd, keypairRenameCmd, keypairEditCmd, keypairPruneCmd, keypairDeleteCmd)
+	keypairCmd.AddCommand(keypairImportCmd, keypairListCmd, keypairExportCmd, keypairSetDefaultCmd, keypairClearDefaultCmd, keypairRenameCmd, keypairEditCmd, keypairPruneCmd, keypairDeleteCmd)
 	hostCmd.AddCommand(hostAddCmd, hostGetCmd, hostEditCmd, hostListCmd, hostDeleteCmd, hostExportCmd, hostUnexportCmd)
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")
 	keypairImportCmd.Flags().StringVar(&keypairImportGroup, "group", "", "keypair group (single value, empty = ungrouped)")
 	keypairImportCmd.Flags().BoolVar(&keypairImportForce, "force", false, "overwrite an existing keypair")
 	keypairEditCmd.Flags().StringVar(&keypairEditGroup, "group", "", "set the keypair group without launching an editor (empty = ungrouped)")
-	keypairMaterializeCmd.Flags().BoolVar(&keypairMaterialForce, "force", false, "overwrite an existing materialized file")
+	keypairExportCmd.Flags().BoolVar(&keypairMaterialForce, "force", false, "overwrite an existing materialized file")
 	keypairDeleteCmd.Flags().BoolVar(&keypairDeleteForce, "force", false, "delete even if referenced and clear references")
 
 	hostAddCmd.Flags().StringVar(&hostAddHostname, "hostname", "", "remote hostname or IP")

@@ -1,8 +1,10 @@
 package ssh
 
 import (
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sort"
@@ -150,9 +152,9 @@ func (m *Manager) ImportKeyPairWithGroup(name, path, group string, force bool) (
 	return summary, nil
 }
 
-// derivePublicKey best-effort derives the authorized-key form and fingerprint.
-// Errors are deliberately collapsed into empty values because encrypted keys
-// are valid imports even though senv never asks for their passphrase.
+// derivePublicKey best-effort derives the authorized-key form, fingerprint and
+// OpenSSH comment (often an email). Encrypted keys are valid imports even
+// though senv never asks for their passphrase — those return empty metadata.
 func derivePublicKey(privateKey []byte) (publicKey, fingerprint, comment string, err error) {
 	raw, err := ssh.ParseRawPrivateKey(privateKey)
 	if err != nil {
@@ -168,7 +170,97 @@ func derivePublicKey(privateKey []byte) (publicKey, fingerprint, comment string,
 	}
 	publicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 	fingerprint = ssh.FingerprintSHA256(signer.PublicKey())
-	return publicKey, fingerprint, signer.PublicKey().Type(), nil
+	comment = extractOpenSSHComment(privateKey)
+	if comment != "" {
+		publicKey = publicKey + " " + comment
+	}
+	return publicKey, fingerprint, comment, nil
+}
+
+const openSSHPrivateKeyMagic = "openssh-key-v1\x00"
+
+// openSSH wire structs mirror golang.org/x/crypto/ssh internals so we can read
+// the comment field that ParseRawPrivateKey discards.
+type openSSHEncryptedPrivateKey struct {
+	CipherName   string
+	KdfName      string
+	KdfOpts      string
+	NumKeys      uint32
+	PubKey       []byte
+	PrivKeyBlock []byte
+}
+
+type openSSHPrivateKeyHeader struct {
+	Check1  uint32
+	Check2  uint32
+	Keytype string
+	Rest    []byte `ssh:"rest"`
+}
+
+type openSSHRSAComment struct {
+	N, E, D, Iqmp, P, Q *big.Int
+	Comment             string
+	Pad                 []byte `ssh:"rest"`
+}
+
+type openSSHEd25519Comment struct {
+	Pub, Priv []byte
+	Comment   string
+	Pad       []byte `ssh:"rest"`
+}
+
+type openSSHECDSAComment struct {
+	Curve   string
+	Pub     []byte
+	D       *big.Int
+	Comment string
+	Pad     []byte `ssh:"rest"`
+}
+
+// extractOpenSSHComment reads the comment from an unencrypted OpenSSH private
+// key PEM. Passphrase-protected and classic PKCS#1/8 PEM keys return "".
+func extractOpenSSHComment(privateKey []byte) string {
+	block, _ := pem.Decode(privateKey)
+	if block == nil || block.Type != "OPENSSH PRIVATE KEY" {
+		return ""
+	}
+	raw := block.Bytes
+	if len(raw) < len(openSSHPrivateKeyMagic) || string(raw[:len(openSSHPrivateKeyMagic)]) != openSSHPrivateKeyMagic {
+		return ""
+	}
+	var enc openSSHEncryptedPrivateKey
+	if err := ssh.Unmarshal(raw[len(openSSHPrivateKeyMagic):], &enc); err != nil {
+		return ""
+	}
+	if enc.CipherName != "none" || enc.KdfName != "none" || enc.NumKeys != 1 {
+		return ""
+	}
+	var hdr openSSHPrivateKeyHeader
+	if err := ssh.Unmarshal(enc.PrivKeyBlock, &hdr); err != nil || hdr.Check1 != hdr.Check2 {
+		return ""
+	}
+	switch hdr.Keytype {
+	case ssh.KeyAlgoRSA:
+		var body openSSHRSAComment
+		if err := ssh.Unmarshal(hdr.Rest, &body); err != nil {
+			return ""
+		}
+		return body.Comment
+	case ssh.KeyAlgoED25519:
+		var body openSSHEd25519Comment
+		if err := ssh.Unmarshal(hdr.Rest, &body); err != nil {
+			return ""
+		}
+		return body.Comment
+	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
+		var body openSSHECDSAComment
+		if err := ssh.Unmarshal(hdr.Rest, &body); err != nil {
+			return ""
+		}
+		return body.Comment
+	default:
+		return ""
+	}
 }
 
 // ListKeyPairs returns safe keypair metadata sorted by name.
@@ -206,6 +298,17 @@ func (m *Manager) GetKeyPairSummary(name string) (*KeyPairSummary, error) {
 	return &summary, nil
 }
 
+// GetPrivateKey returns the decrypted private key body for an on-demand
+// preview. Callers must not retain it in long-lived UI state beyond the
+// preview surface.
+func (m *Manager) GetPrivateKey(name string) (string, error) {
+	entry, err := m.loadKeyPair(name)
+	if err != nil {
+		return "", err
+	}
+	return entry.PrivateKey, nil
+}
+
 // UpdateKeyPair applies a callback to an existing keypair record and saves the
 // result after validating it, mirroring UpdateHost. Name must not change; key
 // material is edited at the caller's own risk.
@@ -213,11 +316,13 @@ func (m *Manager) UpdateKeyPair(name string, update func(*storage.KeyPairEntry) 
 	if err := storage.ValidateName(name); err != nil {
 		return fmt.Errorf("invalid keypair name %q: %w", name, err)
 	}
-	return m.mutate(func(locked *Manager) error {
+	var oldGroup, newGroup string
+	err := m.mutate(func(locked *Manager) error {
 		entry, err := locked.loadKeyPair(name)
 		if err != nil {
 			return err
 		}
+		oldGroup = entry.Group
 		if update != nil {
 			if err := update(entry); err != nil {
 				return err
@@ -229,8 +334,32 @@ func (m *Manager) UpdateKeyPair(name string, update func(*storage.KeyPairEntry) 
 		if err := validateGroup(entry.Group); err != nil {
 			return fmt.Errorf("keypair %q: %w", name, err)
 		}
+		newGroup = entry.Group
 		return locked.saveKeyPair(entry)
 	})
+	if err != nil {
+		return err
+	}
+	if oldGroup == newGroup {
+		return nil
+	}
+	oldPath, err := MaterializePath(oldGroup, name)
+	if err != nil {
+		return err
+	}
+	newPath, err := MaterializePath(newGroup, name)
+	if err != nil {
+		return err
+	}
+	if err := syncDefaultIdentity(oldPath, newPath); err != nil {
+		return err
+	}
+	current, err := DefaultIdentityFile()
+	if err != nil || current != newPath {
+		return err
+	}
+	_, err = m.ensureMaterialized(name)
+	return err
 }
 
 // RenameKeyPair renames a keypair and rewrites every host reference in the
@@ -248,12 +377,14 @@ func (m *Manager) RenameKeyPair(oldName, newName string) ([]string, error) {
 		return nil, nil
 	}
 	var updated []string
+	var group string
 	err := m.mutate(func(locked *Manager) error {
 		updated = nil
 		entry, err := locked.loadKeyPair(oldName)
 		if err != nil {
 			return err
 		}
+		group = entry.Group
 		if _, err := locked.loadKeyPair(newName); err == nil {
 			return fmt.Errorf("keypair %q %w", newName, ErrExists)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -307,6 +438,24 @@ func (m *Manager) RenameKeyPair(oldName, newName string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	oldPath, pathErr := MaterializePath(group, oldName)
+	if pathErr != nil {
+		return nil, pathErr
+	}
+	newPath, pathErr := MaterializePath(group, newName)
+	if pathErr != nil {
+		return nil, pathErr
+	}
+	if err := syncDefaultIdentity(oldPath, newPath); err != nil {
+		return nil, err
+	}
+	if current, err := DefaultIdentityFile(); err != nil {
+		return nil, err
+	} else if current == newPath {
+		if _, err := m.ensureMaterialized(newName); err != nil {
+			return nil, err
+		}
+	}
 	sort.Strings(updated)
 	return updated, nil
 }
@@ -343,10 +492,13 @@ func (m *Manager) Materialize(name string, force bool) (string, error) {
 // clears every reference and deletes the key in one vault mutation.
 func (m *Manager) DeleteKeyPair(name string, force bool) ([]string, error) {
 	var referencers []string
+	var group string
 	err := m.mutate(func(locked *Manager) error {
-		if _, err := locked.loadKeyPair(name); err != nil {
+		entry, err := locked.loadKeyPair(name)
+		if err != nil {
 			return err
 		}
+		group = entry.Group
 		hosts, err := locked.storage.ListHosts()
 		if err != nil {
 			return err
@@ -382,6 +534,13 @@ func (m *Manager) DeleteKeyPair(name string, force bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	oldPath, pathErr := MaterializePath(group, name)
+	if pathErr != nil {
+		return nil, pathErr
+	}
+	if err := syncDefaultIdentity(oldPath, ""); err != nil {
+		return nil, err
+	}
 	sort.Strings(referencers)
 	return referencers, nil
 }
@@ -414,13 +573,40 @@ func (m *Manager) listKeyPairs() ([]string, error) {
 }
 
 func keyPairSummary(entry *storage.KeyPairEntry) KeyPairSummary {
+	pub, fp, comment := entry.PublicKey, entry.Fingerprint, entry.Comment
+	// Re-derive when possible so older vaults (which stored key type as
+	// "comment") and keys imported before comment extraction still show the
+	// OpenSSH comment / email in list and detail.
+	if entry.PrivateKey != "" {
+		if dPub, dFp, dComment, err := derivePublicKey([]byte(entry.PrivateKey)); err == nil && dPub != "" {
+			pub, fp = dPub, dFp
+			if dComment != "" {
+				comment = dComment
+			} else if isKeyAlgoComment(comment) {
+				comment = ""
+			}
+		}
+	}
 	return KeyPairSummary{
 		Name:        entry.Name,
-		Fingerprint: entry.Fingerprint,
-		PublicKey:   entry.PublicKey,
-		Comment:     entry.Comment,
+		Fingerprint: fp,
+		PublicKey:   pub,
+		Comment:     comment,
 		Group:       entry.Group,
 		ImportedAt:  entry.ImportedAt,
-		HasPubKey:   entry.PublicKey != "",
+		HasPubKey:   pub != "",
+	}
+}
+
+// isKeyAlgoComment reports the legacy bug where Comment was set to the key
+// algorithm (e.g. "ssh-ed25519") instead of the OpenSSH comment/email.
+func isKeyAlgoComment(comment string) bool {
+	switch comment {
+	case ssh.KeyAlgoRSA, ssh.KeyAlgoED25519,
+		ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521,
+		ssh.KeyAlgoSKECDSA256, ssh.KeyAlgoSKED25519:
+		return true
+	default:
+		return false
 	}
 }

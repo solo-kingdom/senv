@@ -15,9 +15,9 @@ import (
 )
 
 // keyPairTab 是 KeyPair 的独立编辑板块：分组侧栏 → KeyPair 列表两栏。
-// keypair 支持 import/rename/group 编辑/delete/materialize/详情；host 只以
-// 「被 N 个 Host 引用」的引用计数形态出现（hostRefs）。私钥内容绝不进入
-// Tab 状态或渲染：列表与详情只含指纹/公钥等安全元数据。
+// keypair 支持 import/rename/group 编辑/delete/export/设默认/详情；host 只以
+// 「被 N 个 Host 引用」的引用计数形态出现（hostRefs）。列表与 enter 详情只含
+// 指纹/公钥等安全元数据；按 v 才按需加载私钥进详情弹层（关闭即丢弃）。
 type keyPairTab struct {
 	mgr           Managers
 	width, height int
@@ -34,6 +34,8 @@ type keyPairTab struct {
 	keyIndex   int
 	loadErr    string
 	detail     *detailOverlay
+	// defaultName is the vault keypair currently recorded in _default.conf.
+	defaultName string
 	// pendingJump parks the cursor on a keypair after a reload (rename/import).
 	pendingJump string
 
@@ -69,9 +71,10 @@ const (
 )
 
 type kpLoadedMsg struct {
-	hosts    []storage.HostEntry
-	keyPairs []ssh.KeyPairSummary
-	err      error
+	hosts       []storage.HostEntry
+	keyPairs    []ssh.KeyPairSummary
+	defaultName string
+	err         error
 }
 
 // kpReloadMsg reports a successful vault write; the tab reloads and parks the
@@ -128,7 +131,9 @@ func (t *keyPairTab) Bindings() []KeyAction {
 			KeyAction{[]string{"r"}, "rename keypair", grpItem, false},
 			KeyAction{[]string{"e"}, "edit group", grpItem, false},
 			KeyAction{[]string{"d"}, "delete", grpItem, false},
-			KeyAction{[]string{"m"}, "materialize", grpItem, false},
+			actApply,
+			KeyAction{[]string{"D"}, "toggle default", grpItem, false},
+			KeyAction{[]string{"v"}, "preview private key", grpItem, false},
 			prune,
 		), actRefresh, actFilter)
 	}
@@ -301,8 +306,13 @@ func (t *keyPairTab) load() tea.Cmd {
 		for _, host := range hosts {
 			values = append(values, *host)
 		}
+		defaultName, err := mgr.DefaultKeyPairName()
+		if err != nil {
+			st.End(false)
+			return kpLoadedMsg{err: err}
+		}
 		st.With("hosts", len(hosts), "keypairs", len(keyPairs)).End(true)
-		return kpLoadedMsg{hosts: values, keyPairs: keyPairs}
+		return kpLoadedMsg{hosts: values, keyPairs: keyPairs, defaultName: defaultName}
 	}
 }
 
@@ -345,6 +355,7 @@ func (t *keyPairTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		}
 		t.hosts = msg.hosts
 		t.keyPairs = msg.keyPairs
+		t.defaultName = msg.defaultName
 		t.clamp()
 		t.applyPendingJump()
 		return t, nil
@@ -427,6 +438,10 @@ func (t *keyPairTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			return t, nil
 		}
 		return t, t.openDetail()
+	case "v":
+		if t.focus == kpPaneList {
+			return t, t.openPrivateDetail()
+		}
 	case "n", "i":
 		if t.focus == kpPaneList {
 			return t.enterImportKeyPair()
@@ -443,9 +458,13 @@ func (t *keyPairTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		if t.focus == kpPaneList {
 			return t.enterDeleteKey()
 		}
-	case "m":
+	case "A":
 		if t.focus == kpPaneList {
 			return t.enterMaterialize()
+		}
+	case "D":
+		if t.focus == kpPaneList {
+			return t, t.toggleDefault()
 		}
 	case "p":
 		return t.enterPrune()
@@ -743,7 +762,7 @@ func (t *keyPairTab) doDeleteKey(name string, force bool) tea.Cmd {
 func (t *keyPairTab) enterMaterialize() (Tab, tea.Cmd) {
 	key, ok := t.currentKey()
 	if !ok {
-		return t, warnToast("no keypair to materialize")
+		return t, warnToast("no keypair to export")
 	}
 	path, err := ssh.MaterializePath(key.Group, key.Name)
 	if err != nil {
@@ -768,12 +787,43 @@ func (t *keyPairTab) doMaterialize(name string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		path, err := mgr.Materialize(name, force)
 		if err != nil {
-			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "materialize failed")
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "export failed")
 			return errMsg{err: err}
 		}
-		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "materialize")
+		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "export")
 		// Only the 落盘路径 is surfaced; the private key body never reaches the UI.
 		return toastMsg{text: "written to " + path, level: toastSuccess}
+	}
+}
+
+func (t *keyPairTab) toggleDefault() tea.Cmd {
+	key, ok := t.currentKey()
+	if !ok {
+		return warnToast("no keypair to set as default")
+	}
+	mgr := t.mgr.SSH
+	if mgr == nil {
+		return warnToast("ssh manager unavailable")
+	}
+	mgrs := t.mgr
+	name := key.Name
+	if t.defaultName == name {
+		return func() tea.Msg {
+			if err := ssh.ClearDefault(); err != nil {
+				recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "clear-default failed")
+				return errMsg{err: err}
+			}
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "clear-default")
+			return kpReloadMsg{toast: "cleared default keypair", keyName: name}
+		}
+	}
+	return func() tea.Msg {
+		if _, err := mgr.SetDefaultKeyPair(name); err != nil {
+			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "set-default failed")
+			return errMsg{err: err}
+		}
+		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "set-default")
+		return kpReloadMsg{toast: "default keypair " + name, keyName: name}
 	}
 }
 
@@ -827,38 +877,65 @@ func (t *keyPairTab) currentKey() (ssh.KeyPairSummary, bool) {
 
 // --- detail ---
 
-// openDetail shows the full metadata record for the focused keypair. The
-// private key body is never loaded into the tab, and only the public half
-// is shown.
+// openDetail shows the full metadata record for the focused keypair. Only the
+// public half is shown; use openPrivateDetail (v) for the private body.
 func (t *keyPairTab) openDetail() tea.Cmd {
 	key, ok := t.currentKey()
 	if !ok {
 		return warnToast("no keypair selected")
 	}
-	t.detail = newDetailOverlay("KeyPair "+key.Name, keyPairDetailLines(key))
+	t.detail = newDetailOverlay("KeyPair "+key.Name, keyPairDetailLines(key, key.Name == t.defaultName))
 	t.detail.SetSize(t.width, t.height)
 	return nil
 }
 
-// keyPairDetailLines renders keypair metadata. The private key body is never
-// loaded into the tab, and only the public half is shown.
-func keyPairDetailLines(k ssh.KeyPairSummary) []string {
+// openPrivateDetail loads the private key on demand into a detail overlay.
+// The body is not kept in the list model; closing the overlay drops it.
+func (t *keyPairTab) openPrivateDetail() tea.Cmd {
+	key, ok := t.currentKey()
+	if !ok {
+		return warnToast("no keypair selected")
+	}
+	if t.mgr.SSH == nil {
+		return warnToast("ssh manager unavailable")
+	}
+	body, err := t.mgr.SSH.GetPrivateKey(key.Name)
+	if err != nil {
+		return func() tea.Msg { return errMsg{err: err} }
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = []string{"-"}
+	}
+	t.detail = newDetailOverlay("Private key "+key.Name, lines)
+	t.detail.SetSize(t.width, t.height)
+	return nil
+}
+
+// keyPairDetailLines renders keypair metadata and the public half. The public
+// key line has no leading indent so it is copy-paste friendly.
+func keyPairDetailLines(k ssh.KeyPairSummary, isDefault bool) []string {
 	fp := k.Fingerprint
 	if fp == "" {
-		fp = " (not derived; may be a passphrase-encrypted private key)"
+		fp = "(not derived; may be a passphrase-encrypted private key)"
+	}
+	def := "no"
+	if isDefault {
+		def = "yes (Host *)"
 	}
 	lines := []string{
 		"name:        " + k.Name,
 		"fingerprint: " + fp,
 		"group:       " + orDash(k.Group),
+		"default:     " + def,
 		"comment:     " + orDash(k.Comment),
 		"imported:    " + k.ImportedAt.Local().Format("2006-01-02 15:04:05"),
 		"public key:",
 	}
 	if k.PublicKey == "" {
-		return append(lines, "  -")
+		return append(lines, "-")
 	}
-	return append(lines, "  "+k.PublicKey)
+	return append(lines, k.PublicKey)
 }
 
 // --- cursor ---
@@ -1009,6 +1086,9 @@ func (t *keyPairTab) keyPairListLines(width int) []string {
 			label = "pubkey: none"
 		}
 		line := key.Name + " · " + label
+		if key.Name == t.defaultName {
+			line += "  default"
+		}
 		if refs := len(t.hostRefs(key.Name)); refs > 0 {
 			line += fmt.Sprintf("  被 %d 个 Host 引用", refs)
 		} else {
@@ -1038,7 +1118,7 @@ func (t *keyPairTab) renderModal() string {
 		if t.pendingForce {
 			body += "\n⚠ target file exists and will be overwritten."
 		}
-		return modalBox(t.width, t.height, "materialize keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
+		return modalBox(t.width, t.height, "export keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
 	case kpModePrune:
 		var b strings.Builder
 		for _, c := range t.pendingPrune {

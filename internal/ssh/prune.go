@@ -18,8 +18,9 @@ type PruneCandidate struct {
 }
 
 // PruneCandidates 列出 ~/.ssh/senv/keys/<组>/<名> 及顶层遗留扁平文件中，
-// 未被任何 vault host 的 identityKey 引用的私钥文件。"未引用"按当前
-// (分组, 名) 判定：keypair 改组后旧路径文件自然落入清单。
+// 未被任何 vault host 的 identityKey 引用、也不是本机默认 IdentityFile
+// 的私钥文件。"未引用"按当前 (分组, 名) 判定：keypair 改组后旧路径文件
+// 自然落入清单。
 func (m *Manager) PruneCandidates() ([]PruneCandidate, error) {
 	hosts, err := m.ListHosts()
 	if err != nil {
@@ -42,6 +43,11 @@ func (m *Manager) PruneCandidates() ([]PruneCandidate, error) {
 			return nil, err
 		}
 		referenced[path] = true
+	}
+	if identity, err := DefaultIdentityFile(); err != nil {
+		return nil, err
+	} else if identity != "" {
+		referenced[identity] = true
 	}
 
 	var candidates []PruneCandidate

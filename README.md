@@ -13,7 +13,7 @@
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
 - ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/AI/MCP Server 档案，敏感值默认遮蔽防肩窥
-- ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、`materialize` 落盘、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
+- ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
 
@@ -273,11 +273,14 @@ senv keypair rename web-key prod-key
 senv host export
 senv host export --group prod     # 只重建 prod 组片段
 senv host export --output -       # 纯渲染片段到 stdout（无副作用）
-senv host unexport                # 撤回：摘注册行 + 删组片段（不碰 vault 与私钥）
-senv keypair prune                # 清理未被引用的落盘私钥（先列后删）
+senv host unexport                # 撤回：摘注册行 + 删组片段（含 _default.conf；不碰 vault 与私钥）
+senv keypair prune                # 清理未被引用的落盘私钥（先列后删；跳过当前默认钥）
 
-# 需要单独落盘某把私钥时：~/.ssh/senv/keys/<分组>/<名>
-senv keypair materialize web-key
+# 单独落盘某把私钥：与 host export 同一路径 ~/.ssh/senv/keys/<分组>/<名>
+senv keypair export web-key
+# 本机默认：Host * 兜底（只写 groups/_default.conf，不同步）
+senv keypair set-default web-key
+senv keypair clear-default
 ```
 
 导出后 `~/.ssh/` 的分组布局（`groups/` 为组片段，`keys/` 为落盘私钥，未分组入 `_ungrouped`）：
@@ -286,6 +289,7 @@ senv keypair materialize web-key
 ~/.ssh/config                    ← 顶部一行 Include ~/.ssh/senv/groups/*.conf（senv 幂等注册）
 ~/.ssh/senv/
 ├── groups/
+│   ├── _default.conf            ← 本机默认密钥对（Host *），host apply 不改写
 │   ├── _ungrouped.conf
 │   └── prod.conf
 └── keys/
@@ -297,7 +301,8 @@ senv keypair materialize web-key
 
 安全提示：
 
-- `materialize` 后私钥会**常驻磁盘**：目录是 `0700`，文件是 `0600`；删除 vault 内 keypair 不会自动删除已落盘文件，用 `senv keypair prune` 清理未引用文件。
+- `keypair export`（`materialize` 别名）后私钥会**常驻磁盘**：目录是 `0700`，文件是 `0600`；删除 vault 内 keypair 不会自动删除已落盘文件，用 `senv keypair prune` 清理未引用文件（当前本机默认钥除外）。
+- `senv keypair set-default` 只改本机 `groups/_default.conf`，**不同步**；`host unexport` 会一并删掉该片段。
 - `--attr` / host `extra` 是有意的 OpenSSH 直传能力，会原样写入导出片段。不要把不可信文本放进值；注意 `LocalCommand` 等关键字的副作用。
 - `senv host export` 会写 `~/.ssh/config`（只增删 senv 自己的 Include 行，写入前留 `~/.ssh/config.senv-bak`）并落盘缺失私钥；`--output` 纯渲染模式无副作用。
 - host 与 keypair 的 `--group` 参与导出组织（组片段归属与私钥目录）；组名禁止含 `/`。
@@ -306,7 +311,7 @@ senv keypair materialize web-key
 
 ### 9. TUI 模式（全屏界面）
 
-通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host 与 keypair（host 增删改与导出 OpenSSH 片段；keypair 导入、重命名、分组、删除、materialize），浏览 LLM provider 档案并切换各 coding agent 的指向，以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
+通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host 与 keypair（host 增删改与导出 OpenSSH 片段；keypair 导入、重命名、分组、删除、export 落盘、设本机默认），浏览 LLM provider 档案并切换各 coding agent 的指向，以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -327,20 +332,20 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `↑` `↓` / `j` `k` | 列表导航 |
 | `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / AI / MCP Tab） |
 | `enter` | 打开详情弹层（Config / SSH / AI / MCP）／解开当前 env 明文 |
-| `v` | 单条切换当前 env 值明文/遮蔽（光标移开自动重新遮蔽） |
+| `v` | Env：单条切换当前值明文/遮蔽（光标移开自动重新遮蔽）；KeyPair：按需预览私钥 |
 | `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，KeyPair=keypair 分组，AI=provider 表单，MCP=档案表单） |
 | `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；AI=新建 provider；MCP=新建档案） |
 | `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
-| `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`）；KeyPair Tab：materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600） |
+| `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`） |
 | `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览（超高可 ↑↓/PgUp/PgDn 滚动），`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
-| `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要 |
+| `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要。KeyPair Tab：落盘当前密钥（等价 `senv keypair export`，确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600） |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
 | `t` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
 | `+` | 新建分组（Env / Text Tab） |
 | `i` | 从文件导入（Text=文本块，写 `group`/`key`/源文件路径；KeyPair Tab=导入 keypair 名称 + 私钥路径 + 分组） |
 | `i` / `u` | 安装/卸载 config（`I`/`U` 为批量，需在计划页确认） |
-| `D` | 切换解引用视图（Env Tab；Text 列表仅元数据） |
+| `D` | Env Tab：切换解引用视图；KeyPair Tab：把当前密钥设为/取消本机默认（`Host *`） |
 | `y` | 复制值到剪贴板 |
 | `x` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
@@ -355,7 +360,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、group、tags，`extra` 走 `$EDITOR`），`x` 导出 OpenSSH 片段，`A` 应用导出（与 CLI `senv host export` 同一编排，位置自动推断不再手填 target；host 栏=重建游标 host 所在组整组片段，分组栏=重建选中组、All=全量重建并清理幽灵组片段）。`A` 弹出确认框，列出将重建的组片段数、待落盘私钥数、Include 注册状态与 warning 计数，`enter`/`y` 执行、`esc`/`n` 取消（无副作用），执行后 toast 给出摘要（重建/落盘/跳过/注册/warning 计数）；批量导出目录与单条导出目标文件指向 `~/.ssh/senv/` 内部时被表单内联拒绝（该树由应用导出全权维护，外来文件会被幽灵清理），提示改用 `A` 或另选用户自有路径。host 列表内联显示所用 keypair 名称与指纹摘要（`key:name(fp)`）；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。
 
-KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`m` materialize 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600）、`enter` 详情；行内展示指纹摘要与被引用计数（`被 N 个 Host 引用`），零引用灰显「未被引用」。私钥明文只在 `$EDITOR` 闭环或 materialize 落盘时存在于文件系统，TUI 状态与渲染永不包含私钥内容。导出片段沿用既有规则：悬空 `proxyJump` 报错。
+KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`A` 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600）、`D` 设/取消本机默认（`Host *`，写 `groups/_default.conf`）、`enter` 详情（公钥无缩进，展示 OpenSSH comment/邮箱）、`v` 按需预览私钥（详情弹层，关闭即丢弃）；行内展示指纹摘要、被引用计数（`被 N 个 Host 引用`）与 `default` 标记，零引用灰显「未被引用」。列表永不渲染私钥；导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
 AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
@@ -369,7 +374,7 @@ TUI 内的写操作（env/text/config/SSH/AI/MCP）会写入本机操作审计�
 
 #### 安全设计
 
-- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH/KeyPair Tab 只显示指纹和元数据，不加载或渲染 private key。
+- **肩窥防护**：env 值在列表中始终遮蔽（`prefix***`），需主动按 `v` 才单条显示明文，光标移开即重新遮蔽。SSH/KeyPair 列表只显示指纹和元数据；KeyPair 按 `v` 才按需预览私钥（详情弹层，关闭即丢弃）。
 - **搜索不泄漏**：全局搜索（`S`，含 SSH host alias/hostname、provider alias 与 MCP 档案 alias/command）与 Tab 内过滤（`/`）**只匹配标识字段，绝不匹配值、私钥内容、凭据或 MCP env 值**，避免结果列表批量暴露秘密。
 - **vim 闭环复用**：text/config 的编辑复用现有「解密 → 临时文件(600) → 编辑 → 重新加密 → 删除临时文件」流程，无新攻击面。
 
@@ -661,7 +666,9 @@ senv config delete <name>          删除配置文件
 senv keypair import <name> --file <path> [--force]  导入既有 SSH private key
 senv keypair list                  列出 SSH keypair 指纹/元数据
 senv keypair rename <old> <new>    重命名 keypair 并联动 host identityKey
-senv keypair materialize <name> [--force]  解密落盘到 ~/.ssh/senv/keys/<分组>/<名>
+senv keypair export <name> [--force]       落盘到 ~/.ssh/senv/keys/<分组>/<名>（materialize 为别名）
+senv keypair set-default <name>            本机 Host * 默认密钥（写 groups/_default.conf）
+senv keypair clear-default                 取消本机默认密钥
 senv keypair delete <name> [--force]       删除 keypair（被引用默认拒绝）
 senv host add <alias> [flags]      新建 SSH host 档案并可选关联 keypair
 senv host get <alias>              查看 SSH host 档案

@@ -66,6 +66,12 @@ func TestImportDerivesEd25519AndRSAPublicKeys(t *testing.T) {
 	if summary.PublicKey == "" || !strings.HasPrefix(summary.PublicKey, "ssh-ed25519 ") || !strings.HasPrefix(summary.Fingerprint, "SHA256:") {
 		t.Fatalf("ed25519 summary = %+v", summary)
 	}
+	if summary.Comment != "ed@test" {
+		t.Fatalf("ed25519 comment = %q, want ed@test", summary.Comment)
+	}
+	if !strings.HasSuffix(summary.PublicKey, " ed@test") {
+		t.Fatalf("public key should append comment: %q", summary.PublicKey)
+	}
 
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -78,6 +84,35 @@ func TestImportDerivesEd25519AndRSAPublicKeys(t *testing.T) {
 	}
 	if summary.PublicKey == "" || !strings.HasPrefix(summary.PublicKey, "ssh-rsa ") {
 		t.Fatalf("rsa summary = %+v", summary)
+	}
+	if summary.Comment != "rsa@test" {
+		t.Fatalf("rsa comment = %q, want rsa@test", summary.Comment)
+	}
+}
+
+func TestKeyPairSummaryReDerivesLegacyComment(t *testing.T) {
+	mgr, _ := newTestSSHManager(t)
+	path := writePrivateKey(t, t.TempDir(), ed25519Private(t), "user@example.com", "")
+	if _, err := mgr.ImportKeyPair("legacy", path, false); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the old bug: Comment stored as key algorithm.
+	if err := mgr.UpdateKeyPair("legacy", func(entry *storage.KeyPairEntry) error {
+		entry.Comment = "ssh-ed25519"
+		entry.PublicKey = strings.Fields(entry.PublicKey)[0] + " " + strings.Fields(entry.PublicKey)[1]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := mgr.GetKeyPairSummary("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Comment != "user@example.com" {
+		t.Fatalf("re-derived comment = %q, want user@example.com", summary.Comment)
+	}
+	if !strings.HasSuffix(summary.PublicKey, " user@example.com") {
+		t.Fatalf("re-derived public key missing comment: %q", summary.PublicKey)
 	}
 }
 

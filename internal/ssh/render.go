@@ -106,6 +106,9 @@ func (m *Manager) Render(filter RenderFilter) (*RenderResult, error) {
 	if err := checkUngroupedCollision(blocks, referencedGroups, ungroupedPlaceholder); err != nil {
 		return nil, err
 	}
+	if err := checkDefaultGroupCollision(blocks); err != nil {
+		return nil, err
+	}
 
 	groups := make([]string, 0, len(blocks))
 	for group := range blocks {
@@ -200,6 +203,15 @@ func checkUngroupedCollision(blocks map[string][]*storage.HostEntry, referencedG
 		return nil
 	}
 	return fmt.Errorf("group name %q is reserved for ungrouped hosts/keypairs; rename the real group %q first", ungroupedGroup, ungroupedGroup)
+}
+
+// checkDefaultGroupCollision fails when a real host group would write
+// groups/_default.conf, colliding with the local default keypair fragment.
+func checkDefaultGroupCollision(blocks map[string][]*storage.HostEntry) error {
+	if _, ok := blocks[defaultReservedGroup]; !ok {
+		return nil
+	}
+	return fmt.Errorf("group name %q is reserved for the local default keypair; rename the real group %q first", defaultReservedGroup, defaultReservedGroup)
 }
 
 func renderFragment(group string, hosts []*storage.HostEntry, identityPaths map[string]string) string {

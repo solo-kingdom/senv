@@ -8,10 +8,13 @@ import (
 
 // 分组目录布局（ADR-0023）：~/.ssh/senv/ 下 groups/ 放组片段、keys/ 放落盘
 // 私钥，各按组名一级子目录组织；空组（未分组）用保留名 _ungrouped。
+// _default 是本机默认密钥对片段的保留名（ADR-0025），不是 Host 分组。
 const (
-	ungroupedGroup = "_ungrouped"
-	groupsDirName  = "groups"
-	keysDirName    = "keys"
+	ungroupedGroup       = "_ungrouped"
+	defaultReservedGroup = "_default"
+	defaultFragmentFile  = "_default.conf"
+	groupsDirName        = "groups"
+	keysDirName          = "keys"
 )
 
 // groupDir 把 vault 的组名映射到目录/文件名片段；空组映射为保留名。

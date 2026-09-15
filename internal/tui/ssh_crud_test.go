@@ -387,15 +387,15 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 	}
 	tab = flushTab(tab, tab.load()).(*keyPairTab)
 
-	out, _ := tab.Update(runeKey("m"))
+	out, _ := tab.Update(runeKey("A"))
 	tab = out.(*keyPairTab)
 	if tab.mode != kpModeMaterialize {
-		t.Fatalf("m should stage materialize, mode=%v", tab.mode)
+		t.Fatalf("A should stage export, mode=%v", tab.mode)
 	}
 	view := tab.View()
 	for _, want := range []string{filepath.Join(home, ".ssh", "senv", "keys", "_ungrouped", "web-key"), "0600"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("materialize confirm missing %q:\n%s", want, view)
+			t.Fatalf("export confirm missing %q:\n%s", want, view)
 		}
 	}
 	out, cmd := tab.Update(runeKey("y"))
@@ -411,6 +411,40 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 	// The private key body must never be rendered by the tab.
 	if view := tab.View(); strings.Contains(view, "PRIVATE KEY") {
 		t.Fatalf("view leaked private key material:\n%s", view)
+	}
+}
+
+func TestKeyPairToggleDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tab, _ := newKeyPairCrudTab(t)
+	keyPath := writeSSHTUIKey(t, "id_ed25519")
+	if _, err := tab.mgr.SSH.ImportKeyPair("web-key", keyPath, false); err != nil {
+		t.Fatalf("import keypair: %v", err)
+	}
+	tab = flushTab(tab, tab.load()).(*keyPairTab)
+
+	out, cmd := tab.Update(runeKey("D"))
+	tab = flushTab(out, cmd).(*keyPairTab)
+	if tab.defaultName != "web-key" {
+		t.Fatalf("defaultName = %q", tab.defaultName)
+	}
+	joined := strings.Join(tab.keyPairListLines(200), "\n")
+	if !strings.Contains(joined, "default") {
+		t.Fatalf("list missing default marker:\n%s", joined)
+	}
+	frag := filepath.Join(home, ".ssh", "senv", "groups", "_default.conf")
+	if _, err := os.Stat(frag); err != nil {
+		t.Fatalf("default fragment: %v", err)
+	}
+
+	out, cmd = tab.Update(runeKey("D"))
+	tab = flushTab(out, cmd).(*keyPairTab)
+	if tab.defaultName != "" {
+		t.Fatalf("toggle off left defaultName = %q", tab.defaultName)
+	}
+	if _, err := os.Stat(frag); !os.IsNotExist(err) {
+		t.Fatalf("cleared fragment still present: %v", err)
 	}
 }
 
