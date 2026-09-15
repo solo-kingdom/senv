@@ -153,19 +153,24 @@ func TestListenerReconnectClearsCache(t *testing.T) {
 	waitForListenerReady(t, pool, &invalidations)
 
 	// 从 PG 侧终止监听连接（其最后语句是 LISTEN，借此识别 pid）
+	before := invalidations.Load()
 	if _, err := pool.Exec(ctx,
 		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query = 'LISTEN senv_cache_invalidate'`); err != nil {
 		t.Fatal(err)
 	}
 	// 重连成功应触发一次全清（计数继续上涨，无需新广播）
-	before := invalidations.Load()
 	waitForBroadcast(t, func() bool { return invalidations.Load() >= before+1 }, "监听连接被终止后未重连或未全清")
 
-	// 重连后的新连接仍能收到广播
+	// 重连回调只证明 LISTEN 成功，不证明 WaitForNotification 已进入。
+	// 再 probe 一次，避免吊销 NOTIFY 落在窗口里被丢（与 waitForListenerReady 同源）。
+	waitForListenerReady(t, pool, &invalidations)
+
+	// 必须先采样再吊销：NOTIFY 可能在 RevokeToken 返回前就到达，
+	// 后采样会把这次广播算进 baseline，随后空等第二次（CI flake）。
+	after := invalidations.Load()
 	if err := admin.RevokeToken(ctx, mustFreshToken(t, admin, "alice")); err != nil {
 		t.Fatal(err)
 	}
-	after := invalidations.Load()
 	waitForBroadcast(t, func() bool { return invalidations.Load() >= after+1 }, "重连后广播未到达")
 }
 
