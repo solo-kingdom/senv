@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wii/senv/internal/server/testdb"
 )
 
@@ -26,6 +27,31 @@ func waitForBroadcast(t *testing.T, cond func() bool, msg string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal(msg)
+}
+
+// waitForListenerReady 等到 LISTEN 建立且至少收到一次 NOTIFY。
+// StartInvalidationListener 在 LISTEN 成功后会先调一次 onInvalidate；仅依赖
+// 「先发两枪 NOTIFY 再等计数」会在 LISTEN 晚于 NOTIFY 时丢通知（CI flake）。
+func waitForListenerReady(t *testing.T, pool *pgxpool.Pool, invalidations *atomic.Int64) {
+	t.Helper()
+	ctx := context.Background()
+	waitForBroadcast(t, func() bool { return invalidations.Load() >= 1 }, "listener 未就绪：LISTEN 未建立")
+
+	before := invalidations.Load()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := pool.Exec(ctx, `SELECT pg_notify($1, '')`, invalidationChannel); err != nil {
+			t.Fatalf("probe notify: %v", err)
+		}
+		probeDeadline := time.Now().Add(200 * time.Millisecond)
+		for time.Now().Before(probeDeadline) {
+			if invalidations.Load() > before {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	t.Fatal("listener 未就绪：广播未到达")
 }
 
 func TestInvalidationBroadcast(t *testing.T) {
@@ -59,15 +85,7 @@ func TestInvalidationBroadcast(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 监听就绪探测：block→unblock 两次广播，计数上涨证明 LISTEN 已建立，
-	// 后续场景不再受监听建连时序影响
-	if err := admin.SetClientStatus(ctx, -1, "laptop", ClientStatusBlocked); err != nil {
-		t.Fatal(err)
-	}
-	if err := admin.SetClientStatus(ctx, -1, "laptop", ClientStatusActive); err != nil {
-		t.Fatal(err)
-	}
-	waitForBroadcast(t, func() bool { return invalidations.Load() >= 2 }, "listener 未就绪：广播未到达")
+	waitForListenerReady(t, pool, &invalidations)
 
 	// 场景一：吊销即时生效（spec：吊销命令完成后 ≤1 个请求内 401）
 	aliceToken, err := admin.CreateUser(ctx, "alice")
@@ -132,11 +150,7 @@ func TestListenerReconnectClearsCache(t *testing.T) {
 		cached.ClearAuth()
 	}, 100*time.Millisecond)
 
-	// 首条广播使 LISTEN 就绪
-	if err := admin.RevokeToken(ctx, mustFreshToken(t, admin, "warmup")); err != nil {
-		t.Fatal(err)
-	}
-	waitForBroadcast(t, func() bool { return invalidations.Load() >= 1 }, "listener 未就绪：广播未到达")
+	waitForListenerReady(t, pool, &invalidations)
 
 	// 从 PG 侧终止监听连接（其最后语句是 LISTEN，借此识别 pid）
 	if _, err := pool.Exec(ctx,
