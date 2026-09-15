@@ -792,7 +792,11 @@ func (t *keyPairTab) doMaterialize(name string, force bool) tea.Cmd {
 		}
 		recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, true, "export")
 		// Only the 落盘路径 is surfaced; the private key body never reaches the UI.
-		return toastMsg{text: "written to " + path, level: toastSuccess}
+		text := "written to " + path
+		if _, err := os.Lstat(path + ".pub"); err == nil {
+			text += " and " + path + ".pub"
+		}
+		return toastMsg{text: text, level: toastSuccess}
 	}
 }
 
@@ -1115,6 +1119,9 @@ func (t *keyPairTab) renderModal() string {
 		return modalBox(t.width, t.height, "keypair "+t.pendingKey+" still referenced", b.String(), "F force delete · esc cancel")
 	case kpModeMaterialize:
 		body := "will write the private key in plaintext to:\n" + t.materializePath + " (0600)."
+		if key, ok := t.currentKey(); ok && key.HasPubKey {
+			body += "\nand the public key to:\n" + t.materializePath + ".pub (0644)."
+		}
 		if t.pendingForce {
 			body += "\n⚠ target file exists and will be overwritten."
 		}

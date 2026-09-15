@@ -120,9 +120,10 @@ var keypairListCmd = &cobra.Command{
 var keypairExportCmd = &cobra.Command{
 	Use:     "export <name>",
 	Aliases: []string{"materialize"},
-	Short:   "Write a private key to ~/.ssh/senv/keys/<group>/<name>",
+	Short:   "Write a private key and its .pub file to ~/.ssh/senv/keys/<group>/<name>",
 	Long: `Decrypt one keypair onto the same path host export uses:
-~/.ssh/senv/keys/<group>/<name> (ungrouped keys go in _ungrouped).
+~/.ssh/senv/keys/<group>/<name> (ungrouped keys go in _ungrouped),
+plus the sibling <name>.pub when a public key can be derived.
 materialize is a transitional alias for this command.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -141,6 +142,10 @@ materialize is a transitional alias for this command.`,
 		}
 		auditOp(session.AuditOpSSHKey, "keypair:"+args[0], true, detail)
 		fmt.Printf("✓ Exported %s to %s (0600)\n", args[0], path)
+		pubPath := path + ".pub"
+		if info, err := os.Stat(pubPath); err == nil {
+			fmt.Printf("✓ public key %s (%04o)\n", pubPath, info.Mode().Perm())
+		}
 		return nil
 	},
 }
@@ -489,9 +494,9 @@ var hostExportCmd = &cobra.Command{
 
 By default (apply mode) export maintains the grouped layout under
 ~/.ssh/senv/: per-group fragments in groups/, missing referenced private
-keys materialized into keys/<group>/, and a single glob Include line
-registered at the top of ~/.ssh/config. After it runs, ssh resolves the
-exported aliases directly — no manual wiring.
+keys (and sibling .pub files) materialized into keys/<group>/, and a
+single glob Include line registered at the top of ~/.ssh/config. After it
+runs, ssh resolves the exported aliases directly — no manual wiring.
 
   senv host export                # rebuild all group fragments
   senv host export --group prod   # rebuild only groups/prod.conf
@@ -592,10 +597,10 @@ var keypairPruneForce bool
 
 var keypairPruneCmd = &cobra.Command{
 	Use:   "prune",
-	Short: "Delete materialized private keys that no host references",
-	Long: `List materialized private keys under ~/.ssh/senv/ that no host's
-identityKey references (including leftovers at old paths after a keypair
-changed groups) and delete them after confirmation.
+	Short: "Delete materialized keys that no host references",
+	Long: `List materialized private keys and sibling .pub files under ~/.ssh/senv/
+that no host's identityKey references (including leftovers at old paths
+after a keypair changed groups) and delete them after confirmation.
 
 Files are only deleted after an explicit confirmation; in a non-interactive
 terminal re-run with --force. Vault archives are never touched.`,

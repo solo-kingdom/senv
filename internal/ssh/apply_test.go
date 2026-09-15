@@ -65,6 +65,11 @@ func TestApplyWritesFragmentsKeysAndInclude(t *testing.T) {
 	if err != nil || keyInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("materialized key: %v", err)
 	}
+	summary, err := mgr.GetKeyPairSummary("prod-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPublicCompanion(t, senvPath(t, "keys", "prod", "prod-key"), summary.PublicKey)
 	cfg, err := os.ReadFile(filepath.Join(mustHome(t), ".ssh", "config"))
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +130,45 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if strings.Contains(string(bak), IncludeLine) {
 		t.Fatalf("backup must hold the pre-modification content:\n%s", bak)
 	}
+}
+
+func TestApplyFillsMissingPublicCompanion(t *testing.T) {
+	mgr := newApplyFixture(t)
+	first, err := mgr.Apply(RenderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Materialized) != 1 || first.Materialized[0] != "prod-key" {
+		t.Fatalf("first materialized = %v, want prod-key", first.Materialized)
+	}
+	priv := senvPath(t, "keys", "prod", "prod-key")
+	pub := priv + ".pub"
+	if err := os.Remove(pub); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := mgr.Apply(RenderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Materialized) != 0 {
+		t.Fatalf("must not rematerialize private key: %v", second.Materialized)
+	}
+	after, err := os.ReadFile(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("existing private key must not be overwritten when filling .pub")
+	}
+	summary, err := mgr.GetKeyPairSummary("prod-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPublicCompanion(t, priv, summary.PublicKey)
 }
 
 func TestApplyGroupScopeAndGhostPrune(t *testing.T) {

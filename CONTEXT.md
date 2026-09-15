@@ -126,7 +126,7 @@ _Avoid_: 展示名、备注名
 _Avoid_: identity 文件（指盘上路径时）、钥匙（单指私钥时）
 
 **落盘（Materialize）**:
-把 vault 内 KeyPair 的私钥按分组组织形式写到 `~/.ssh/senv/keys/` 下的动作及其产物（分组目录布局见 ADR-0023）；属本机状态，不同步。用户面 CLI/TUI 可称 `keypair export`（与 Host Apply 对称），领域仍称落盘；`materialize` 为过渡别名。
+把 vault 内 KeyPair 的私钥按分组组织形式写到 `~/.ssh/senv/keys/` 下的动作及其产物（分组目录布局见 ADR-0023），并在能派生公钥时写出伴生 `.pub`；属本机状态，不同步。用户面 CLI/TUI 可称 `keypair export`（与 Host Apply 对称），领域仍称落盘；`materialize` 为过渡别名。
 _Avoid_: 导出（指 Host 配置导出或本机默认密钥对写入时）、解密（泛指时）
 
 **导出（Export）**:

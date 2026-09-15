@@ -7,7 +7,7 @@ import (
 )
 
 // 分组目录布局（ADR-0023）：~/.ssh/senv/ 下 groups/ 放组片段、keys/ 放落盘
-// 私钥，各按组名一级子目录组织；空组（未分组）用保留名 _ungrouped。
+// 私钥与伴生 .pub，各按组名一级子目录组织；空组（未分组）用保留名 _ungrouped。
 // _default 是本机默认密钥对片段的保留名（ADR-0025），不是 Host 分组。
 const (
 	ungroupedGroup       = "_ungrouped"
@@ -64,6 +64,7 @@ func FragmentPath(group string) (string, error) {
 
 // MaterializePath 是稳定的落盘路径约定（ADR-0023 取代 ADR-0001 的扁平
 // 布局）：~/.ssh/senv/keys/<keypair 分组>/<名>，未分组入 _ungrouped。
+// 公钥伴生文件是同一路径加 .pub 后缀。
 func MaterializePath(group, name string) (string, error) {
 	dir, err := keysDir()
 	if err != nil {

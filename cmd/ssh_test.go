@@ -407,6 +407,29 @@ func TestKeypairMaterializePermissionsAndOverwrite(t *testing.T) {
 	if dirInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("materialize dir mode = %o, want 700", dirInfo.Mode().Perm())
 	}
+	mgr, err := getSSHManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := mgr.GetKeyPairSummary("material-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := target + ".pub"
+	info, err = os.Stat(pub)
+	if err != nil {
+		t.Fatalf("public key missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("public key mode = %o, want 644", info.Mode().Perm())
+	}
+	pubBody, err := os.ReadFile(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(pubBody)) != strings.TrimSpace(summary.PublicKey) {
+		t.Fatalf("public key content mismatch")
+	}
 	if err := keypairExportCmd.RunE(&cobra.Command{}, []string{"material-key"}); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("overwrite error = %v", err)
 	}
@@ -569,6 +592,9 @@ func TestHostExportApplyUnexportAndPruneFlow(t *testing.T) {
 	keyFile := filepath.Join(dir, ".ssh", "senv", "keys", "_ungrouped", "apply-key")
 	if info, err := os.Stat(keyFile); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("materialized key: %v", err)
+	}
+	if info, err := os.Stat(keyFile + ".pub"); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("materialized public key: %v", err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(dir, ".ssh", "config"))
 	if err != nil || !strings.Contains(string(cfg), "Include ~/.ssh/senv/groups/*.conf") {

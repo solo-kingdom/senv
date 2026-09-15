@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -461,8 +460,9 @@ func (m *Manager) RenameKeyPair(oldName, newName string) ([]string, error) {
 }
 
 // Materialize decrypts one private key into ~/.ssh/senv/keys/<分组>/<名>
-// (see MaterializePath). Existing files require force; the parent directory
-// and file are created 0700/0600.
+// (see MaterializePath) and writes the sibling <名>.pub when a public key
+// can be derived. Existing private files require force; the parent directory
+// is 0700, private 0600, public 0644.
 func (m *Manager) Materialize(name string, force bool) (string, error) {
 	entry, err := m.loadKeyPair(name)
 	if err != nil {
@@ -479,11 +479,8 @@ func (m *Manager) Materialize(name string, force bool) (string, error) {
 			return "", fmt.Errorf("inspect materialized key %q: %w", target, statErr)
 		}
 	}
-	if err := storage.EnsurePrivateDir(filepath.Dir(target), 0o700); err != nil {
+	if err := writeMaterializedPair(target, name, entry.PrivateKey, resolvedPublicKey(entry)); err != nil {
 		return "", err
-	}
-	if err := storage.WriteSensitiveFile(target, []byte(entry.PrivateKey), 0o700, 0o600); err != nil {
-		return "", fmt.Errorf("materialize keypair %q: %w", name, err)
 	}
 	return target, nil
 }

@@ -260,11 +260,59 @@ func TestMaterializeCreatesPrivatePermissions(t *testing.T) {
 	if info.Mode().Perm() != 0o600 || dirInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("modes = file %o, dir %o", info.Mode().Perm(), dirInfo.Mode().Perm())
 	}
+	summary, err := mgr.GetKeyPairSummary("material-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPublicCompanion(t, target, summary.PublicKey)
 	if _, err := mgr.Materialize("material-key", false); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("overwrite error = %v", err)
 	}
 	if _, err := mgr.Materialize("material-key", true); err != nil {
 		t.Fatalf("force materialize: %v", err)
+	}
+	assertPublicCompanion(t, target, summary.PublicKey)
+}
+
+func TestMaterializeEncryptedKeySkipsPublicFile(t *testing.T) {
+	mgr, _ := newTestSSHManager(t)
+	t.Setenv("HOME", t.TempDir())
+	path := writePrivateKey(t, t.TempDir(), ed25519Private(t), "encrypted@test", "passphrase")
+	if _, err := mgr.ImportKeyPair("encrypted-key", path, false); err != nil {
+		t.Fatal(err)
+	}
+	target, err := mgr.Materialize("encrypted-key", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("private key missing: %v", err)
+	}
+	if _, err := os.Stat(target + ".pub"); !os.IsNotExist(err) {
+		t.Fatalf("encrypted key must not write .pub: %v", err)
+	}
+}
+
+func assertPublicCompanion(t *testing.T, privatePath, wantPub string) {
+	t.Helper()
+	pubPath := privatePath + ".pub"
+	info, err := os.Stat(pubPath)
+	if err != nil {
+		t.Fatalf("public key missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("public key mode = %o, want 644", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(pubPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != strings.TrimSpace(wantPub) {
+		t.Fatalf("public key content = %q, want %q", got, wantPub)
+	}
+	if !strings.HasSuffix(string(data), "\n") {
+		t.Fatal("public key file must end with a newline")
 	}
 }
 

@@ -3,6 +3,7 @@ package ssh
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wii/senv/internal/storage"
@@ -77,6 +78,51 @@ func TestPruneCandidatesAndDelete(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("referenced key must survive: %v", err)
+	}
+}
+
+func TestPruneCandidatesIncludesPublicCompanion(t *testing.T) {
+	mgr, _ := newTestSSHManager(t)
+	t.Setenv("HOME", t.TempDir())
+	keyPath := writePrivateKey(t, t.TempDir(), ed25519Private(t), "prune@test", "")
+	if _, err := mgr.ImportKeyPairWithGroup("used-key", keyPath, "prod", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.ImportKeyPairWithGroup("orphan-key", keyPath, "prod", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.AddHost(&storage.HostEntry{Alias: "web", Hostname: "10.0.0.1", Group: "prod", IdentityKey: "used-key"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Materialize("used-key", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Materialize("orphan-key", false); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := mgr.PruneCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := senvPath(t, "keys", "prod", "used-key")
+	orphan := senvPath(t, "keys", "prod", "orphan-key")
+	byPath := map[string]PruneCandidate{}
+	for _, c := range candidates {
+		byPath[c.Path] = c
+		if strings.HasPrefix(c.Path, keep) {
+			t.Fatalf("referenced key or companion must not be listed: %+v", c)
+		}
+	}
+	if _, ok := byPath[orphan]; !ok {
+		t.Fatalf("orphan private missing: %+v", byPath)
+	}
+	pub, ok := byPath[orphan+".pub"]
+	if !ok {
+		t.Fatalf("orphan public companion missing: %+v", byPath)
+	}
+	if !pub.InVault {
+		t.Fatalf("orphan .pub should resolve to vault keypair: %+v", pub)
 	}
 }
 

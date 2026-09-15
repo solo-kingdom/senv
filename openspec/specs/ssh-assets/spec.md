@@ -108,11 +108,11 @@
 - **THEN** keypair 被删除，引用它的 host `identityKey` 被清空且列表刷新
 
 ### Requirement: 导出 OpenSSH config 片段
-`senv host export` SHALL 以**应用模式**为默认：按分组整树维护 `~/.ssh/senv/`——组片段落于 `groups/<组>.conf`（未分组 `_ungrouped.conf`，目录 0700、文件 0600），整文件从 vault 重渲染、不回读合并；对被引用 keypair SHALL 自动落盘缺失的私钥文件（已存在 MUST 跳过不覆盖；keypair 不在本机 vault 时逐条 warning 且不阻断导出，片段照常生成）；并幂等注册 `~/.ssh/config` 顶部一行 `Include ~/.ssh/senv/groups/*.conf`（文件不存在时创建为 0600，写入前留 `~/.ssh/config.senv-bak`，用户其余内容 MUST NOT 改动）。`--output <path>`（`-` 表示 stdout）SHALL 进入纯渲染模式：写出片段但不写组片段、不落盘、不注册。`--group <名>` 只重建该组片段；`--host <别名>` 重建其所在组整文件；无过滤为全量重建。组内 host 的 ProxyJump 指向组外 host 时，闭包目标 SHALL 并入发起导出的 fragment。组在 vault 中消失（改名/删空）时，全量 export SHALL 删除对应组片段（`--group`/`--host` 单组重建 MUST NOT 触碰其他组文件）。`groups/_default.conf` MUST NOT 被 Host Apply 重写，全量幽灵清理 MUST 跳过该文件。`proxyJump` 引用缺失 MUST 报错。`IdentityFile` SHALL 指向 `~/.ssh/senv/keys/<keypair 分组>/<keypair 名>`。export 对未被任何 host 引用且不是本机默认的落盘私钥 SHALL 逐条 warning，MUST NOT 自动删除。真实组名与 `_ungrouped` 或 `_default` 冲突时 SHALL 报错拒绝导出。应用导出完成后 SHALL 输出摘要（写入的组片段、落盘的密钥、注册结果、warning 清单）。
+`senv host export` SHALL 以**应用模式**为默认：按分组整树维护 `~/.ssh/senv/`——组片段落于 `groups/<组>.conf`（未分组 `_ungrouped.conf`，目录 0700、文件 0600），整文件从 vault 重渲染、不回读合并；对被引用 keypair SHALL 自动落盘缺失的私钥文件及伴生 `.pub`（已存在的私钥 MUST 跳过不覆盖，缺失的 `.pub` SHALL 补写；keypair 不在本机 vault 时逐条 warning 且不阻断导出，片段照常生成）；并幂等注册 `~/.ssh/config` 顶部一行 `Include ~/.ssh/senv/groups/*.conf`（文件不存在时创建为 0600，写入前留 `~/.ssh/config.senv-bak`，用户其余内容 MUST NOT 改动）。`--output <path>`（`-` 表示 stdout）SHALL 进入纯渲染模式：写出片段但不写组片段、不落盘、不注册。`--group <名>` 只重建该组片段；`--host <别名>` 重建其所在组整文件；无过滤为全量重建。组内 host 的 ProxyJump 指向组外 host 时，闭包目标 SHALL 并入发起导出的 fragment。组在 vault 中消失（改名/删空）时，全量 export SHALL 删除对应组片段（`--group`/`--host` 单组重建 MUST NOT 触碰其他组文件）。`groups/_default.conf` MUST NOT 被 Host Apply 重写，全量幽灵清理 MUST 跳过该文件。`proxyJump` 引用缺失 MUST 报错。`IdentityFile` SHALL 指向 `~/.ssh/senv/keys/<keypair 分组>/<keypair 名>`。export 对未被任何 host 引用且不是本机默认的落盘私钥 SHALL 逐条 warning，MUST NOT 自动删除。真实组名与 `_ungrouped` 或 `_default` 冲突时 SHALL 报错拒绝导出。应用导出完成后 SHALL 输出摘要（写入的组片段、落盘的密钥、注册结果、warning 清单）。
 
 #### Scenario: Export all hosts
 - **WHEN** 执行 `senv host export`（未给 `--output`）
-- **THEN** 系统 SHALL 为每个 host 生成 `Host <alias>` 块（含 HostName/User/Port/ProxyJump/IdentityFile 与额外 KV，写入对应 `groups/<组>.conf`），落盘所有缺失的被引用私钥，保证 `~/.ssh/config` 顶部存在 glob Include 行，并输出摘要
+- **THEN** 系统 SHALL 为每个 host 生成 `Host <alias>` 块（含 HostName/User/Port/ProxyJump/IdentityFile 与额外 KV，写入对应 `groups/<组>.conf`），落盘所有缺失的被引用私钥及伴生 `.pub`，保证 `~/.ssh/config` 顶部存在 glob Include 行，并输出摘要
 
 #### Scenario: Export single host
 - **WHEN** 执行 `senv host export --host web`，host `web` 属于组 `prod`
@@ -186,15 +186,19 @@
 - **THEN** 系统 SHALL 报告无变更，不创建任何文件
 
 ### Requirement: keypair export 落盘
-`senv keypair export <name>` SHALL 将私钥解密写入 `~/.ssh/senv/keys/<keypair 分组>/<name>`（未分组的分组目录为 `_ungrouped`；目录 0700、文件 0600）；目标已存在时默认 SHALL 拒绝覆盖（`--force` 覆盖）。`materialize` SHALL 作为该命令的过渡别名。
+`senv keypair export <name>` SHALL 将私钥解密写入 `~/.ssh/senv/keys/<keypair 分组>/<name>`（未分组的分组目录为 `_ungrouped`；目录 0700、文件 0600），并在能导出公钥时写入伴生文件 `<name>.pub`（权限 0644，内容为 authorized-key 行加换行）。无法派生公钥时（如口令保护的私钥）MUST NOT 写入 `.pub`。目标私钥已存在时默认 SHALL 拒绝覆盖（`--force` 覆盖私钥与 `.pub`）。`materialize` SHALL 作为该命令的过渡别名。
 
 #### Scenario: Export to convention directory
 - **WHEN** keypair `web-key` 的 group 为 `prod`，执行 `senv keypair export web-key`
-- **THEN** `~/.ssh/senv/keys/prod/web-key` SHALL 存在且权限 0600，目录权限 0700，命令输出该路径
+- **THEN** `~/.ssh/senv/keys/prod/web-key` SHALL 存在且权限 0600，`~/.ssh/senv/keys/prod/web-key.pub` SHALL 存在且权限 0644，目录权限 0700，命令输出私钥路径与公钥路径
 
 #### Scenario: 未分组落盘路径
 - **WHEN** keypair `old-key` 无分组，执行 `senv keypair export old-key`
-- **THEN** 私钥 SHALL 写入 `~/.ssh/senv/keys/_ungrouped/old-key`
+- **THEN** 私钥 SHALL 写入 `~/.ssh/senv/keys/_ungrouped/old-key`，公钥 SHALL 写入 `~/.ssh/senv/keys/_ungrouped/old-key.pub`
+
+#### Scenario: 无法派生公钥时不写 .pub
+- **WHEN** keypair 为口令保护的私钥（vault 中无公钥），执行 `senv keypair export encrypted-key`
+- **THEN** 私钥 SHALL 落盘，MUST NOT 创建 `.pub`
 
 #### Scenario: Refuse overwrite
 - **WHEN** 目标文件已存在且未指定 `--force`
@@ -202,7 +206,7 @@
 
 #### Scenario: Force overwrite
 - **WHEN** 目标文件已存在且指定 `--force`
-- **THEN** 系统 SHALL 覆盖为目标 keypair 的当前私钥内容
+- **THEN** 系统 SHALL 覆盖为目标 keypair 的当前私钥与公钥内容
 
 #### Scenario: materialize 别名
 - **WHEN** 执行 `senv keypair materialize web-key`
@@ -224,7 +228,7 @@
 - **THEN** `_default.conf` 随组片段一并删除，落盘私钥保留
 
 ### Requirement: 未引用落盘私钥清理（prune）
-`senv keypair prune` SHALL 列出 `~/.ssh/senv/keys/` 下未被任何 vault host `identityKey` 引用、且不是本机默认 IdentityFile 的私钥文件（标注对应 keypair 是否仍在 vault 中），经用户确认后删除；无显式确认 MUST NOT 删除任何文件。被引用 keypair 与当前默认钥的落盘文件 MUST NOT 出现在清理清单。
+`senv keypair prune` SHALL 列出 `~/.ssh/senv/keys/` 下未被任何 vault host `identityKey` 引用、且不是本机默认 IdentityFile 的私钥文件及其伴生 `.pub`（标注对应 keypair 是否仍在 vault 中），经用户确认后删除；无显式确认 MUST NOT 删除任何文件。被引用 keypair 与当前默认钥的落盘文件（含 `.pub`）MUST NOT 出现在清理清单。
 
 #### Scenario: 清理未引用私钥
 - **WHEN** `keys/` 下存在未引用文件，执行 `senv keypair prune` 并确认
@@ -330,11 +334,11 @@ TUI SHALL 提供 host 与 keypair 的完整编辑板块，分属两个 Tab：SSH
 - **THEN** 先展示将写入的内容预览，确认后写目标文件；存在悬空 `proxyJump` 时按既有规则报错
 
 ### Requirement: TUI export 需确认
-TUI 的 KeyPair `A`（apply export）确认框 SHALL 显示分组落盘路径 `~/.ssh/senv/keys/<分组>/<名>`（未分组为 `_ungrouped`，目标权限 0600）；目标已存在时需再次确认；成功后只提示路径，不渲染私钥内容。
+TUI 的 KeyPair `A`（apply export）确认框 SHALL 显示分组落盘路径 `~/.ssh/senv/keys/<分组>/<名>`（未分组为 `_ungrouped`，私钥 0600）以及伴生公钥路径 `<名>.pub`（0644，仅在能导出公钥时）；目标已存在时需再次确认；成功后只提示路径，不渲染私钥内容。
 
 #### Scenario: TUI export 需确认
 - **WHEN** 用户在 KeyPair Tab 对 group 为 `prod` 的 keypair 按 `A`
-- **THEN** 显示确认框与目标路径 `~/.ssh/senv/keys/prod/<名>`（0600）；目标已存在时需再次确认；成功后只提示路径，不渲染私钥内容
+- **THEN** 显示确认框与目标路径 `~/.ssh/senv/keys/prod/<名>`（0600）及 `<名>.pub`（0644）；目标已存在时需再次确认；成功后只提示路径，不渲染私钥内容
 
 ### Requirement: 加密与同步不变性
 

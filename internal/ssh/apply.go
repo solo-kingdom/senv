@@ -193,8 +193,9 @@ func fragmentNameSet(rr *RenderResult) map[string]bool {
 	return names
 }
 
-// materializeReferenced 落盘缺失的被引用私钥；已存在 MUST 跳过不覆盖
-// （ADR-0023 D4），force 语义只属于显式 `keypair materialize`。
+// materializeReferenced 落盘缺失的被引用私钥及伴生 .pub；私钥已存在 MUST
+// 跳过不覆盖（ADR-0023 D4），但缺失的 .pub 仍补写。force 语义只属于显式
+// `keypair materialize`。
 func materializeReferenced(rr *RenderResult, res *ApplyResult) {
 	names := make([]string, 0, len(rr.Referenced))
 	for name := range rr.Referenced {
@@ -208,19 +209,19 @@ func materializeReferenced(rr *RenderResult, res *ApplyResult) {
 			res.Errors = append(res.Errors, err.Error())
 			continue
 		}
+		pub := resolvedPublicKey(entry)
 		if _, statErr := os.Lstat(target); statErr == nil {
 			res.KeysSkipped = append(res.KeysSkipped, name)
+			if err := ensurePublicKeyFile(target, pub); err != nil {
+				res.Errors = append(res.Errors, err.Error())
+			}
 			continue
 		} else if !errors.Is(statErr, os.ErrNotExist) {
 			res.Errors = append(res.Errors, fmt.Sprintf("inspect materialized key %q: %v", target, statErr))
 			continue
 		}
-		if err := storage.EnsurePrivateDir(filepath.Dir(target), 0o700); err != nil {
+		if err := writeMaterializedPair(target, name, entry.PrivateKey, pub); err != nil {
 			res.Errors = append(res.Errors, err.Error())
-			continue
-		}
-		if err := storage.WriteSensitiveFile(target, []byte(entry.PrivateKey), 0o700, 0o600); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("materialize keypair %q: %v", name, err))
 			continue
 		}
 		res.Materialized = append(res.Materialized, name)
@@ -231,16 +232,16 @@ func materializeReferenced(rr *RenderResult, res *ApplyResult) {
 // 对未被任何 host 引用的逐条 warning——它们可能仍被你手写 ssh config
 // 引用，只提示、绝不自动删除（清理是显式 `keypair prune`）。
 func unreferencedKeyWarnings(rr *RenderResult) []string {
-	referenced := make(map[string]bool, len(rr.Referenced)+1)
+	referenced := make(map[string]bool, (len(rr.Referenced)+1)*2)
 	for _, entry := range rr.Referenced {
 		path, err := MaterializePath(entry.Group, entry.Name)
 		if err != nil {
 			continue
 		}
-		referenced[path] = true
+		markMaterializedPaths(referenced, path)
 	}
 	if identity, err := DefaultIdentityFile(); err == nil && identity != "" {
-		referenced[identity] = true
+		markMaterializedPaths(referenced, identity)
 	}
 	var paths []string
 	root, err := SenvDir()
@@ -273,9 +274,10 @@ func unreferencedKeyWarnings(rr *RenderResult) []string {
 	sort.Strings(paths)
 	var warnings []string
 	for _, path := range paths {
-		if !referenced[path] {
-			warnings = append(warnings, fmt.Sprintf("落盘私钥 %s 未被任何 host 引用（可用 senv keypair prune 清理）", path))
+		if referenced[path] || isPublicCompanionName(filepath.Base(path)) {
+			continue
 		}
+		warnings = append(warnings, fmt.Sprintf("落盘私钥 %s 未被任何 host 引用（可用 senv keypair prune 清理）", path))
 	}
 	return warnings
 }

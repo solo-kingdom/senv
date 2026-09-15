@@ -28,6 +28,9 @@ func TestSetDefaultWritesFragmentAndInclude(t *testing.T) {
 	if _, err := os.Stat(wantKey); err != nil {
 		t.Fatalf("materialized key: %v", err)
 	}
+	if _, err := os.Stat(wantKey + ".pub"); err != nil {
+		t.Fatalf("materialized public key: %v", err)
+	}
 	frag := senvPath(t, "groups", "_default.conf")
 	data, err := os.ReadFile(frag)
 	if err != nil {
@@ -107,6 +110,9 @@ func TestDefaultFollowsRenameEditDelete(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("renamed default must be materialized: %v", err)
+	}
+	if _, err := os.Stat(want + ".pub"); err != nil {
+		t.Fatalf("renamed default public key missing: %v", err)
 	}
 	if name, err := mgr.DefaultKeyPairName(); err != nil || name != "new-key" {
 		t.Fatalf("name after rename = %q, %v", name, err)

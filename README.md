@@ -276,14 +276,14 @@ senv host export --output -       # 纯渲染片段到 stdout（无副作用）
 senv host unexport                # 撤回：摘注册行 + 删组片段（含 _default.conf；不碰 vault 与私钥）
 senv keypair prune                # 清理未被引用的落盘私钥（先列后删；跳过当前默认钥）
 
-# 单独落盘某把私钥：与 host export 同一路径 ~/.ssh/senv/keys/<分组>/<名>
+# 单独落盘某把私钥：与 host export 同一路径 ~/.ssh/senv/keys/<分组>/<名>（含 .pub）
 senv keypair export web-key
 # 本机默认：Host * 兜底（只写 groups/_default.conf，不同步）
 senv keypair set-default web-key
 senv keypair clear-default
 ```
 
-导出后 `~/.ssh/` 的分组布局（`groups/` 为组片段，`keys/` 为落盘私钥，未分组入 `_ungrouped`）：
+导出后 `~/.ssh/` 的分组布局（`groups/` 为组片段，`keys/` 为落盘私钥与伴生 `.pub`，未分组入 `_ungrouped`）：
 
 ```text
 ~/.ssh/config                    ← 顶部一行 Include ~/.ssh/senv/groups/*.conf（senv 幂等注册）
@@ -294,14 +294,16 @@ senv keypair clear-default
 │   └── prod.conf
 └── keys/
     ├── _ungrouped/
-    │   └── old-key
+    │   ├── old-key
+    │   └── old-key.pub
     └── prod/
-        └── web-key
+        ├── web-key
+        └── web-key.pub
 ```
 
 安全提示：
 
-- `keypair export`（`materialize` 别名）后私钥会**常驻磁盘**：目录是 `0700`，文件是 `0600`；删除 vault 内 keypair 不会自动删除已落盘文件，用 `senv keypair prune` 清理未引用文件（当前本机默认钥除外）。
+- `keypair export`（`materialize` 别名）后私钥会**常驻磁盘**：目录是 `0700`，私钥 `0600`、公钥 `.pub` 为 `0644`；删除 vault 内 keypair 不会自动删除已落盘文件，用 `senv keypair prune` 清理未引用文件（当前本机默认钥除外）。
 - `senv keypair set-default` 只改本机 `groups/_default.conf`，**不同步**；`host unexport` 会一并删掉该片段。
 - `--attr` / host `extra` 是有意的 OpenSSH 直传能力，会原样写入导出片段。不要把不可信文本放进值；注意 `LocalCommand` 等关键字的副作用。
 - `senv host export` 会写 `~/.ssh/config`（只增删 senv 自己的 Include 行，写入前留 `~/.ssh/config.senv-bak`）并落盘缺失私钥；`--output` 纯渲染模式无副作用。
@@ -339,7 +341,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
 | `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`） |
 | `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览（超高可 ↑↓/PgUp/PgDn 滚动），`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
-| `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要。KeyPair Tab：落盘当前密钥（等价 `senv keypair export`，确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600） |
+| `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要。KeyPair Tab：落盘当前密钥（等价 `senv keypair export`，确认后写到 `~/.ssh/senv/keys/<分组>/<名>` 0600 与 `<名>.pub` 0644） |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
 | `t` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
 | `+` | 新建分组（Env / Text Tab） |
@@ -360,7 +362,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 
 SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host（alias、hostname、user、port、proxyJump／identityKey 用选择器关联、group、tags，`extra` 走 `$EDITOR`），`x` 导出 OpenSSH 片段，`A` 应用导出（与 CLI `senv host export` 同一编排，位置自动推断不再手填 target；host 栏=重建游标 host 所在组整组片段，分组栏=重建选中组、All=全量重建并清理幽灵组片段）。`A` 弹出确认框，列出将重建的组片段数、待落盘私钥数、Include 注册状态与 warning 计数，`enter`/`y` 执行、`esc`/`n` 取消（无副作用），执行后 toast 给出摘要（重建/落盘/跳过/注册/warning 计数）；批量导出目录与单条导出目标文件指向 `~/.ssh/senv/` 内部时被表单内联拒绝（该树由应用导出全权维护，外来文件会被幽灵清理），提示改用 `A` 或另选用户自有路径。host 列表内联显示所用 keypair 名称与指纹摘要（`key:name(fp)`）；编辑 host 时引用的 keypair/proxyJump 不存在会在表单内联报错且不写入。
 
-KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`A` 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>`，0600）、`D` 设/取消本机默认（`Host *`，写 `groups/_default.conf`）、`enter` 详情（公钥无缩进，展示 OpenSSH comment/邮箱）、`v` 按需预览私钥（详情弹层，关闭即丢弃）；行内展示指纹摘要、被引用计数（`被 N 个 Host 引用`）与 `default` 标记，零引用灰显「未被引用」。列表永不渲染私钥；导出片段沿用既有规则：悬空 `proxyJump` 报错。
+KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`A` 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>` 0600 与 `<名>.pub` 0644）、`D` 设/取消本机默认（`Host *`，写 `groups/_default.conf`）、`enter` 详情（公钥无缩进，展示 OpenSSH comment/邮箱）、`v` 按需预览私钥（详情弹层，关闭即丢弃）；行内展示指纹摘要、被引用计数（`被 N 个 Host 引用`）与 `default` 标记，零引用灰显「未被引用」。列表永不渲染私钥；导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
 AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 

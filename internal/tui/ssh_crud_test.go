@@ -393,7 +393,7 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 		t.Fatalf("A should stage export, mode=%v", tab.mode)
 	}
 	view := tab.View()
-	for _, want := range []string{filepath.Join(home, ".ssh", "senv", "keys", "_ungrouped", "web-key"), "0600"} {
+	for _, want := range []string{filepath.Join(home, ".ssh", "senv", "keys", "_ungrouped", "web-key"), "0600", ".pub", "0644"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("export confirm missing %q:\n%s", want, view)
 		}
@@ -407,6 +407,13 @@ func TestSSHMaterializeConfirmAndPath(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("materialized mode = %o, want 600", info.Mode().Perm())
+	}
+	pubInfo, err := os.Stat(target + ".pub")
+	if err != nil {
+		t.Fatalf("public key missing: %v", err)
+	}
+	if pubInfo.Mode().Perm() != 0o644 {
+		t.Fatalf("public key mode = %o, want 644", pubInfo.Mode().Perm())
 	}
 	// The private key body must never be rendered by the tab.
 	if view := tab.View(); strings.Contains(view, "PRIVATE KEY") {

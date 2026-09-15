@@ -113,7 +113,8 @@ func writeDefaultFragment(identityPath string) error {
 }
 
 // ensureMaterialized writes the private key if the conventional path is
-// missing; an existing file is left untouched (no force).
+// missing; an existing private file is left untouched (no force). A missing
+// sibling .pub is still filled in so older exports pick up the public file.
 func (m *Manager) ensureMaterialized(name string) (string, error) {
 	entry, err := m.loadKeyPair(name)
 	if err != nil {
@@ -124,6 +125,9 @@ func (m *Manager) ensureMaterialized(name string) (string, error) {
 		return "", err
 	}
 	if _, statErr := os.Lstat(target); statErr == nil {
+		if err := ensurePublicKeyFile(target, resolvedPublicKey(entry)); err != nil {
+			return "", err
+		}
 		return target, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return "", fmt.Errorf("inspect materialized key %q: %w", target, statErr)
