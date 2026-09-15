@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/session"
 )
 
@@ -233,6 +234,9 @@ var envExportCmd = &cobra.Command{
 	Long: `Export environment variables from active groups.
 This command outputs shell-compatible export statements.
 References ({{env:...}} and {{text:...}}) are automatically resolved.
+When a reference target is missing, the template is kept in the export line,
+a warning is printed to stderr, and the command still succeeds (exit 0).
+Circular references and excessive nesting still fail the command.
 
 When stdout is not a TTY (e.g. eval $(senv env export)) and there is no
 active session, export refuses to prompt and asks you to run
@@ -262,20 +266,23 @@ Usage:
 			}
 			return err
 		}
-
-		exports, err := envManager.Export()
+		textManager, err := getTextManager()
 		if err != nil {
+			if envExportIfSession && errors.Is(err, ErrNeedSession) {
+				return nil
+			}
 			return err
 		}
 
-		if exports == "" {
-			return nil
-		}
-
-		// Auto-resolve references in export
-		resolved, err := resolveValue(exports, false, envGroup)
+		resolved, warnings, err := resolveExportShell(envManager, textManager, envGroup)
 		if err != nil {
 			return fmt.Errorf("failed to resolve references in export: %w", err)
+		}
+
+		ref.PrintWarnings(warnings)
+
+		if resolved == "" {
+			return nil
 		}
 
 		fmt.Println(resolved)

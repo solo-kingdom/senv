@@ -344,15 +344,15 @@ func (m *managers) envList(_ context.Context, _ *mcp.CallToolRequest, in listInp
 
 func (m *managers) envExport(_ context.Context, _ *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
-	exports, err := m.env.Export()
+	resolved, warnings, err := resolveExportShell(m.env, m.text, "default")
 	if err != nil {
 		return errResult(err)
 	}
-	resolved, err := resolveValueWith(exports, false, "", m.env, m.text)
-	if err != nil {
-		return errResult(err)
+	out := map[string]any{"exports": resolved}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
 	}
-	return textResult(map[string]string{"exports": resolved})
+	return textResult(out)
 }
 
 func (m *managers) textGet(_ context.Context, _ *mcp.CallToolRequest, in envGetInput) (*mcp.CallToolResult, emptyOut, error) {

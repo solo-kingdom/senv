@@ -1115,7 +1115,11 @@ func (t *aiTab) doRenameProvider(f *form, submit func(map[string]string) tea.Cmd
 			return aiFormReopenMsg{form: f, submit: submit, values: values, field: "alias", err: err}
 		}
 		recordAudit(mgrs, session.AuditOpLLMProvider, "provider:"+newAlias, true, "rename "+oldAlias)
-		toast := fmt.Sprintf("renamed to %s (updated %d agent pointer(s); re-run senv ai switch)", newAlias, res.PointersUpdated)
+		toast := fmt.Sprintf("renamed to %s (updated %d agent pointer(s)", newAlias, res.PointersUpdated)
+		if res.EnvRefsUpdated > 0 {
+			toast += fmt.Sprintf(", %d env reference(s)", res.EnvRefsUpdated)
+		}
+		toast += "; re-run senv ai switch)"
 		return aiProviderReloadMsg{toast: toast, providerAlias: newAlias}
 	}
 }

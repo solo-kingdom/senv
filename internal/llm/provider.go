@@ -932,6 +932,7 @@ func (m *ProviderManager) ListProviders() ([]*storage.LLMProviderEntry, error) {
 type RenameProviderResult struct {
 	Entry           *storage.LLMProviderEntry
 	PointersUpdated int
+	EnvRefsUpdated  int
 	// PointerAgents lists agent ids whose provider field was rewritten.
 	PointerAgents []string
 }
@@ -963,6 +964,7 @@ func (m *ProviderManager) RenameProvider(oldAlias, newAlias, pointerPath string)
 	}
 
 	var entry *storage.LLMProviderEntry
+	var envRefsUpdated int
 	err := m.mutate(func(locked *ProviderManager) error {
 		current, loadErr := locked.load(oldAlias)
 		if errors.Is(loadErr, os.ErrNotExist) {
@@ -982,8 +984,10 @@ func (m *ProviderManager) RenameProvider(oldAlias, newAlias, pointerPath string)
 		renamed.UpdatedAt = time.Now().Truncate(time.Second).UTC()
 
 		tm := locked.textManager()
+		em := locked.envManager()
 		textRenamed := false
 		owned := current.CredentialRef == OwnedCredentialRef(oldAlias)
+		var envRollback func()
 		if owned {
 			if _, err := tm.Get(LLMKeysGroup, newAlias); err == nil {
 				return fmt.Errorf("credential text:%s/%s already exists", LLMKeysGroup, newAlias)
@@ -999,11 +1003,25 @@ func (m *ProviderManager) RenameProvider(oldAlias, newAlias, pointerPath string)
 				return fmt.Errorf("read credential: %w", err)
 			}
 			renamed.CredentialRef = OwnedCredentialRef(newAlias)
+
+			oldRef := ownedSeedRefTemplate(oldAlias)
+			applied, cascadeErr := cascadeEnvOwnedSeedRefs(em, oldAlias, newAlias)
+			if cascadeErr != nil {
+				if textRenamed {
+					_ = tm.RenameKey(LLMKeysGroup, newAlias, oldAlias)
+				}
+				return cascadeErr
+			}
+			envRefsUpdated = len(applied)
+			envRollback = func() { rollbackEnvSeedRefUpdates(em, oldRef, applied) }
 		}
 
 		rollbackText := func() {
 			if textRenamed {
 				_ = tm.RenameKey(LLMKeysGroup, newAlias, oldAlias)
+			}
+			if envRollback != nil {
+				envRollback()
 			}
 		}
 		if err := locked.save(newAlias, &renamed); err != nil {
@@ -1024,10 +1042,51 @@ func (m *ProviderManager) RenameProvider(oldAlias, newAlias, pointerPath string)
 
 	updated, agents, ptrErr := updateProviderPointers(pointerPath, oldAlias, newAlias)
 	if ptrErr != nil {
-		return &RenameProviderResult{Entry: entry, PointersUpdated: updated, PointerAgents: agents},
+		return &RenameProviderResult{Entry: entry, PointersUpdated: updated, EnvRefsUpdated: envRefsUpdated, PointerAgents: agents},
 			fmt.Errorf("provider renamed to %q but agent pointers were not updated: %w", newAlias, ptrErr)
 	}
-	return &RenameProviderResult{Entry: entry, PointersUpdated: updated, PointerAgents: agents}, nil
+	return &RenameProviderResult{Entry: entry, PointersUpdated: updated, EnvRefsUpdated: envRefsUpdated, PointerAgents: agents}, nil
+}
+
+func ownedSeedRefTemplate(alias string) string {
+	return fmt.Sprintf("{{text:%s:%s}}", LLMKeysGroup, alias)
+}
+
+type envSeedRefUpdate struct {
+	group string
+	key   string
+}
+
+func cascadeEnvOwnedSeedRefs(em *env.Manager, oldAlias, newAlias string) ([]envSeedRefUpdate, error) {
+	oldRef := ownedSeedRefTemplate(oldAlias)
+	newRef := ownedSeedRefTemplate(newAlias)
+	vars, groups, err := em.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("scan env references: %w", err)
+	}
+	var pending []envSeedRefUpdate
+	for _, g := range groups {
+		for key, value := range vars[g.Name] {
+			if value == oldRef {
+				pending = append(pending, envSeedRefUpdate{group: g.Name, key: key})
+			}
+		}
+	}
+	applied := make([]envSeedRefUpdate, 0, len(pending))
+	for _, u := range pending {
+		if err := em.Set(u.group, u.key, newRef); err != nil {
+			rollbackEnvSeedRefUpdates(em, oldRef, applied)
+			return nil, fmt.Errorf("update env reference %s in group %s: %w", u.key, u.group, err)
+		}
+		applied = append(applied, u)
+	}
+	return applied, nil
+}
+
+func rollbackEnvSeedRefUpdates(em *env.Manager, oldRef string, applied []envSeedRefUpdate) {
+	for _, u := range applied {
+		_ = em.Set(u.group, u.key, oldRef)
+	}
 }
 
 // updateProviderPointers rewrites every agent pointer whose provider matches

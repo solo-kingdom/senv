@@ -306,11 +306,12 @@ func (m *Manager) Snapshot() (map[string]map[string]string, []GroupInfo, error) 
 	return vars, gis, nil
 }
 
-// Export exports environment variables from active groups
-func (m *Manager) Export() (string, error) {
+// ExportVariables returns merged variables from active groups (default ∪
+// activated). Later groups overwrite same key names, matching Export semantics.
+func (m *Manager) ExportVariables() (map[string]string, error) {
 	settings, err := m.storage.LoadSettings()
 	if err != nil {
-		return "", fmt.Errorf("failed to load settings: %w", err)
+		return nil, fmt.Errorf("failed to load settings: %w", err)
 	}
 
 	activeGroups := []string{settings.DefaultGroup}
@@ -323,35 +324,50 @@ func (m *Manager) Export() (string, error) {
 	allVars := make(map[string]string)
 	for _, group := range activeGroups {
 		if err := validateGroup(group); err != nil {
-			return "", err
+			return nil, err
 		}
 		envGroup, err := m.loadEnvGroup(group)
 		if err != nil {
-			return "", fmt.Errorf("failed to load active group %s: %w", group, err)
+			return nil, fmt.Errorf("failed to load active group %s: %w", group, err)
 		}
 
 		for k, v := range envGroup.Variables {
 			if err := validateIdentity(group, k); err != nil {
-				return "", fmt.Errorf("invalid historical env identity: %w", err)
+				return nil, fmt.Errorf("invalid historical env identity: %w", err)
 			}
 			allVars[k] = v
 		}
 	}
+	return allVars, nil
+}
 
-	var lines []string
-	keys := make([]string, 0, len(allVars))
-	for k := range allVars {
+// FormatExportShell renders export statements for the given variables.
+func FormatExportShell(vars map[string]string) string {
+	if len(vars) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
+	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
-		value := allVars[key]
+		value := vars[key]
 		escapedValue := strings.ReplaceAll(value, "'", "'\\''")
 		lines = append(lines, fmt.Sprintf("export %s='%s'", key, escapedValue))
 	}
+	return strings.Join(lines, "\n")
+}
 
-	return strings.Join(lines, "\n"), nil
+// Export exports environment variables from active groups
+func (m *Manager) Export() (string, error) {
+	vars, err := m.ExportVariables()
+	if err != nil {
+		return "", err
+	}
+	return FormatExportShell(vars), nil
 }
 
 // AddGroup creates a new environment variable group

@@ -442,7 +442,11 @@ senv ai switch <agent> <new> so senv-<new> appears in those configs.`,
 		}
 		auditOp(session.AuditOpLLMProvider, "provider:"+newAlias, true, "rename "+oldAlias)
 		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "✓ renamed %s → %s; updated %d agent pointer(s)\n", oldAlias, newAlias, res.PointersUpdated)
+		fmt.Fprintf(out, "✓ renamed %s → %s; updated %d agent pointer(s)", oldAlias, newAlias, res.PointersUpdated)
+		if res.EnvRefsUpdated > 0 {
+			fmt.Fprintf(out, ", %d env reference(s)", res.EnvRefsUpdated)
+		}
+		fmt.Fprintln(out)
 		fmt.Fprintf(out, "note: coding agent configs still use senv-%s until you re-run: senv ai switch <agent> %s\n", oldAlias, newAlias)
 		return nil
 	},

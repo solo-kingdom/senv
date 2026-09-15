@@ -18,6 +18,11 @@ func TestRenameProviderOwnedCredentialAndPointers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	em := env.NewManager(store, "test-password")
+	seedRef := ownedSeedRefTemplate("acme")
+	if err := em.Set("default", "SENV_ACME_API_KEY", seedRef); err != nil {
+		t.Fatalf("seed env ref: %v", err)
+	}
 	pointerPath := filepath.Join(t.TempDir(), "agent-pointers.json")
 	pf := &PointerFile{Version: 1, Agents: map[string]AgentPointer{}}
 	pf.Set("codex", "acme", []string{"m1"}, "m1")
@@ -36,6 +41,13 @@ func TestRenameProviderOwnedCredentialAndPointers(t *testing.T) {
 	}
 	if res.PointersUpdated != 2 {
 		t.Fatalf("PointersUpdated = %d, want 2", res.PointersUpdated)
+	}
+	if res.EnvRefsUpdated != 1 {
+		t.Fatalf("EnvRefsUpdated = %d, want 1", res.EnvRefsUpdated)
+	}
+	gotRef, err := em.Get("default", "SENV_ACME_API_KEY")
+	if err != nil || gotRef != ownedSeedRefTemplate("acme-prod") {
+		t.Fatalf("env ref = %q, %v", gotRef, err)
 	}
 
 	if _, err := mgr.GetProvider("acme"); err == nil {
@@ -130,6 +142,9 @@ func TestRenameProviderExternalKeyRefUnchanged(t *testing.T) {
 	if res.PointersUpdated != 0 {
 		t.Fatalf("PointersUpdated = %d, want 0", res.PointersUpdated)
 	}
+	if res.EnvRefsUpdated != 0 {
+		t.Fatalf("EnvRefsUpdated = %d, want 0", res.EnvRefsUpdated)
+	}
 	got, err := em.Get("llm", "KEY")
 	if err != nil || got != "sk-ext" {
 		t.Fatalf("external env moved/deleted: %q, %v", got, err)
@@ -166,6 +181,63 @@ func TestRenameProviderMissingOwnedCredential(t *testing.T) {
 	}
 	if _, err := mgr.GetProvider("acme-prod"); err != nil {
 		t.Fatalf("new alias missing: %v", err)
+	}
+}
+
+func TestRenameProviderEnvSeedRefExactMatchOnly(t *testing.T) {
+	mgr, store, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "acme", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"m1"}, ModelContexts: map[string]int{"m1": 1000},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	em := env.NewManager(store, "test-password")
+	partial := "prefix " + ownedSeedRefTemplate("acme") + " suffix"
+	if err := em.Set("default", "NOTE", partial); err != nil {
+		t.Fatalf("seed partial env: %v", err)
+	}
+
+	res, err := mgr.RenameProvider("acme", "acme-prod", "")
+	if err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+	if res.EnvRefsUpdated != 0 {
+		t.Fatalf("EnvRefsUpdated = %d, want 0", res.EnvRefsUpdated)
+	}
+	got, err := em.Get("default", "NOTE")
+	if err != nil || got != partial {
+		t.Fatalf("partial env changed: %q, %v", got, err)
+	}
+}
+
+func TestRenameProviderMissingCredentialStillCascadesEnvRef(t *testing.T) {
+	mgr, store, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "acme", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"m1"}, ModelContexts: map[string]int{"m1": 1000},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tm := text.NewManager(store, "test-password")
+	if err := tm.Delete(LLMKeysGroup, "acme"); err != nil {
+		t.Fatalf("delete credential: %v", err)
+	}
+	em := env.NewManager(store, "test-password")
+	if err := em.Set("default", "SENV_ACME_API_KEY", ownedSeedRefTemplate("acme")); err != nil {
+		t.Fatalf("seed env ref: %v", err)
+	}
+
+	res, err := mgr.RenameProvider("acme", "acme-prod", "")
+	if err != nil {
+		t.Fatalf("RenameProvider: %v", err)
+	}
+	if res.EnvRefsUpdated != 1 {
+		t.Fatalf("EnvRefsUpdated = %d, want 1", res.EnvRefsUpdated)
+	}
+	gotRef, err := em.Get("default", "SENV_ACME_API_KEY")
+	if err != nil || gotRef != ownedSeedRefTemplate("acme-prod") {
+		t.Fatalf("env ref = %q, %v", gotRef, err)
 	}
 }
 
