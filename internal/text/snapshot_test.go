@@ -10,13 +10,16 @@ import (
 func TestSnapshotMatchesListPath(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
 
-	if err := mgr.AddGroup("zeta"); err != nil {
+	if err := mgr.AddGroup("zeta", "test"); err != nil {
 		t.Fatalf("create empty group zeta: %v", err)
 	}
 	seed := map[string]map[string]string{
 		"default": {"readme": "hello world", "config": "k=v"},
 		"prod":    {"token": "secret"},
 		"zeta":    {},
+	}
+	if err := mgr.AddGroup("prod", "test"); err != nil {
+		t.Fatalf("create prod: %v", err)
 	}
 	for group, entries := range seed {
 		for k, v := range entries {

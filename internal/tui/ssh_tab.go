@@ -1169,6 +1169,7 @@ func (t *sshTab) enterHostForm(existing *storage.HostEntry) (Tab, tea.Cmd) {
 		formField{
 			key: "tags", label: "tags", kind: formText, value: strings.Join(base.Tags, ", "), placeholder: "prod, web",
 		},
+		optionalDescriptionField(base.Description),
 		formField{
 			key: "extra", label: "extra", kind: formEditor, value: renderExtraText(base.Extra),
 			validate: func(v string) error {
@@ -1210,6 +1211,7 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 		IdentityKey: strings.TrimSpace(values["identityKey"]),
 		Group:       strings.TrimSpace(values["group"]),
 		Tags:        parseTagsText(values["tags"]),
+		Description: strings.TrimSpace(values["description"]),
 		Extra:       extra,
 	}
 	mgr := t.mgr.SSH
@@ -1236,6 +1238,7 @@ func (t *sshTab) doSubmitHost(existing *storage.HostEntry, values map[string]str
 			h.IdentityKey = entry.IdentityKey
 			h.Group = entry.Group
 			h.Tags = entry.Tags
+			h.Description = entry.Description
 			h.Extra = entry.Extra
 			return nil
 		})
@@ -1411,6 +1414,7 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 		"proxyJump:   "+orDash(h.ProxyJump),
 		"identityKey: "+orDash(h.IdentityKey),
 		"group:       "+orDash(h.Group),
+		"description: "+orDash(h.Description),
 	)
 	if h.IdentityKey != "" {
 		summary := ""

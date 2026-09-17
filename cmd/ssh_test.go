@@ -290,7 +290,7 @@ func TestKeypairEditGroupFlow(t *testing.T) {
 	}
 
 	// 缺 --group：参数错误提示用法，零变更。
-	if err := keypairEditCmd.RunE(&cobra.Command{}, []string{"edit-key"}); err == nil || !strings.Contains(err.Error(), "--group is required") {
+	if err := keypairEditCmd.RunE(&cobra.Command{}, []string{"edit-key"}); err == nil || !strings.Contains(err.Error(), "specify --group and/or --description") {
 		t.Fatalf("missing --group error = %v", err)
 	}
 	summary, err := mgr.GetKeyPairSummary("edit-key")

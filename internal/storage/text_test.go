@@ -179,18 +179,17 @@ func TestListTextGroups(t *testing.T) {
 		t.Fatalf("ListTextGroups failed: %v", err)
 	}
 
-	if len(groups) != 3 {
-		t.Errorf("Expected 3 groups, got %d", len(groups))
-	}
-
 	groupMap := map[string]bool{}
 	for _, g := range groups {
 		groupMap[g] = true
 	}
-	for _, expected := range []string{"notes", "keys", "templates"} {
+	for _, expected := range []string{"default", "llm-keys", "notes", "keys", "templates"} {
 		if !groupMap[expected] {
 			t.Errorf("Expected group '%s' not found", expected)
 		}
+	}
+	if len(groups) != 5 {
+		t.Errorf("Expected 5 groups (init default/llm-keys + 3 created), got %d", len(groups))
 	}
 }
 
@@ -201,8 +200,17 @@ func TestListTextGroupsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTextGroups on empty should not error: %v", err)
 	}
-	if len(groups) != 0 {
-		t.Errorf("Expected 0 groups, got %d", len(groups))
+	if len(groups) != 2 {
+		t.Errorf("Expected 2 init groups (default, llm-keys), got %d", len(groups))
+	}
+	got := map[string]bool{}
+	for _, g := range groups {
+		got[g] = true
+	}
+	for _, name := range []string{"default", "llm-keys"} {
+		if !got[name] {
+			t.Errorf("missing init group %q", name)
+		}
 	}
 }
 

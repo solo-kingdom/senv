@@ -17,6 +17,9 @@ import (
 func TestAITabSwitchCodexUsesReferencedEnvName(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	em := tab.mgr.Env
+	if err := em.AddGroup("ai", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := em.Set("ai", "DEEPSEEK_API_KEY", "sk-env"); err != nil {
 		t.Fatalf("env set: %v", err)
 	}
@@ -54,6 +57,9 @@ func TestAITabSwitchCodexUsesReferencedEnvName(t *testing.T) {
 func TestAITabSwitchCodexShowsEveryWarning(t *testing.T) {
 	tab, _, store := newAITestTabWithStore(t)
 	em := tab.mgr.Env
+	if err := em.AddGroup("dev", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := em.Set("dev", "APP_KEY", "sk-dev"); err != nil {
 		t.Fatalf("env set: %v", err)
 	}

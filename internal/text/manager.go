@@ -1,6 +1,7 @@
 package text
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/storage"
@@ -83,30 +85,77 @@ func (m *Manager) loadTextFile(group, key string) (*storage.TextEntry, error) {
 	return m.storage.LoadTextFile(group, key, m.password)
 }
 
-// Set sets a text entry in a group
+func (m *Manager) resolveCryptoKey() ([]byte, error) {
+	if m.key != nil {
+		return m.key, nil
+	}
+	md, err := m.storage.LoadMetadata()
+	if err != nil {
+		return nil, err
+	}
+	salt, err := base64.StdEncoding.DecodeString(md.Salt)
+	if err != nil {
+		return nil, err
+	}
+	iterations, err := md.ValidatedKDFIterations()
+	if err != nil {
+		return nil, err
+	}
+	return crypto.DeriveKeyWithIterations(m.password, salt, iterations), nil
+}
+
+func (m *Manager) requireGroup(group string) error {
+	exists, err := m.storage.TextGroupExists(group)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return storage.ErrGroupMissing("text", group)
+	}
+	return nil
+}
+
+// Set sets a text entry in a group. The group must already exist.
 func (m *Manager) Set(group, key, value string) error {
+	return m.SetWithDescription(group, key, value, nil)
+}
+
+// SetWithDescription sets a text value. description nil keeps the existing
+// (or empty) description; non-nil replaces it.
+func (m *Manager) SetWithDescription(group, key, value string, description *string) error {
 	if err := validateIdentity(group, key); err != nil {
 		return err
 	}
+	if description != nil {
+		desc, err := storage.ValidateDescription(*description, true)
+		if err != nil {
+			return err
+		}
+		description = &desc
+	}
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.Set(group, key, value) })
+		return m.mutate(func(locked *Manager) error {
+			return locked.SetWithDescription(group, key, value, description)
+		})
 	}
 
-	// Size check
 	if len(value) > storage.MaxTextSize {
 		return fmt.Errorf("text value exceeds %d bytes limit (%d bytes)", storage.MaxTextSize, len(value))
 	}
+	if err := m.requireGroup(group); err != nil {
+		return err
+	}
 
-	// Check if entry already exists (to preserve CreatedAt)
 	entry, err := m.loadTextFile(group, key)
 	if err != nil {
-		// New entry
 		entry = storage.NewTextEntry(value)
 	} else {
-		// Update existing entry, preserve CreatedAt
 		entry.Value = value
 		entry.Size = len(value)
 		entry.UpdatedAt = time.Now()
+	}
+	if description != nil {
+		entry.Description = *description
 	}
 
 	return m.saveTextFile(group, key, entry)
@@ -122,6 +171,18 @@ func (m *Manager) Get(group, key string) (string, error) {
 		return "", err
 	}
 	return entry.Value, nil
+}
+
+// GetWithMeta returns the stored value and description. Missing description is empty.
+func (m *Manager) GetWithMeta(group, key string) (value, description string, err error) {
+	if err := validateIdentity(group, key); err != nil {
+		return "", "", err
+	}
+	entry, err := m.loadTextFile(group, key)
+	if err != nil {
+		return "", "", err
+	}
+	return entry.Value, entry.Description, nil
 }
 
 // Delete deletes a text entry from a group
@@ -143,9 +204,10 @@ func (m *Manager) Delete(group, key string) error {
 
 // TextInfo contains metadata about a text entry for listing
 type TextInfo struct {
-	Key       string
-	Size      int
-	UpdatedAt time.Time
+	Key         string
+	Description string
+	Size        int
+	UpdatedAt   time.Time
 }
 
 // List lists all text entries in a group with metadata
@@ -176,9 +238,10 @@ func (m *Manager) listEntries(group string) ([]TextInfo, error) {
 			return nil, fmt.Errorf("failed to load text %q in group %q: %w", key, group, err)
 		}
 		result = append(result, TextInfo{
-			Key:       key,
-			Size:      entry.Size,
-			UpdatedAt: entry.UpdatedAt,
+			Key:         key,
+			Description: entry.Description,
+			Size:        entry.Size,
+			UpdatedAt:   entry.UpdatedAt,
 		})
 	}
 
@@ -198,11 +261,29 @@ func (m *Manager) SetFromFile(group, key, filePath string) error {
 		return fmt.Errorf("failed to read file %s: %w", filePath, err)
 	}
 
-	return m.Set(group, key, string(data))
+	return m.SetWithDescription(group, key, string(data), nil)
+}
+
+// SetFromFileWithDescription is SetFromFile and optionally replaces the description.
+func (m *Manager) SetFromFileWithDescription(group, key, filePath string, description *string) error {
+	if err := validateIdentity(group, key); err != nil {
+		return err
+	}
+	filePath = expandHome(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+	return m.SetWithDescription(group, key, string(data), description)
 }
 
 // SetFromReader sets a text entry from an io.Reader
 func (m *Manager) SetFromReader(group, key string, reader io.Reader) error {
+	return m.SetFromReaderWithDescription(group, key, reader, nil)
+}
+
+// SetFromReaderWithDescription is SetFromReader and optionally replaces the description.
+func (m *Manager) SetFromReaderWithDescription(group, key string, reader io.Reader, description *string) error {
 	if err := validateIdentity(group, key); err != nil {
 		return err
 	}
@@ -211,7 +292,7 @@ func (m *Manager) SetFromReader(group, key string, reader io.Reader) error {
 		return fmt.Errorf("failed to read from input: %w", err)
 	}
 
-	return m.Set(group, key, string(data))
+	return m.SetWithDescription(group, key, string(data), description)
 }
 
 // EditorSession holds the state of a pending editor invocation: the temp file
@@ -389,13 +470,17 @@ func (m *Manager) GetToClipboard(group, key string) error {
 	return nil
 }
 
-// AddGroup creates a new text group directory
-func (m *Manager) AddGroup(name string) error {
+// AddGroup creates a new text group. Description is required.
+func (m *Manager) AddGroup(name string, description string) error {
 	if err := validateGroup(name); err != nil {
 		return err
 	}
+	desc, err := storage.ValidateDescription(description, false)
+	if err != nil {
+		return err
+	}
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name) })
+		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name, description) })
 	}
 	groups, err := m.storage.ListTextGroups()
 	if err != nil {
@@ -409,7 +494,32 @@ func (m *Manager) AddGroup(name string) error {
 	if err := m.storage.AddTextGroup(name); err != nil {
 		return fmt.Errorf("failed to create group directory: %w", err)
 	}
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	meta := &storage.EnvGroupMeta{Name: name, Description: desc, CreatedAt: time.Now()}
+	if err := m.storage.SaveTextGroupMetaWithKey(name, meta, cryptoKey); err != nil {
+		return fmt.Errorf("failed to save group metadata: %w", err)
+	}
 	return nil
+}
+
+// EnsureGroup creates the group when missing. Existing groups are left unchanged,
+// including reserved buckets such as llm-keys on vaults initialized before the
+// reserved group was created at init time.
+func (m *Manager) EnsureGroup(name, description string) error {
+	if err := validateGroup(name); err != nil {
+		return err
+	}
+	exists, err := m.storage.TextGroupExists(name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return m.AddGroup(name, description)
 }
 
 // DeleteGroup deletes a text group and all its contents
@@ -442,8 +552,9 @@ func (m *Manager) DeleteGroup(name string) error {
 
 // ListGroups lists all text groups with their key counts
 type GroupInfo struct {
-	Name     string
-	KeyCount int
+	Name        string
+	Description string
+	KeyCount    int
 }
 
 // ListGroups 列出全部分组，附耗时日志。
@@ -469,9 +580,16 @@ func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to list text group %q: %w", name, err)
 		}
+		desc := ""
+		if cryptoKey, err := m.resolveCryptoKey(); err == nil {
+			if meta, err := m.storage.LoadTextGroupMetaWithKey(name, cryptoKey); err == nil && meta != nil {
+				desc = meta.Description
+			}
+		}
 		result = append(result, GroupInfo{
-			Name:     name,
-			KeyCount: len(keys),
+			Name:        name,
+			Description: desc,
+			KeyCount:    len(keys),
 		})
 	}
 
@@ -504,14 +622,20 @@ func (m *Manager) Snapshot() (*Snapshot, error) {
 	}
 	total := 0
 	for _, name := range vault.Groups {
-		out.Groups = append(out.Groups, GroupInfo{Name: name, KeyCount: vault.KeyCount[name]})
+		desc := ""
+		if cryptoKey, err := m.resolveCryptoKey(); err == nil {
+			if meta, err := m.storage.LoadTextGroupMetaWithKey(name, cryptoKey); err == nil && meta != nil {
+				desc = meta.Description
+			}
+		}
+		out.Groups = append(out.Groups, GroupInfo{Name: name, Description: desc, KeyCount: vault.KeyCount[name]})
 		entries, ok := vault.Entries[name]
 		if !ok {
 			continue // 条目级失败组：列出但无条目（vault.Errors[name] 有原因）
 		}
 		infos := make([]TextInfo, 0, len(entries))
 		for _, f := range entries {
-			infos = append(infos, TextInfo{Key: f.Key, Size: f.Entry.Size, UpdatedAt: f.Entry.UpdatedAt})
+			infos = append(infos, TextInfo{Key: f.Key, Description: f.Entry.Description, Size: f.Entry.Size, UpdatedAt: f.Entry.UpdatedAt})
 		}
 		out.Items[name] = infos
 		total += len(infos)
@@ -609,5 +733,23 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 	if !found {
 		return fmt.Errorf("group %s does not exist", oldName)
 	}
-	return m.storage.RenameTextGroup(oldName, newName)
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	meta, err := m.storage.LoadTextGroupMetaWithKey(oldName, cryptoKey)
+	if err != nil {
+		return err
+	}
+	if err := m.storage.RenameTextGroup(oldName, newName); err != nil {
+		return err
+	}
+	if meta != nil {
+		meta.Name = newName
+		if err := m.storage.SaveTextGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
+			_ = m.storage.RenameTextGroup(newName, oldName)
+			return fmt.Errorf("failed to rewrite group metadata: %w", err)
+		}
+	}
+	return nil
 }

@@ -149,6 +149,11 @@ func validateHost(host *storage.HostEntry) error {
 	if err := validateTags(host.Tags); err != nil {
 		return err
 	}
+	desc, err := storage.ValidateDescription(host.Description, true)
+	if err != nil {
+		return fmt.Errorf("host %q: %w", host.Alias, err)
+	}
+	host.Description = desc
 	return validateExtra(host.Extra)
 }
 

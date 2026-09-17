@@ -135,13 +135,114 @@ func (m *Manager) Get(group string, key string) (string, error) {
 	return entry.Value, nil
 }
 
-// Set sets an environment variable in a group
+// GetWithMeta returns the stored value and description. Missing description is empty.
+func (m *Manager) GetWithMeta(group string, key string) (value, description string, err error) {
+	if err := validateIdentity(group, key); err != nil {
+		return "", "", err
+	}
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return "", "", err
+	}
+	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
+	if err != nil {
+		if os.IsNotExist(err) {
+			envGroup, loadErr := m.loadEnvGroup(group)
+			if loadErr != nil {
+				return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
+			}
+			value, exists := envGroup.Variables[key]
+			if !exists {
+				return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
+			}
+			desc := ""
+			if envGroup.Descriptions != nil {
+				desc = envGroup.Descriptions[key]
+			}
+			return value, desc, nil
+		}
+		envGroup, loadErr := m.loadEnvGroup(group)
+		if loadErr != nil {
+			return "", "", fmt.Errorf("failed to load group %s: %w", group, loadErr)
+		}
+		value, exists := envGroup.Variables[key]
+		if !exists {
+			return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
+		}
+		desc := ""
+		if envGroup.Descriptions != nil {
+			desc = envGroup.Descriptions[key]
+		}
+		return value, desc, nil
+	}
+	return entry.Value, entry.Description, nil
+}
+
+// VarInfo is one env entry as shown by list: value plus optional description.
+type VarInfo struct {
+	Value       string
+	Description string
+}
+
+// ListVarInfo lists environment variables with descriptions (or all groups if group is empty).
+func (m *Manager) ListVarInfo(group string) (map[string]map[string]VarInfo, error) {
+	if group != "" {
+		if err := validateGroup(group); err != nil {
+			return nil, err
+		}
+	}
+	result := make(map[string]map[string]VarInfo)
+	loadOne := func(name string, eg *storage.EnvGroup) {
+		row := make(map[string]VarInfo, len(eg.Variables))
+		for k, v := range eg.Variables {
+			desc := ""
+			if eg.Descriptions != nil {
+				desc = eg.Descriptions[k]
+			}
+			row[k] = VarInfo{Value: v, Description: desc}
+		}
+		result[name] = row
+	}
+	if group != "" {
+		eg, err := m.loadEnvGroup(group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load group %s: %w", group, err)
+		}
+		loadOne(group, eg)
+		return result, nil
+	}
+	all, err := m.loadEnvVault()
+	if err != nil {
+		return nil, err
+	}
+	for name, eg := range all {
+		loadOne(name, eg)
+	}
+	return result, nil
+}
+
+// Set sets an environment variable in a group. The group must already exist.
 func (m *Manager) Set(group string, key string, value string) error {
+	return m.SetWithDescription(group, key, value, nil)
+}
+
+// SetWithDescription sets an env value. description nil keeps the existing
+// (or empty) description; non-nil replaces it.
+func (m *Manager) SetWithDescription(group string, key string, value string, description *string) error {
 	if err := validateIdentity(group, key); err != nil {
 		return err
 	}
+	if description != nil {
+		desc, err := storage.ValidateDescription(*description, true)
+		if err != nil {
+			return err
+		}
+		description = &desc
+	}
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.Set(group, key, value) })
+		return m.mutate(func(locked *Manager) error {
+			return locked.SetWithDescription(group, key, value, description)
+		})
 	}
 
 	cryptoKey, err := m.resolveCryptoKey()
@@ -149,16 +250,12 @@ func (m *Manager) Set(group string, key string, value string) error {
 		return err
 	}
 
-	// Ensure group exists (migrate old format if needed)
 	exists, err := m.storage.EnvGroupExists(group)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		envGroup := storage.NewEnvGroup(group)
-		if err := m.saveEnvGroup(envGroup); err != nil {
-			return fmt.Errorf("failed to create group %s: %w", group, err)
-		}
+		return storage.ErrGroupMissing("env", group)
 	} else if _, err := m.storage.LoadEnvGroupMetaWithKey(group, cryptoKey); err != nil {
 		// Old format exists but not yet migrated — trigger migration
 		if _, err := m.loadEnvGroup(group); err != nil {
@@ -168,10 +265,12 @@ func (m *Manager) Set(group string, key string, value string) error {
 
 	now := time.Now()
 	entry := &storage.EnvVarEntry{Value: value, CreatedAt: now, UpdatedAt: now}
-
-	// Preserve CreatedAt if the variable already exists
 	if existing, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey); err == nil {
 		entry.CreatedAt = existing.CreatedAt
+		entry.Description = existing.Description
+	}
+	if description != nil {
+		entry.Description = *description
 	}
 
 	if err := m.storage.SaveEnvVarWithKey(group, key, entry, cryptoKey); err != nil {
@@ -296,10 +395,11 @@ func (m *Manager) Snapshot() (map[string]map[string]string, []GroupInfo, error) 
 			}
 		}
 		gis = append(gis, GroupInfo{
-			Name:      name,
-			IsActive:  isActive,
-			VarCount:  len(eg.Variables),
-			IsDefault: name == settings.DefaultGroup,
+			Name:        name,
+			Description: eg.Description,
+			IsActive:    isActive,
+			VarCount:    len(eg.Variables),
+			IsDefault:   name == settings.DefaultGroup,
 		})
 	}
 	st.With("groups", len(gis), "items", len(vars)).End(true)
@@ -341,6 +441,48 @@ func (m *Manager) ExportVariables() (map[string]string, error) {
 	return allVars, nil
 }
 
+// KeyCollisionWarnings reports keys present in more than one active env group.
+// Overlay order matches ExportVariables (default first, then ActiveGroups).
+func (m *Manager) KeyCollisionWarnings() ([]string, error) {
+	settings, err := m.storage.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load settings: %w", err)
+	}
+	activeGroups := []string{settings.DefaultGroup}
+	for _, g := range settings.ActiveGroups {
+		if g != settings.DefaultGroup {
+			activeGroups = append(activeGroups, g)
+		}
+	}
+	owners := make(map[string][]string)
+	for _, group := range activeGroups {
+		if err := validateGroup(group); err != nil {
+			return nil, err
+		}
+		envGroup, err := m.loadEnvGroup(group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load active group %s: %w", group, err)
+		}
+		for k := range envGroup.Variables {
+			owners[k] = append(owners[k], group)
+		}
+	}
+	keys := make([]string, 0, len(owners))
+	for k, groups := range owners {
+		if len(groups) > 1 {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		groups := owners[k]
+		winner := groups[len(groups)-1]
+		out = append(out, fmt.Sprintf("warning: env key %q in groups %s; export uses %s", k, strings.Join(groups, ", "), winner))
+	}
+	return out, nil
+}
+
 // FormatExportShell renders export statements for the given variables.
 func FormatExportShell(vars map[string]string) string {
 	if len(vars) == 0 {
@@ -370,13 +512,17 @@ func (m *Manager) Export() (string, error) {
 	return FormatExportShell(vars), nil
 }
 
-// AddGroup creates a new environment variable group
-func (m *Manager) AddGroup(name string) error {
+// AddGroup creates a new environment variable group. Description is required.
+func (m *Manager) AddGroup(name string, description string) error {
 	if err := validateGroup(name); err != nil {
 		return err
 	}
+	desc, err := storage.ValidateDescription(description, false)
+	if err != nil {
+		return err
+	}
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name) })
+		return m.mutate(func(locked *Manager) error { return locked.AddGroup(name, description) })
 	}
 	groups, err := m.storage.ListEnvGroups()
 	if err != nil {
@@ -389,8 +535,12 @@ func (m *Manager) AddGroup(name string) error {
 		}
 	}
 
-	envGroup := storage.NewEnvGroup(name)
-	if err := m.saveEnvGroup(envGroup); err != nil {
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	meta := &storage.EnvGroupMeta{Name: name, Description: desc, CreatedAt: time.Now()}
+	if err := m.storage.SaveEnvGroupMetaWithKey(name, meta, cryptoKey); err != nil {
 		return fmt.Errorf("failed to create group %s: %w", name, err)
 	}
 
@@ -500,10 +650,11 @@ func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
 
 // GroupInfo represents information about a group
 type GroupInfo struct {
-	Name      string
-	IsActive  bool
-	VarCount  int
-	IsDefault bool
+	Name        string
+	Description string
+	IsActive    bool
+	VarCount    int
+	IsDefault   bool
 }
 
 // RenameKey atomically renames an environment variable inside its group. The
@@ -589,7 +740,7 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 		_ = m.storage.RenameEnvGroupDir(newName, oldName)
 		return err
 	}
-	meta := &storage.EnvGroupMeta{Name: newName, CreatedAt: envGroup.CreatedAt}
+	meta := &storage.EnvGroupMeta{Name: newName, Description: envGroup.Description, CreatedAt: envGroup.CreatedAt}
 	if err := m.storage.SaveEnvGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
 		_ = m.storage.RenameEnvGroupDir(newName, oldName)
 		return fmt.Errorf("failed to rewrite group metadata: %w", err)

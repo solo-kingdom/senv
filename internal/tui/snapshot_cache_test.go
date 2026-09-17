@@ -52,6 +52,9 @@ func seedSnapshotData(t *testing.T, mgrs Managers) {
 	if err := mgrs.Env.Set("default", "API_KEY", "topsecret-value-xyz"); err != nil {
 		t.Fatalf("seed env: %v", err)
 	}
+	if err := mgrs.Text.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgrs.Text.Set("notes", "readme-block", "confidential-body-123"); err != nil {
 		t.Fatalf("seed text: %v", err)
 	}

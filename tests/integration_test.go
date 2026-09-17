@@ -60,7 +60,7 @@ func TestIntegrationTextFullLifecycle(t *testing.T) {
 	_ = tmpDir
 
 	// Step 1: Create a text group
-	err := textMgr.AddGroup("notes")
+	err := textMgr.AddGroup("notes", "test")
 	if err != nil {
 		t.Fatalf("AddGroup failed: %v", err)
 	}
@@ -155,8 +155,14 @@ func TestIntegrationTextFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListGroups failed: %v", err)
 	}
-	if len(groups) != 1 || groups[0].Name != "notes" {
-		t.Errorf("Expected 1 group 'notes', got %v", groups)
+	foundNotes := false
+	for _, g := range groups {
+		if g.Name == "notes" {
+			foundNotes = true
+		}
+	}
+	if !foundNotes {
+		t.Errorf("Expected group 'notes' among %v", groups)
 	}
 
 	// Step 11: Delete group
@@ -168,8 +174,10 @@ func TestIntegrationTextFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListGroups after delete failed: %v", err)
 	}
-	if len(groups) != 0 {
-		t.Errorf("Expected 0 groups after delete, got %d", len(groups))
+	for _, g := range groups {
+		if g.Name == "notes" {
+			t.Error("notes still listed after delete")
+		}
 	}
 }
 
@@ -182,6 +190,9 @@ func TestIntegrationEnvTextReferences(t *testing.T) {
 	getter := &testGetter{envMgr: envMgr, textMgr: textMgr}
 
 	// Setup: create text values
+	if err := textMgr.AddGroup("secrets", "test"); err != nil {
+		t.Fatal(err)
+	}
 	textMgr.Set("secrets", "DB_PASS", "hunter2")
 	textMgr.Set("secrets", "API_KEY", "sk-12345")
 
@@ -209,6 +220,9 @@ func TestIntegrationEnvTextReferences(t *testing.T) {
 	}
 
 	// Test 3: text references env
+	if err := textMgr.AddGroup("templates", "test"); err != nil {
+		t.Fatal(err)
+	}
 	textMgr.Set("templates", "APP_YAML", "database:\n  url: {{env:default:DB_URL}}")
 	result, err = ref.Resolve("{{text:templates:APP_YAML}}", getter, ref.ResolveOptions{})
 	if err != nil {
@@ -264,6 +278,9 @@ func TestIntegrationImplicitGroupResolution(t *testing.T) {
 	getter := &testGetter{envMgr: envMgr, textMgr: textMgr}
 
 	// Set value in "staging" env group
+	if err := envMgr.AddGroup("staging", "test"); err != nil {
+		t.Fatal(err)
+	}
 	envMgr.Set("staging", "HOST", "staging.example.com")
 
 	// Reference with implicit group (should use CurrentGroup)
@@ -293,6 +310,9 @@ func TestIntegrationManagerWithKey(t *testing.T) {
 
 	// Create managers using password
 	textMgr := text.NewManager(storeMgr, password)
+	if err := textMgr.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
+	}
 	textMgr.Set("notes", "KEY", "value")
 
 	// Get the derived key

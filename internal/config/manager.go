@@ -117,6 +117,10 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string, grou
 	if err != nil {
 		return err
 	}
+	description, err = storage.ValidateDescription(description, true)
+	if err != nil {
+		return err
+	}
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error {
 			return locked.Create(name, sourcePath, targetPath, group, description)
@@ -496,6 +500,10 @@ func (m *Manager) SetMeta(name string, group string, description string) error {
 	}
 	var err error
 	group, err = normalizeConfigGroup(group)
+	if err != nil {
+		return err
+	}
+	description, err = storage.ValidateDescription(description, true)
 	if err != nil {
 		return err
 	}

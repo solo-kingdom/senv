@@ -61,6 +61,7 @@ func isPipe() bool {
 // --- text set ---
 
 var textSetFile string
+var textSetDescription string
 
 var textSetCmd = &cobra.Command{
 	Use:   "set <key|group:key> [value]",
@@ -79,22 +80,38 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 		group, key := resolveAddressKey(args[0], textGroup)
 		target := "text:" + group + ":" + key
 
-		// Priority: --file > stdin > args > editor
+		var desc *string
+		if cmd.Flags().Changed("description") {
+			desc = &textSetDescription
+		}
+
 		var setErr error
 		var via string
 		switch {
 		case textSetFile != "":
 			via = "set --file"
-			setErr = textManager.SetFromFile(group, key, textSetFile)
+			setErr = textManager.SetFromFileWithDescription(group, key, textSetFile, desc)
 		case isPipe():
 			via = "set stdin"
-			setErr = textManager.SetFromReader(group, key, os.Stdin)
+			setErr = textManager.SetFromReaderWithDescription(group, key, os.Stdin, desc)
 		case len(args) >= 2:
 			via = "set"
-			setErr = textManager.Set(group, key, args[1])
+			if desc != nil {
+				setErr = textManager.SetWithDescription(group, key, args[1], desc)
+			} else {
+				setErr = textManager.Set(group, key, args[1])
+			}
 		default:
 			via = "set editor"
 			setErr = textManager.SetViaEditor(group, key)
+			if setErr == nil && desc != nil {
+				value, getErr := textManager.Get(group, key)
+				if getErr != nil {
+					setErr = getErr
+				} else {
+					setErr = textManager.SetWithDescription(group, key, value, desc)
+				}
+			}
 		}
 		if setErr != nil {
 			auditOp(session.AuditOpText, target, false, via+" 失败")
@@ -108,6 +125,7 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 // --- text import ---
 
 var textImportFile string
+var textImportDescription string
 
 var textImportCmd = &cobra.Command{
 	Use:   "import <key|group:key>",
@@ -129,7 +147,11 @@ The key may be a group:key address (e.g. feg:ACCOUNT); address group takes prece
 		}
 
 		group, key := resolveAddressKey(args[0], textGroup)
-		if err := textManager.SetFromFile(group, key, textImportFile); err != nil {
+		var desc *string
+		if cmd.Flags().Changed("description") {
+			desc = &textImportDescription
+		}
+		if err := textManager.SetFromFileWithDescription(group, key, textImportFile, desc); err != nil {
 			auditOp(session.AuditOpText, "text:"+group+":"+key, false, "import 失败")
 			return err
 		}
@@ -288,10 +310,14 @@ var textListCmd = &cobra.Command{
 
 		fmt.Printf("\n[%s]\n", listGroup)
 		for _, info := range infos {
-			fmt.Printf("  %-20s %6d bytes  %s\n",
+			fmt.Printf("  %-20s %6d bytes  %s",
 				info.Key,
 				info.Size,
 				info.UpdatedAt.Format("2006-01-02 15:04"))
+			if info.Description != "" {
+				fmt.Printf("  %s", info.Description)
+			}
+			fmt.Println()
 		}
 
 		return nil
@@ -336,12 +362,14 @@ var textGroupListCmd = &cobra.Command{
 
 		fmt.Println("Text groups:")
 		for _, g := range visible {
-			fmt.Printf("  %s (%d keys)\n", g.Name, g.KeyCount)
+			fmt.Printf("  %s (%d keys)\n    %s\n", g.Name, g.KeyCount, g.Description)
 		}
 
 		return nil
 	},
 }
+
+var textGroupAddDescription string
 
 var textGroupAddCmd = &cobra.Command{
 	Use:   "add <name>",
@@ -354,7 +382,7 @@ var textGroupAddCmd = &cobra.Command{
 		}
 
 		name := args[0]
-		if err := textManager.AddGroup(name); err != nil {
+		if err := textManager.AddGroup(name, textGroupAddDescription); err != nil {
 			return err
 		}
 
@@ -460,6 +488,7 @@ func (g *combinedGetter) GetTextValue(group, key string) (string, error) {
 func init() {
 	// text set flags
 	textSetCmd.Flags().StringVar(&textSetFile, "file", "", "read value from file")
+	textSetCmd.Flags().StringVar(&textSetDescription, "description", "", "optional note stored with the text block (omit to keep the existing note)")
 
 	// text get flags
 	textGetCmd.Flags().BoolVarP(&textGetDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
@@ -481,6 +510,7 @@ func init() {
 
 	// text import flags
 	textImportCmd.Flags().StringVar(&textImportFile, "file", "", "read the value from this file (required)")
+	textImportCmd.Flags().StringVar(&textImportDescription, "description", "", "optional note stored with the text block (omit to keep the existing note)")
 
 	// text export flags
 	textExportCmd.Flags().StringVar(&textExportPath, "path", "", "write the plaintext value to this file (required, fixed 0600)")
@@ -488,4 +518,6 @@ func init() {
 	textGroupCmd.AddCommand(textGroupListCmd)
 	textGroupCmd.AddCommand(textGroupAddCmd)
 	textGroupCmd.AddCommand(textGroupDeleteCmd)
+	textGroupAddCmd.Flags().StringVar(&textGroupAddDescription, "description", "", "required note describing what this group is for")
+	_ = textGroupAddCmd.MarkFlagRequired("description")
 }

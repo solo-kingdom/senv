@@ -60,6 +60,11 @@ func (e *MCPServerEntry) ValidateMCPServer() error {
 		return fmt.Errorf("MCP server %q: unsupported transport %q: only %q, %q, %q are supported",
 			e.Alias, e.Transport, MCPTransportStdio, MCPTransportHTTP, MCPTransportSSE)
 	}
+	desc, err := ValidateDescription(e.Description, true)
+	if err != nil {
+		return fmt.Errorf("MCP server %q: %w", e.Alias, err)
+	}
+	e.Description = desc
 	for key, value := range e.Headers {
 		if err := ValidateHeaderName(key); err != nil {
 			return fmt.Errorf("MCP server %q header: %w", e.Alias, err)

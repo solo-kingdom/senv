@@ -49,7 +49,7 @@ func TestEnvSetAcceptsValidKeys(t *testing.T) {
 func TestEnvShorthandKeyValidation(t *testing.T) {
 	_, envMgr := setupAddressKeyTest(t)
 
-	if err := envMgr.AddGroup("prod"); err != nil {
+	if err := envMgr.AddGroup("prod", "test"); err != nil {
 		t.Fatalf("AddGroup: %v", err)
 	}
 

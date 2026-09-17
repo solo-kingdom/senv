@@ -62,8 +62,8 @@ func TestEnvWritesRecordAuditWithoutValues(t *testing.T) {
 	flush(tab, tab.load())
 
 	const secret = "s3cr3t-value"
-	flush(tab, tab.doSet("default", "API_KEY", secret))
-	flush(tab, tab.doAddGroup("prod"))
+	flush(tab, tab.doSet("default", "API_KEY", secret, nil))
+	flush(tab, tab.doAddGroup("prod", "test"))
 	flush(tab, tab.doDelete("default", "API_KEY"))
 
 	want := []auditCall{
@@ -112,7 +112,7 @@ func TestTextWritesRecordAudit(t *testing.T) {
 	tab := newTextTab(mgrs)
 	tab.SetSize(80, 20)
 
-	flushText(tab, tab.doAddGroup("notes"))
+	flushText(tab, tab.doAddGroup("notes", "test"))
 	if len(w.calls) != 1 || w.calls[0].target != "text:group:notes" || !w.calls[0].success {
 		t.Fatalf("add group audit = %#v", w.calls)
 	}
@@ -157,5 +157,5 @@ func TestAuditWriterNilIsNoOp(t *testing.T) {
 	}
 	tab := newEnvTab(Managers{Env: env.NewManager(sm, "pw")})
 	tab.SetSize(80, 20)
-	flush(tab, tab.doSet("default", "FOO", "bar"))
+	flush(tab, tab.doSet("default", "FOO", "bar", nil))
 }

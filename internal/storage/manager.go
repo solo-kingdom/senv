@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
@@ -185,6 +186,30 @@ func (m *Manager) Initialize(password string) error {
 	defaultGroup := NewEnvGroup("default")
 	if err := m.SaveEnvGroup(defaultGroup, password); err != nil {
 		return fmt.Errorf("failed to create default group: %w", err)
+	}
+
+	if err := m.AddTextGroup("default"); err != nil {
+		return fmt.Errorf("failed to create default text group: %w", err)
+	}
+	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err != nil {
+		return err
+	}
+	textMeta := &EnvGroupMeta{Name: "default", CreatedAt: time.Now()}
+	if err := m.SaveTextGroupMetaWithKey("default", textMeta, cryptoKey); err != nil {
+		return fmt.Errorf("failed to save default text group metadata: %w", err)
+	}
+
+	if err := m.AddTextGroup("llm-keys"); err != nil {
+		return fmt.Errorf("failed to create llm-keys text group: %w", err)
+	}
+	llmMeta := &EnvGroupMeta{
+		Name:        "llm-keys",
+		Description: "reserved: LLM API keys (CLI/TUI only)",
+		CreatedAt:   time.Now(),
+	}
+	if err := m.SaveTextGroupMetaWithKey("llm-keys", llmMeta, cryptoKey); err != nil {
+		return fmt.Errorf("failed to save llm-keys text group metadata: %w", err)
 	}
 
 	return nil
@@ -400,6 +425,7 @@ func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group
 	}
 	envGroup.Name = meta.Name
 	envGroup.CreatedAt = meta.CreatedAt
+	envGroup.Description = meta.Description
 
 	vars, err := listEnvVarsFromRoot(root, group)
 	if err != nil {
@@ -411,6 +437,12 @@ func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group
 			return nil, fmt.Errorf("load var %s/%s: %w", group, k, err)
 		}
 		envGroup.Variables[k] = entry.Value
+		if entry.Description != "" {
+			if envGroup.Descriptions == nil {
+				envGroup.Descriptions = make(map[string]string)
+			}
+			envGroup.Descriptions[k] = entry.Description
+		}
 		envGroup.UpdatedAt = entry.UpdatedAt
 	}
 
@@ -534,13 +566,16 @@ func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 	}
 	root.Close()
 
-	meta := &EnvGroupMeta{Name: envGroup.Name, CreatedAt: envGroup.CreatedAt}
+	meta := &EnvGroupMeta{Name: envGroup.Name, Description: envGroup.Description, CreatedAt: envGroup.CreatedAt}
 	if err := m.SaveEnvGroupMetaWithKey(envGroup.Name, meta, key); err != nil {
 		return err
 	}
 
 	for k, v := range envGroup.Variables {
 		entry := &EnvVarEntry{Value: v, CreatedAt: envGroup.CreatedAt, UpdatedAt: envGroup.UpdatedAt}
+		if envGroup.Descriptions != nil {
+			entry.Description = envGroup.Descriptions[k]
+		}
 		if err := m.SaveEnvVarWithKey(envGroup.Name, k, entry, key); err != nil {
 			return err
 		}
@@ -1068,6 +1103,100 @@ func (m *Manager) AddTextGroup(group string) error {
 	return root.EnsureDir([]string{TextDirName, group}, 0o700)
 }
 
+// TextGroupExists reports whether texts/{group}/ exists.
+func (m *Manager) TextGroupExists(group string) (bool, error) {
+	if err := ValidateName(group); err != nil {
+		return false, fmt.Errorf("invalid text group %q: %w", group, err)
+	}
+	if !m.mutationLocked {
+		return withVaultRead(m, func(locked *Manager) (bool, error) { return locked.TextGroupExists(group) })
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	_, err = root.ReadDir(TextDirName, group)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SaveTextGroupMetaWithKey writes texts/{group}/.meta.enc.
+func (m *Manager) SaveTextGroupMetaWithKey(group string, meta *EnvGroupMeta, cryptoKey []byte) error {
+	if err := ValidateName(group); err != nil {
+		return fmt.Errorf("invalid text group %q: %w", group, err)
+	}
+	if meta == nil || meta.Name != group {
+		return fmt.Errorf("text group metadata identity mismatch for %q", group)
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error {
+			return locked.SaveTextGroupMetaWithKey(group, meta, cryptoKey)
+		})
+	}
+	if err := m.requireCurrentKey(cryptoKey); err != nil {
+		return err
+	}
+	data, err := ToJSON(meta)
+	if err != nil {
+		return err
+	}
+	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	if err != nil {
+		return err
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.EnsureDir([]string{TextDirName, group}, 0o700); err != nil {
+		return err
+	}
+	return root.AtomicWrite([]string{TextDirName, group, EnvMetaFileName}, []byte(encrypted), 0o600)
+}
+
+// LoadTextGroupMetaWithKey loads text group metadata. Missing file returns nil, nil.
+func (m *Manager) LoadTextGroupMetaWithKey(group string, cryptoKey []byte) (*EnvGroupMeta, error) {
+	if !m.mutationLocked {
+		return withVaultRead(m, func(locked *Manager) (*EnvGroupMeta, error) {
+			return locked.LoadTextGroupMetaWithKey(group, cryptoKey)
+		})
+	}
+	if err := ValidateName(group); err != nil {
+		return nil, fmt.Errorf("invalid text group %q: %w", group, err)
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	data, err := root.Read(TextDirName, group, EnvMetaFileName)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	if err != nil {
+		return nil, err
+	}
+	var meta EnvGroupMeta
+	if err := FromJSON(decrypted, &meta); err != nil {
+		return nil, err
+	}
+	if meta.Name != group {
+		return nil, fmt.Errorf("text group metadata identity mismatch: requested %q, Name %q", group, meta.Name)
+	}
+	return &meta, nil
+}
+
 func (m *Manager) DeleteTextGroup(group string) error {
 	if err := ValidateName(group); err != nil {
 		return fmt.Errorf("invalid text group %q: %w", group, err)
@@ -1206,6 +1335,12 @@ func (m *Manager) ListTextFiles(group string) ([]string, error) {
 	}
 	keys := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Name == EnvMetaFileName {
+			if entry.IsDir {
+				return nil, fmt.Errorf("invalid text metadata entry in group %q", group)
+			}
+			continue
+		}
 		if entry.IsDir || !strings.HasSuffix(entry.Name, TextFileSuffix) {
 			return nil, fmt.Errorf("invalid historical text entry %q in group %q", entry.Name, group)
 		}
@@ -1317,11 +1452,20 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 			return nil, fmt.Errorf("failed to list text group %q: %w", gd.Name, err)
 		}
 		// 文件清单与身份校验沿用逐组路径的 fail-closed 语义：任何非法
-		// 历史条目使整个快照失败（对应 ListGroups 阶段失败）。
-		snap.KeyCount[gd.Name] = len(files)
-		var groupFiles []TextVaultFile
-		var groupErr error
+		// 历史条目使整个快照失败（对应 ListGroups 阶段失败）。组说明
+		// 存在 .meta.enc，与 ListTextFiles 一样跳过，不计入条目。
+		type listedFile struct {
+			name string
+			key  string
+		}
+		content := make([]listedFile, 0, len(files))
 		for _, f := range files {
+			if f.Name == EnvMetaFileName {
+				if f.IsDir {
+					return nil, fmt.Errorf("invalid text metadata entry in group %q", gd.Name)
+				}
+				continue
+			}
 			if f.IsDir || !strings.HasSuffix(f.Name, TextFileSuffix) {
 				return nil, fmt.Errorf("invalid historical text entry %q in group %q", f.Name, gd.Name)
 			}
@@ -1329,9 +1473,15 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 			if err := validateTextIdentity(gd.Name, key); err != nil {
 				return nil, fmt.Errorf("invalid historical text identity: %w", err)
 			}
-			encryptedData, err := root.Read(TextDirName, gd.Name, f.Name)
+			content = append(content, listedFile{name: f.Name, key: key})
+		}
+		snap.KeyCount[gd.Name] = len(content)
+		var groupFiles []TextVaultFile
+		var groupErr error
+		for _, f := range content {
+			encryptedData, err := root.Read(TextDirName, gd.Name, f.name)
 			if err != nil {
-				groupErr = fmt.Errorf("failed to read text %q in group %q: %w", key, gd.Name, err)
+				groupErr = fmt.Errorf("failed to read text %q in group %q: %w", f.key, gd.Name, err)
 				break
 			}
 			decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
@@ -1344,7 +1494,7 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 				groupErr = fmt.Errorf("failed to parse text entry: %w", err)
 				break
 			}
-			groupFiles = append(groupFiles, TextVaultFile{Key: key, Entry: &entry})
+			groupFiles = append(groupFiles, TextVaultFile{Key: f.key, Entry: &entry})
 		}
 		// 条目级失败按组降级（对应逐组 List 失败后消费方把该组置空）：分组
 		// 保留列出，仅该组条目缺失。

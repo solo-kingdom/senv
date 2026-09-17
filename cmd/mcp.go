@@ -116,6 +116,27 @@ func (m mcpTextManager) Set(group, key, value string) error {
 	return m.Manager.Set(group, key, value)
 }
 
+func (m mcpTextManager) SetWithDescription(group, key, value string, description *string) error {
+	if group == llm.LLMKeysGroup {
+		return errLLMKeysReserved
+	}
+	return m.Manager.SetWithDescription(group, key, value, description)
+}
+
+func (m mcpTextManager) AddGroup(name, description string) error {
+	if name == llm.LLMKeysGroup {
+		return errLLMKeysReserved
+	}
+	return m.Manager.AddGroup(name, description)
+}
+
+func (m mcpTextManager) GetWithMeta(group, key string) (string, string, error) {
+	if group == llm.LLMKeysGroup {
+		return "", "", errLLMKeysReserved
+	}
+	return m.Manager.GetWithMeta(group, key)
+}
+
 func (m mcpTextManager) Delete(group, key string) error {
 	if group == llm.LLMKeysGroup {
 		return errLLMKeysReserved
@@ -226,9 +247,10 @@ type envKeyInput struct {
 }
 
 type envSetValueInput struct {
-	Group string `json:"group,omitempty" jsonschema_description:"optional group name; overrides any group in key"`
-	Key   string `json:"key" jsonschema_description:"variable key, or a group:key address"`
-	Value string `json:"value" jsonschema_description:"secret value to store"`
+	Group       string  `json:"group,omitempty" jsonschema_description:"optional group name; overrides any group in key"`
+	Key         string  `json:"key" jsonschema_description:"variable key, or a group:key address"`
+	Value       string  `json:"value" jsonschema_description:"secret value to store"`
+	Description *string `json:"description,omitempty" jsonschema_description:"optional note; omit to keep the existing description"`
 }
 
 type envGetInput struct {
@@ -242,8 +264,9 @@ type listInput struct {
 }
 
 type groupKindInput struct {
-	Kind string `json:"kind" jsonschema_description:"group namespace; one of \"env\" or \"text\""`
-	Name string `json:"name" jsonschema_description:"group name"`
+	Kind        string `json:"kind" jsonschema_description:"group namespace; one of \"env\" or \"text\""`
+	Name        string `json:"name" jsonschema_description:"group name"`
+	Description string `json:"description" jsonschema_description:"required non-empty note describing the group"`
 }
 
 type groupNameInput struct {
@@ -301,12 +324,26 @@ func (m *managers) envGet(_ context.Context, _ *mcp.CallToolRequest, in envGetIn
 		}
 		value = resolved
 	}
-	return textResult(map[string]string{"group": group, "key": key, "value": value})
+	_, desc, metaErr := m.env.GetWithMeta(group, key)
+	if metaErr != nil {
+		return errResult(metaErr)
+	}
+	out := map[string]string{"group": group, "key": key, "value": value}
+	if desc != "" {
+		out["description"] = desc
+	}
+	return textResult(out)
 }
 
 func (m *managers) envSet(_ context.Context, _ *mcp.CallToolRequest, in envSetValueInput) (*mcp.CallToolResult, emptyOut, error) {
 	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
-	if err := m.env.Set(group, key, in.Value); err != nil {
+	var err error
+	if in.Description != nil {
+		err = m.env.SetWithDescription(group, key, in.Value, in.Description)
+	} else {
+		err = m.env.Set(group, key, in.Value)
+	}
+	if err != nil {
 		return errResult(err)
 	}
 	return textResult(map[string]string{"status": "ok", "group": group, "key": key})
@@ -323,19 +360,22 @@ func (m *managers) envDelete(_ context.Context, _ *mcp.CallToolRequest, in envKe
 func (m *managers) envList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
 	group := orDefault(in.Group, "")
-	vars, err := m.env.List(group)
+	vars, err := m.env.ListVarInfo(group)
 	if err != nil {
 		return errResult(err)
 	}
-	// Drop empty non-default groups to mirror the CLI listing.
-	out := make(map[string]map[string]string, len(vars))
+	type item struct {
+		Value       string `json:"value"`
+		Description string `json:"description,omitempty"`
+	}
+	out := make(map[string]map[string]item, len(vars))
 	for g, variables := range vars {
 		if len(variables) == 0 {
 			continue
 		}
-		row := make(map[string]string, len(variables))
-		for k, v := range variables {
-			row[k] = v
+		row := make(map[string]item, len(variables))
+		for k, info := range variables {
+			row[k] = item{Value: info.Value, Description: info.Description}
 		}
 		out[g] = row
 	}
@@ -369,12 +409,26 @@ func (m *managers) textGet(_ context.Context, _ *mcp.CallToolRequest, in envGetI
 		}
 		value = resolved
 	}
-	return textResult(map[string]string{"group": group, "key": key, "value": value})
+	_, desc, metaErr := m.text.GetWithMeta(group, key)
+	if metaErr != nil {
+		return errResult(metaErr)
+	}
+	out := map[string]string{"group": group, "key": key, "value": value}
+	if desc != "" {
+		out["description"] = desc
+	}
+	return textResult(out)
 }
 
 func (m *managers) textSet(_ context.Context, _ *mcp.CallToolRequest, in envSetValueInput) (*mcp.CallToolResult, emptyOut, error) {
 	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
-	if err := m.text.Set(group, key, in.Value); err != nil {
+	var err error
+	if in.Description != nil {
+		err = m.text.SetWithDescription(group, key, in.Value, in.Description)
+	} else {
+		err = m.text.Set(group, key, in.Value)
+	}
+	if err != nil {
 		return errResult(err)
 	}
 	return textResult(map[string]string{"status": "ok", "group": group, "key": key})
@@ -391,9 +445,10 @@ func (m *managers) textDelete(_ context.Context, _ *mcp.CallToolRequest, in envK
 func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
 	type entry struct {
-		Group string `json:"group"`
-		Key   string `json:"key"`
-		Size  int    `json:"size"`
+		Group       string `json:"group"`
+		Key         string `json:"key"`
+		Size        int    `json:"size"`
+		Description string `json:"description,omitempty"`
 	}
 	var out []entry
 	addGroup := func(group string) error {
@@ -402,7 +457,7 @@ func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listIn
 			return err
 		}
 		for _, info := range infos {
-			out = append(out, entry{Group: group, Key: info.Key, Size: info.Size})
+			out = append(out, entry{Group: group, Key: info.Key, Size: info.Size, Description: info.Description})
 		}
 		return nil
 	}
@@ -464,12 +519,13 @@ func (m *managers) groupList(_ context.Context, _ *mcp.CallToolRequest, in listI
 			return errResult(err)
 		}
 		type g struct {
-			Name     string `json:"name"`
-			KeyCount int    `json:"keyCount"`
+			Name        string `json:"name"`
+			KeyCount    int    `json:"keyCount"`
+			Description string `json:"description,omitempty"`
 		}
 		out := make([]g, 0, len(groups))
 		for _, gr := range groups {
-			out = append(out, g{Name: gr.Name, KeyCount: gr.KeyCount})
+			out = append(out, g{Name: gr.Name, KeyCount: gr.KeyCount, Description: gr.Description})
 		}
 		return textResult(out)
 	default:
@@ -478,14 +534,15 @@ func (m *managers) groupList(_ context.Context, _ *mcp.CallToolRequest, in listI
 			return errResult(err)
 		}
 		type g struct {
-			Name      string `json:"name"`
-			IsActive  bool   `json:"isActive"`
-			VarCount  int    `json:"varCount"`
-			IsDefault bool   `json:"isDefault"`
+			Name        string `json:"name"`
+			IsActive    bool   `json:"isActive"`
+			VarCount    int    `json:"varCount"`
+			IsDefault   bool   `json:"isDefault"`
+			Description string `json:"description,omitempty"`
 		}
 		out := make([]g, 0, len(groups))
 		for _, gr := range groups {
-			out = append(out, g{Name: gr.Name, IsActive: gr.IsActive, VarCount: gr.VarCount, IsDefault: gr.IsDefault})
+			out = append(out, g{Name: gr.Name, IsActive: gr.IsActive, VarCount: gr.VarCount, IsDefault: gr.IsDefault, Description: gr.Description})
 		}
 		return textResult(out)
 	}
@@ -497,11 +554,11 @@ func (m *managers) groupAdd(_ context.Context, _ *mcp.CallToolRequest, in groupK
 	}
 	switch in.Kind {
 	case "text":
-		if err := m.text.AddGroup(in.Name); err != nil {
+		if err := m.text.AddGroup(in.Name, in.Description); err != nil {
 			return errResult(err)
 		}
 	default: // env
-		if err := m.env.AddGroup(in.Name); err != nil {
+		if err := m.env.AddGroup(in.Name, in.Description); err != nil {
 			return errResult(err)
 		}
 	}
@@ -512,7 +569,13 @@ func (m *managers) groupActivate(_ context.Context, _ *mcp.CallToolRequest, in g
 	if err := m.env.ActivateGroup(in.Name); err != nil {
 		return errResult(err)
 	}
-	return textResult(map[string]string{"status": "activated", "name": in.Name})
+	out := map[string]any{"status": "activated", "name": in.Name}
+	if warnings, err := m.env.KeyCollisionWarnings(); err != nil {
+		return errResult(err)
+	} else if len(warnings) > 0 {
+		out["warnings"] = warnings
+	}
+	return textResult(out)
 }
 
 func (m *managers) groupDeactivate(_ context.Context, _ *mcp.CallToolRequest, in groupNameInput) (*mcp.CallToolResult, emptyOut, error) {
@@ -534,19 +597,19 @@ type toolDef struct {
 // sync with toolCatalogue below.
 func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull func()) {
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_get", Description: "Get an environment variable (secret). Set decode=true to resolve {{env:...}}/{{text:...}} references."}, guardMCPTool("senv_env_get", authorize, autoPull, (*managers).envGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret."}, guardMCPTool("senv_env_set", authorize, autoPull, (*managers).envSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_set", Description: "Set (store) an environment variable secret. Optional description is a vault note; omit to keep the existing note."}, guardMCPTool("senv_env_set", authorize, autoPull, (*managers).envSet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_delete", Description: "Delete an environment variable."}, guardMCPTool("senv_env_delete", authorize, autoPull, (*managers).envDelete))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables, optionally restricted to a group."}, guardMCPTool("senv_env_list", authorize, autoPull, (*managers).envList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_list", Description: "List environment variables with values and descriptions, optionally restricted to a group."}, guardMCPTool("senv_env_list", authorize, autoPull, (*managers).envList))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_env_export", Description: "Export active-group environment variables as shell export statements, with references resolved."}, guardMCPTool("senv_env_export", authorize, autoPull, (*managers).envExport))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_get", Description: "Get a text block (key/cert/template). decode=true resolves references."}, guardMCPTool("senv_text_get", authorize, autoPull, (*managers).textGet))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block."}, guardMCPTool("senv_text_set", authorize, autoPull, (*managers).textSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block. Optional description is a vault note; omit to keep the existing note."}, guardMCPTool("senv_text_set", authorize, autoPull, (*managers).textSet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, guardMCPTool("senv_text_delete", authorize, autoPull, (*managers).textDelete))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, guardMCPTool("senv_text_list", authorize, autoPull, (*managers).textList))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, guardMCPTool("senv_config_list", authorize, autoPull, (*managers).configList))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, guardMCPTool("senv_config_get", authorize, autoPull, (*managers).configGet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, guardMCPTool("senv_config_export", authorize, autoPull, (*managers).configExport))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, guardMCPTool("senv_group_list", authorize, autoPull, (*managers).groupList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text)."}, guardMCPTool("senv_group_add", authorize, autoPull, (*managers).groupAdd))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text). description is required."}, guardMCPTool("senv_group_add", authorize, autoPull, (*managers).groupAdd))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool("senv_group_activate", authorize, autoPull, (*managers).groupActivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool("senv_group_deactivate", authorize, autoPull, (*managers).groupDeactivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool("ssh_host_list", authorize, autoPull, (*managers).sshHostList))
@@ -560,19 +623,19 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 func toolCatalogue() []toolDef {
 	return []toolDef{
 		{"senv_env_get", "Get an environment variable (secret). decode=true resolves references."},
-		{"senv_env_set", "Set (store) an environment variable secret."},
+		{"senv_env_set", "Set (store) an environment variable secret. Optional description is a vault note; omit to keep the existing note."},
 		{"senv_env_delete", "Delete an environment variable."},
-		{"senv_env_list", "List environment variables, optionally by group."},
+		{"senv_env_list", "List environment variables with values and descriptions, optionally by group."},
 		{"senv_env_export", "Export active-group env vars as shell statements (references resolved)."},
 		{"senv_text_get", "Get a text block. decode=true resolves references."},
-		{"senv_text_set", "Set a text block."},
+		{"senv_text_set", "Set a text block. Optional description is a vault note; omit to keep the existing note."},
 		{"senv_text_delete", "Delete a text block."},
 		{"senv_text_list", "List text blocks, optionally by group."},
 		{"senv_config_list", "List stored config files."},
 		{"senv_config_get", "Get metadata for a stored config file."},
 		{"senv_config_export", "Export a stored config file and return its content."},
 		{"senv_group_list", "List groups (group=text for text groups)."},
-		{"senv_group_add", "Create a group (kind=env|text)."},
+		{"senv_group_add", "Create a group (kind=env|text). description is required."},
 		{"senv_group_activate", "Activate an env group."},
 		{"senv_group_deactivate", "Deactivate an env group."},
 		{"ssh_host_list", "List SSH host connection metadata (read-only; no private keys)."},

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/storage"
 )
 
 // This file implements the reusable structured form used by every multi-field
@@ -63,6 +64,17 @@ type formField struct {
 	// form values. Hidden fields are skipped by navigation, validation and
 	// rendering, but keep their value (the tab decides what to submit).
 	visible func(values map[string]string) bool
+}
+
+func optionalDescriptionField(value string) formField {
+	return formField{
+		key: "description", label: "description", kind: formText, value: value,
+		placeholder: "optional",
+		validate: func(v string) error {
+			_, err := storage.ValidateDescription(v, true)
+			return err
+		},
+	}
 }
 
 // enumOptions returns the selectable candidates, with an explicit empty choice

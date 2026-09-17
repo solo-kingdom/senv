@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -42,7 +43,23 @@ func resolveExportShell(envMgr *env.Manager, textMgr textValueGetter, currentGro
 		}
 		resolved[key] = value
 	}
+	collisions, err := envMgr.KeyCollisionWarnings()
+	if err != nil {
+		return "", nil, err
+	}
+	warnings = append(collisions, warnings...)
 	return env.FormatExportShell(resolved), warnings, nil
+}
+
+func printCollisionWarnings(envMgr *env.Manager) {
+	warnings, err := envMgr.KeyCollisionWarnings()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to check key collisions: %v\n", err)
+		return
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w)
+	}
 }
 
 func formatExportWarning(envKey, refWarning string) string {

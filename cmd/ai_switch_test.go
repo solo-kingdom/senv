@@ -423,6 +423,9 @@ func codexEnvKeyOf(t *testing.T, configPath, alias string) string {
 func TestAISwitchCodexReusesReferencedEnvName(t *testing.T) {
 	cfg, data := newAuditTestProject(t)
 	em := env.NewManager(storage.NewManager(cfg, data), "audit-password")
+	if err := em.AddGroup("ai", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := em.Set("ai", "DEEPSEEK_API_KEY", "sk-env-value"); err != nil {
 		t.Fatalf("env set: %v", err)
 	}
@@ -461,6 +464,9 @@ func TestAISwitchCodexReusesReferencedEnvName(t *testing.T) {
 func TestAISwitchCodexWarnsOnInactiveCredentialGroup(t *testing.T) {
 	cfg, data := newAuditTestProject(t)
 	em := env.NewManager(storage.NewManager(cfg, data), "audit-password")
+	if err := em.AddGroup("dev", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := em.Set("dev", "APP_KEY", "sk-dev"); err != nil {
 		t.Fatalf("env set: %v", err)
 	}

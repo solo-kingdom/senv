@@ -23,6 +23,9 @@ func TestTextImportFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := mgr.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
+	}
 
 	src := filepath.Join(dir, "README.md")
 	content := []byte("# hello\nmulti-line import\n")
@@ -139,6 +142,9 @@ func TestTextExportFlow(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := getTextManager()
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.AddGroup("secrets", "test"); err != nil {
 		t.Fatal(err)
 	}
 

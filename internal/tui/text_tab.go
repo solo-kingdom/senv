@@ -47,16 +47,18 @@ type textTab struct {
 }
 
 type textGroupRow struct {
-	name     string
-	isAll    bool
-	keyCount int
+	name        string
+	description string
+	isAll       bool
+	keyCount    int
 }
 
 type textItemRow struct {
-	group     string
-	key       string
-	size      int
-	updatedAt string
+	group       string
+	key         string
+	description string
+	size        int
+	updatedAt   string
 }
 
 type textMode int
@@ -207,7 +209,7 @@ func (t *textTab) load() tea.Cmd {
 		totalKeys := 0
 		for _, g := range snap.Groups {
 			// 侧栏范式：空分组也显示（计数 0），与过滤期行为一致
-			groups = append(groups, textGroupRow{name: g.Name, keyCount: g.KeyCount})
+			groups = append(groups, textGroupRow{name: g.Name, description: g.Description, keyCount: g.KeyCount})
 			itemsByGroup[g.Name] = buildTextItems(g.Name, snap.Items[g.Name])
 			totalKeys += len(itemsByGroup[g.Name])
 		}
@@ -231,10 +233,11 @@ func buildTextItems(group string, infos []text.TextInfo) []textItemRow {
 	out := make([]textItemRow, 0, len(infos))
 	for _, ti := range infos {
 		out = append(out, textItemRow{
-			group:     group,
-			key:       ti.Key,
-			size:      ti.Size,
-			updatedAt: ti.UpdatedAt.Format("2006-01-02 15:04"),
+			group:       group,
+			key:         ti.Key,
+			description: ti.Description,
+			size:        ti.Size,
+			updatedAt:   ti.UpdatedAt.Format("2006-01-02 15:04"),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
@@ -628,7 +631,7 @@ func (t *textTab) submitModal() (Tab, tea.Cmd) {
 		if name == "" {
 			return t, warnToast("group name cannot be empty")
 		}
-		return t, t.doAddGroup(name)
+		return t, warnToast("group description is required")
 	}
 	t.mode = textModeNormal
 	return t, nil
@@ -769,11 +772,37 @@ func (t *textTab) enterExportMode() (Tab, tea.Cmd) {
 }
 
 func (t *textTab) enterAddGroupMode() (Tab, tea.Cmd) {
-	t.mode = textModeAddGroup
-	t.input.SetValue("")
-	t.input.Placeholder = "group name"
-	t.input.Focus()
-	return t, textinput.Blink
+	siblings := make(map[string]bool, len(t.groups))
+	for _, g := range t.groups {
+		siblings[g.name] = true
+	}
+	f := newForm("new text group",
+		formField{key: "name", label: "name", kind: formText, placeholder: "group-name",
+			validate: func(v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return fmt.Errorf("group name cannot be empty")
+				}
+				if err := storage.ValidateName(v); err != nil {
+					return fmt.Errorf("invalid group name")
+				}
+				if siblings[v] {
+					return fmt.Errorf("group %s already exists", v)
+				}
+				return nil
+			}},
+		formField{key: "description", label: "description", kind: formText, placeholder: "required: what this group is for",
+			validate: func(v string) error {
+				if _, err := storage.ValidateDescription(v, false); err != nil {
+					return err
+				}
+				return nil
+			}},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		return t.doAddGroup(strings.TrimSpace(values["name"]), values["description"])
+	})
+	return t, nil
 }
 
 // openForm installs a structured form and the action to run on submit.
@@ -901,9 +930,10 @@ func (t *textTab) enterImportMode() (Tab, tea.Cmd) {
 				return nil
 			}},
 		formField{key: "path", label: "source file path", kind: formPath, placeholder: "/path/to/file"},
+		optionalDescriptionField(""),
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
-		return t.doImport(strings.TrimSpace(values["group"]), strings.TrimSpace(values["key"]), strings.TrimSpace(values["path"]))
+		return t.doImport(strings.TrimSpace(values["group"]), strings.TrimSpace(values["key"]), strings.TrimSpace(values["path"]), strings.TrimSpace(values["description"]))
 	})
 	return t, nil
 }
@@ -1025,14 +1055,15 @@ func (t *textTab) doDeleteGroup(name string) tea.Cmd {
 
 // doImport encrypts a local file into a text block (SetFromFile); the source
 // file itself is left untouched.
-func (t *textTab) doImport(group, key, path string) tea.Cmd {
+func (t *textTab) doImport(group, key, path, description string) tea.Cmd {
 	if path == "" {
 		return warnToast("source file path cannot be empty")
 	}
 	mgr := t.mgr.Text
 	mgrs := t.mgr
 	return func() tea.Msg {
-		if err := mgr.SetFromFile(group, key, path); err != nil {
+		desc := description
+		if err := mgr.SetFromFileWithDescription(group, key, path, &desc); err != nil {
 			recordAudit(mgrs, session.AuditOpText, textTarget(group, key), false, "import failed")
 			return errMsg{err: err}
 		}
@@ -1068,11 +1099,11 @@ func (t *textTab) doExport(group, key, path string) tea.Cmd {
 	}
 }
 
-func (t *textTab) doAddGroup(name string) tea.Cmd {
+func (t *textTab) doAddGroup(name, description string) tea.Cmd {
 	mgr := t.mgr.Text
 	mgrs := t.mgr
 	return func() tea.Msg {
-		if err := mgr.AddGroup(name); err != nil {
+		if err := mgr.AddGroup(name, description); err != nil {
 			recordAudit(mgrs, session.AuditOpText, "text:group:"+name, false, "add group failed")
 			return errMsg{err: err}
 		}
@@ -1192,6 +1223,9 @@ func (t *textTab) renderItems(width, height int) string {
 			keyLabel = "[x] " + keyLabel
 		}
 		line := truncateRunes(fmt.Sprintf("%-24s %8d b  %s", keyLabel, it.size, it.updatedAt), inner-2)
+		if it.description != "" {
+			line = truncateRunes(line+"  "+it.description, inner-2)
+		}
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
 		}

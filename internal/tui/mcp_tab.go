@@ -809,7 +809,11 @@ func (t *mcpTab) enterForm(existing *storage.MCPServerEntry) (Tab, tea.Cmd) {
 		{key: "env", label: "env", kind: formEditor, value: envText, preview: mcpEnvPreview, validate: validateEnvLines, visible: stdioOnly},
 		{key: "url", label: "url", kind: formText, value: url, validate: requiredURL, visible: remoteOnly},
 		{key: "headers", label: "headers", kind: formEditor, value: headersText, preview: mcpHeadersPreview, validate: validateHeaderLines, visible: remoteOnly},
-		{key: "description", label: "description", kind: formText, value: desc},
+		{key: "description", label: "description", kind: formText, value: desc,
+			validate: func(v string) error {
+				_, err := storage.ValidateDescription(v, true)
+				return err
+			}},
 	}
 	f := newForm(title, fields...)
 	f.editExternal = func(index int, current string) tea.Cmd {

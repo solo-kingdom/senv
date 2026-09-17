@@ -63,7 +63,7 @@ func TestTextRenameKeyViaForm(t *testing.T) {
 
 func TestTextRenameGroupAndDeleteGroup(t *testing.T) {
 	tab := newLoadedTextTab(t)
-	flushText(tab, tab.doAddGroup("notes"))
+	flushText(tab, tab.doAddGroup("notes", "test"))
 	if err := tab.mgr.Text.Set("notes", "todo", "buy milk"); err != nil {
 		t.Fatalf("seed block: %v", err)
 	}

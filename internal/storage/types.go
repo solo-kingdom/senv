@@ -60,31 +60,39 @@ type SessionConfig struct {
 
 // EnvGroup represents an environment variable group
 type EnvGroup struct {
-	Name      string            `json:"name"`
-	Variables map[string]string `json:"variables"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	Name        string            `json:"name"`
+	Variables   map[string]string `json:"variables"`
+	Description string            `json:"description,omitempty"`
+	// Descriptions is the per-variable note map populated when loading the
+	// directory format. It is not serialized on the group blob.
+	Descriptions map[string]string `json:"-"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
 // EnvVarEntry represents a single environment variable stored in its own file.
 type EnvVarEntry struct {
-	Value     string    `json:"value"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Value       string    `json:"value"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // EnvGroupMeta represents group-level metadata in per-variable storage.
+// Text groups reuse this shape in texts/{group}/.meta.enc.
 type EnvGroupMeta struct {
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // TextEntry represents a single text block stored in encrypted file
 type TextEntry struct {
-	Value     string    `json:"value"`
-	Size      int       `json:"size"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Value       string    `json:"value"`
+	Description string    `json:"description,omitempty"`
+	Size        int       `json:"size"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // KeyPairEntry represents an imported SSH private key. PrivateKey is always
@@ -96,6 +104,7 @@ type KeyPairEntry struct {
 	PublicKey   string `json:"public_key,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Comment     string `json:"comment,omitempty"`
+	Description string `json:"description,omitempty"`
 	// Group is the single-value group membership (empty = ungrouped),
 	// semantically identical to HostEntry.Group. It is a pure organization
 	// dimension: not part of materialized files or exports.
@@ -116,9 +125,10 @@ type HostEntry struct {
 	// Group is the single-value group membership (empty = ungrouped). It is
 	// not rendered into ssh config exports or materialized files.
 	Group     string            `json:"group,omitempty"`
-	Tags      []string          `json:"tags,omitempty"`
-	Extra     map[string]string `json:"extra,omitempty"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	Tags        []string          `json:"tags,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Extra       map[string]string `json:"extra,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // LLMProviderEntry represents a saved LLM provider profile. The credential is
@@ -136,6 +146,7 @@ type LLMProviderEntry struct {
 	Models       []string                `json:"models"`
 	ModelInfo    map[string]LLMModelInfo `json:"model_info,omitempty"`
 	DefaultModel string                  `json:"default_model,omitempty"`
+	Description  string                  `json:"description,omitempty"`
 	CreatedAt    time.Time               `json:"created_at"`
 	UpdatedAt    time.Time               `json:"updated_at"`
 }

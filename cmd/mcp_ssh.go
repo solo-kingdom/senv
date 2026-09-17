@@ -19,6 +19,7 @@ type sshHostView struct {
 	Fingerprint string            `json:"identity_fingerprint,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Extra       map[string]string `json:"extra,omitempty"`
+	Description string            `json:"description,omitempty"`
 }
 
 func sshHostViewFrom(host *storage.HostEntry, fingerprint string) sshHostView {
@@ -32,6 +33,7 @@ func sshHostViewFrom(host *storage.HostEntry, fingerprint string) sshHostView {
 		Fingerprint: fingerprint,
 		Tags:        host.Tags,
 		Extra:       host.Extra,
+		Description: host.Description,
 	}
 }
 

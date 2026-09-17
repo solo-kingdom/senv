@@ -47,6 +47,16 @@ func TestCreateDefaultGroup(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsOversizeDescription(t *testing.T) {
+	m := newTestManager(t)
+	src := filepath.Join(t.TempDir(), "app.conf")
+	writeFile(t, src, "key: value\n")
+	tooLong := strings.Repeat("x", storage.MaxDescriptionBytes+1)
+	if err := m.Create("app", src, "/etc/app.conf", "work", tooLong); err == nil {
+		t.Fatal("oversize description should fail")
+	}
+}
+
 func TestListGroupFilter(t *testing.T) {
 	m := newTestManager(t)
 	dir := t.TempDir()

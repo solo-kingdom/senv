@@ -76,6 +76,13 @@ func TestEnvSetDeleteWriteAuditEvents(t *testing.T) {
 
 func TestTextSetWritesAuditEvent(t *testing.T) {
 	newAuditTestProject(t)
+	textMgr, err := getTextManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := textMgr.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := textSetCmd.RunE(&cobra.Command{}, []string{"notes:README", "hello"}); err != nil {
 		t.Fatalf("text set: %v", err)

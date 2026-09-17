@@ -24,6 +24,7 @@ const (
 	KindEnv         = syncschema.KindEnv
 	KindEnvMeta     = syncschema.KindEnvMeta
 	KindText        = syncschema.KindText
+	KindTextMeta    = syncschema.KindTextMeta
 	KindConfig      = syncschema.KindConfig
 	KindConfigIndex = syncschema.KindConfigIndex
 	KindLLMProvider = syncschema.KindLLMProvider
@@ -144,6 +145,8 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.EnvDirName, grp, key + storage.EnvVarSuffix}}, nil
 	case KindEnvMeta:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.EnvDirName, grp, storage.EnvMetaFileName}}, nil
+	case KindTextMeta:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TextDirName, grp, storage.EnvMetaFileName}}, nil
 	case KindText:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TextDirName, grp, key + storage.TextFileSuffix}}, nil
 	case KindConfig:
@@ -304,9 +307,14 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 				if file.IsDir {
 					return nil, nil, reads, fmt.Errorf("invalid text cache entry type")
 				}
-				if strings.HasSuffix(file.Name, storage.TextFileSuffix) {
+				ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+				switch {
+				case file.Name == storage.EnvMetaFileName:
+					if err := add(KindTextMeta, group.Name, "", ident, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
+					}
+				case strings.HasSuffix(file.Name, storage.TextFileSuffix):
 					key := strings.TrimSuffix(file.Name, storage.TextFileSuffix)
-					ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
 					if err := add(KindText, group.Name, key, ident, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
 						return nil, nil, reads, err
 					}

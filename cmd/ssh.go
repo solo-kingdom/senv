@@ -37,11 +37,12 @@ var keypairCmd = &cobra.Command{
 }
 
 var (
-	keypairImportFile    string
-	keypairImportGroup   string
-	keypairImportForce   bool
-	keypairDeleteForce   bool
-	keypairMaterialForce bool
+	keypairImportFile        string
+	keypairImportGroup       string
+	keypairImportDescription string
+	keypairImportForce       bool
+	keypairDeleteForce       bool
+	keypairMaterialForce     bool
 )
 
 var keypairImportCmd = &cobra.Command{
@@ -56,7 +57,7 @@ var keypairImportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		summary, err := mgr.ImportKeyPairWithGroup(args[0], keypairImportFile, keypairImportGroup, keypairImportForce)
+		summary, err := mgr.ImportKeyPairWithMeta(args[0], keypairImportFile, keypairImportGroup, keypairImportDescription, keypairImportForce)
 		detail := "import"
 		if keypairImportForce {
 			detail = "import --force"
@@ -107,6 +108,9 @@ var keypairListCmd = &cobra.Command{
 			line := fmt.Sprintf("  %-24s %s  imported %s", s.Name, publicKey, s.ImportedAt.Format("2006-01-02 15:04"))
 			if s.Group != "" {
 				line += fmt.Sprintf(" group:%s", s.Group)
+			}
+			if s.Description != "" {
+				line += "  " + s.Description
 			}
 			if s.Name == defaultName {
 				line += " default"
@@ -244,29 +248,35 @@ identityKey is rewritten in the same vault mutation. Key material is unchanged.
 }
 
 var keypairEditGroup string
+var keypairEditDescription string
 
 var keypairEditCmd = &cobra.Command{
 	Use:   "edit <name>",
-	Short: "Edit keypair metadata (group) without touching key material",
-	Long: `Edit an SSH keypair's group in place, without launching an editor.
-Group is the only keypair metadata editable in place; key material never
-changes. An empty value clears the group (ungrouped). Group changes only
-affect future materialize/export paths; already materialized files are not
-moved (use keypair prune to clean leftovers).
+	Short: "Edit keypair metadata without touching key material",
+	Long: `Edit an SSH keypair's group or description in place, without launching an editor.
+Key material never changes. An empty --group clears the group (ungrouped).
+Group changes only affect future materialize/export paths; already
+materialized files are not moved (use keypair prune to clean leftovers).
 
-  senv keypair edit web-key --group prod   # move to group prod
+  senv keypair edit web-key --group prod
+  senv keypair edit web-key --description "gitlab deploy"
   senv keypair edit web-key --group ""     # clear group`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !cmd.Flags().Changed("group") {
-			return fmt.Errorf("--group is required: senv keypair edit <name> --group <group> (empty value clears the group)")
+		if !cmd.Flags().Changed("group") && !cmd.Flags().Changed("description") {
+			return fmt.Errorf("specify --group and/or --description")
 		}
 		mgr, err := getSSHManager()
 		if err != nil {
 			return err
 		}
 		if err := mgr.UpdateKeyPair(args[0], func(k *storage.KeyPairEntry) error {
-			k.Group = keypairEditGroup
+			if cmd.Flags().Changed("group") {
+				k.Group = keypairEditGroup
+			}
+			if cmd.Flags().Changed("description") {
+				k.Description = keypairEditDescription
+			}
 			return nil
 		}); err != nil {
 			auditOp(session.AuditOpSSHKey, "keypair:"+args[0], false, "edit 失败")
@@ -296,10 +306,12 @@ var (
 	hostAddKeyFile     string
 	hostAddKeypairName string
 	hostAddGroup       string
-	hostAddTags        []string
-	hostAddAttrs       []string
-	hostForce          bool
-	hostEditGroup      string
+	hostAddTags         []string
+	hostAddAttrs        []string
+	hostAddDescription  string
+	hostForce           bool
+	hostEditGroup       string
+	hostEditDescription string
 )
 
 var hostAddCmd = &cobra.Command{
@@ -328,6 +340,7 @@ var hostAddCmd = &cobra.Command{
 			IdentityKey: identityKey,
 			Group:       hostAddGroup,
 			Tags:        hostAddTags,
+			Description: hostAddDescription,
 			Extra:       extra,
 		}
 		if err := mgr.AddHost(host); err != nil {
@@ -374,6 +387,9 @@ var hostGetCmd = &cobra.Command{
 		if len(host.Tags) > 0 {
 			fmt.Printf("  Tags: %s\n", strings.Join(host.Tags, ", "))
 		}
+		if host.Description != "" {
+			fmt.Printf("  Description: %s\n", host.Description)
+		}
 		for key, value := range host.Extra {
 			fmt.Printf("  %s: %s\n", key, value)
 		}
@@ -393,9 +409,14 @@ var hostEditCmd = &cobra.Command{
 		}
 		// --group set explicitly applies a single-field update without
 		// launching the editor; other fields keep their current values.
-		if cmd.Flags().Changed("group") {
+		if cmd.Flags().Changed("group") || cmd.Flags().Changed("description") {
 			if err := mgr.UpdateHost(args[0], func(host *storage.HostEntry) error {
-				host.Group = hostEditGroup
+				if cmd.Flags().Changed("group") {
+					host.Group = hostEditGroup
+				}
+				if cmd.Flags().Changed("description") {
+					host.Description = hostEditDescription
+				}
 				return nil
 			}); err != nil {
 				auditOp(session.AuditOpSSHHost, "host:"+args[0], false, "edit 失败")
@@ -455,6 +476,9 @@ var hostListCmd = &cobra.Command{
 			line := fmt.Sprintf("  %-24s %-30s %-16s key:%s", host.Alias, host.Hostname, host.User, identity)
 			if host.Group != "" {
 				line += fmt.Sprintf(" group:%s", host.Group)
+			}
+			if host.Description != "" {
+				line += "  " + host.Description
 			}
 			fmt.Println(line)
 		}
@@ -754,8 +778,10 @@ func init() {
 
 	keypairImportCmd.Flags().StringVar(&keypairImportFile, "file", "", "path to an existing private key")
 	keypairImportCmd.Flags().StringVar(&keypairImportGroup, "group", "", "keypair group (single value, empty = ungrouped)")
+	keypairImportCmd.Flags().StringVar(&keypairImportDescription, "description", "", "optional vault note (independent of OpenSSH comment)")
 	keypairImportCmd.Flags().BoolVar(&keypairImportForce, "force", false, "overwrite an existing keypair")
 	keypairEditCmd.Flags().StringVar(&keypairEditGroup, "group", "", "set the keypair group without launching an editor (empty = ungrouped)")
+	keypairEditCmd.Flags().StringVar(&keypairEditDescription, "description", "", "set the keypair vault note (empty clears it)")
 	keypairExportCmd.Flags().BoolVar(&keypairMaterialForce, "force", false, "overwrite an existing materialized file")
 	keypairDeleteCmd.Flags().BoolVar(&keypairDeleteForce, "force", false, "delete even if referenced and clear references")
 
@@ -769,7 +795,9 @@ func init() {
 	hostAddCmd.Flags().StringVar(&hostAddGroup, "group", "", "host group (single value, empty = ungrouped)")
 	hostAddCmd.Flags().StringSliceVar(&hostAddTags, "tag", nil, "host tag (repeatable)")
 	hostAddCmd.Flags().StringSliceVar(&hostAddAttrs, "attr", nil, "extra OpenSSH key=value (repeatable)")
+	hostAddCmd.Flags().StringVar(&hostAddDescription, "description", "", "optional vault note (not written to ssh config)")
 	hostEditCmd.Flags().StringVar(&hostEditGroup, "group", "", "set the host group without launching the editor")
+	hostEditCmd.Flags().StringVar(&hostEditDescription, "description", "", "set the host vault note without launching the editor")
 	hostDeleteCmd.Flags().BoolVar(&hostForce, "force", false, "acknowledge deletion")
 	hostExportCmd.Flags().StringVar(&hostExportAlias, "host", "", "export only this host alias (apply mode: rebuild its group fragment)")
 	hostExportCmd.Flags().StringVar(&hostExportGroup, "group", "", "export only this host group (apply mode: rebuild only this group fragment)")

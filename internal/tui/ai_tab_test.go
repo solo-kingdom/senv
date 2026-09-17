@@ -540,8 +540,14 @@ func TestAITabEditFormReopensOnBackendError(t *testing.T) {
 
 func TestAITabCredentialPickerListsExistingEntries(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
+	if err := tab.mgr.Env.AddGroup("llm", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := tab.mgr.Env.Set("llm", "KEY", "env-secret"); err != nil {
 		t.Fatalf("env set: %v", err)
+	}
+	if err := tab.mgr.Text.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
 	}
 	if err := tab.mgr.Text.Set("notes", "TOKEN", "text-secret"); err != nil {
 		t.Fatalf("text set: %v", err)

@@ -777,7 +777,11 @@ func (t *configTab) enterCreateName() (Tab, tea.Cmd) {
 				}
 				return storage.ValidateName(v)
 			}},
-		formField{key: "description", label: "description", kind: formText, placeholder: "optional"},
+		formField{key: "description", label: "description", kind: formText, placeholder: "optional",
+			validate: func(v string) error {
+				_, err := storage.ValidateDescription(v, true)
+				return err
+			}},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
 		return t.doCreate(strings.TrimSpace(values["name"]), strings.TrimSpace(values["source"]),
@@ -851,7 +855,11 @@ func (t *configTab) enterMetaMode() (Tab, tea.Cmd) {
 				}
 				return nil
 			}},
-		formField{key: "description", label: "description", kind: formText, value: old.description, placeholder: "optional"},
+		formField{key: "description", label: "description", kind: formText, value: old.description, placeholder: "optional",
+			validate: func(v string) error {
+				_, err := storage.ValidateDescription(v, true)
+				return err
+			}},
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
 		return t.doSetMeta(old.name, strings.TrimSpace(values["group"]), strings.TrimSpace(values["description"]))

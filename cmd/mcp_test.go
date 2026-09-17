@@ -72,6 +72,10 @@ func TestMCPEnvSetGetDelete(t *testing.T) {
 	m, _, _ := newManagersForTest(t, "pw")
 	ctx := context.Background()
 
+	if err := m.env.AddGroup("prod", "test"); err != nil {
+		t.Fatal(err)
+	}
+
 	// Set via group:key address
 	res, _, err := m.envSet(ctx, nil, envSetValueInput{Key: "prod:API_KEY", Value: "secret123"})
 	if err != nil {
@@ -146,7 +150,8 @@ func TestMCPEnvListAndExport(t *testing.T) {
 	if !ok {
 		t.Fatalf("list missing default group: %v", body)
 	}
-	if def["A"] != "1" {
+	a, ok := def["A"].(map[string]any)
+	if !ok || a["value"] != "1" {
 		t.Fatalf("A = %v", def["A"])
 	}
 
@@ -167,6 +172,10 @@ func TestMCPEnvListAndExport(t *testing.T) {
 func TestMCPTextSetGetListDelete(t *testing.T) {
 	m, _, _ := newManagersForTest(t, "pw")
 	ctx := context.Background()
+
+	if err := m.text.AddGroup("certs", "test"); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, _, err := m.textSet(ctx, nil, envSetValueInput{Key: "certs:TLS", Value: "-----BEGIN-----"}); err != nil {
 		t.Fatal(err)
@@ -207,7 +216,7 @@ func TestMCPGroupAddListActivate(t *testing.T) {
 	ctx := context.Background()
 
 	// env group
-	if _, _, err := m.groupAdd(ctx, nil, groupKindInput{Kind: "env", Name: "staging"}); err != nil {
+	if _, _, err := m.groupAdd(ctx, nil, groupKindInput{Kind: "env", Name: "staging", Description: "staging variant"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,7 +230,7 @@ func TestMCPGroupAddListActivate(t *testing.T) {
 	}
 
 	// text group + listing
-	if _, _, err := m.groupAdd(ctx, nil, groupKindInput{Kind: "text", Name: "secrets"}); err != nil {
+	if _, _, err := m.groupAdd(ctx, nil, groupKindInput{Kind: "text", Name: "secrets", Description: "credential archive"}); err != nil {
 		t.Fatal(err)
 	}
 	res, _, err = m.groupList(ctx, nil, listInput{Group: "text"})

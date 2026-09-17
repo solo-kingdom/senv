@@ -47,11 +47,12 @@ type envTab struct {
 }
 
 type envGroupRow struct {
-	name      string
-	isActive  bool
-	isDefault bool
-	isAll     bool // All 伪组（侧栏顶部固定项）
-	varCount  int
+	name        string
+	description string
+	isActive    bool
+	isDefault   bool
+	isAll       bool // All 伪组（侧栏顶部固定项）
+	varCount    int
 }
 
 type envItemRow struct {
@@ -216,10 +217,11 @@ func (t *envTab) load() tea.Cmd {
 				continue
 			}
 			groups = append(groups, envGroupRow{
-				name:      gi.Name,
-				isActive:  gi.IsActive,
-				isDefault: gi.IsDefault,
-				varCount:  gi.VarCount,
+				name:        gi.Name,
+				description: gi.Description,
+				isActive:    gi.IsActive,
+				isDefault:   gi.IsDefault,
+				varCount:    gi.VarCount,
 			})
 			itemsByGroup[gi.Name] = buildEnvItems(gi.Name, allVars[gi.Name])
 			itemCount += len(itemsByGroup[gi.Name])
@@ -686,7 +688,7 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 		key := it.key
 		t.mode = envModeNormal
 		t.input.Blur()
-		return t, t.doSet(group, key, value)
+		return t, t.doSet(group, key, value, nil)
 
 	case envModeAddGroup:
 		name := t.input.Value()
@@ -695,7 +697,7 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 		if name == "" {
 			return t, warnToast("group name cannot be empty")
 		}
-		return t, t.doAddGroup(name)
+		return t, warnToast("group description is required")
 	}
 	t.mode = envModeNormal
 	return t, nil
@@ -748,9 +750,11 @@ func (t *envTab) enterNewKeyMode() (Tab, tea.Cmd) {
 				}
 				return nil
 			}},
+		optionalDescriptionField(""),
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
-		return t.doSet(group, strings.TrimSpace(values["key"]), values["value"])
+		desc := strings.TrimSpace(values["description"])
+		return t.doSet(group, strings.TrimSpace(values["key"]), values["value"], &desc)
 	})
 	return t, nil
 }
@@ -828,11 +832,37 @@ func (t *envTab) doBatchDelete(targets [][2]string) tea.Cmd {
 }
 
 func (t *envTab) enterAddGroupMode() (Tab, tea.Cmd) {
-	t.mode = envModeAddGroup
-	t.input.SetValue("")
-	t.input.Placeholder = "group name"
-	t.input.Focus()
-	return t, textinput.Blink
+	siblings := make(map[string]bool, len(t.groups))
+	for _, g := range t.groups {
+		siblings[g.name] = true
+	}
+	f := newForm("new env group",
+		formField{key: "name", label: "name", kind: formText, placeholder: "group-name",
+			validate: func(v string) error {
+				v = strings.TrimSpace(v)
+				if v == "" {
+					return fmt.Errorf("group name cannot be empty")
+				}
+				if err := storage.ValidateName(v); err != nil {
+					return fmt.Errorf("invalid group name")
+				}
+				if siblings[v] {
+					return fmt.Errorf("group %s already exists", v)
+				}
+				return nil
+			}},
+		formField{key: "description", label: "description", kind: formText, placeholder: "required: what this group is for",
+			validate: func(v string) error {
+				if _, err := storage.ValidateDescription(v, false); err != nil {
+					return err
+				}
+				return nil
+			}},
+	)
+	t.openForm(f, func(values map[string]string) tea.Cmd {
+		return t.doAddGroup(strings.TrimSpace(values["name"]), values["description"])
+	})
+	return t, nil
 }
 
 // openForm installs a structured form and the action to run on submit.
@@ -935,11 +965,17 @@ func (t *envTab) enterFilterMode() (Tab, tea.Cmd) {
 
 // --- manager operations (executed in a command goroutine) ---
 
-func (t *envTab) doSet(group, key, value string) tea.Cmd {
+func (t *envTab) doSet(group, key, value string, description *string) tea.Cmd {
 	mgr := t.mgr.Env
 	mgrs := t.mgr
 	return func() tea.Msg {
-		if err := mgr.Set(group, key, value); err != nil {
+		var err error
+		if description != nil {
+			err = mgr.SetWithDescription(group, key, value, description)
+		} else {
+			err = mgr.Set(group, key, value)
+		}
+		if err != nil {
 			recordAudit(mgrs, session.AuditOpEnv, envTarget(group, key), false, "set failed")
 			return errMsg{err: err}
 		}
@@ -1042,11 +1078,11 @@ func (t *envTab) doDeactivate() tea.Cmd {
 	}
 }
 
-func (t *envTab) doAddGroup(name string) tea.Cmd {
+func (t *envTab) doAddGroup(name, description string) tea.Cmd {
 	mgr := t.mgr.Env
 	mgrs := t.mgr
 	return func() tea.Msg {
-		if err := mgr.AddGroup(name); err != nil {
+		if err := mgr.AddGroup(name, description); err != nil {
 			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "add group failed")
 			return errMsg{err: err}
 		}
@@ -1164,6 +1200,9 @@ func (t *envTab) renderItems(width, height int) string {
 	}
 	items := t.filteredItems()
 	header := group
+	if row, ok := t.currentGroupRow(); ok && row.description != "" && !row.isAll {
+		header += " — " + truncateRunes(row.description, 40)
+	}
 	if t.filterBox.Term() != "" {
 		header += "  /" + t.filterBox.Term()
 	}
