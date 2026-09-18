@@ -1,8 +1,12 @@
 package env
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 func TestSetRejectsMissingGroup(t *testing.T) {
@@ -107,4 +111,66 @@ func TestKeyCollisionWarnings(t *testing.T) {
 	if len(warnings) != 1 {
 		t.Fatalf("unique key should not add a warning: %v", warnings)
 	}
+}
+
+func TestGetWithMetaDoesNotMaskDecryptError(t *testing.T) {
+	mgr := newTestManager(t)
+	if err := mgr.Set("default", "FOO", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(mgr.storage.GetDataPath(), storage.EnvDirName, "default", "FOO"+storage.EnvVarSuffix)
+	if err := os.WriteFile(path, []byte("not-ciphertext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := mgr.GetWithMeta("default", "FOO")
+	if err == nil {
+		t.Fatal("corrupt ciphertext should fail")
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Fatalf("decrypt failure was swallowed as missing: %v", err)
+	}
+	if _, err := mgr.Get("default", "FOO"); err == nil || strings.Contains(err.Error(), "not found") {
+		t.Fatalf("Get should surface decrypt failure, got %v", err)
+	}
+}
+
+func TestGetReadsLegacyGroup(t *testing.T) {
+	mgr := newTestManager(t)
+	writeLegacyEnvGroup(t, mgr, "archive", "self-use keys", "TOKEN", "legacy-secret")
+
+	got, desc, err := mgr.GetWithMeta("archive", "TOKEN")
+	if err != nil {
+		t.Fatalf("GetWithMeta legacy: %v", err)
+	}
+	if got != "legacy-secret" {
+		t.Fatalf("value = %q", got)
+	}
+	if desc != "" {
+		t.Fatalf("per-var description = %q, want empty", desc)
+	}
+	value, err := mgr.Get("archive", "TOKEN")
+	if err != nil {
+		t.Fatalf("Get legacy: %v", err)
+	}
+	if value != "legacy-secret" {
+		t.Fatalf("Get value = %q", value)
+	}
+}
+
+func TestListGroupsReadsLegacyDescription(t *testing.T) {
+	mgr := newTestManager(t)
+	writeLegacyEnvGroup(t, mgr, "archive", "self-use keys", "TOKEN", "x")
+	groups, err := mgr.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g.Name == "archive" {
+			if g.Description != "self-use keys" {
+				t.Fatalf("description = %q", g.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("legacy group not listed")
 }

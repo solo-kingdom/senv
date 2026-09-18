@@ -2,6 +2,7 @@ package env
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -109,28 +110,9 @@ func (m *Manager) Get(group string, key string) (string, error) {
 	if err := validateIdentity(group, key); err != nil {
 		return "", err
 	}
-	cryptoKey, err := m.resolveCryptoKey()
+	entry, err := m.loadVarEntry(group, key)
 	if err != nil {
 		return "", err
-	}
-
-	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// 包哨兵本身而不是底层 securefs 错误：消息干净、不泄露内部
-			// 存储布局，errors.Is(err, os.ErrNotExist) 仍可判定。
-			return "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
-		}
-		// Fall back to group load (handles old-format groups not yet migrated)
-		envGroup, loadErr := m.loadEnvGroup(group)
-		if loadErr != nil {
-			return "", fmt.Errorf("failed to load group %s: %w", group, loadErr)
-		}
-		value, exists := envGroup.Variables[key]
-		if !exists {
-			return "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
-		}
-		return value, nil
 	}
 	return entry.Value, nil
 }
@@ -140,42 +122,44 @@ func (m *Manager) GetWithMeta(group string, key string) (value, description stri
 	if err := validateIdentity(group, key); err != nil {
 		return "", "", err
 	}
-	cryptoKey, err := m.resolveCryptoKey()
+	entry, err := m.loadVarEntry(group, key)
 	if err != nil {
 		return "", "", err
 	}
-	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
-	if err != nil {
-		if os.IsNotExist(err) {
-			envGroup, loadErr := m.loadEnvGroup(group)
-			if loadErr != nil {
-				return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
-			}
-			value, exists := envGroup.Variables[key]
-			if !exists {
-				return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
-			}
-			desc := ""
-			if envGroup.Descriptions != nil {
-				desc = envGroup.Descriptions[key]
-			}
-			return value, desc, nil
-		}
-		envGroup, loadErr := m.loadEnvGroup(group)
-		if loadErr != nil {
-			return "", "", fmt.Errorf("failed to load group %s: %w", group, loadErr)
-		}
-		value, exists := envGroup.Variables[key]
-		if !exists {
-			return "", "", fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
-		}
-		desc := ""
-		if envGroup.Descriptions != nil {
-			desc = envGroup.Descriptions[key]
-		}
-		return value, desc, nil
-	}
 	return entry.Value, entry.Description, nil
+}
+
+// loadVarEntry reads one variable from the per-file layout. Missing files fall
+// back to a legacy group blob (and migrate it); any other load error is
+// returned as-is so decrypt/parse failures cannot be masked by stale data.
+func (m *Manager) loadVarEntry(group, key string) (*storage.EnvVarEntry, error) {
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return nil, err
+	}
+	entry, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey)
+	if err == nil {
+		return entry, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	envGroup, loadErr := m.loadEnvGroup(group)
+	if loadErr != nil {
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("failed to load group %s: %w", group, loadErr)
+	}
+	value, exists := envGroup.Variables[key]
+	if !exists {
+		return nil, fmt.Errorf("variable %s not found in group %s: %w", key, group, os.ErrNotExist)
+	}
+	entry = &storage.EnvVarEntry{Value: value}
+	if envGroup.Descriptions != nil {
+		entry.Description = envGroup.Descriptions[key]
+	}
+	return entry, nil
 }
 
 // VarInfo is one env entry as shown by list: value plus optional description.
@@ -294,7 +278,7 @@ func (m *Manager) Delete(group string, key string) error {
 
 	// Check existence (triggers migration if old format)
 	if _, err := m.storage.LoadEnvVarWithKey(group, key, cryptoKey); err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			// Maybe old format not yet migrated
 			envGroup, loadErr := m.loadEnvGroup(group)
 			if loadErr != nil {

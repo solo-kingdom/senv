@@ -491,15 +491,16 @@ func (m *Manager) AddGroup(name string, description string) error {
 			return fmt.Errorf("group %s already exists", name)
 		}
 	}
-	if err := m.storage.AddTextGroup(name); err != nil {
-		return fmt.Errorf("failed to create group directory: %w", err)
-	}
 	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
 		return err
 	}
+	if err := m.storage.AddTextGroup(name); err != nil {
+		return fmt.Errorf("failed to create group directory: %w", err)
+	}
 	meta := &storage.EnvGroupMeta{Name: name, Description: desc, CreatedAt: time.Now()}
 	if err := m.storage.SaveTextGroupMetaWithKey(name, meta, cryptoKey); err != nil {
+		_ = m.storage.DeleteTextGroup(name)
 		return fmt.Errorf("failed to save group metadata: %w", err)
 	}
 	return nil
@@ -511,6 +512,9 @@ func (m *Manager) AddGroup(name string, description string) error {
 func (m *Manager) EnsureGroup(name, description string) error {
 	if err := validateGroup(name); err != nil {
 		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.EnsureGroup(name, description) })
 	}
 	exists, err := m.storage.TextGroupExists(name)
 	if err != nil {

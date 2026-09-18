@@ -2,10 +2,14 @@ package storage
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wii/senv/internal/securefs"
 )
 
 // TestInitGuard_RefusesWhenOrphanedEnvExists covers the desync-prevention case:
@@ -117,6 +121,128 @@ func TestInitGuard_MachineLocalArtifactsDoNotBlockInit(t *testing.T) {
 	}
 	if err := mgr.Initialize("test-password"); err != nil {
 		t.Fatalf("Initialize with only machine-local artifacts must succeed: %v", err)
+	}
+}
+
+func TestSeedTextGroupDoesNotOverwriteDescription(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	custom := &EnvGroupMeta{
+		Name:        "llm-keys",
+		Description: "user-edited reserved note",
+		CreatedAt:   time.Now(),
+	}
+	if err := mgr.SaveTextGroupMetaWithKey("llm-keys", custom, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.seedTextGroup("llm-keys", reservedLLMKeysDescription, key); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.LoadTextGroupMetaWithKey("llm-keys", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != "user-edited reserved note" {
+		t.Fatalf("description = %q, want preserved", got.Description)
+	}
+}
+
+type failAtomicRoot struct {
+	securefs.TrustedRoot
+	match func(segments []string) bool
+}
+
+func (r *failAtomicRoot) AtomicWrite(segments []string, data []byte, mode fs.FileMode) error {
+	if r.match != nil && r.match(segments) {
+		return errors.New("injected atomic write failure")
+	}
+	return r.TrustedRoot.AtomicWrite(segments, data, mode)
+}
+
+func TestSaveEnvGroupMetaRollsBackNewDirectory(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	original := mgr.openRoot
+	mgr.openRoot = func(path string) (securefs.TrustedRoot, error) {
+		root, err := original(path)
+		if err != nil {
+			return nil, err
+		}
+		return &failAtomicRoot{
+			TrustedRoot: root,
+			match: func(segments []string) bool {
+				return len(segments) == 3 && segments[0] == EnvDirName && segments[1] == "newsvc" && segments[2] == EnvMetaFileName
+			},
+		}, nil
+	}
+	t.Cleanup(func() { mgr.openRoot = original })
+
+	err := mgr.SaveEnvGroupMetaWithKey("newsvc", &EnvGroupMeta{Name: "newsvc", CreatedAt: time.Now()}, key)
+	if err == nil {
+		t.Fatal("want injected write failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(mgr.dataPath, EnvDirName, "newsvc")); !os.IsNotExist(statErr) {
+		t.Fatal("failed meta write left an orphan group directory")
+	}
+}
+
+func TestSaveTextGroupMetaRollsBackNewDirectory(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	original := mgr.openRoot
+	mgr.openRoot = func(path string) (securefs.TrustedRoot, error) {
+		root, err := original(path)
+		if err != nil {
+			return nil, err
+		}
+		return &failAtomicRoot{
+			TrustedRoot: root,
+			match: func(segments []string) bool {
+				return len(segments) == 3 && segments[0] == TextDirName && segments[1] == "scratch" && segments[2] == EnvMetaFileName
+			},
+		}, nil
+	}
+	t.Cleanup(func() { mgr.openRoot = original })
+
+	err := mgr.SaveTextGroupMetaWithKey("scratch", &EnvGroupMeta{Name: "scratch", CreatedAt: time.Now()}, key)
+	if err == nil {
+		t.Fatal("want injected write failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(mgr.dataPath, TextDirName, "scratch")); !os.IsNotExist(statErr) {
+		t.Fatal("failed meta write left an orphan text group directory")
+	}
+}
+
+func TestInitializeRollsBackWhenGroupSeedFails(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "cfg")
+	data := filepath.Join(tmp, "data")
+	mgr := NewManager(cfg, data)
+
+	original := mgr.openRoot
+	mgr.openRoot = func(path string) (securefs.TrustedRoot, error) {
+		root, err := original(path)
+		if err != nil {
+			return nil, err
+		}
+		return &failAtomicRoot{
+			TrustedRoot: root,
+			match: func(segments []string) bool {
+				return len(segments) == 3 && segments[0] == TextDirName && segments[1] == "llm-keys" && segments[2] == EnvMetaFileName
+			},
+		}, nil
+	}
+
+	if err := mgr.Initialize("test-password"); err == nil {
+		t.Fatal("initialize should fail when llm-keys meta cannot be written")
+	}
+	if mgr.IsInitialized() {
+		t.Fatal("failed initialize left metadata in place")
+	}
+
+	mgr.openRoot = original
+	if err := mgr.Initialize("test-password"); err != nil {
+		t.Fatalf("retry after rollback: %v", err)
 	}
 }
 

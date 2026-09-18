@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wii/senv/internal/securefs"
 )
@@ -82,6 +83,51 @@ func TestLoadEnvVaultMatchesPerGroupLoad(t *testing.T) {
 		t.Fatalf("batch read after write = %q, want rotated", batch2["prod"].Variables["API_KEY"])
 	}
 	_ = configPath
+}
+
+func TestSaveEnvGroupWithKeyPreservesEntryTimestamps(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+
+	created := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	entry := &EnvVarEntry{Value: "v1", CreatedAt: created, UpdatedAt: created}
+	if err := mgr.SaveEnvVarWithKey("hist", "TOKEN", entry, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SaveEnvGroupMetaWithKey("hist", &EnvGroupMeta{Name: "hist", CreatedAt: created}, key); err != nil {
+		t.Fatal(err)
+	}
+
+	grp := NewEnvGroup("hist")
+	grp.Variables["TOKEN"] = "v1"
+	if err := mgr.SaveEnvGroupWithKey(grp, key); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.LoadEnvVarWithKey("hist", "TOKEN", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, created)
+	}
+	if !got.UpdatedAt.Equal(created) {
+		t.Fatalf("UpdatedAt = %v, want preserved", got.UpdatedAt)
+	}
+
+	grp.Variables["TOKEN"] = "v2"
+	if err := mgr.SaveEnvGroupWithKey(grp, key); err != nil {
+		t.Fatal(err)
+	}
+	got, err = mgr.LoadEnvVarWithKey("hist", "TOKEN", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Fatalf("CreatedAt after value change = %v, want %v", got.CreatedAt, created)
+	}
+	if !got.UpdatedAt.After(created) {
+		t.Fatalf("UpdatedAt should advance on value change, got %v", got.UpdatedAt)
+	}
 }
 
 // TestManifestCacheSeesUnfinishedJournal 验证 manifest 缓存的失效界：缓存

@@ -171,3 +171,24 @@ func TestDeleteActiveGroupRequiresConfirmation(t *testing.T) {
 		}
 	}
 }
+
+func TestRenameLegacyGroupKeepsDescription(t *testing.T) {
+	mgr := newTestManager(t)
+	writeLegacyEnvGroup(t, mgr, "staging", "archive of staging keys", "TOKEN", "abc")
+	if err := mgr.RenameGroup("staging", "prod"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	groups, err := mgr.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g.Name == "prod" {
+			if g.Description != "archive of staging keys" {
+				t.Fatalf("description = %q, want preserved", g.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("renamed group missing")
+}

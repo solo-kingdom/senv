@@ -43,6 +43,8 @@ const (
 	EnvDirName       = "envs"
 	EnvVarSuffix     = ".enc"
 	EnvMetaFileName  = ".meta.enc"
+
+	reservedLLMKeysDescription = "reserved: LLM API keys (CLI/TUI only)"
 )
 
 // Manager handles storage operations
@@ -161,12 +163,19 @@ func (m *Manager) Initialize(password string) error {
 		passwordKey,
 	)
 
-	// Save metadata
+	// Save metadata. Anything after this point is rolled back on failure so a
+	// half-initialized vault cannot trap the caller behind "already initialized".
 	if err := m.SaveMetadata(metadata); err != nil {
 		return fmt.Errorf("failed to save metadata: %w", err)
 	}
+	if err := m.completeInitialize(password, key); err != nil {
+		m.rollbackPartialInitialize()
+		return err
+	}
+	return nil
+}
 
-	// Create settings
+func (m *Manager) completeInitialize(password string, key []byte) error {
 	settings := NewSettings()
 	if err := m.SaveSettings(settings); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
@@ -176,43 +185,53 @@ func (m *Manager) Initialize(password string) error {
 		return fmt.Errorf("failed to write .gitignore: %w", err)
 	}
 
-	// Create config index
 	configIndex := NewConfigIndex()
 	if err := m.SaveConfigIndex(configIndex); err != nil {
 		return fmt.Errorf("failed to save config index: %w", err)
 	}
 
-	// Create default env group
 	defaultGroup := NewEnvGroup("default")
 	if err := m.SaveEnvGroup(defaultGroup, password); err != nil {
 		return fmt.Errorf("failed to create default group: %w", err)
 	}
-
-	if err := m.AddTextGroup("default"); err != nil {
+	if err := m.seedTextGroup("default", "", key); err != nil {
 		return fmt.Errorf("failed to create default text group: %w", err)
 	}
-	cryptoKey, err := m.deriveKeyFromPassword(password)
+	if err := m.seedTextGroup("llm-keys", reservedLLMKeysDescription, key); err != nil {
+		return fmt.Errorf("failed to create llm-keys text group: %w", err)
+	}
+	return nil
+}
+
+// seedTextGroup creates the text group directory and writes metadata only when
+// .meta.enc is missing, so a reserved description is never clobbered.
+func (m *Manager) seedTextGroup(name, description string, cryptoKey []byte) error {
+	if err := m.AddTextGroup(name); err != nil {
+		return err
+	}
+	existing, err := m.LoadTextGroupMetaWithKey(name, cryptoKey)
 	if err != nil {
 		return err
 	}
-	textMeta := &EnvGroupMeta{Name: "default", CreatedAt: time.Now()}
-	if err := m.SaveTextGroupMetaWithKey("default", textMeta, cryptoKey); err != nil {
-		return fmt.Errorf("failed to save default text group metadata: %w", err)
+	if existing != nil {
+		return nil
 	}
+	meta := &EnvGroupMeta{Name: name, Description: description, CreatedAt: time.Now()}
+	return m.SaveTextGroupMetaWithKey(name, meta, cryptoKey)
+}
 
-	if err := m.AddTextGroup("llm-keys"); err != nil {
-		return fmt.Errorf("failed to create llm-keys text group: %w", err)
+func (m *Manager) rollbackPartialInitialize() {
+	_ = m.DeleteEnvGroup("default")
+	_ = m.DeleteTextGroup("default")
+	_ = m.DeleteTextGroup("llm-keys")
+	root, err := m.openConfigRoot()
+	if err != nil {
+		return
 	}
-	llmMeta := &EnvGroupMeta{
-		Name:        "llm-keys",
-		Description: "reserved: LLM API keys (CLI/TUI only)",
-		CreatedAt:   time.Now(),
-	}
-	if err := m.SaveTextGroupMetaWithKey("llm-keys", llmMeta, cryptoKey); err != nil {
-		return fmt.Errorf("failed to save llm-keys text group metadata: %w", err)
-	}
-
-	return nil
+	defer root.Close()
+	_ = root.Remove(MetadataFile)
+	_ = root.Remove(SettingsFile)
+	_ = root.Remove(ConfigIndexFile)
 }
 
 // IsInitialized checks if the project is initialized
@@ -571,10 +590,20 @@ func (m *Manager) SaveEnvGroupWithKey(envGroup *EnvGroup, key []byte) error {
 		return err
 	}
 
+	now := time.Now()
 	for k, v := range envGroup.Variables {
-		entry := &EnvVarEntry{Value: v, CreatedAt: envGroup.CreatedAt, UpdatedAt: envGroup.UpdatedAt}
+		entry := &EnvVarEntry{Value: v, CreatedAt: now, UpdatedAt: now}
 		if envGroup.Descriptions != nil {
 			entry.Description = envGroup.Descriptions[k]
+		}
+		existing, err := m.LoadEnvVarWithKey(envGroup.Name, k, key)
+		if err == nil {
+			entry.CreatedAt = existing.CreatedAt
+			if existing.Value == v && existing.Description == entry.Description {
+				entry.UpdatedAt = existing.UpdatedAt
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		if err := m.SaveEnvVarWithKey(envGroup.Name, k, entry, key); err != nil {
 			return err
@@ -782,10 +811,7 @@ func (m *Manager) SaveEnvGroupMetaWithKey(group string, meta *EnvGroupMeta, cryp
 		return err
 	}
 	defer root.Close()
-	if err := root.EnsureDir([]string{EnvDirName, group}, 0o700); err != nil {
-		return err
-	}
-	return root.AtomicWrite([]string{EnvDirName, group, EnvMetaFileName}, []byte(encrypted), 0o600)
+	return writeGroupMetaFile(root, EnvDirName, group, encrypted)
 }
 
 // LoadEnvGroupMetaWithKey loads group metadata.
@@ -868,6 +894,11 @@ func (m *Manager) deriveKeyFromPassword(password string) ([]byte, error) {
 		return nil, err
 	}
 	return deriveKeyWithIterations(password, salt, iterations), nil
+}
+
+// DeriveKeyFromPassword derives the current vault key from a password.
+func (m *Manager) DeriveKeyFromPassword(password string) ([]byte, error) {
+	return m.deriveKeyFromPassword(password)
 }
 
 // LoadConfigIndex loads the config file index
@@ -1155,10 +1186,28 @@ func (m *Manager) SaveTextGroupMetaWithKey(group string, meta *EnvGroupMeta, cry
 		return err
 	}
 	defer root.Close()
-	if err := root.EnsureDir([]string{TextDirName, group}, 0o700); err != nil {
+	return writeGroupMetaFile(root, TextDirName, group, encrypted)
+}
+
+// writeGroupMetaFile creates the group directory if needed and writes .meta.enc.
+// A newly created empty directory is removed when the write fails so callers
+// never observe a group that "exists" without metadata.
+func writeGroupMetaFile(root securefs.TrustedRoot, dirName, group string, encrypted string) error {
+	_, statErr := root.ReadDir(dirName, group)
+	existed := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if err := root.EnsureDir([]string{dirName, group}, 0o700); err != nil {
 		return err
 	}
-	return root.AtomicWrite([]string{TextDirName, group, EnvMetaFileName}, []byte(encrypted), 0o600)
+	if err := root.AtomicWrite([]string{dirName, group, EnvMetaFileName}, []byte(encrypted), 0o600); err != nil {
+		if !existed {
+			_ = root.RemoveTree(dirName, group)
+		}
+		return err
+	}
+	return nil
 }
 
 // LoadTextGroupMetaWithKey loads text group metadata. Missing file returns nil, nil.

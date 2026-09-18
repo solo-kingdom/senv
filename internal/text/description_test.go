@@ -59,3 +59,29 @@ func TestSetWithDescriptionPersists(t *testing.T) {
 		t.Fatalf("omitted description was overwritten: %q", desc)
 	}
 }
+
+func TestEnsureGroupIsIdempotent(t *testing.T) {
+	mgr, _ := setupTestTextManager(t)
+	if err := mgr.EnsureGroup("notes", "draft archive"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.EnsureGroup("notes", "other description"); err != nil {
+		t.Fatalf("second EnsureGroup: %v", err)
+	}
+	groups, err := mgr.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range groups {
+		if g.Name == "notes" {
+			found = true
+			if g.Description != "draft archive" {
+				t.Fatalf("description overwritten = %q", g.Description)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("notes group missing")
+	}
+}

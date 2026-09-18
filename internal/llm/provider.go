@@ -58,12 +58,27 @@ func (m *ProviderManager) mutate(fn func(*ProviderManager) error) error {
 		clone := *m
 		clone.storage = locked
 		clone.mutationLocked = true
+		if err := clone.ensureKey(); err != nil {
+			return err
+		}
 		return fn(&clone)
 	})
 }
 
-func (m *ProviderManager) textManager() *text.Manager {
+func (m *ProviderManager) ensureKey() error {
 	if m.key != nil {
+		return nil
+	}
+	key, err := m.storage.DeriveKeyFromPassword(m.password)
+	if err != nil {
+		return err
+	}
+	m.key = key
+	return nil
+}
+
+func (m *ProviderManager) textManager() *text.Manager {
+	if err := m.ensureKey(); err == nil && m.key != nil {
 		return text.NewManagerWithKey(m.storage, m.key)
 	}
 	return text.NewManager(m.storage, m.password)
@@ -71,13 +86,16 @@ func (m *ProviderManager) textManager() *text.Manager {
 
 // envManager 返回 env 凭据读取器（env: 引用解密用）。
 func (m *ProviderManager) envManager() *env.Manager {
-	if m.key != nil {
+	if err := m.ensureKey(); err == nil && m.key != nil {
 		return env.NewManagerWithKey(m.storage, m.key)
 	}
 	return env.NewManager(m.storage, m.password)
 }
 
 func (m *ProviderManager) ensureLLMKeysGroup() error {
+	if err := m.ensureKey(); err != nil {
+		return err
+	}
 	return m.textManager().EnsureGroup(LLMKeysGroup, "reserved: LLM API keys (CLI/TUI only)")
 }
 
