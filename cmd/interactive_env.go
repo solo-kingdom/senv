@@ -212,8 +212,8 @@ func (is *interactiveSession) addEnvGroup() {
 		fmt.Println("❌ 分组名称不能为空")
 		return
 	}
-
-	if err := is.envManager.AddGroup(name); err != nil {
+	desc := is.prompt("分组说明（必填）: ")
+	if err := is.envManager.AddGroup(name, desc); err != nil {
 		fmt.Printf("❌ 创建失败: %v\n", err)
 		return
 	}

@@ -72,6 +72,9 @@ func TestTextTraversalSymlink(t *testing.T) {
 		if err := os.WriteFile(sentinel, []byte("outside"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.RemoveAll(texts); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Symlink(outside, texts); err != nil {
 			t.Fatal(err)
 		}

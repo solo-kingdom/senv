@@ -15,6 +15,9 @@ func TestTextRekeyConcurrentMutationBoundary(t *testing.T) {
 	if err := store.Initialize("password"); err != nil {
 		t.Fatal(err)
 	}
+	if err := NewManager(store, "password").AddGroup("notes", "test"); err != nil {
+		t.Fatalf("AddGroup notes: %v", err)
+	}
 	entered, release := make(chan struct{}), make(chan struct{})
 	lockDone := make(chan error, 1)
 	go func() {

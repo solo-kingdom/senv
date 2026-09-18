@@ -19,9 +19,10 @@ func TestLoadTextVaultMatchesPerEntryLoad(t *testing.T) {
 		t.Fatalf("create empty group zeta: %v", err)
 	}
 	want := map[string]map[string]string{
-		"default": {"A": "1", "B": "22"},
-		"prod":    {"X": "secret"},
-		"zeta":    {},
+		"default":  {"A": "1", "B": "22"},
+		"llm-keys": {},
+		"prod":     {"X": "secret"},
+		"zeta":     {},
 	}
 	for group, entries := range want {
 		for k, v := range entries {

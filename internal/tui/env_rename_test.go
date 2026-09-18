@@ -18,7 +18,7 @@ func newLoadedEnvTab(t *testing.T, mgrs Managers) *envTab {
 func TestEnvRenameKeyViaForm(t *testing.T) {
 	mgrs, audit := newAuditTestManagers(t)
 	tab := newLoadedEnvTab(t, mgrs)
-	flush(tab, tab.doSet("default", "OLD", "v"))
+	flush(tab, tab.doSet("default", "OLD", "v", nil))
 
 	tab.focusLeft = false
 	tab.itemIndex = 0
@@ -65,8 +65,8 @@ func TestEnvRenameKeyViaForm(t *testing.T) {
 func TestEnvRenameConflictKeepsFormOpen(t *testing.T) {
 	mgrs, _ := newAuditTestManagers(t)
 	tab := newLoadedEnvTab(t, mgrs)
-	flush(tab, tab.doSet("default", "A", "1"))
-	flush(tab, tab.doSet("default", "B", "2"))
+	flush(tab, tab.doSet("default", "A", "1", nil))
+	flush(tab, tab.doSet("default", "B", "2", nil))
 
 	tab.focusLeft = false
 	tab.itemIndex = 0
@@ -96,8 +96,8 @@ func TestEnvRenameConflictKeepsFormOpen(t *testing.T) {
 func TestEnvRenameGroupAndDeleteGroup(t *testing.T) {
 	mgrs, _ := newAuditTestManagers(t)
 	tab := newLoadedEnvTab(t, mgrs)
-	flush(tab, tab.doAddGroup("staging"))
-	flush(tab, tab.doSet("staging", "K", "v"))
+	flush(tab, tab.doAddGroup("staging", "test"))
+	flush(tab, tab.doSet("staging", "K", "v", nil))
 	tab.groupIndex = groupIndexByName(tab, "staging")
 	tab.focusLeft = true
 
@@ -173,8 +173,8 @@ func TestEnvDefaultGroupRenameAndDeleteRefused(t *testing.T) {
 func TestEnvDeleteActiveGroupWarnsAboutActivation(t *testing.T) {
 	mgrs, _ := newAuditTestManagers(t)
 	tab := newLoadedEnvTab(t, mgrs)
-	flush(tab, tab.doAddGroup("prod"))
-	flush(tab, tab.doSet("prod", "K", "v"))
+	flush(tab, tab.doAddGroup("prod", "test"))
+	flush(tab, tab.doSet("prod", "K", "v", nil))
 	tab.groupIndex = groupIndexByName(tab, "prod")
 	flush(tab, tab.doActivate())
 

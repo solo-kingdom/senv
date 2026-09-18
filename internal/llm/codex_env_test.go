@@ -56,6 +56,9 @@ func TestCodexEnvPlanFor(t *testing.T) {
 func TestCodexEnvKeyReusesReferencedEnvName(t *testing.T) {
 	pm, store, _ := newTestProviderManager(t)
 	envMgr := env.NewManager(store, "test-password")
+	if err := envMgr.AddGroup("ai", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := envMgr.Set("ai", "DEEPSEEK_API_KEY", "sk-deepseek"); err != nil {
 		t.Fatalf("env.Set() error = %v", err)
 	}
@@ -185,6 +188,9 @@ func TestCodexEnvSeedKeepsExistingEntry(t *testing.T) {
 func TestCodexEnvKeyFromInactiveGroupWarns(t *testing.T) {
 	pm, store, _ := newTestProviderManager(t)
 	envMgr := env.NewManager(store, "test-password")
+	if err := envMgr.AddGroup("dev", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := envMgr.Set("dev", "APP_KEY", "sk-dev"); err != nil {
 		t.Fatalf("env.Set() error = %v", err)
 	}

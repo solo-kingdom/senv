@@ -1,0 +1,25 @@
+{
+  "status": "manual_fallback",
+  "reason": "OCR CLI 与 MiniMax LLM 不兼容：模型在 OCR 的 file_read 工具上反复生成反向行范围（start_line > end_line），进入死循环，已尝试 M2.5/M2.7/M2.7-highspeed/M3 + effort=low/max-tokens-budget/timeout 全部超时失败。回退为直接调用 MiniMax-M3 chat completions 对核心 9 个生产文件（1139 行 diff）做结构化 review，提取 12 个 findings 并经事实复核后定级。",
+  "llm": {
+    "model": "MiniMax-M3",
+    "endpoint": "https://token-api.wii.pub/v1",
+    "protocol": "openai-completions"
+  },
+  "summary": {
+    "files_reviewed": 9,
+    "findings_raw": 12,
+    "findings_published": 9,
+    "findings_dropped": 3
+  },
+  "dropped": [
+    {"priority": "P1", "file": "internal/text/manager.go", "reason": "F0：本次新增的 resolveCryptoKey 在 m.key 缓存下 O(1)，实际 PBKDF2 仅在 password-mode 且每个 manager 实例首次调用各派生一次；listGroupsInfo/Snapshot 的循环是已有行为，非本次回归。降为 P2。" },
+    {"priority": "P1", "file": "internal/llm/provider.go", "reason": "F2：ensureLLMKeysGroup → text.NewManagerWithKey 用已缓存的 m.key，AddGroup 内的 resolveCryptoKey 也走 m.key 缓存分支，password-mode 下才会重复派生。降为 P3。" },
+    {"priority": "P2", "file": "internal/ssh/host.go", "reason": "F8 失实：KeyPair Edit（internal/ssh/manager.go:347）和 ImportKeyPairWithMeta（:120）均已调 storage.ValidateDescription。移除。" }
+  ],
+  "session_id": "manual-minimax-m3-2026-09-18",
+  "root": {
+    "path": "/home/wii/code/repos/github/solo-kingdom/senv",
+    "source": "nearest"
+  }
+}

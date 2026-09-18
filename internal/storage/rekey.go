@@ -446,8 +446,10 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 		if key == segments[2] {
 			return 0, fmt.Errorf("invalid text entry identity %q", strings.Join(segments, "/"))
 		}
-		if err := securefs.ValidateSegment(key); err != nil {
-			return 0, fmt.Errorf("invalid text key: %w", err)
+		if segments[2] != EnvMetaFileName {
+			if err := securefs.ValidateSegment(key); err != nil {
+				return 0, fmt.Errorf("invalid text key: %w", err)
+			}
 		}
 		return rekeyEntryText, nil
 	case len(segments) == 2 && segments[0] == HostDirName:

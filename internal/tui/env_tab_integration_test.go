@@ -70,8 +70,8 @@ func TestEnvManagerOpsDirect(t *testing.T) {
 	}
 
 	// Set two variables in default.
-	tab = flush(tab, tab.doSet("default", "FOO", "bar"))
-	tab = flush(tab, tab.doSet("default", "BAZ", "qux"))
+	tab = flush(tab, tab.doSet("default", "FOO", "bar", nil))
+	tab = flush(tab, tab.doSet("default", "BAZ", "qux", nil))
 	if !hasEnvItem(tab, "default", "FOO", "bar") {
 		t.Error("FOO=bar missing after set")
 	}
@@ -81,8 +81,8 @@ func TestEnvManagerOpsDirect(t *testing.T) {
 
 	// Add a new group, then seed it with a key so it shows up in the listing
 	// (empty non-default groups are hidden by the view layer).
-	tab = flush(tab, tab.doAddGroup("prod"))
-	tab = flush(tab, tab.doSet("prod", "KEY", "v"))
+	tab = flush(tab, tab.doAddGroup("prod", "test"))
+	tab = flush(tab, tab.doSet("prod", "KEY", "v", nil))
 	if groupIndexByName(tab, "prod") < 0 {
 		t.Fatal("prod group not visible after seeding a key")
 	}

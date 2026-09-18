@@ -65,6 +65,7 @@ var (
 	providerAddModelModalities    []string
 	providerAddDefault            string
 	providerAddAPIShape           string
+	providerAddDescription        string
 	providerAddForce              bool
 
 	providerEditBaseURL            string
@@ -82,6 +83,7 @@ var (
 	providerEditModelModalities    []string
 	providerEditDefault            string
 	providerEditAPIShape           string
+	providerEditDescription        string
 
 	// providerCredentialReader is a test seam; production input never becomes
 	// a flag value and is dropped when AddProvider returns.
@@ -155,6 +157,7 @@ its own shape at switch time; the command reports the normalized value.
 			RequireModelMetadata:  true,
 			DefaultModel:          providerAddDefault,
 			APIShape:              providerAddAPIShape,
+			Description:           providerAddDescription,
 			Force:                 providerAddForce,
 		})
 		if err != nil {
@@ -256,6 +259,9 @@ the profile, credential and references untouched.`,
 		if cmd.Flags().Changed("api-shape") {
 			opts.APIShape = &providerEditAPIShape
 		}
+		if cmd.Flags().Changed("description") {
+			opts.Description = &providerEditDescription
+		}
 		if cmd.Flags().Changed("catalog-provider") {
 			opts.CatalogProvider = &providerEditCatalog
 		}
@@ -342,8 +348,8 @@ var aiProviderListCmd = &cobra.Command{
 		}
 		out := cmd.OutOrStdout()
 		for _, e := range entries {
-			fmt.Fprintf(out, "%s\t%s\t模型数 %d\t默认 %s\t形态 %s\t目录 %s\n",
-				e.Alias, e.BaseURL, len(e.Models), orDash(e.DefaultModel), orDash(e.APIShape), orDash(e.CatalogProvider))
+			fmt.Fprintf(out, "%s\t%s\t模型数 %d\t默认 %s\t形态 %s\t目录 %s\t%s\n",
+				e.Alias, e.BaseURL, len(e.Models), orDash(e.DefaultModel), orDash(e.APIShape), orDash(e.CatalogProvider), orDash(e.Description))
 		}
 		return nil
 	},
@@ -384,6 +390,7 @@ var aiProviderShowCmd = &cobra.Command{
 			}
 		}
 		fmt.Fprintf(out, "默认模型：%s\n", orDash(e.DefaultModel))
+		fmt.Fprintf(out, "说明：%s\n", orDash(e.Description))
 		return nil
 	},
 }
@@ -530,6 +537,7 @@ func init() {
 	aiProviderAddCmd.Flags().StringArrayVar(&providerAddModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefault, "default-model", "", "default model (must be in the model set)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty derives it from the target agent)")
+	aiProviderAddCmd.Flags().StringVar(&providerAddDescription, "description", "", "optional vault note on the provider profile (not model catalog text)")
 	aiProviderAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing profile")
 	aiProviderEditCmd.Flags().StringVar(&providerEditBaseURL, "base-url", "", "new provider base URL (https)")
 	aiProviderEditCmd.Flags().BoolVar(&providerEditAPIKeyStdin, "api-key-stdin", false, "rotate the own credential with a key read from stdin (no echo, no argv)")
@@ -546,5 +554,6 @@ func init() {
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
+	aiProviderEditCmd.Flags().StringVar(&providerEditDescription, "description", "", "replace the provider profile note (empty clears it)")
 	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderRenameCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)
 }

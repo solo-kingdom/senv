@@ -19,7 +19,7 @@ func TestManagerEnvValidation(t *testing.T) {
 			}{
 				{"create", func() error { return m.Set(group, "API_KEY", "value") }},
 				{"read", func() error { _, err := m.Get(group, "API_KEY"); return err }},
-				{"AddGroup", func() error { return m.AddGroup(group) }},
+				{"AddGroup", func() error { return m.AddGroup(group, "test") }},
 				{"activate", func() error { return m.ActivateGroup(group) }},
 				{"deactivate", func() error { return m.DeactivateGroup(group) }},
 				{"delete", func() error { return m.Delete(group, "API_KEY") }},

@@ -58,12 +58,27 @@ func (m *ProviderManager) mutate(fn func(*ProviderManager) error) error {
 		clone := *m
 		clone.storage = locked
 		clone.mutationLocked = true
+		if err := clone.ensureKey(); err != nil {
+			return err
+		}
 		return fn(&clone)
 	})
 }
 
-func (m *ProviderManager) textManager() *text.Manager {
+func (m *ProviderManager) ensureKey() error {
 	if m.key != nil {
+		return nil
+	}
+	key, err := m.storage.DeriveKeyFromPassword(m.password)
+	if err != nil {
+		return err
+	}
+	m.key = key
+	return nil
+}
+
+func (m *ProviderManager) textManager() *text.Manager {
+	if err := m.ensureKey(); err == nil && m.key != nil {
 		return text.NewManagerWithKey(m.storage, m.key)
 	}
 	return text.NewManager(m.storage, m.password)
@@ -71,10 +86,17 @@ func (m *ProviderManager) textManager() *text.Manager {
 
 // envManager 返回 env 凭据读取器（env: 引用解密用）。
 func (m *ProviderManager) envManager() *env.Manager {
-	if m.key != nil {
+	if err := m.ensureKey(); err == nil && m.key != nil {
 		return env.NewManagerWithKey(m.storage, m.key)
 	}
 	return env.NewManager(m.storage, m.password)
+}
+
+func (m *ProviderManager) ensureLLMKeysGroup() error {
+	if err := m.ensureKey(); err != nil {
+		return err
+	}
+	return m.textManager().EnsureGroup(LLMKeysGroup, "reserved: LLM API keys (CLI/TUI only)")
 }
 
 func (m *ProviderManager) save(alias string, entry *storage.LLMProviderEntry) error {
@@ -126,7 +148,10 @@ type AddProviderOptions struct {
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
 	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
 	APIShape string
-	Force    bool
+	// Description is an optional vault note on the provider profile itself,
+	// independent of model catalog text in ModelInfo.
+	Description string
+	Force       bool
 }
 
 // AddProviderResult 携带保存结果与非致命警告（如目录缓存过期）。
@@ -151,6 +176,10 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		return nil, fmt.Errorf("invalid base URL %q: %w", opts.BaseURL, err)
 	}
 	if err := storage.ValidateLLMProviderAPIShape(strings.TrimSpace(opts.APIShape)); err != nil {
+		return nil, err
+	}
+	desc, err := storage.ValidateDescription(opts.Description, true)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateCredentialInput(opts); err != nil {
@@ -180,6 +209,7 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		Models:          models,
 		ModelInfo:       modelInfo,
 		DefaultModel:    defaultModel,
+		Description:     desc,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -196,6 +226,9 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 				return fmt.Errorf("provider %q already exists; use --force to overwrite", alias)
 			}
 			entry.CreatedAt = existing.CreatedAt
+			if opts.Description == "" {
+				entry.Description = existing.Description
+			}
 		}
 		if existing == nil && opts.APIKey == "" && opts.KeyRef == "" {
 			return fmt.Errorf("either the interactive credential prompt, --api-key-stdin, or --key-ref is required")
@@ -220,6 +253,9 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 				oldValue, hadOld = value, getErr == nil
 			}
 			if opts.APIKey != "" {
+				if err := locked.ensureLLMKeysGroup(); err != nil {
+					return err
+				}
 				if err := locked.textManager().Set(LLMKeysGroup, alias, opts.APIKey); err != nil {
 					return fmt.Errorf("store credential: %w", err)
 				}
@@ -300,6 +336,9 @@ type EditProviderOptions struct {
 	RequireModelMetadata bool
 	DefaultModel         *string
 	APIShape             *string
+	// Description nil keeps the current profile note; non-nil replaces it
+	// (empty string clears).
+	Description *string
 }
 
 // EditProvider 更新既有档案。alias 不可改；未提供的字段保持原值。凭据轮换
@@ -392,6 +431,13 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 	} else if hasKeyRef {
 		entry.CredentialRef = strings.TrimSpace(*opts.KeyRef)
 	}
+	if opts.Description != nil {
+		desc, descErr := storage.ValidateDescription(*opts.Description, true)
+		if descErr != nil {
+			return nil, descErr
+		}
+		entry.Description = desc
+	}
 	if err := entry.ValidateLLMProvider(); err != nil {
 		return nil, err
 	}
@@ -421,6 +467,9 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 				oldValue, hadOld = value, getErr == nil
 			}
 			if apiKey != "" {
+				if err := locked.ensureLLMKeysGroup(); err != nil {
+					return err
+				}
 				if err := locked.textManager().Set(LLMKeysGroup, alias, apiKey); err != nil {
 					return fmt.Errorf("store credential: %w", err)
 				}

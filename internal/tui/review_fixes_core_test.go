@@ -111,6 +111,9 @@ func TestTextAllViewSelectAllUsesRealGroups(t *testing.T) {
 	if err := mgr.Set("default", "a1", "v"); err != nil {
 		t.Fatal(err)
 	}
+	if err := mgr.AddGroup("other", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgr.Set("other", "b1", "v"); err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +458,9 @@ var _ = config.Scope{}
 // （审查 text:960；剪贴板行为因环境而异，两类结果均视为通过）。
 func TestTextAllViewCopyUsesRealGroup(t *testing.T) {
 	mgr := newTestTextManager(t)
+	if err := mgr.AddGroup("prod", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgr.Set("prod", "secret-key", "v"); err != nil {
 		t.Fatal(err)
 	}

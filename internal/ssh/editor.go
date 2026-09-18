@@ -101,6 +101,7 @@ func renderHostForEditor(host *storage.HostEntry) string {
 	fmt.Fprintf(&b, "identity-key %s\n", host.IdentityKey)
 	fmt.Fprintf(&b, "group %s\n", host.Group)
 	fmt.Fprintf(&b, "tags %s\n", strings.Join(host.Tags, ","))
+	fmt.Fprintf(&b, "description %s\n", host.Description)
 	keys := make([]string, 0, len(host.Extra))
 	for key := range host.Extra {
 		keys = append(keys, key)
@@ -157,6 +158,8 @@ func parseHostEditor(alias, content string) (*storage.HostEntry, error) {
 					}
 				}
 			}
+		case "description":
+			host.Description = value
 		case "attr":
 			attrKey, attrValue, found := strings.Cut(value, "=")
 			if !found {

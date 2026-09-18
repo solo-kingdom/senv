@@ -113,7 +113,7 @@ func TestRekeyPreflightEnumeratesAndDecryptsCompleteVault(t *testing.T) {
 	if len(metadata) == 0 || len(entries) != result.Total() {
 		t.Fatalf("entries=%d result=%+v metadata=%d", len(entries), result, len(metadata))
 	}
-	if result.EnvFiles != 2 || result.TextFiles != 1 || result.ConfigFiles != 1 {
+	if result.EnvFiles != 2 || result.TextFiles != 3 || result.ConfigFiles != 1 {
 		t.Fatalf("unexpected preflight counts: %+v", result)
 	}
 }

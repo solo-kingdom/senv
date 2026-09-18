@@ -26,6 +26,7 @@ type KeyPairSummary struct {
 	Fingerprint string    `json:"fingerprint,omitempty"`
 	PublicKey   string    `json:"public_key,omitempty"`
 	Comment     string    `json:"comment,omitempty"`
+	Description string    `json:"description,omitempty"`
 	Group       string    `json:"group,omitempty"`
 	ImportedAt  time.Time `json:"imported_at"`
 	HasPubKey   bool      `json:"has_pubkey"`
@@ -105,10 +106,19 @@ func (m *Manager) ImportKeyPair(name, path string, force bool) (*KeyPairSummary,
 
 // ImportKeyPairWithGroup is ImportKeyPair plus the initial group membership.
 func (m *Manager) ImportKeyPairWithGroup(name, path, group string, force bool) (*KeyPairSummary, error) {
+	return m.ImportKeyPairWithMeta(name, path, group, "", force)
+}
+
+// ImportKeyPairWithMeta is ImportKeyPairWithGroup plus an optional description.
+func (m *Manager) ImportKeyPairWithMeta(name, path, group, description string, force bool) (*KeyPairSummary, error) {
 	if err := storage.ValidateName(name); err != nil {
 		return nil, fmt.Errorf("invalid keypair name %q: %w", name, err)
 	}
 	if err := validateGroup(group); err != nil {
+		return nil, fmt.Errorf("keypair %q: %w", name, err)
+	}
+	desc, err := storage.ValidateDescription(description, true)
+	if err != nil {
 		return nil, fmt.Errorf("keypair %q: %w", name, err)
 	}
 	privateKey, err := os.ReadFile(path) //nolint:gosec // the user explicitly supplies this path
@@ -126,6 +136,7 @@ func (m *Manager) ImportKeyPairWithGroup(name, path, group string, force bool) (
 		PublicKey:   publicKey,
 		Fingerprint: fingerprint,
 		Comment:     comment,
+		Description: desc,
 		Group:       group,
 		ImportedAt:  now,
 	}
@@ -333,6 +344,11 @@ func (m *Manager) UpdateKeyPair(name string, update func(*storage.KeyPairEntry) 
 		if err := validateGroup(entry.Group); err != nil {
 			return fmt.Errorf("keypair %q: %w", name, err)
 		}
+		desc, err := storage.ValidateDescription(entry.Description, true)
+		if err != nil {
+			return fmt.Errorf("keypair %q: %w", name, err)
+		}
+		entry.Description = desc
 		newGroup = entry.Group
 		return locked.saveKeyPair(entry)
 	})
@@ -589,6 +605,7 @@ func keyPairSummary(entry *storage.KeyPairEntry) KeyPairSummary {
 		Fingerprint: fp,
 		PublicKey:   pub,
 		Comment:     comment,
+		Description: entry.Description,
 		Group:       entry.Group,
 		ImportedAt:  entry.ImportedAt,
 		HasPubKey:   pub != "",

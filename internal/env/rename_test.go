@@ -59,7 +59,7 @@ func TestRenameKeyRejectsConflictsAndMissing(t *testing.T) {
 
 func TestRenameGroupKeepsVariablesAndActivation(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.AddGroup("staging"); err != nil {
+	if err := mgr.AddGroup("staging", "test"); err != nil {
 		t.Fatalf("add group: %v", err)
 	}
 	if err := mgr.Set("staging", "TOKEN", "abc"); err != nil {
@@ -102,7 +102,7 @@ func TestRenameGroupKeepsVariablesAndActivation(t *testing.T) {
 
 func TestRenameGroupRefusesDefaultAndConflicts(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.AddGroup("staging"); err != nil {
+	if err := mgr.AddGroup("staging", "test"); err != nil {
 		t.Fatalf("add group: %v", err)
 	}
 	if err := mgr.RenameGroup("default", "main"); err == nil || !strings.Contains(err.Error(), "default") {
@@ -118,7 +118,7 @@ func TestRenameGroupRefusesDefaultAndConflicts(t *testing.T) {
 
 func TestDeleteGroup(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.AddGroup("tmp"); err != nil {
+	if err := mgr.AddGroup("tmp", "test"); err != nil {
 		t.Fatalf("add group: %v", err)
 	}
 	if err := mgr.Set("tmp", "K", "v"); err != nil {
@@ -137,7 +137,7 @@ func TestDeleteGroup(t *testing.T) {
 
 func TestDeleteActiveGroupRequiresConfirmation(t *testing.T) {
 	mgr := newTestManager(t)
-	if err := mgr.AddGroup("prod"); err != nil {
+	if err := mgr.AddGroup("prod", "test"); err != nil {
 		t.Fatalf("add group: %v", err)
 	}
 	if err := mgr.Set("prod", "K", "v"); err != nil {
@@ -170,4 +170,25 @@ func TestDeleteActiveGroupRequiresConfirmation(t *testing.T) {
 			t.Error("deleted group still listed")
 		}
 	}
+}
+
+func TestRenameLegacyGroupKeepsDescription(t *testing.T) {
+	mgr := newTestManager(t)
+	writeLegacyEnvGroup(t, mgr, "staging", "archive of staging keys", "TOKEN", "abc")
+	if err := mgr.RenameGroup("staging", "prod"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	groups, err := mgr.ListGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g.Name == "prod" {
+			if g.Description != "archive of staging keys" {
+				t.Fatalf("description = %q, want preserved", g.Description)
+			}
+			return
+		}
+	}
+	t.Fatal("renamed group missing")
 }

@@ -14,6 +14,7 @@ func TestValidateIdentityAcceptsLegacyFiveKinds(t *testing.T) {
 	}{
 		{KindEnv, "default", "API_KEY"},
 		{KindEnvMeta, "prod", ""},
+		{KindTextMeta, "notes", ""},
 		{KindText, "secrets", "ssh-key"},
 		{KindConfig, "", "database-prod"},
 		{KindConfigIndex, "", ""},
@@ -37,6 +38,7 @@ func TestValidateIdentityRejectsUnknownAndFieldMatrix(t *testing.T) {
 		{"env missing key", KindEnv, "default", ""},
 		{"env meta missing grp", KindEnvMeta, "", ""},
 		{"env meta extra key", KindEnvMeta, "default", "KEY"},
+		{"text meta extra key", KindTextMeta, "notes", "KEY"},
 		{"text missing grp", KindText, "", "KEY"},
 		{"text missing key", KindText, "group", ""},
 		{"config extra grp", KindConfig, "group", "name"},
@@ -69,6 +71,7 @@ func TestValidateIdentityRejectsPathAttacks(t *testing.T) {
 				{KindEnv, attack, "KEY"},
 				{KindEnv, "default", attack},
 				{KindEnvMeta, attack, ""},
+				{KindTextMeta, attack, ""},
 				{KindText, attack, "key"},
 				{KindText, "group", attack},
 				{KindConfig, "", attack},

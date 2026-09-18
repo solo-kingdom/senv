@@ -49,6 +49,9 @@ func TestModelSearchOpensOnS(t *testing.T) {
 
 func TestModelSearchJumpSelectsEntry(t *testing.T) {
 	mgrs := newTestManagers(t)
+	if err := mgrs.Env.AddGroup("prod", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgrs.Env.Set("prod", "API_KEY", "x"); err != nil {
 		t.Fatalf("env set: %v", err)
 	}

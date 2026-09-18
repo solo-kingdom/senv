@@ -2,7 +2,6 @@
 
 提供 SSH host 与 keypair 的一等加密管理：结构化字段与自由扩展、host→keypair 引用一致性、ssh config 导出与私钥落地，并集成 TUI 浏览与 MCP 只读查询。
 ## Requirements
-
 ### Requirement: KeyPair 导入与存储
 系统 SHALL 提供 `senv keypair` 命令组（`import`、`list`、`export`、`set-default`、`clear-default`、`delete`）。`materialize` SHALL 作为 `export` 的过渡别名。`import` SHALL 从指定私钥文件读取内容并整体加密存储，name 全局唯一。`group` 为单值归属字段（空 = 未分组），`import --group` 可设置，`list` 输出在有值时展示，当前本机默认钥行尾 SHALL 标注 `default`。
 
@@ -32,7 +31,6 @@
 #### Scenario: Encrypted private key imports without public key
 - **WHEN** 导入 passphrase 加密的私钥
 - **THEN** 导入 SHALL 成功，公钥留空并在 list 中标注 `pubkey: none`
-
 
 ### Requirement: Host CRUD 与字段模型
 系统 SHALL 提供 `senv host` 命令组（`add`、`get`、`edit`、`list`、`delete`）。alias SHALL 全局唯一并作为主键；核心字段为 hostname、user、port、proxyJump、identityKey、group、tags；除核心字段外 SHALL 接受任意额外 KV 并原样保存。`group` 为单值归属字段，空值表示未分组，参与导出组片段归属与 materialize 分组路径推导；group 值禁止包含 `/`（写入与编辑时校验）。`tags` 为多值自由标注，与 group 正交。
@@ -241,6 +239,7 @@
 #### Scenario: 未确认不删除
 - **WHEN** 用户执行 `senv keypair prune` 后未确认
 - **THEN** 系统 MUST NOT 删除任何文件
+
 ### Requirement: TUI 导出撤回与私钥清理
 
 TUI SHALL 为两条 CLI 管理命令补齐入口，语义与 CLI 逐一等价。SSH Tab SHALL 提供 `u`（unexport）键：按键后系统 SHALL 先只读预检（`~/.ssh/config` 的 senv 注册行是否在位、`~/.ssh/senv/groups/` 下组片段数），无可撤回项时 toast 告知且不进确认框；否则 SHALL 弹确认框，逐项列出将发生的动作——移除 senv Include 注册行（仅在位时）、删除 N 个组片段（仅 fragments>0 时，N 实填）、并明示「`~/.ssh/senv/keys/` 下落盘私钥保留」；`enter/y` 确认后异步执行与 CLI `senv host unexport` 同一 `Manager.Unexport` 编排，`esc/n` 取消且零副作用。KeyPair Tab SHALL 提供 `p`（prune）键：按键后异步取候选清单，非空时 SHALL 先弹列表（逐条路径，vault 中仍有对应 keypair 的标注 `(keypair still in vault)`）再于同屏请求确认；`enter/y` 确认后异步删除与 CLI `senv keypair prune` 同一 `PruneCandidates`/`DeletePrunedFiles` 白名单集合，`esc/n` 取消且 MUST NOT 删除任何文件。两操作 MUST NOT 触碰 vault 档案；prune 的删除集合 MUST NOT 包含被任何 host 引用的落盘私钥。两入口执行后 SHALL 以 toast 报告实际结果（撤回了几项/删除了几个文件）并记录本机操作审计。
@@ -388,6 +387,7 @@ TUI SSH Tab SHALL 以三栏呈现：分组侧栏 → 组内 Host 列表 → KeyP
 #### Scenario: 全部 Host 均有分组
 - **WHEN** 所有 Host 均设置了非空 group
 - **THEN** 侧栏 SHALL 不显示「未分组」
+
 ### Requirement: TUI Host 行内 tags 展示
 Host 列表行 SHALL 在行尾展示 tags，格式为 `#tag` 前缀，最多 2 个，超出以 `+n` 汇总；行宽不足时 MUST 截断且不得折行。行内 MUST NOT 展示 group（group 由侧栏表达）。
 
@@ -402,6 +402,7 @@ Host 列表行 SHALL 在行尾展示 tags，格式为 `#tag` 前缀，最多 2 �
 #### Scenario: 无 tags
 - **WHEN** host `web` 未设置 tags
 - **THEN** 行 SHALL 不渲染 tags 片段
+
 ### Requirement: SSH 过滤与全局搜索匹配范围
 SSH Tab 的 `/` 过滤 SHALL 匹配 alias、hostname、tags 与 group 四个维度。全局搜索（`S`）在 SSH 类目下 SHALL 匹配 alias、hostname、tags 与 group。
 
@@ -470,9 +471,26 @@ TUI SHALL 提供独立 KeyPair Tab（`mgr.SSH` 非空时注册，紧随 SSH Tab�
 #### Scenario: 按名称过滤
 - **WHEN** 用户输入 `/web`
 - **THEN** 列表 SHALL 仅保留名称匹配的 KeyPair
+
 ### Requirement: SSH Tab 两栏呈现
 SSH Tab SHALL 为「分组侧栏 → Host 列表」两栏，不再内嵌 KeyPair 栏；Host 行 SHALL 保留内联的关联 keypair 名称与指纹摘要（`key:keyName(fp)`）。Host 栏 `/` 过滤的匹配范围（alias、hostname、tags、group）不变。
 
 #### Scenario: Host 行内联 keypair 引用
 - **WHEN** host `web` 关联 keypair `web-key`（指纹 fp）
 - **THEN** Host 行 SHALL 展示 `key:web-key(fp)` 片段，KeyPair 详情不在本 Tab
+
+### Requirement: Host 与 KeyPair 说明
+Host 与 KeyPair 档案 SHALL 各有可选说明字段。`senv host add/edit`、`senv host get/list`、`senv keypair import/edit`、`senv keypair list` 以及 TUI 对应表单/详情 SHALL 读写该字段。说明上限与空说明规则遵循 vault-description。导出 OpenSSH 片段与私钥落盘 MUST NOT 把说明写入 ssh config 或密钥文件。MCP `ssh_host_list`/`ssh_host_get` SHALL 返回 Host 说明；MUST NOT 因此新增写工具。
+
+#### Scenario: add host with description
+- **WHEN** 用户执行 `senv host add web --hostname 10.0.0.1 --description "广告实验机"`
+- **THEN** `host get web` 展示该说明，导出的 ssh 片段不含该文本
+
+#### Scenario: list host shows description
+- **WHEN** 该 Host 有说明
+- **THEN** `host list` 与 MCP `ssh_host_list` 含该说明
+
+#### Scenario: keypair description independent of comment
+- **WHEN** 导入私钥自带 OpenSSH comment `user@host`，并设置说明「gitlab deploy」
+- **THEN** comment 仍为密钥派生字段，说明为独立档案字段
+

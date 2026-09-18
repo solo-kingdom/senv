@@ -25,7 +25,7 @@ func setupAddressKeyTest(t *testing.T) (*text.Manager, *env.Manager) {
 func TestAddressKeyTextGetSetDelete(t *testing.T) {
 	textMgr, _ := setupAddressKeyTest(t)
 
-	if err := textMgr.AddGroup("feg"); err != nil {
+	if err := textMgr.AddGroup("feg", "test"); err != nil {
 		t.Fatalf("AddGroup: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestAddressKeyTextGetSetDelete(t *testing.T) {
 func TestAddressKeyEnvGetSetDelete(t *testing.T) {
 	_, envMgr := setupAddressKeyTest(t)
 
-	if err := envMgr.AddGroup("feg"); err != nil {
+	if err := envMgr.AddGroup("feg", "test"); err != nil {
 		t.Fatalf("AddGroup: %v", err)
 	}
 
@@ -126,10 +126,10 @@ func TestAddressKeyEnvGetSetDelete(t *testing.T) {
 func TestShorthandSetUnchanged(t *testing.T) {
 	textMgr, envMgr := setupAddressKeyTest(t)
 
-	if err := textMgr.AddGroup("mygroup"); err != nil {
+	if err := textMgr.AddGroup("mygroup", "test"); err != nil {
 		t.Fatalf("AddGroup text: %v", err)
 	}
-	if err := envMgr.AddGroup("mygroup"); err != nil {
+	if err := envMgr.AddGroup("mygroup", "test"); err != nil {
 		t.Fatalf("AddGroup env: %v", err)
 	}
 

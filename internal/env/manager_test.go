@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -18,6 +19,29 @@ func newTestManager(t *testing.T) *Manager {
 		t.Fatalf("initialize: %v", err)
 	}
 	return NewManager(storeMgr, "test-password")
+}
+
+func writeLegacyEnvGroup(t *testing.T, mgr *Manager, name, description, key, value string) {
+	t.Helper()
+	cryptoKey, err := mgr.resolveCryptoKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := storage.NewEnvGroup(name)
+	group.Description = description
+	group.Variables[key] = value
+	data, err := storage.ToJSON(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := crypto.Encrypt(cryptoKey, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(mgr.storage.GetDataPath(), storage.EnvFilePrefix+name+storage.EnvFileSuffix)
+	if err := os.WriteFile(path, []byte(enc), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSetRejectsInvalidEnvKey(t *testing.T) {

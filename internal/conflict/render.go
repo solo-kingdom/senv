@@ -82,7 +82,7 @@ func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSid
 			out.UpdatedAt = entry.UpdatedAt
 			out.Size = entry.Size
 		}
-	case provider.KindEnvMeta:
+	case provider.KindEnvMeta, provider.KindTextMeta:
 		var meta storage.EnvGroupMeta
 		if err := storage.FromJSON(plaintext, &meta); err == nil {
 			out.Plaintext = []byte(meta.Name)

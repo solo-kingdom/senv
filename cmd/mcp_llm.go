@@ -17,6 +17,7 @@ type llmProviderView struct {
 	CredentialRef string                          `json:"credential_ref"`
 	Catalog       string                          `json:"catalog_provider,omitempty"`
 	DefaultModel  string                          `json:"default_model,omitempty"`
+	Description   string                          `json:"description,omitempty"`
 	Models        []string                        `json:"models"`
 	ModelInfo     map[string]storage.LLMModelInfo `json:"model_info,omitempty"`
 	CreatedAt     string                          `json:"created_at"`
@@ -30,6 +31,7 @@ func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 		CredentialRef: e.CredentialRef,
 		Catalog:       e.CatalogProvider,
 		DefaultModel:  e.DefaultModel,
+		Description:   e.Description,
 		Models:        e.Models,
 		ModelInfo:     e.ModelInfo,
 		CreatedAt:     e.CreatedAt.Format(time.RFC3339),

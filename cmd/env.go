@@ -85,6 +85,8 @@ The key may be a group:key address (e.g. prod:API_KEY); address group takes prec
 }
 
 // envSetCmd represents the env set command
+var envSetDescription string
+
 var envSetCmd = &cobra.Command{
 	Use:   "set <key|group:key> <value>",
 	Short: "Set an environment variable",
@@ -99,9 +101,15 @@ var envSetCmd = &cobra.Command{
 		group, key := resolveAddressKey(args[0], envGroup)
 		value := args[1]
 
-		if err := envManager.Set(group, key, value); err != nil {
+		var setErr error
+		if cmd.Flags().Changed("description") {
+			setErr = envManager.SetWithDescription(group, key, value, &envSetDescription)
+		} else {
+			setErr = envManager.Set(group, key, value)
+		}
+		if setErr != nil {
 			auditOp(session.AuditOpEnv, "env:"+group+":"+key, false, "set 失败")
-			return err
+			return setErr
 		}
 
 		auditOp(session.AuditOpEnv, "env:"+group+":"+key, true, "set")
@@ -162,7 +170,7 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 			listGroup = args[0]
 		}
 
-		vars, err := envManager.List(listGroup)
+		vars, err := envManager.ListVarInfo(listGroup)
 		if err != nil {
 			return err
 		}
@@ -196,22 +204,23 @@ Use -d/--decode to resolve {{env:...}} and {{text:...}} references.`,
 				fmt.Println("  (empty)")
 				continue
 			}
-			for key, value := range variables {
-				// Resolve references if -d flag is set
-				displayValue := value
+			for key, info := range variables {
+				displayValue := info.Value
 				if envListDecode {
-					resolved, err := resolveValue(value, envListLoose, group)
+					resolved, err := resolveValue(info.Value, envListLoose, group)
 					if err != nil {
 						displayValue = fmt.Sprintf("[ERROR: %v]", err)
 					} else {
 						displayValue = resolved
 					}
 				}
-				// Mask long values
 				if len(displayValue) > 50 {
 					displayValue = displayValue[:47] + "..."
 				}
 				fmt.Printf("  %s=%s\n", key, displayValue)
+				if info.Description != "" {
+					fmt.Printf("    %s\n", info.Description)
+				}
 			}
 		}
 
@@ -336,6 +345,7 @@ var envGroupListCmd = &cobra.Command{
 				defaultMark = " (default)"
 			}
 			fmt.Printf("  %s%s - %s - %d variables\n", group.Name, defaultMark, status, group.VarCount)
+			fmt.Printf("    %s\n", group.Description)
 		}
 
 		return nil
@@ -343,6 +353,8 @@ var envGroupListCmd = &cobra.Command{
 }
 
 // envGroupAddCmd represents the env group add command
+var envGroupAddDescription string
+
 var envGroupAddCmd = &cobra.Command{
 	Use:   "add <name>",
 	Short: "Add a new group",
@@ -354,7 +366,7 @@ var envGroupAddCmd = &cobra.Command{
 		}
 
 		name := args[0]
-		if err := envManager.AddGroup(name); err != nil {
+		if err := envManager.AddGroup(name, envGroupAddDescription); err != nil {
 			return err
 		}
 
@@ -382,6 +394,7 @@ The default group is always active.`,
 		}
 
 		fmt.Printf("✓ Activated group %s\n", name)
+		printCollisionWarnings(envManager)
 		return nil
 	},
 }
@@ -429,6 +442,9 @@ func init() {
 	envListCmd.Flags().BoolVarP(&envListDecode, "decode", "d", false, "resolve {{env:...}} and {{text:...}} references")
 	addRefreshFlag(envListCmd)
 	envListCmd.Flags().BoolVar(&envListLoose, "loose", false, "keep unresolved references as-is instead of erroring")
+	envSetCmd.Flags().StringVar(&envSetDescription, "description", "", "optional note stored with the variable (omit to keep the existing note)")
+	envGroupAddCmd.Flags().StringVar(&envGroupAddDescription, "description", "", "required note describing what this group is for")
+	_ = envGroupAddCmd.MarkFlagRequired("description")
 	envExportCmd.Flags().BoolVar(&envExportIfSession, "if-session", false,
 		"if no active session, print nothing and exit 0 (for shell rc files)")
 	addRefreshFlag(envExportCmd)

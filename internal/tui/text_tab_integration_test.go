@@ -75,7 +75,7 @@ func TestTextManagerLoadAndOps(t *testing.T) {
 
 	// Add a group, then seed it with a key so it shows up in the listing
 	// (empty non-default groups are hidden by the view layer).
-	tab = flushText(tab, tab.doAddGroup("prod"))
+	tab = flushText(tab, tab.doAddGroup("prod", "test"))
 	if err := mgr.Set("prod", "seed", "v"); err != nil {
 		t.Fatalf("seed prod: %v", err)
 	}

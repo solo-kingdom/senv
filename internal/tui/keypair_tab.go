@@ -602,25 +602,27 @@ func (t *keyPairTab) enterImportKeyPair() (Tab, tea.Cmd) {
 		formField{
 			key: "group", label: "group", kind: formText, placeholder: "prod",
 		},
+		optionalDescriptionField(""),
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
 		return t.doImportKeyPair(
 			strings.TrimSpace(values["name"]),
 			strings.TrimSpace(values["path"]),
 			strings.TrimSpace(values["group"]),
+			strings.TrimSpace(values["description"]),
 		)
 	})
 	return t, nil
 }
 
-func (t *keyPairTab) doImportKeyPair(name, path, group string) tea.Cmd {
+func (t *keyPairTab) doImportKeyPair(name, path, group, description string) tea.Cmd {
 	if path == "" {
 		return warnToast("private key file path cannot be empty")
 	}
 	mgr := t.mgr.SSH
 	mgrs := t.mgr
 	return func() tea.Msg {
-		if _, err := mgr.ImportKeyPairWithGroup(name, expandHome(path), group, false); err != nil {
+		if _, err := mgr.ImportKeyPairWithMeta(name, expandHome(path), group, description, false); err != nil {
 			recordAudit(mgrs, session.AuditOpSSHKey, "keypair:"+name, false, "import failed")
 			return errMsg{err: err}
 		}
@@ -700,19 +702,21 @@ func (t *keyPairTab) enterEditGroup() (Tab, tea.Cmd) {
 		formField{
 			key: "group", label: "group", kind: formText, value: key.Group, placeholder: "prod",
 		},
+		optionalDescriptionField(key.Description),
 	)
 	t.openForm(f, func(values map[string]string) tea.Cmd {
-		return t.doEditGroup(name, strings.TrimSpace(values["group"]))
+		return t.doEditGroup(name, strings.TrimSpace(values["group"]), strings.TrimSpace(values["description"]))
 	})
 	return t, nil
 }
 
-func (t *keyPairTab) doEditGroup(name, group string) tea.Cmd {
+func (t *keyPairTab) doEditGroup(name, group, description string) tea.Cmd {
 	mgr := t.mgr.SSH
 	mgrs := t.mgr
 	return func() tea.Msg {
 		err := mgr.UpdateKeyPair(name, func(k *storage.KeyPairEntry) error {
 			k.Group = group
+			k.Description = description
 			return nil
 		})
 		if err != nil {
@@ -931,6 +935,7 @@ func keyPairDetailLines(k ssh.KeyPairSummary, isDefault bool) []string {
 		"name:        " + k.Name,
 		"fingerprint: " + fp,
 		"group:       " + orDash(k.Group),
+		"description: " + orDash(k.Description),
 		"default:     " + def,
 		"comment:     " + orDash(k.Comment),
 		"imported:    " + k.ImportedAt.Local().Format("2006-01-02 15:04:05"),

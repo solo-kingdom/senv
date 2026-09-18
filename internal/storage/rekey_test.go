@@ -46,8 +46,9 @@ func TestRekey_ReEncryptsAllFiles(t *testing.T) {
 	if result.EnvFiles != 3 {
 		t.Errorf("expected 3 env files, got %d", result.EnvFiles)
 	}
-	if result.TextFiles != 1 {
-		t.Errorf("expected 1 text file, got %d", result.TextFiles)
+	// init default/.meta.enc + llm-keys/.meta.enc + notes/readme.enc
+	if result.TextFiles != 3 {
+		t.Errorf("expected 3 text files, got %d", result.TextFiles)
 	}
 
 	// Old key should no longer work

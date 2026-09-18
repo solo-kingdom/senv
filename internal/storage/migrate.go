@@ -55,7 +55,7 @@ func (m *Manager) MigrateEnvGroupIfNeeded(group string, key []byte) (bool, error
 		return false, fmt.Errorf("invalid legacy env group %q: %w", group, err)
 	}
 
-	meta := &EnvGroupMeta{Name: group, CreatedAt: envGroup.CreatedAt}
+	meta := &EnvGroupMeta{Name: group, Description: envGroup.Description, CreatedAt: envGroup.CreatedAt}
 	if err := m.SaveEnvGroupMetaWithKey(group, meta, key); err != nil {
 		return false, err
 	}

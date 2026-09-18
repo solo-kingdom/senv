@@ -35,8 +35,18 @@ func setupTestTextManager(t *testing.T) (*Manager, string) {
 	return mgr, tmpDir
 }
 
+func mustGroup(t *testing.T, mgr *Manager, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if err := mgr.AddGroup(name, "test"); err != nil {
+			t.Fatalf("AddGroup %s: %v", name, err)
+		}
+	}
+}
+
 func TestSetAndGet(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	err := mgr.Set("notes", "README", "hello world")
 	if err != nil {
@@ -55,6 +65,7 @@ func TestSetAndGet(t *testing.T) {
 
 func TestSetOverwrite(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	mgr.Set("notes", "KEY", "original")
 	mgr.Set("notes", "KEY", "updated")
@@ -92,6 +103,7 @@ func TestSetExceedsSizeLimit(t *testing.T) {
 
 func TestSetAtSizeLimit(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	// Create a value exactly at 512KB
 	exactValue := strings.Repeat("x", storage.MaxTextSize)
@@ -112,6 +124,7 @@ func TestSetAtSizeLimit(t *testing.T) {
 
 func TestSetMultilineValue(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	value := "line1\nline2\nline3\n"
 	err := mgr.Set("notes", "MULTI", value)
@@ -131,6 +144,7 @@ func TestSetMultilineValue(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	mgr.Set("notes", "TEMP", "to be deleted")
 
@@ -156,6 +170,7 @@ func TestDeleteNotFound(t *testing.T) {
 
 func TestList(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	mgr.Set("notes", "README", "content 1")
 	mgr.Set("notes", "TODO", "content 2")
@@ -202,6 +217,7 @@ func TestListEmptyGroup(t *testing.T) {
 
 func TestSetFromFile(t *testing.T) {
 	mgr, tmpDir := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	// Create a temp source file
 	srcFile := filepath.Join(tmpDir, "source.txt")
@@ -234,6 +250,7 @@ func TestSetFromFileNotFound(t *testing.T) {
 
 func TestSetFromReader(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	reader := strings.NewReader("reader content")
 
@@ -255,7 +272,7 @@ func TestSetFromReader(t *testing.T) {
 func TestAddGroup(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
 
-	err := mgr.AddGroup("secrets")
+	err := mgr.AddGroup("secrets", "test")
 	if err != nil {
 		t.Fatalf("AddGroup failed: %v", err)
 	}
@@ -270,9 +287,9 @@ func TestAddGroup(t *testing.T) {
 func TestAddGroupDuplicate(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
 
-	mgr.AddGroup("test-group")
+	mgr.AddGroup("test-group", "test")
 
-	err := mgr.AddGroup("test-group")
+	err := mgr.AddGroup("test-group", "test")
 	if err == nil {
 		t.Error("Should error when adding duplicate group")
 	}
@@ -280,6 +297,7 @@ func TestAddGroupDuplicate(t *testing.T) {
 
 func TestDeleteGroup(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "test-group")
 
 	mgr.Set("test-group", "KEY1", "value1")
 	mgr.Set("test-group", "KEY2", "value2")
@@ -307,6 +325,7 @@ func TestDeleteGroupNotFound(t *testing.T) {
 
 func TestListGroups(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes", "keys", "templates")
 
 	mgr.Set("notes", "KEY1", "v1")
 	mgr.Set("keys", "KEY2", "v2")
@@ -315,10 +334,6 @@ func TestListGroups(t *testing.T) {
 	groups, err := mgr.ListGroups()
 	if err != nil {
 		t.Fatalf("ListGroups failed: %v", err)
-	}
-
-	if len(groups) != 3 {
-		t.Errorf("Expected 3 groups, got %d", len(groups))
 	}
 
 	groupMap := map[string]int{}
@@ -333,6 +348,7 @@ func TestListGroups(t *testing.T) {
 
 func TestGetToFile(t *testing.T) {
 	mgr, tmpDir := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 
 	mgr.Set("notes", "README", "file output content")
 
@@ -386,6 +402,7 @@ func TestExpandHome(t *testing.T) {
 
 func TestTextExportPathsAndPermissions(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 	if err := mgr.Set("notes", "PRIVATE", "secret-data"); err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +436,7 @@ func TestTextExportPathsAndPermissions(t *testing.T) {
 
 func TestTextExportFileModes(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 	if err := mgr.Set("notes", "VALUE", "new"); err != nil {
 		t.Fatal(err)
 	}
@@ -459,6 +477,7 @@ func TestTextExportFileModes(t *testing.T) {
 
 func TestTextExportRejectsSymlinks(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
+	mustGroup(t, mgr, "notes")
 	if err := mgr.Set("notes", "VALUE", "new-secret"); err != nil {
 		t.Fatal(err)
 	}

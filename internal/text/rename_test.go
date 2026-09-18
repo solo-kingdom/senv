@@ -46,7 +46,7 @@ func TestRenameKeyRejectsConflictsAndMissing(t *testing.T) {
 
 func TestRenameGroupKeepsBlocks(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
-	if err := mgr.AddGroup("notes"); err != nil {
+	if err := mgr.AddGroup("notes", "test"); err != nil {
 		t.Fatalf("add group: %v", err)
 	}
 	if err := mgr.Set("notes", "todo", "buy milk"); err != nil {
@@ -77,7 +77,7 @@ func TestRenameGroupKeepsBlocks(t *testing.T) {
 	if err := mgr.RenameGroup("journal", "other"); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("missing group error = %v, want does-not-exist", err)
 	}
-	if err := mgr.AddGroup("existing"); err != nil {
+	if err := mgr.AddGroup("existing", "test"); err != nil {
 		t.Fatalf("add conflicting group: %v", err)
 	}
 	if err := mgr.RenameGroup("notes", "existing"); err == nil || !strings.Contains(err.Error(), "already exists") {

@@ -122,6 +122,9 @@ func TestRenameProviderConflicts(t *testing.T) {
 func TestRenameProviderExternalKeyRefUnchanged(t *testing.T) {
 	mgr, store, _ := newTestProviderManager(t)
 	em := env.NewManager(store, "test-password")
+	if err := em.AddGroup("llm", "test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := em.Set("llm", "KEY", "sk-ext"); err != nil {
 		t.Fatalf("seed env: %v", err)
 	}

@@ -15,6 +15,7 @@ const (
 	KindEnv         = "env"
 	KindEnvMeta     = "env_meta"
 	KindText        = "text"
+	KindTextMeta    = "text_meta"
 	KindConfig      = "config"
 	KindConfigIndex = "config_index"
 	KindLLMProvider = "llm_provider"
@@ -75,9 +76,9 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := securefs.ValidateSegment(key); err != nil {
 			return invalid("invalid key")
 		}
-	case KindEnvMeta:
+	case KindEnvMeta, KindTextMeta:
 		if grp == "" || key != "" {
-			return invalid("env_meta requires grp and empty key")
+			return invalid("group meta requires grp and empty key")
 		}
 		if err := securefs.ValidateSegment(grp); err != nil {
 			return invalid("invalid grp")

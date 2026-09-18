@@ -849,6 +849,7 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			key: "default_model", label: "default model", kind: formText, value: base.DefaultModel,
 			placeholder: "m1 (optional)",
 		},
+		optionalDescriptionField(base.Description),
 		formField{
 			key: "credential", label: "credential source", kind: formRef, value: credentialValue,
 			options: credentialOptions,
@@ -971,6 +972,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			RequireModelMetadata:  true,
 			DefaultModel:          defaultModel,
 			APIShape:              apiShape,
+			Description:           strings.TrimSpace(values["description"]),
 		}
 		if credential == aiNewCredential {
 			opts.APIKey = apiKey
@@ -1000,6 +1002,8 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		APIShape:     &apiShape,
 		DefaultModel: &defaultModel,
 	}
+	desc := strings.TrimSpace(values["description"])
+	opts.Description = &desc
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
 	outputsChanged := strings.TrimSpace(values["model_outputs"]) != strings.TrimSpace(formatModelOutputs(existing.Models, existing.ModelInfo))
 	reasoningChanged := strings.TrimSpace(values["model_reasoning"]) != strings.TrimSpace(formatModelReasoning(existing.Models, existing.ModelInfo))
@@ -1205,6 +1209,7 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		"credential_ref: " + p.CredentialRef,
 		"catalog:        " + orDash(p.CatalogProvider),
 		"default_model:  " + orDash(p.DefaultModel),
+		"description:    " + orDash(p.Description),
 		fmt.Sprintf("models (%d):", len(p.Models)),
 	}
 	if len(p.Models) == 0 {

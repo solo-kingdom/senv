@@ -86,8 +86,20 @@ client 本地目录中的加密数据文件，是唯一的编辑现场；同步�
 ### 数据组织
 
 **分组（Group）**:
-条目（env 变量组、text 块、config 文件、Host）的单值归属：组是 TUI 分组侧栏的组织单位，也是导出激活的作用域。空分组值表示该条目未归入任何组，TUI 归入「未分组」兜底组。
-_Avoid_: 目录、文件夹
+某一种条目类型内的扁平单值归属：TUI 侧栏的组织单位；对 env 还是导出激活所选择的那一套同名变量。env 组与 text 组等同名也不表示同一组；空值表示未分组。组名不表达层级。
+_Avoid_: 目录、文件夹、嵌套组、跨类型共享分类、命名空间（指靠组避免撞名时）
+
+**变体组**:
+env 分组的一种用法：装外部工具按名读取的契约 key（同名不同值），靠激活在互斥场景（个人/工作/项目）间切换取值。数量等于场景数，不是服务数。
+_Avoid_: 环境组（只覆盖 prod/dev）、用组给裸名隔服务
+
+**存档组**:
+env/text 分组的一种用法：装带服务或机器前缀的自用 key，默认不激活，只为查找与引用。命名空间在 key 上，不在组名上。
+_Avoid_: 一组一服务（svc-* 膨胀）、变体组
+
+**说明（Description）**:
+贴在配置源（env/text/config 条目、Host、KeyPair、LLM Provider 档案、MCP Server 档案）或 env/text 分组上、随 vault 同步的人与 agent 共用短文本：这是什么、何时用、不要和谁搞混。不是值，也不是 LLM 模型目录文案。
+_Avoid_: 备注、注释、note、remark、annotation、comment（OpenSSH 私钥 comment 除外）
 
 **标签（Tags）**:
 Host 的多值自由标注，与单值的 Group 正交：只用于列表行内展示与过滤，不参与分组侧栏。
@@ -181,7 +193,7 @@ _Avoid_: 模型列表（泛指时）
 
 **模型元数据**:
 随 LLM Provider 档案保存的 per-model 声明值，至少包含 context window；该模型若声明了推理档位，还必须有默认推理档。来源是显式提供或模型目录，senv 不按模型名或档位列表推断。切换写入 Coding Agent 配置时优先使用它，再进行 agent 专属投影。增改模型集时缺失必填项会拒绝写入；既有旧档案可不补全并继续读取。
-_Avoid_: 模型配置（易与 agent 配置混淆）、模型能力（范围过宽）
+_Avoid_: 模型配置（易与 agent 配置混淆）、模型能力（范围过宽）、说明（指 vault 上那份 Description 时）
 
 **Coding Agent**:
 接入 LLM 的编程助手 CLI/IDE，以 id 标识（如 claude-code、codex）；senv 通过改写其配置把它指向某个 LLM Provider，并写入 Agent 模型集与默认模型。

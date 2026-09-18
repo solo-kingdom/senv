@@ -3,7 +3,6 @@
 ## Purpose
 用 vault 加密保管第三方 MCP 服务器的接入定义，作为导出到各 Coding Agent 的唯一事实源。
 ## Requirements
-
 ### Requirement: 档案传输与字段校验
 
 `senv mcp add <alias>` SHALL 创建一条 MCP Server 档案。档案 MUST 以别名唯一标识；传输 MUST 为 `stdio` / `http` / `sse` 之一。`stdio` 传输 `command` MUST 必填，`args` 与 `env` MAY 省略；`http` / `sse` 传输 `url` MUST 必填且 MUST 以 `http://` 或 `https://` 开头（值可含引用模板），`headers` MAY 省略，且 `command` / `args` / `env` MUST NOT 出现。别名已存在时 SHALL 报错且不修改现有档案。
@@ -109,3 +108,15 @@
 
 - **WHEN** 创建档案时 `url` 含 `{{env:secrets:KEY}}`、header 值为 `Bearer {{text:secrets:T}}`
 - **THEN** vault 中保存该字面模板，导出时才解析
+
+### Requirement: MCP Server 说明上限与 list
+MCP Server 档案已有的说明字段 SHALL 遵守 2048 字节上限；超限写入 MUST 拒绝。`senv mcp list`、`senv mcp get` 与 MCP `mcp_server_list` SHALL 包含说明（可为空）。MCP 工具 MUST NOT 提供写入说明的途径。
+
+#### Scenario: list includes description
+- **WHEN** 档案 `playwright` 有说明
+- **THEN** `senv mcp list` 与 `mcp_server_list` 含该说明，仍不输出 env 值
+
+#### Scenario: oversize description rejected
+- **WHEN** 编辑档案说明超过 2048 字节
+- **THEN** 保存失败，原档案不变
+

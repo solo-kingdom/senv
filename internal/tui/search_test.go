@@ -40,6 +40,9 @@ func TestSearchGathersKeysAndNamesOnly(t *testing.T) {
 	mgrs := newTestManagers(t)
 	// Plant a secret value across all three types.
 	mgrs.Env.Set("default", "API_KEY", "topsecret-value")
+	if err := mgrs.Env.AddGroup("prod", "test"); err != nil {
+		t.Fatal(err)
+	}
 	mgrs.Env.Set("prod", "DB_URL", "postgres://topsecret")
 	if err := mgrs.Text.Set("default", "readme", "contains topsecret-value too"); err != nil {
 		t.Fatalf("text set: %v", err)

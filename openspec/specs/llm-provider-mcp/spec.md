@@ -4,11 +4,11 @@
 把 LLM provider 档案与 agent 指针以只读 MCP 工具暴露给 AI agent：响应是显式白名单视图（不含凭据明文），agent 可据此回答「有哪些 provider、某个 agent 现在指向谁」。
 ## Requirements
 ### Requirement: 列出 LLM provider 档案
-`llm_provider_list` 工具 SHALL 返回全部 provider 档案的 JSON 数组，字段白名单为 alias、base_url、credential_ref、catalog_provider、default_model、models（模型 id 列表）、created_at、updated_at。响应 MUST NOT 包含任何凭据明文。工具需要有效 MCP session（与其他受保护工具一致）。
+`llm_provider_list` 工具 SHALL 返回全部 provider 档案的 JSON 数组，字段白名单为 alias、base_url、credential_ref、catalog_provider、default_model、models（模型 id 列表）、description、created_at、updated_at。响应 MUST NOT 包含任何凭据明文。工具需要有效 MCP session（与其他受保护工具一致）。
 
 #### Scenario: 列出档案
 - **WHEN** vault 中存在档案 main 且 agent 调用 llm_provider_list
-- **THEN** 返回含 main 档案白名单字段的 JSON，无任何 key 明文字段或值
+- **THEN** 返回含 main 档案白名单字段（含 description，可为空）的 JSON，无任何 key 明文字段或值
 
 #### Scenario: 无档案
 - **WHEN** vault 中无 provider 档案
