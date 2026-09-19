@@ -45,8 +45,28 @@ func hasTrailingV1(path string) bool {
 	return path == "/v1" || strings.HasSuffix(path, "/v1")
 }
 
+// hasVersionSegment 判断路径末段是否本身就是纯数字版本段（v1、v4 这类）。
+// 智谱开放平台等网关的 OpenAI 兼容端点以 /v4 结尾，再补 /v1 会得到 /v4/v1
+// 的死地址（实测 404），这类末段视为已归一。/v1beta 等带字母后缀的变体仍不
+// 识别，维持 ADR 0004 记载的有损语义。
+func hasVersionSegment(path string) bool {
+	last := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		last = path[i+1:]
+	}
+	if len(last) < 2 || last[0] != 'v' {
+		return false
+	}
+	for i := 1; i < len(last); i++ {
+		if last[i] < '0' || last[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func ensureTrailingV1(path string) string {
-	if hasTrailingV1(path) {
+	if hasTrailingV1(path) || hasVersionSegment(path) {
 		return path
 	}
 	return path + "/v1"

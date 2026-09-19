@@ -11,7 +11,7 @@ LLM Provider 档案只存一份接入地址，按 OpenAI 兼容形态落库（�
 ## Consequences
 
 - 剥离末段 `/v1` 对 Anthropic 族是**无损**变换：Claude Code 总请求 `base + /v1/messages`，剥离前后的最终 URL 完全相同。改 `trimTrailingV1` 前需理解这一点。
-- 归一化是有损猜测：`/v1beta` 这类版本变体会被补成 `…/v1beta/v1`。补偿是 `ai switch` 输出实际写入的接入地址，让改写可见；档案不加额外字段。
+- 归一化是有损猜测：`/v1beta` 这类版本变体会被补成 `…/v1beta/v1`。补偿是 `ai switch` 输出实际写入的接入地址，让改写可见；档案不加额外字段。（2026-09-19 细化：末段为纯数字版本段（`/v4` 这类，智谱 open.bigmodel.cn 实测 `/v4/v1` 404）视为已归一不再补 `/v1`；带字母后缀的变体维持有损语义。）
 - 存量档案不迁移：adapter 读取侧再做一次幂等归一，旧档案在下次 `switch` 时自动修正；已被写坏的 agent 配置需重跑 `switch`，不自动改写。
 
 ## Status

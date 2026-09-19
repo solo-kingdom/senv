@@ -101,8 +101,9 @@ Every model must resolve a context window: catalog models read models.dev
 limit.context, and custom models require --model-context <model>=<tokens>.
 The --api-key flag is unsupported because argv and shell history leak secrets.
 The base URL is normalized to the OpenAI-compatible shape (a trailing /v1 is
-appended when missing, trailing slashes are trimmed) so every agent can derive
-its own shape at switch time; the command reports the normalized value.
+appended when missing unless the path already ends in a version segment such
+as /v1 or /v4; trailing slashes are trimmed) so every agent can derive its own
+shape at switch time; the command reports the normalized value.
 --api-shape optionally declares the wire protocol (openai-chat | openai-responses
 | anthropic); leave it empty to keep deriving the shape from the target agent.`,
 	Args: cobra.ExactArgs(1),
