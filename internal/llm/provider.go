@@ -148,6 +148,10 @@ type AddProviderOptions struct {
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
 	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
 	APIShape string
+	// ShapeURLs 是形态地址（per-shape URLs），key 为合法 api_shape 值：
+	// openai-chat / openai-responses / anthropic。nil 表示未提供。anthropic
+	// 地址原样存储仅收敛尾斜杠，OpenAI 族地址沿用 BaseURL 的兼容归一。
+	ShapeURLs map[string]string
 	// Description is an optional vault note on the provider profile itself,
 	// independent of model catalog text in ModelInfo.
 	Description string
@@ -176,6 +180,10 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		return nil, fmt.Errorf("invalid base URL %q: %w", opts.BaseURL, err)
 	}
 	if err := storage.ValidateLLMProviderAPIShape(strings.TrimSpace(opts.APIShape)); err != nil {
+		return nil, err
+	}
+	shapeURLs, shapeWarnings, err := normalizeShapeURLs(opts.ShapeURLs, opts.AllowHTTP, true)
+	if err != nil {
 		return nil, err
 	}
 	desc, err := storage.ValidateDescription(opts.Description, true)
@@ -212,6 +220,9 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		Description:     desc,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+	for shape, shapeURL := range shapeURLs {
+		applyShapeURL(entry, shape, shapeURL)
 	}
 	if opts.APIKey != "" {
 		entry.CredentialRef = OwnedCredentialRef(alias)
@@ -299,6 +310,7 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if baseURL != rawBaseURL {
 		warnings = append([]string{fmt.Sprintf("base URL 已规范为 %s", baseURL)}, warnings...)
 	}
+	warnings = append(warnings, shapeWarnings...)
 	return &AddProviderResult{Entry: entry, Warnings: warnings}, nil
 }
 
@@ -336,6 +348,9 @@ type EditProviderOptions struct {
 	RequireModelMetadata bool
 	DefaultModel         *string
 	APIShape             *string
+	// ShapeURLs 非 nil 时应用形态地址：出现的 key 设置（空值清除），未出现的
+	// key 保留原值；nil 表示保留全部形态地址。
+	ShapeURLs map[string]string
 	// Description nil keeps the current profile note; non-nil replaces it
 	// (empty string clears).
 	Description *string
@@ -384,6 +399,27 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 			return nil, err
 		}
 		entry.APIShape = shape
+	}
+	if opts.ShapeURLs != nil {
+		normalized, shapeWarnings, err := normalizeShapeURLs(opts.ShapeURLs, opts.AllowHTTP, false)
+		if err != nil {
+			return nil, err
+		}
+		warnings = append(warnings, shapeWarnings...)
+		// 先清空本次出现的 key（空值 = 清除），再写回设置值；未出现的 key 保留。
+		for shape := range opts.ShapeURLs {
+			applyShapeURL(&entry, shape, "")
+		}
+		for shape, shapeURL := range normalized {
+			applyShapeURL(&entry, shape, shapeURL)
+		}
+		if len(opts.ShapeURLs) == 0 {
+			// 空 map（编辑入口给了 flag 但无有效值）表示清空全部形态地址，
+			// 与其他元数据 flag 的「传入即清空维度」约定一致。
+			for _, shape := range storage.LLMAPIShapes {
+				applyShapeURL(&entry, shape, "")
+			}
+		}
 	}
 	if opts.CatalogProvider != nil {
 		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
@@ -512,6 +548,92 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 		return nil, err
 	}
 	return &AddProviderResult{Entry: saved, Warnings: warnings}, nil
+}
+
+// ParseShapeURLs 解析重复的 --shape-url <api_shape>=<url> 参数。key 必须是
+// 合法 api_shape 取值；value 允许为空（edit 语义 = 清除该形态地址，add 拒绝）。
+// 重复 key 报错；无有效输入返回 nil。
+func ParseShapeURLs(specs []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, raw := range specs {
+		spec := strings.TrimSpace(raw)
+		if spec == "" {
+			continue
+		}
+		shape, value, ok := strings.Cut(spec, "=")
+		shape = strings.TrimSpace(shape)
+		if !ok || shape == "" {
+			return nil, fmt.Errorf("invalid --shape-url %q: want <api_shape>=<url>", raw)
+		}
+		if err := storage.ValidateLLMProviderAPIShape(shape); err != nil {
+			return nil, fmt.Errorf("invalid --shape-url %q: %w", raw, err)
+		}
+		if _, exists := out[shape]; exists {
+			return nil, fmt.Errorf("duplicate --shape-url for shape %q", shape)
+		}
+		out[shape] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// normalizeShapeURLs 校验并归一形态地址：openai-chat / openai-responses 沿用
+// BaseURL 的 OpenAI 兼容归一（补末段版本段、收敛尾斜杠）；anthropic 原样存储
+// 仅收敛尾斜杠（claude-code 拼 /v1/messages 的 base，前缀路径不可被版本段
+// 规则触碰）。rejectEmpty 为 true 时（add 语义）拒绝空值；false 时（edit 语义）
+// 空值表示清除、不出现在返回 map 中。返回归一后的 map 与归一警告。
+func normalizeShapeURLs(specs map[string]string, allowHTTP, rejectEmpty bool) (map[string]string, []string, error) {
+	if len(specs) == 0 {
+		return nil, nil, nil
+	}
+	for shape := range specs {
+		if shape == "" {
+			return nil, nil, fmt.Errorf("invalid shape URL key: empty api_shape")
+		}
+		if err := storage.ValidateLLMProviderAPIShape(shape); err != nil {
+			return nil, nil, fmt.Errorf("invalid shape URL key: %w", err)
+		}
+	}
+	out := make(map[string]string, len(specs))
+	var warnings []string
+	for _, shape := range storage.LLMAPIShapes {
+		raw, ok := specs[shape]
+		if !ok {
+			continue
+		}
+		if raw == "" {
+			if rejectEmpty {
+				return nil, nil, fmt.Errorf("--shape-url %s requires a URL (clearing is only available via edit)", shape)
+			}
+			continue
+		}
+		normalized := baseURLForFamily(raw, ProtocolOpenAICompatible)
+		if shape == storage.LLMAPIShapeAnthropic {
+			normalized = normalizeAnthropicShapeURL(raw)
+		}
+		if err := storage.ValidateLLMProviderURL(normalized, allowHTTP); err != nil {
+			return nil, nil, fmt.Errorf("invalid --shape-url %s %q: %w", shape, raw, err)
+		}
+		if normalized != raw {
+			warnings = append(warnings, fmt.Sprintf("shape URL %s 已规范为 %s", shape, normalized))
+		}
+		out[shape] = normalized
+	}
+	return out, warnings, nil
+}
+
+// applyShapeURL 把归一后的形态地址写入档案对应字段；url 为空表示清除。
+func applyShapeURL(entry *storage.LLMProviderEntry, shape, url string) {
+	switch shape {
+	case storage.LLMAPIShapeOpenAIChat:
+		entry.ChatBaseURL = url
+	case storage.LLMAPIShapeOpenAIResponses:
+		entry.ResponsesBaseURL = url
+	case storage.LLMAPIShapeAnthropic:
+		entry.AnthropicBaseURL = url
+	}
 }
 
 // validateCredentialInput 校验自有凭据 / --key-ref 恰选其一；force 允许两者

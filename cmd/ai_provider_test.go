@@ -36,6 +36,8 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		modelDefaultReason: providerAddModelDefaultReason,
 		defaultReasoning:   providerAddDefaultReasoning,
 		modelModalities:    providerAddModelModalities,
+		apiShape:           providerAddAPIShape,
+		shapeURLs:          providerAddShapeURLs,
 		defaultModel:       providerAddDefault, force: providerAddForce,
 		stdin: providerAddAPIKeyStdin, allowHTTP: providerAddAllowHTTP,
 	}
@@ -51,6 +53,8 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		providerAddModelDefaultReason = old.modelDefaultReason
 		providerAddDefaultReasoning = old.defaultReasoning
 		providerAddModelModalities = old.modelModalities
+		providerAddAPIShape = old.apiShape
+		providerAddShapeURLs = old.shapeURLs
 		providerAddDefault = old.defaultModel
 		providerAddForce = old.force
 		providerAddAPIKeyStdin = old.stdin
@@ -62,6 +66,8 @@ type providerAddFlags struct {
 	baseURL, keyRef, catalog, defaultModel, defaultReasoning string
 	models, modelCtx, modelOut, modelReason                  []string
 	modelDefaultReason, modelModalities                      []string
+	apiShape                                                 string
+	shapeURLs                                                []string
 	force                                                    bool
 	stdin, allowHTTP                                         bool
 }
@@ -687,5 +693,75 @@ func TestAIProviderRenameCLI(t *testing.T) {
 	if _, err := runAIProviderCmd(t, aiProviderRenameCmd, []string{"acme-prod", "taken"}); err == nil ||
 		!strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("conflict error = %v", err)
+	}
+}
+
+func TestAIProviderShapeURLCLI(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "k")
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+	})
+	addShapeFlag := aiProviderAddCmd.Flags().Lookup("shape-url")
+	if err := aiProviderAddCmd.Flags().Set("shape-url", "anthropic=https://gw.example.com/api/anthropic/"); err != nil {
+		t.Fatalf("set --shape-url: %v", err)
+	}
+	t.Cleanup(func() {
+		addShapeFlag.Changed = false
+		providerAddShapeURLs = nil
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"gw"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("gw")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	// anthropic 形态地址原样存储、仅收敛尾斜杠。
+	if entry.AnthropicBaseURL != "https://gw.example.com/api/anthropic" {
+		t.Fatalf("AnthropicBaseURL = %q", entry.AnthropicBaseURL)
+	}
+
+	// show 展示三个形态地址（未设显示 -）。
+	showOut, err := runAIProviderCmd(t, aiProviderShowCmd, []string{"gw"})
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(showOut, "anthropic=https://gw.example.com/api/anthropic") ||
+		!strings.Contains(showOut, "chat=-") {
+		t.Fatalf("show output missing shape URLs:\n%s", showOut)
+	}
+	listOut, err := runAIProviderCmd(t, aiProviderListCmd, nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(listOut, "anthropic=https://gw.example.com/api/anthropic") {
+		t.Fatalf("list output missing shape URLs:\n%s", listOut)
+	}
+
+	// edit 空值清空该形态地址。
+	setProviderEditFlag(t, "shape-url", "anthropic=")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"gw"}); err != nil {
+		t.Fatalf("edit clear: %v", err)
+	}
+	entry, err = mgr.GetProvider("gw")
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if entry.AnthropicBaseURL != "" {
+		t.Fatalf("AnthropicBaseURL = %q, want cleared", entry.AnthropicBaseURL)
+	}
+
+	// 非法 key 拒绝。
+	setProviderEditFlag(t, "shape-url", "openai=https://x.example.com")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"gw"}); err == nil ||
+		!strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("invalid shape key error = %v", err)
 	}
 }

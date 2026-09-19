@@ -1,9 +1,4 @@
-# llm-provider-mcp Specification
-
-## Purpose
-把 LLM provider 档案与 agent 指针以只读 MCP 工具暴露给 AI agent：响应是显式白名单视图（不含凭据明文），agent 可据此回答「有哪些 provider、某个 agent 现在指向谁」。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 列出 LLM provider 档案
 
@@ -33,17 +28,3 @@
 
 - **WHEN** MCP session 未启动或已过期
 - **THEN** 工具返回错误提示先执行 `senv session start`
-
-### Requirement: 查询各 agent 当前指向
-`llm_agent_status` 工具 SHALL 返回全部已知 agent（受支持与不支持）的 JSON 数组，字段为 agent、name、supported、pointer（provider/model/switched_at，未切换为 null）、config_path。指针是本机状态，该工具 MUST NOT 触发任何写入。
-
-#### Scenario: 混合状态
-- **WHEN** claude-code 已切换、opencode 未切换且 agent 调用 llm_agent_status
-- **THEN** 返回的数组中三态齐全：已切换含 pointer 对象、未切换 pointer 为 null、cursor/zcode supported 为 false
-
-### Requirement: 只读边界
-LLM 相关 MCP 工具 SHALL 仅为上述两个查询；MUST NOT 提供 provider 增删改或 agent 切换工具。工具目录（list-tools）与实际注册保持一致。
-
-#### Scenario: 目录一致
-- **WHEN** 执行 `senv mcp list-tools`
-- **THEN** 输出包含 llm_provider_list 与 llm_agent_status，且不含任何 LLM 写入类工具

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-20
+goal: per-shape 形态地址数据面与 CLI：LLMProviderEntry 新增可选 chat_base_url /
+  responses_base_url / anthropic_base_url 与校验；归一化分族（anthropic 字段透传仅收敛尾斜杠）；switch
+  门禁放宽与地址选择跟随线协议、输出 explicit/inferred 来源；CLI --shape-url 重复 flag 与 show/list
+  展示；llm-provider 与 llm-provider-switch spec delta

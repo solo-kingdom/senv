@@ -790,7 +790,7 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 	}
 
 	title := "new LLM provider"
-	fields := make([]formField, 0, 9)
+	fields := make([]formField, 0, 12)
 	if create {
 		fields = append(fields, formField{
 			key: "alias", label: "alias", kind: formText, placeholder: "main",
@@ -811,6 +811,18 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 				storage.LLMAPIShapeAnthropic,
 			},
 			optional: true,
+		},
+		formField{
+			key: "chat_base_url", label: "chat url", kind: formText, value: base.ChatBaseURL,
+			placeholder: "https://chat.example.com/v1 (openai-chat endpoint, optional)",
+		},
+		formField{
+			key: "responses_base_url", label: "responses url", kind: formText, value: base.ResponsesBaseURL,
+			placeholder: "https://resp.example.com/v1 (openai-responses endpoint, optional)",
+		},
+		formField{
+			key: "anthropic_base_url", label: "anthropic url", kind: formText, value: base.AnthropicBaseURL,
+			placeholder: "https://gw.example.com/api/anthropic (root; claude-code appends /v1/messages)",
 		},
 		formField{
 			key: "catalog", label: "catalog provider", kind: formText, value: base.CatalogProvider,
@@ -911,6 +923,24 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if err := storage.ValidateLLMProviderAPIShape(apiShape); err != nil {
 		return reopen("api_shape", err)
 	}
+	// 形态地址（per-shape URLs）：TUI 先做内联校验，归一化交给 Manager
+	//（openai 族补版本段；anthropic 原样仅收敛尾斜杠）。编辑表单是全量状态，
+	// 三个 key 全部传入（空值 = 清除）；新建只传非空 key。
+	shapeURLs := map[string]string{}
+	for _, sf := range providerShapeURLFields {
+		raw := strings.TrimSpace(values[sf.field])
+		if raw == "" {
+			continue
+		}
+		if err := storage.ValidateLLMProviderURL(raw, allowHTTP); err != nil {
+			return reopen(sf.field, err)
+		}
+		shapeURLs[sf.shape] = raw
+	}
+	editShapeURLs := map[string]string{}
+	for _, sf := range providerShapeURLFields {
+		editShapeURLs[sf.shape] = strings.TrimSpace(values[sf.field])
+	}
 	catalog := strings.TrimSpace(values["catalog"])
 	models := parseModelList(values["models"])
 	modelContexts, err := llm.ParseModelContexts(parseModelList(values["model_contexts"]))
@@ -972,6 +1002,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			RequireModelMetadata:  true,
 			DefaultModel:          defaultModel,
 			APIShape:              apiShape,
+			ShapeURLs:             shapeURLs,
 			Description:           strings.TrimSpace(values["description"]),
 		}
 		if credential == aiNewCredential {
@@ -1000,6 +1031,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		CatalogPath:  catalogPath,
 		BaseURL:      &baseURL,
 		APIShape:     &apiShape,
+		ShapeURLs:    editShapeURLs,
 		DefaultModel: &defaultModel,
 	}
 	desc := strings.TrimSpace(values["description"])
@@ -1147,6 +1179,14 @@ func (t *aiTab) doDeleteProvider(alias string) (Tab, tea.Cmd) {
 	}
 }
 
+// providerShapeURLFields 形态地址的表单字段与 api_shape key 对应关系；
+// 顺序即表单展示顺序。
+var providerShapeURLFields = []struct{ shape, field string }{
+	{storage.LLMAPIShapeOpenAIChat, "chat_base_url"},
+	{storage.LLMAPIShapeOpenAIResponses, "responses_base_url"},
+	{storage.LLMAPIShapeAnthropic, "anthropic_base_url"},
+}
+
 // providerErrorField maps a backend error to the form field that should show it
 // inline, so a failed provider write keeps the user's input.
 func providerErrorField(err error) string {
@@ -1155,6 +1195,23 @@ func providerErrorField(err error) string {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	// 形态地址错误必须先于 "base url" 判定：normalizeShapeURLs 的报错包装了
+	// ValidateLLMProviderURL 的 "base URL must be…" 文案。
+	case strings.Contains(msg, "--shape-url"):
+		switch {
+		case strings.Contains(msg, "openai-chat"):
+			return "chat_base_url"
+		case strings.Contains(msg, "openai-responses"):
+			return "responses_base_url"
+		default:
+			return "anthropic_base_url"
+		}
+	case strings.Contains(msg, "chat_base_url"):
+		return "chat_base_url"
+	case strings.Contains(msg, "responses_base_url"):
+		return "responses_base_url"
+	case strings.Contains(msg, "anthropic_base_url"):
+		return "anthropic_base_url"
 	case strings.Contains(msg, "base url"):
 		return "base_url"
 	case strings.Contains(msg, "api_shape"):
@@ -1206,6 +1263,9 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		"alias:          " + p.Alias,
 		"base_url:       " + p.BaseURL,
 		"api_shape:      " + orDash(p.APIShape),
+		"chat_url:       " + orDash(p.ChatBaseURL),
+		"responses_url:  " + orDash(p.ResponsesBaseURL),
+		"anthropic_url:  " + orDash(p.AnthropicBaseURL),
 		"credential_ref: " + p.CredentialRef,
 		"catalog:        " + orDash(p.CatalogProvider),
 		"default_model:  " + orDash(p.DefaultModel),

@@ -83,8 +83,8 @@ OpenAI-compatible agents with it.`,
 		}
 		auditOp(session.AuditOpLLMSwitch, "agent:"+out.AgentID, true,
 			fmt.Sprintf("default:%s models:%d", out.DefaultModel, len(out.Models)))
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（默认模型 %s，共 %d 个模型）\n  接入地址：%s\n  配置：%s\n",
-			out.AgentName, out.Provider, out.DefaultModel, len(out.Models), out.BaseURL, out.ConfigPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（默认模型 %s，共 %d 个模型）\n  接入地址：%s（%s）\n  配置：%s\n",
+			out.AgentName, out.Provider, out.DefaultModel, len(out.Models), out.BaseURL, out.BaseURLSource, out.ConfigPath)
 		// 凭据环境变量名是切换结果的确定性事实（env: 引用复用被引用 key 名，
 		// text: 引用由默认组引用条目兜底），因此走 stdout 的普通信息行；需要用户
 		// 动作的情形（组未激活、名字被占用）在下方 warnings 里逐条提示。

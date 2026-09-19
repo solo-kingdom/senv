@@ -135,10 +135,17 @@ type HostEntry struct {
 // never stored here: CredentialRef points at a vault entry (for example the
 // reserved text group "llm-keys") so profile metadata can be listed safely.
 type LLMProviderEntry struct {
-	Alias           string `json:"alias"`
-	BaseURL         string `json:"base_url"`
-	CredentialRef   string `json:"credential_ref"`
-	CatalogProvider string `json:"catalog_provider,omitempty"`
+	Alias   string `json:"alias"`
+	BaseURL string `json:"base_url"`
+	// 形态地址（per-shape URLs）：为特定接口形态显式声明的接入地址，空值表示
+	// 未声明，切换时按 ADR-0004 规则从 BaseURL 推断。chat/responses 落库走
+	// OpenAI 兼容归一；anthropic 原样存储仅收敛尾斜杠（claude-code 拼
+	// /v1/messages 的 base，前缀路径不可被版本段规则触碰）。
+	ChatBaseURL      string `json:"chat_base_url,omitempty"`
+	ResponsesBaseURL string `json:"responses_base_url,omitempty"`
+	AnthropicBaseURL string `json:"anthropic_base_url,omitempty"`
+	CredentialRef    string `json:"credential_ref"`
+	CatalogProvider  string `json:"catalog_provider,omitempty"`
 	// APIShape optionally declares the wire protocol this profile speaks
 	// (openai-chat | openai-responses | anthropic). Empty keeps the legacy
 	// behavior of deriving the shape from the target agent (ADR-0006).
@@ -177,6 +184,23 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 	// accepts both schemes but still rejects malformed URLs and userinfo.
 	if err := ValidateLLMProviderURL(e.BaseURL, true); err != nil {
 		return fmt.Errorf("provider %q: %w", e.Alias, err)
+	}
+	// 形态地址与 BaseURL 同受 URL 校验（空值合法）。逐字段检查保证错误信息
+	// 指明是哪个形态地址。
+	for _, field := range []struct {
+		name string
+		raw  string
+	}{
+		{"chat_base_url", e.ChatBaseURL},
+		{"responses_base_url", e.ResponsesBaseURL},
+		{"anthropic_base_url", e.AnthropicBaseURL},
+	} {
+		if field.raw == "" {
+			continue
+		}
+		if err := ValidateLLMProviderURL(field.raw, true); err != nil {
+			return fmt.Errorf("provider %q: %s: %w", e.Alias, field.name, err)
+		}
 	}
 	if err := ValidateLLMProviderAPIShape(e.APIShape); err != nil {
 		return fmt.Errorf("provider %q: %w", e.Alias, err)

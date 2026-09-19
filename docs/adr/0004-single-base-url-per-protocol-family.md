@@ -16,4 +16,4 @@ LLM Provider 档案只存一份接入地址，按 OpenAI 兼容形态落库（�
 
 ## Status
 
-部分由 [ADR-0006](./0006-provider-api-shape.md) 取代：接入地址的形态可由 LLM Provider 显式声明（`api_shape`），不再只由 agent 协议族决定；归一规则本身不变。
+部分由 [ADR-0006](./0006-provider-api-shape.md) 取代：接入地址的形态可由 LLM Provider 显式声明（`api_shape`），不再只由 agent 协议族决定；归一规则本身不变。后经 [ADR-0027](./0027-provider-per-shape-urls.md) 细化：单地址原则收窄为「默认地址 + 可选形态地址」，推断路径与本 ADR 保持一致。

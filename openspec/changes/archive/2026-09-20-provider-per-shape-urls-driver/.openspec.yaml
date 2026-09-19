@@ -1,0 +1,8 @@
+schema: spec-driven
+skip_specs: true
+created: 2026-09-20
+goal: 为一个 provider 提供按接口形态的接入地址：BaseURL 保留必填（默认地址+推断源），新增可选 chat_base_url /
+  responses_base_url / anthropic_base_url 三字段；未设置的形态按 ADR-0004 规则从 BaseURL
+  自动推断；switch 门禁放宽为「目标协议族有显式形态地址即放行」，地址选择严格跟随线协议（输出 explicit/inferred 来源）；CLI 重复
+  flag --shape-url <shape>=<url>、TUI 表单三字段、MCP llm_provider_list 视图补 shape_urls
+  与 api_shape；anthropic 字段原样存储仅收敛尾斜杠；更新 senv-cli skill 并晋升任务内 ADR 到仓库 docs/adr
