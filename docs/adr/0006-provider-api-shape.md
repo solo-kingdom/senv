@@ -12,3 +12,7 @@ LLM Provider 新增可选字段 `api_shape`（`openai-chat` | `openai-responses`
 - 部分取代 ADR-0004：一份档案一个接入地址、跨族由 senv 归一仍然成立；「形态只由 agent 协议族决定」不再成立。
 - 存量档案不迁移：字段缺省即旧行为，`api_shape` 只在用户显式设置后生效。
 - 兼容判定给 `senv ai switch` 增加一种失败模式（形态不匹配），错误信息必须给出两个可行动作：改 provider 形态，或换 provider。
+
+## Status
+
+采纳，后经 [ADR-0027](./0027-provider-per-shape-urls.md) 修订：显式形态地址（per-shape URLs）的存在即「该族被服务」的声明，`switch` 门禁在目标族有显式地址时放行；`api_shape` 的职责收敛为 OpenAI 族内选线协议与无显式地址时的兼容判据。

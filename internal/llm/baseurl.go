@@ -41,6 +41,13 @@ func baseURLForFamily(raw string, family ProtocolFamily) string {
 	return u.String()
 }
 
+// normalizeAnthropicShapeURL 收敛 anthropic 形态地址的尾斜杠，不做任何版本段
+// 处理：claude-code 请求 base + /v1/messages，`/api/anthropic` 这类路径前缀
+// 不可被版本段规则触碰；用户传入带 /v1 的值原样保留，由 switch 输出让其可见。
+func normalizeAnthropicShapeURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
 func hasTrailingV1(path string) bool {
 	return path == "/v1" || strings.HasSuffix(path, "/v1")
 }

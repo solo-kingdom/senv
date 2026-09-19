@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-20
+goal: per-shape 形态地址交互面与文档：TUI provider 表单三字段与详情展示；MCP llm_provider_list 视图补
+  shape_urls 与 api_shape；senv-cli SKILL.md 回写；晋升 per-shape ADR 到仓库 docs/adr 并标注与
+  ADR-0004/0006 修订关系；llm-provider-tui 与 llm-provider-mcp spec delta
