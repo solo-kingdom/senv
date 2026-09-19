@@ -155,6 +155,7 @@ senv sync --force-push      # 放弃远端，采用本地
 
 已踩过的坑：
 
+- **扩容同步 kind 白名单必须先发 server 镜像**：`internal/syncschema` 由 client 与 senv-server 共享。新 kind（如 `backup`/`backup_meta`）未进运行中镜像时，新 client 的整批 push 会被拒绝。发布顺序：iship 构建并推送 senv-server 镜像 → tcbj `docker compose pull && up -d` → 再发 client。
 - **不要在 tcbj 上直接 docker build**：大陆云机访问不了默认 Go 模块代理
   `proxy.golang.org`，`go mod download` 必失败（2026-09-08 实测）。
 - **`--trust-proxy-headers` 旧语义（<0.1.23）只认 loopback 对端**：docker 网桥反代

@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
@@ -80,6 +81,7 @@ var mcpListToolsCmd = &cobra.Command{
 type managers struct {
 	env        *env.Manager
 	text       mcpTextManager
+	backup     *backup.Manager
 	config     *config.Manager
 	ssh        *ssh.Manager
 	llm        *llm.ProviderManager
@@ -189,6 +191,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		requestManagers := &managers{
 			env:        env.NewManagerWithKey(store, key),
 			text:       mcpTextManager{text.NewManagerWithKey(store, key)},
+			backup:     backup.NewManagerWithKey(store, key),
 			config:     config.NewManagerWithKey(store, key),
 			ssh:        ssh.NewManagerWithKey(store, key),
 			llm:        llm.NewProviderManagerWithKey(store, key),
@@ -200,6 +203,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			session.ZeroKey(key)
 			requestManagers.env = nil
 			requestManagers.text = mcpTextManager{}
+			requestManagers.backup = nil
 			requestManagers.config = nil
 			requestManagers.ssh = nil
 			requestManagers.llm = nil
@@ -259,12 +263,17 @@ type envGetInput struct {
 	Decode bool   `json:"decode,omitempty" jsonschema_description:"resolve {{env:...}} and {{text:...}} references"`
 }
 
+type backupGetInput struct {
+	Group string `json:"group,omitempty" jsonschema_description:"optional group name"`
+	Key   string `json:"key" jsonschema_description:"backup key, or a group:key address"`
+}
+
 type listInput struct {
 	Group string `json:"group,omitempty" jsonschema_description:"optional group to restrict the listing to"`
 }
 
 type groupKindInput struct {
-	Kind        string `json:"kind" jsonschema_description:"group namespace; one of \"env\" or \"text\""`
+	Kind        string `json:"kind" jsonschema_description:"group namespace; one of \"env\", \"text\", or \"backup\""`
 	Name        string `json:"name" jsonschema_description:"group name"`
 	Description string `json:"description" jsonschema_description:"required non-empty note describing the group"`
 }
@@ -479,6 +488,102 @@ func (m *managers) textList(_ context.Context, _ *mcp.CallToolRequest, in listIn
 	return textResult(out)
 }
 
+func (m *managers) backupGet(_ context.Context, _ *mcp.CallToolRequest, in backupGetInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
+	if err := m.ensureBackup(); err != nil {
+		return errResult(err)
+	}
+	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
+	value, err := m.backup.Get(group, key)
+	if err != nil {
+		return errResult(err)
+	}
+	_, desc, metaErr := m.backup.GetWithMeta(group, key)
+	if metaErr != nil {
+		return errResult(metaErr)
+	}
+	out := map[string]string{"group": group, "key": key, "value": value}
+	if desc != "" {
+		out["description"] = desc
+	}
+	return textResult(out)
+}
+
+func (m *managers) backupSet(_ context.Context, _ *mcp.CallToolRequest, in envSetValueInput) (*mcp.CallToolResult, emptyOut, error) {
+	if err := m.ensureBackup(); err != nil {
+		return errResult(err)
+	}
+	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
+	var err error
+	if in.Description != nil {
+		err = m.backup.SetWithDescription(group, key, in.Value, in.Description)
+	} else {
+		err = m.backup.Set(group, key, in.Value)
+	}
+	if err != nil {
+		return errResult(err)
+	}
+	return textResult(map[string]string{"status": "ok", "group": group, "key": key})
+}
+
+func (m *managers) backupDelete(_ context.Context, _ *mcp.CallToolRequest, in envKeyInput) (*mcp.CallToolResult, emptyOut, error) {
+	if err := m.ensureBackup(); err != nil {
+		return errResult(err)
+	}
+	group, key := resolveAddressKey(in.Key, orDefault(in.Group, "default"))
+	if err := m.backup.Delete(group, key); err != nil {
+		return errResult(err)
+	}
+	return textResult(map[string]string{"status": "deleted", "group": group, "key": key})
+}
+
+func (m *managers) backupList(_ context.Context, _ *mcp.CallToolRequest, in listInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
+	if err := m.ensureBackup(); err != nil {
+		return errResult(err)
+	}
+	type entry struct {
+		Group       string `json:"group"`
+		Key         string `json:"key"`
+		Size        int    `json:"size"`
+		Description string `json:"description,omitempty"`
+	}
+	var out []entry
+	addGroup := func(group string) error {
+		infos, err := m.backup.List(group)
+		if err != nil {
+			return err
+		}
+		for _, info := range infos {
+			out = append(out, entry{Group: group, Key: info.Key, Size: info.Size, Description: info.Description})
+		}
+		return nil
+	}
+	if in.Group != "" {
+		if err := addGroup(in.Group); err != nil {
+			return errResult(err)
+		}
+	} else {
+		groups, err := m.backup.ListGroups()
+		if err != nil {
+			return errResult(err)
+		}
+		for _, gr := range groups {
+			if err := addGroup(gr.Name); err != nil {
+				return errResult(err)
+			}
+		}
+	}
+	return textResult(out)
+}
+
+func (m *managers) ensureBackup() error {
+	if m.backup == nil {
+		return fmt.Errorf("backup manager unavailable")
+	}
+	return m.backup.EnsureDefault()
+}
+
 func (m *managers) configList(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyOut, error) {
 	m.pullBeforeRead()
 	infos, err := m.config.List("")
@@ -512,9 +617,27 @@ func (m *managers) groupList(_ context.Context, _ *mcp.CallToolRequest, in listI
 	m.pullBeforeRead()
 	switch orDefault(in.Group, "") {
 	// We overload the otherwise-unused Group field with the namespace to avoid a
-	// bespoke input type. Accept "text" (and empty) => text groups; otherwise env.
+	// bespoke input type. Accept "text"/"backup"; otherwise env groups.
 	case "text":
 		groups, err := m.text.ListGroups()
+		if err != nil {
+			return errResult(err)
+		}
+		type g struct {
+			Name        string `json:"name"`
+			KeyCount    int    `json:"keyCount"`
+			Description string `json:"description,omitempty"`
+		}
+		out := make([]g, 0, len(groups))
+		for _, gr := range groups {
+			out = append(out, g{Name: gr.Name, KeyCount: gr.KeyCount, Description: gr.Description})
+		}
+		return textResult(out)
+	case "backup":
+		if err := m.ensureBackup(); err != nil {
+			return errResult(err)
+		}
+		groups, err := m.backup.ListGroups()
 		if err != nil {
 			return errResult(err)
 		}
@@ -549,12 +672,19 @@ func (m *managers) groupList(_ context.Context, _ *mcp.CallToolRequest, in listI
 }
 
 func (m *managers) groupAdd(_ context.Context, _ *mcp.CallToolRequest, in groupKindInput) (*mcp.CallToolResult, emptyOut, error) {
-	if in.Kind != "env" && in.Kind != "text" {
-		return errResult(fmt.Errorf("invalid kind %q: must be \"env\" or \"text\"", in.Kind))
+	if in.Kind != "env" && in.Kind != "text" && in.Kind != "backup" {
+		return errResult(fmt.Errorf("invalid kind %q: must be \"env\", \"text\", or \"backup\"", in.Kind))
 	}
 	switch in.Kind {
 	case "text":
 		if err := m.text.AddGroup(in.Name, in.Description); err != nil {
+			return errResult(err)
+		}
+	case "backup":
+		if err := m.ensureBackup(); err != nil {
+			return errResult(err)
+		}
+		if err := m.backup.AddGroup(in.Name, in.Description); err != nil {
 			return errResult(err)
 		}
 	default: // env
@@ -605,11 +735,15 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_set", Description: "Set a text block. Optional description is a vault note; omit to keep the existing note."}, guardMCPTool("senv_text_set", authorize, autoPull, (*managers).textSet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_delete", Description: "Delete a text block."}, guardMCPTool("senv_text_delete", authorize, autoPull, (*managers).textDelete))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_text_list", Description: "List text blocks, optionally restricted to a group."}, guardMCPTool("senv_text_list", authorize, autoPull, (*managers).textList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_backup_get", Description: "Get a backup block. References are never resolved."}, guardMCPTool("senv_backup_get", authorize, autoPull, (*managers).backupGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_backup_set", Description: "Set a backup block. Optional description is a vault note; omit to keep the existing note."}, guardMCPTool("senv_backup_set", authorize, autoPull, (*managers).backupSet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_backup_delete", Description: "Delete a backup block."}, guardMCPTool("senv_backup_delete", authorize, autoPull, (*managers).backupDelete))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_backup_list", Description: "List backup blocks (no values), optionally restricted to a group."}, guardMCPTool("senv_backup_list", authorize, autoPull, (*managers).backupList))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_list", Description: "List stored config files."}, guardMCPTool("senv_config_list", authorize, autoPull, (*managers).configList))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_get", Description: "Get metadata for a stored config file."}, guardMCPTool("senv_config_get", authorize, autoPull, (*managers).configGet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_config_export", Description: "Export a stored config file and return its content."}, guardMCPTool("senv_config_export", authorize, autoPull, (*managers).configExport))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" for text groups; otherwise env groups."}, guardMCPTool("senv_group_list", authorize, autoPull, (*managers).groupList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text). description is required."}, guardMCPTool("senv_group_add", authorize, autoPull, (*managers).groupAdd))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_list", Description: "List groups. Pass group=\"text\" or group=\"backup\"; otherwise env groups."}, guardMCPTool("senv_group_list", authorize, autoPull, (*managers).groupList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_add", Description: "Create a group (kind=env|text|backup). description is required."}, guardMCPTool("senv_group_add", authorize, autoPull, (*managers).groupAdd))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_activate", Description: "Activate an env group (included in env export)."}, guardMCPTool("senv_group_activate", authorize, autoPull, (*managers).groupActivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_group_deactivate", Description: "Deactivate an env group."}, guardMCPTool("senv_group_deactivate", authorize, autoPull, (*managers).groupDeactivate))
 	mcp.AddTool(s, &mcp.Tool{Name: "ssh_host_list", Description: "List SSH host connection metadata (read-only; no private keys)."}, guardMCPTool("ssh_host_list", authorize, autoPull, (*managers).sshHostList))
@@ -631,11 +765,15 @@ func toolCatalogue() []toolDef {
 		{"senv_text_set", "Set a text block. Optional description is a vault note; omit to keep the existing note."},
 		{"senv_text_delete", "Delete a text block."},
 		{"senv_text_list", "List text blocks, optionally by group."},
+		{"senv_backup_get", "Get a backup block. References are never resolved."},
+		{"senv_backup_set", "Set a backup block. Optional description is a vault note; omit to keep the existing note."},
+		{"senv_backup_delete", "Delete a backup block."},
+		{"senv_backup_list", "List backup blocks (no values), optionally by group."},
 		{"senv_config_list", "List stored config files."},
 		{"senv_config_get", "Get metadata for a stored config file."},
 		{"senv_config_export", "Export a stored config file and return its content."},
-		{"senv_group_list", "List groups (group=text for text groups)."},
-		{"senv_group_add", "Create a group (kind=env|text). description is required."},
+		{"senv_group_list", "List groups. Pass group=\"text\" or group=\"backup\"; otherwise env groups."},
+		{"senv_group_add", "Create a group (kind=env|text|backup). description is required."},
 		{"senv_group_activate", "Activate an env group."},
 		{"senv_group_deactivate", "Deactivate an env group."},
 		{"ssh_host_list", "List SSH host connection metadata (read-only; no private keys)."},

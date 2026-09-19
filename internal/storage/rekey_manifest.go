@@ -26,6 +26,7 @@ type rekeyManifestEntryKind string
 const (
 	rekeyManifestEntryEnv       rekeyManifestEntryKind = "env"
 	rekeyManifestEntryText      rekeyManifestEntryKind = "text"
+	rekeyManifestEntryBackup    rekeyManifestEntryKind = "backup"
 	rekeyManifestEntryConfig    rekeyManifestEntryKind = "config"
 	rekeyManifestEntryHost      rekeyManifestEntryKind = "host"
 	rekeyManifestEntryKeyPair   rekeyManifestEntryKind = "keypair"
@@ -153,6 +154,8 @@ func rekeyManifestKind(kind rekeyEntryKind) rekeyManifestEntryKind {
 		return rekeyManifestEntryEnv
 	case rekeyEntryText:
 		return rekeyManifestEntryText
+	case rekeyEntryBackup:
+		return rekeyManifestEntryBackup
 	case rekeyEntryConfig:
 		return rekeyManifestEntryConfig
 	case rekeyEntryHost:
@@ -200,7 +203,7 @@ func (m *Manager) validateManifest(manifest *rekeyManifest) error {
 	seen := make(map[string]struct{}, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		switch entry.Kind {
-		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryConfig,
+		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryBackup, rekeyManifestEntryConfig,
 			rekeyManifestEntryHost, rekeyManifestEntryKeyPair, rekeyManifestEntryProvider,
 			rekeyManifestEntryMCPServer:
 		default:

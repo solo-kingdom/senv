@@ -190,6 +190,8 @@ func tabLoadedFlag(tab Tab) (loaded, hasFlag bool) {
 		return tb.loaded, true
 	case *textTab:
 		return tb.loaded, true
+	case *backupTab:
+		return tb.loaded, true
 	case *configTab:
 		return tb.loaded, true
 	case *sshTab:
@@ -210,15 +212,14 @@ func tabLoadedFlag(tab Tab) (loaded, hasFlag bool) {
 // asserts on reload behavior.
 func focusAllTabs(m Model) Model {
 	for i := range m.tabs {
-		out, cmd := m.Update(runeKey(string(rune('1' + i))))
+		out, cmd := m.activateTab(i)
 		m = out.(Model)
 		for _, msg := range runCmd(cmd) {
 			out, _ = m.Update(msg)
 			m = out.(Model)
 		}
 	}
-	// Land back on the first tab so the active tab has a loaded flag.
-	out, cmd := m.Update(runeKey("1"))
+	out, cmd := m.activateTab(0)
 	m = out.(Model)
 	for _, msg := range runCmd(cmd) {
 		out, _ = m.Update(msg)

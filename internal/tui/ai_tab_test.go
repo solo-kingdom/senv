@@ -73,8 +73,8 @@ func submitAIForm(t *testing.T, tab *aiTab, values map[string]string) *aiTab {
 }
 
 func TestAITabRegistration(t *testing.T) {
-	if tabs := New(Managers{}); len(tabs.tabs) != 3 {
-		t.Fatalf("base tab count = %d, want 3 (no AI without LLM)", len(tabs.tabs))
+	if tabs := New(Managers{}); len(tabs.tabs) != 4 {
+		t.Fatalf("base tab count = %d, want 4 (no AI without LLM)", len(tabs.tabs))
 	}
 	m := New(Managers{LLM: &llm.ProviderManager{}})
 	last := m.tabs[len(m.tabs)-1]

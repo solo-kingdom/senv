@@ -127,6 +127,22 @@ func TestResolveNoTypePrefixIsLiteral(t *testing.T) {
 	}
 }
 
+func TestResolveBackupTypeIsNotAReference(t *testing.T) {
+	getter := newMockGetter()
+	getter.setText("notes", "DUMP", "SHOULD-NOT-APPEAR")
+
+	result, err := Resolve("{{backup:notes:DUMP}}", getter, ResolveOptions{})
+	if err != nil {
+		t.Fatalf("backup type must stay literal, got err %v", err)
+	}
+	if result != "{{backup:notes:DUMP}}" {
+		t.Errorf("expected literal template, got %q", result)
+	}
+	if result == "SHOULD-NOT-APPEAR" {
+		t.Error("must not substitute backup/text body")
+	}
+}
+
 func TestResolveEscapedRef(t *testing.T) {
 	getter := newMockGetter()
 

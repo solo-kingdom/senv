@@ -147,6 +147,22 @@ Text Tab SHALL 采用双栏分组侧栏布局：左侧为分组侧栏（顶部�
 - **WHEN** 用户在侧栏对某分组触发重命名或删除并确认
 - **THEN** 分别调用 `RenameGroup`/`DeleteGroup`，列表刷新，光标落在有效条目上
 
+### Requirement: Backup Tab 浏览与操作
+
+TUI SHALL 提供独立 Backup Tab，采用与 Text Tab 相同的双栏分组侧栏布局（All 伪组默认选中，空分组计数 0，行前缀 `group/key`）。右侧列表 MUST 仅显示 key、大小、更新时间与说明，MUST NOT 显示 value。Backup Tab MUST 支持浏览、新建（vim）、vim 编辑、重命名 key、删除、导入、导出、新建/重命名/删除分组、Tab 内过滤与多选批量删除/导出。MUST NOT 提供解引用切换。`default` 分组 MUST NOT 可改名或删除。
+
+#### Scenario: 默认全览
+- **WHEN** 打开 Backup Tab
+- **THEN** 左侧 All 默认选中，右侧显示全部 backup 条目且带 `group/key` 前缀，不显示正文
+
+#### Scenario: vim 编辑 backup
+- **WHEN** 用户选中某 backup 条目按 `e`
+- **THEN** TUI 挂起并打开编辑器预填现有内容，保存后重新加密并刷新列表
+
+#### Scenario: default 组受保护
+- **WHEN** 用户在 Backup Tab 侧栏选中 `default` 并尝试重命名或删除
+- **THEN** 操作被拒绝，组仍在
+
 ### Requirement: Config Tab 浏览与操作
 
 Config Tab SHALL 采用双栏分组浏览布局：左侧为分组侧栏（顶部 All 伪组，其下真实分组与条目计数），右侧为条目列表，详细行为见 config-tui 能力规约。Config Tab MUST 支持浏览、创建（从文件导入，走结构化表单）、vim 编辑、重命名条目、编辑元信息（分组、描述）、导出到 target、删除、查看详情、Tab 内过滤。重命名 SHALL 走存储层原子操作，MUST NOT 改变条目的 target 路径与内容。
@@ -229,7 +245,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: 全局跨类型搜索
 
-TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI/MCP 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI/MCP 结果跳转到对应 Tab 并定位光标）。
+TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI/MCP/Backup 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command、backup 的 group/key/description），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI/MCP/Backup 结果跳转到对应 Tab 并定位光标）。
 
 #### Scenario: 触发全局搜索
 - **WHEN** 用户按 `S` 键
@@ -262,6 +278,10 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SS
 #### Scenario: 关闭搜索
 - **WHEN** 用户按 `esc`
 - **THEN** overlay 关闭，返回之前的 Tab 视图
+
+#### Scenario: 搜索 backup 标识
+- **WHEN** 用户按 `S` 并输入某 backup key 或说明片段
+- **THEN** 结果含对应 Backup 条目，`enter` 跳转 Backup Tab 并定位；正文即使含相同片段 MUST NOT 作为匹配依据
 
 ### Requirement: vim 编辑复用现有加密闭环
 

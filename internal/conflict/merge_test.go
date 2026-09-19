@@ -122,6 +122,30 @@ func TestMergeSessionTextConfigAndIndex(t *testing.T) {
 	}
 	_ = textSession.Close()
 
+	backupLocal, backupRemote := textEntry("local-dump"), textEntry("remote-dump")
+	backupSession, err := PrepareMergeEditor(provider.ConflictDetail{
+		Kind: provider.KindBackup, Grp: "notes", Key: "DUMP",
+		Local:  provider.ConflictSide{Ciphertext: backupLocal},
+		Remote: provider.ConflictSide{Ciphertext: backupRemote},
+	}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupSession.Path, []byte("merged dump"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupCipher, err := backupSession.Finish(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ = crypto.Decrypt(key, string(backupCipher))
+	var decodedBackup storage.BackupEntry
+	_ = storage.FromJSON(plain, &decodedBackup)
+	if decodedBackup.Value != "merged dump" || decodedBackup.Size != len("merged dump") || !decodedBackup.CreatedAt.Equal(created) {
+		t.Fatalf("backup entry = %+v", decodedBackup)
+	}
+	_ = backupSession.Close()
+
 	configLocal, _ := crypto.Encrypt(key, []byte("local-conf"))
 	configRemote, _ := crypto.Encrypt(key, []byte("remote-conf"))
 	configSession, err := PrepareMergeEditor(provider.ConflictDetail{
@@ -201,6 +225,13 @@ func TestValidateMergedBufferRejectsUnsafeContent(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
+	}
+}
+
+func TestValidateMergedBackupRejectsOversize(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), storage.MaxBackupSize+1)
+	if err := ValidateMergedBuffer(provider.KindBackup, data); err == nil {
+		t.Fatal("oversize backup merge must fail")
 	}
 }
 

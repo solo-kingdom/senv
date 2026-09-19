@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/storage"
@@ -39,6 +40,7 @@ func snapshotTestVault(t *testing.T) (Managers, *SnapshotCache, string) {
 	mgrs := Managers{
 		Env:    env.NewManagerWithKey(sm, key),
 		Text:   text.NewManagerWithKey(sm, key),
+		Backup: backup.NewManagerWithKey(sm, key),
 		Config: nil,
 	}
 	cache := NewSnapshotCache(dataPath, configPath, key)
@@ -57,6 +59,10 @@ func seedSnapshotData(t *testing.T, mgrs Managers) {
 	}
 	if err := mgrs.Text.Set("notes", "readme-block", "confidential-body-123"); err != nil {
 		t.Fatalf("seed text: %v", err)
+	}
+	note := "weekly dump"
+	if err := mgrs.Backup.SetWithDescription("default", "DUMP", "secret-backup-body-xyz", &note); err != nil {
+		t.Fatalf("seed backup: %v", err)
 	}
 }
 
@@ -93,6 +99,13 @@ func TestSnapshotCacheRoundTrip(t *testing.T) {
 	if len(items) != 1 || items[0].Key != "readme-block" {
 		t.Fatalf("text round-trip = %+v", items)
 	}
+	if payload.Backup == nil {
+		t.Fatal("backup snapshot missing")
+	}
+	backups := payload.Backup.Items["default"]
+	if len(backups) != 1 || backups[0].Key != "DUMP" || backups[0].Description != "weekly dump" {
+		t.Fatalf("backup round-trip = %+v", backups)
+	}
 	if payload.Fingerprint == "" {
 		t.Fatal("fingerprint must be recorded")
 	}
@@ -112,6 +125,7 @@ func TestSnapshotCacheCiphertextNoPlaintext(t *testing.T) {
 	}
 	for _, plaintext := range []string{
 		"topsecret-value-xyz", "confidential-body-123", "readme-block", "API_KEY",
+		"secret-backup-body-xyz",
 	} {
 		if strings.Contains(string(blob), plaintext) {
 			t.Fatalf("snapshot file contains plaintext %q", plaintext)

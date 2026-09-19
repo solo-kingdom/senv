@@ -57,6 +57,19 @@ func TestRenderEnvAndText(t *testing.T) {
 	if !strings.Contains(RenderDetail(detail, auth, true), "remote text") {
 		t.Fatal("text reveal missing remote content")
 	}
+
+	localBackup := encrypted(t, key, storage.BackupEntry{Value: "local dump", Size: 10, UpdatedAt: updated})
+	remoteBackup := encrypted(t, key, storage.BackupEntry{Value: "remote dump", Size: 11, UpdatedAt: updated})
+	detail.Kind = provider.KindBackup
+	detail.Local.Ciphertext, detail.Remote.Ciphertext = localBackup, remoteBackup
+	detail.Local.Size, detail.Remote.Size = len(localBackup), len(remoteBackup)
+	hiddenBackup := RenderDetail(detail, auth, false)
+	if strings.Contains(hiddenBackup, "local dump") || !strings.Contains(hiddenBackup, "<text hidden>") {
+		t.Fatalf("backup leaked without explicit reveal:\n%s", hiddenBackup)
+	}
+	if !strings.Contains(RenderDetail(detail, auth, true), "remote dump") {
+		t.Fatal("backup reveal missing remote content")
+	}
 }
 
 func TestRenderBinaryConfigAndIncompatibleRemote(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/storage"
@@ -36,6 +37,7 @@ func newManagersForTest(t *testing.T, password string) (*managers, string, strin
 	return &managers{
 		env:    env.NewManager(store, password),
 		text:   mcpTextManager{text.NewManager(store, password)},
+		backup: backup.NewManager(store, password),
 		config: config.NewManager(store, password),
 	}, configPath, dataPath
 }
@@ -211,6 +213,78 @@ func TestMCPTextSetGetListDelete(t *testing.T) {
 	}
 }
 
+func TestMCPBackupSetGetListDelete(t *testing.T) {
+	m, _, _ := newManagersForTest(t, "pw")
+	ctx := context.Background()
+
+	if err := m.backup.AddGroup("notes", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	secret := "SECRET-BACKUP-BODY"
+	note := "weekly dump"
+	if _, _, err := m.backupSet(ctx, nil, envSetValueInput{Key: "notes:DUMP", Value: secret, Description: &note}); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := m.backupGet(ctx, nil, backupGetInput{Key: "notes:DUMP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := asMap(t, textOf(t, res))
+	if got["value"] != secret {
+		t.Fatalf("backupGet value wrong: %s", textOf(t, res))
+	}
+
+	res, _, err = m.backupList(ctx, nil, listInput{Group: "notes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, res)), &arr); err != nil {
+		t.Fatalf("backupList unmarshal: %v", err)
+	}
+	if len(arr) != 1 || arr[0]["key"] != "DUMP" {
+		t.Fatalf("backupList result = %v", arr)
+	}
+	if _, ok := arr[0]["value"]; ok {
+		t.Fatalf("backupList leaked value: %v", arr)
+	}
+	if arr[0]["description"] != note {
+		t.Fatalf("backupList missing description: %v", arr)
+	}
+
+	if _, _, err := m.backupSet(ctx, nil, envSetValueInput{Key: "notes:DUMP", Value: "NEW-BODY"}); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err = m.backupGet(ctx, nil, backupGetInput{Key: "notes:DUMP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = asMap(t, textOf(t, res))
+	if got["value"] != "NEW-BODY" {
+		t.Fatalf("backupSet overwrite value wrong: %s", textOf(t, res))
+	}
+	if got["description"] != note {
+		t.Fatalf("omitted description must keep existing note: %v", got)
+	}
+
+	res, _, err = m.backupSet(ctx, nil, envSetValueInput{Key: "nope:KEY", Value: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("backup set into missing group must fail")
+	}
+
+	res, _, err = m.backupDelete(ctx, nil, envKeyInput{Key: "notes:DUMP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asMap(t, textOf(t, res))["status"] != "deleted" {
+		t.Fatalf("backupDelete status wrong")
+	}
+}
+
 func TestMCPGroupAddListActivate(t *testing.T) {
 	m, _, _ := newManagersForTest(t, "pw")
 	ctx := context.Background()
@@ -249,6 +323,35 @@ func TestMCPGroupAddListActivate(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("text group secrets not listed: %v", groups)
+	}
+
+	res, _, err = m.groupAdd(ctx, nil, groupKindInput{Kind: "backup", Name: "emptydesc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatal("backup group add without description must fail")
+	}
+
+	if _, _, err := m.groupAdd(ctx, nil, groupKindInput{Kind: "backup", Name: "dumps", Description: "dump archive"}); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err = m.groupList(ctx, nil, listInput{Group: "backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups = nil
+	if err := json.Unmarshal([]byte(textOf(t, res)), &groups); err != nil {
+		t.Fatalf("groupList backup unmarshal: %v", err)
+	}
+	found = false
+	for _, g := range groups {
+		if g["name"] == "dumps" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("backup group dumps not listed: %v", groups)
 	}
 
 	// activate/deactivate env group

@@ -40,6 +40,8 @@ const (
 	ConfigFileSuffix = ".enc"
 	TextFileSuffix   = ".enc"
 	TextDirName      = "texts"
+	BackupDirName    = "backups"
+	BackupFileSuffix = ".enc"
 	EnvDirName       = "envs"
 	EnvVarSuffix     = ".enc"
 	EnvMetaFileName  = ".meta.enc"
@@ -200,7 +202,25 @@ func (m *Manager) completeInitialize(password string, key []byte) error {
 	if err := m.seedTextGroup("llm-keys", reservedLLMKeysDescription, key); err != nil {
 		return fmt.Errorf("failed to create llm-keys text group: %w", err)
 	}
+	if err := m.seedBackupGroup("default", "Default backup group", key); err != nil {
+		return fmt.Errorf("failed to create default backup group: %w", err)
+	}
 	return nil
+}
+
+func (m *Manager) seedBackupGroup(name, description string, cryptoKey []byte) error {
+	if err := m.AddBackupGroup(name); err != nil {
+		return err
+	}
+	existing, err := m.LoadBackupGroupMetaWithKey(name, cryptoKey)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+	meta := &EnvGroupMeta{Name: name, Description: description, CreatedAt: time.Now()}
+	return m.SaveBackupGroupMetaWithKey(name, meta, cryptoKey)
 }
 
 // seedTextGroup creates the text group directory and writes metadata only when
@@ -224,6 +244,7 @@ func (m *Manager) rollbackPartialInitialize() {
 	_ = m.DeleteEnvGroup("default")
 	_ = m.DeleteTextGroup("default")
 	_ = m.DeleteTextGroup("llm-keys")
+	_ = m.DeleteBackupGroup("default")
 	root, err := m.openConfigRoot()
 	if err != nil {
 		return

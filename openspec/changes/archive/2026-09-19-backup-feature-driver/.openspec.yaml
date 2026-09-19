@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-18
+skip_specs: true
+goal: 新增独立 vault kind backup：不常用备份数据与常用 text 隔离；字段/加密/命令/MCP/分组规则对齐 text（value
+  明文 512KB 超限拒绝、禁止隐式建组、upsert 无确认）；独立 TUI Backup Tab；init 预置 backup
+  default；无引用、不抢根快捷；git/server 同步；更新 senv-cli skill 并补 backup-storage spec

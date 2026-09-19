@@ -23,4 +23,5 @@ func recordAudit(mgr Managers, eventType session.AuditEventType, target string, 
 // shared by the tabs; they never include values.
 func envTarget(group, key string) string     { return "env:" + group + ":" + key }
 func textTarget(group, key string) string    { return "text:" + group + ":" + key }
+func backupTarget(group, key string) string  { return "backup:" + group + ":" + key }
 func configTarget(group, name string) string { return "config:" + group + ":" + name }

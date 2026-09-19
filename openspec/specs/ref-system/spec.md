@@ -6,7 +6,7 @@
 
 
 ### Requirement: Reference syntax
-系统 SHALL 支持在 env 和 text 的值中嵌入引用模板。引用格式为 `{{type:key}}` 或 `{{type:group:key}}`，其中 type MUST 为 `env` 或 `text`。不含类型前缀的 `{{...}}` SHALL 视为原文本，不做解析。`\{{` SHALL 作为转义，输出字面 `{{` 而不触发解析。
+系统 SHALL 支持在 env 和 text 的值中嵌入引用模板。引用格式为 `{{type:key}}` 或 `{{type:group:key}}`，其中 type MUST 为 `env` 或 `text`。`backup` MUST NOT 成为合法 type。不含类型前缀的 `{{...}}` SHALL 视为原文本，不做解析。`\{{` SHALL 作为转义，输出字面 `{{` 而不触发解析。
 
 #### Scenario: Reference with explicit group
 - **WHEN** 值包含 `{{text:secrets:DB_PASS}}`
@@ -23,6 +23,10 @@
 #### Scenario: No type prefix is literal
 - **WHEN** 值包含 `{{not_a_ref}}`
 - **THEN** 系统 SHALL 视为原文本，不做任何解析
+
+#### Scenario: backup type is not a reference
+- **WHEN** 值包含 `{{backup:notes:DUMP}}` 且 backup 条目 `notes:DUMP` 存在
+- **THEN** 系统 MUST NOT 用该 backup 值替换模板（结果不得等于 backup 正文）
 
 ### Requirement: Reference resolution timing
 存储时 SHALL 保存原始模板，不做任何引用解析。`env export` 与 MCP `senv_env_export` SHALL 自动解引用所有导出值中的引用；引用目标缺失时 SHALL 按「env export 宽松解引用」处理（保留模板、stderr 警告、命令 exit 0），而非整命令失败。`env get`、`env list`、`text get` SHALL 默认原样输出，仅在指定 `-d`/`--decode` 时解引用；这些命令在未指定 `--loose` 时仍遵循严格模式。

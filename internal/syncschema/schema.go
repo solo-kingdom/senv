@@ -22,6 +22,8 @@ const (
 	KindMCPServer   = "mcp_server"
 	KindSSHHost     = "ssh_host"
 	KindSSHKeypair  = "ssh_keypair"
+	KindBackup      = "backup"
+	KindBackupMeta  = "backup_meta"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -66,7 +68,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := ValidateEnvKey(key); err != nil {
 			return invalid("invalid env key")
 		}
-	case KindText:
+	case KindText, KindBackup:
 		if grp == "" || key == "" {
 			return invalid("kind requires grp and key")
 		}
@@ -76,7 +78,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := securefs.ValidateSegment(key); err != nil {
 			return invalid("invalid key")
 		}
-	case KindEnvMeta, KindTextMeta:
+	case KindEnvMeta, KindTextMeta, KindBackupMeta:
 		if grp == "" || key != "" {
 			return invalid("group meta requires grp and empty key")
 		}

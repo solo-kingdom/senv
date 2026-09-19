@@ -53,10 +53,11 @@ func NewSnapshotCache(dataPath, configPath string, key []byte) *SnapshotCache {
 // 指纹。env 含变量明文（与运行态内存一致）；text 只含条目元数据（tab
 // 只渲染元数据）。指纹不含明文/密钥材料。
 type snapshotCachePayload struct {
-	Version     int       `json:"version"`
-	Fingerprint string    `json:"fingerprint"`
-	Env         *envSnap  `json:"env"`
-	Text        *textSnap `json:"text"`
+	Version     int         `json:"version"`
+	Fingerprint string      `json:"fingerprint"`
+	Env         *envSnap    `json:"env"`
+	Text        *textSnap   `json:"text"`
+	Backup      *backupSnap `json:"backup,omitempty"`
 }
 
 // gatherSnapshot 采集当前展示视图：优先复用进程内 memo（明文本就在内存，
@@ -64,6 +65,7 @@ type snapshotCachePayload struct {
 func gatherSnapshot(mgr Managers) (*snapshotCachePayload, error) {
 	var envData *envSnap
 	var textData *textSnap
+	var backupData *backupSnap
 	if mgr.snap != nil {
 		// Get/GetText 在 memo 被失效后会现场重建，拿到的总是当前真相。
 		if s, err := mgr.snap.Get(); err == nil {
@@ -71,6 +73,11 @@ func gatherSnapshot(mgr Managers) (*snapshotCachePayload, error) {
 		}
 		if s, err := mgr.snap.GetText(); err == nil {
 			textData = s
+		}
+		if mgr.Backup != nil {
+			if s, err := mgr.snap.GetBackup(); err == nil {
+				backupData = s
+			}
 		}
 	}
 	if envData == nil {
@@ -93,10 +100,18 @@ func gatherSnapshot(mgr Managers) (*snapshotCachePayload, error) {
 		}
 		textData = &textSnap{Groups: snap.Groups, Items: snap.Items}
 	}
+	if backupData == nil && mgr.Backup != nil {
+		snap, err := mgr.Backup.Snapshot()
+		if err != nil {
+			return nil, err
+		}
+		backupData = &backupSnap{Groups: snap.Groups, Items: snap.Items}
+	}
 	return &snapshotCachePayload{
 		Version: snapshotCacheVersion,
 		Env:     envData,
 		Text:    textData,
+		Backup:  backupData,
 	}, nil
 }
 

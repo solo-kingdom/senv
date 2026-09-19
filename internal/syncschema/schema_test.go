@@ -16,6 +16,8 @@ func TestValidateIdentityAcceptsLegacyFiveKinds(t *testing.T) {
 		{KindEnvMeta, "prod", ""},
 		{KindTextMeta, "notes", ""},
 		{KindText, "secrets", "ssh-key"},
+		{KindBackupMeta, "dumps", ""},
+		{KindBackup, "notes", "DUMP"},
 		{KindConfig, "", "database-prod"},
 		{KindConfigIndex, "", ""},
 	}
@@ -41,6 +43,9 @@ func TestValidateIdentityRejectsUnknownAndFieldMatrix(t *testing.T) {
 		{"text meta extra key", KindTextMeta, "notes", "KEY"},
 		{"text missing grp", KindText, "", "KEY"},
 		{"text missing key", KindText, "group", ""},
+		{"backup meta extra key", KindBackupMeta, "dumps", "DUMP"},
+		{"backup missing grp", KindBackup, "", "DUMP"},
+		{"backup missing key", KindBackup, "notes", ""},
 		{"config extra grp", KindConfig, "group", "name"},
 		{"config missing key", KindConfig, "", ""},
 		{"config index extra grp", KindConfigIndex, "group", ""},
@@ -74,6 +79,9 @@ func TestValidateIdentityRejectsPathAttacks(t *testing.T) {
 				{KindTextMeta, attack, ""},
 				{KindText, attack, "key"},
 				{KindText, "group", attack},
+				{KindBackupMeta, attack, ""},
+				{KindBackup, attack, "DUMP"},
+				{KindBackup, "notes", attack},
 				{KindConfig, "", attack},
 			} {
 				err := ValidateIdentity(identity.kind, identity.grp, identity.key)

@@ -244,8 +244,11 @@ func TestTextEntryUpdatePreservesCreatedAt(t *testing.T) {
 	}
 }
 
-func TestMaxTextSize(t *testing.T) {
-	if MaxTextSize != 512*1024 {
-		t.Errorf("Expected MaxTextSize to be %d, got %d", 512*1024, MaxTextSize)
+func TestMaxBackupSize(t *testing.T) {
+	if MaxBackupSize != 512*1024 {
+		t.Errorf("Expected MaxBackupSize to be %d, got %d", 512*1024, MaxBackupSize)
+	}
+	if MaxBackupSize != MaxTextSize {
+		t.Errorf("v1 MaxBackupSize should match MaxTextSize")
 	}
 }

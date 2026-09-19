@@ -62,6 +62,27 @@ func runTextShorthand(group, key, file string, valueArgs []string) error {
 	return textManager.SetViaEditor(group, key)
 }
 
+func runBackupShorthand(group, key, file string, valueArgs []string) error {
+	backupManager, err := getBackupManager()
+	if err != nil {
+		return err
+	}
+
+	if file != "" {
+		return backupManager.SetFromFile(group, key, file)
+	}
+
+	if isPipe() {
+		return backupManager.SetFromReader(group, key, os.Stdin)
+	}
+
+	if len(valueArgs) >= 1 {
+		return backupManager.Set(group, key, valueArgs[0])
+	}
+
+	return backupManager.SetViaEditor(group, key)
+}
+
 // runEnvShorthand performs an env set via the group:key shorthand.
 // valueArgs contains any remaining positional args after the address.
 func runEnvShorthand(group, key string, valueArgs []string) error {

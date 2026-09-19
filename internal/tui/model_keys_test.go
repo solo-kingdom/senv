@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
@@ -28,6 +29,7 @@ func newFullManagers(t *testing.T) Managers {
 	return Managers{
 		Env:       env.NewManager(sm, "pw"),
 		Text:      text.NewManager(sm, "pw"),
+		Backup:    backup.NewManager(sm, "pw"),
 		Config:    config.NewManager(sm, "pw"),
 		SSH:       ssh.NewManager(sm, "pw"),
 		LLM:       llm.NewProviderManager(sm, "pw"),
@@ -41,8 +43,8 @@ func newFullManagers(t *testing.T) Managers {
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 9 {
-		t.Fatalf("tabs = %d, want 9", len(m.tabs))
+	if len(m.tabs) != 10 {
+		t.Fatalf("tabs = %d, want 10", len(m.tabs))
 	}
 	for i := 1; i <= 9; i++ {
 		key := string(rune('0' + i))
@@ -55,13 +57,13 @@ func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 }
 
 func TestNumberKeyOutOfRangeIgnored(t *testing.T) {
-	m := New(Managers{}) // three tabs only (git-like integration)
-	if len(m.tabs) != 3 {
-		t.Fatalf("tabs = %d, want 3", len(m.tabs))
+	m := New(Managers{}) // four tabs (Env/Text/Backup/Config)
+	if len(m.tabs) != 4 {
+		t.Fatalf("tabs = %d, want 4", len(m.tabs))
 	}
 	out, _ := m.Update(runeKey("2"))
 	m = out.(Model)
-	for _, key := range []string{"4", "5", "9"} {
+	for _, key := range []string{"5", "6", "9"} {
 		out, _ = m.Update(runeKey(key))
 		m = out.(Model)
 		if m.active != 1 {

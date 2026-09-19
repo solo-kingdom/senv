@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-18
+goal: backup 存储、Manager、CLI、init/存量 default、512KB 与隐式建组闸门、backup-storage
+  spec、引用与根快捷隔离、skill CLI 段
