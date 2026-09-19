@@ -114,6 +114,25 @@ var keymapConsistencyContract = []struct {
 			"y", "x", "+", "D", "/", "ctrl+r"},
 	},
 	{
+		name: "backup/group",
+		new:  func() Tab { return newBackupTab(Managers{}) },
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "r", "d", "+", "n", "e", "i", "y", "x", "/", "ctrl+r"},
+		absent: []string{"space", "a", "D"},
+	},
+	{
+		name: "backup/items",
+		new: func() Tab {
+			t := newBackupTab(Managers{})
+			t.focusLeft = false
+			return t
+		},
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "space", "a", "e", "n", "d", "r", "i",
+			"y", "x", "+", "/", "ctrl+r"},
+		absent: []string{"D"},
+	},
+	{
 		name: "config/items",
 		new:  func() Tab { return newConfigTab(Managers{}) },
 		want: []string{"up", "down", "left", "right", "g", "G",

@@ -59,7 +59,7 @@ func PrepareMergeEditor(detail provider.ConflictDetail, key []byte) (*MergeSessi
 		return nil, fmt.Errorf("deleted conflicts cannot be editor-merged")
 	}
 	switch detail.Kind {
-	case provider.KindEnv, provider.KindText, provider.KindConfig, provider.KindConfigIndex:
+	case provider.KindEnv, provider.KindText, provider.KindBackup, provider.KindConfig, provider.KindConfigIndex:
 	default:
 		return nil, fmt.Errorf("kind %s does not support editor merge", detail.Kind)
 	}
@@ -150,8 +150,12 @@ func ValidateMergedBuffer(kind string, data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("merged content must be valid UTF-8")
 	}
-	if len(data) > storage.MaxTextSize {
-		return fmt.Errorf("merged content exceeds %d bytes", storage.MaxTextSize)
+	limit := storage.MaxTextSize
+	if kind == provider.KindBackup {
+		limit = storage.MaxBackupSize
+	}
+	if len(data) > limit {
+		return fmt.Errorf("merged content exceeds %d bytes", limit)
 	}
 	for _, marker := range []string{localMarker, sepMarker, remoteMarker} {
 		if strings.Contains(string(data), marker) {
@@ -211,7 +215,7 @@ func (s *MergeSession) Finish(key []byte) ([]byte, error) {
 		if plaintext, err = storage.ToJSON(entry); err != nil {
 			return nil, err
 		}
-	case provider.KindText:
+	case provider.KindText, provider.KindBackup:
 		var local, remote storage.TextEntry
 		if localBlob, err := decryptEntry(s.Kind, s.LocalData, key); err == nil {
 			_ = storage.FromJSON(localBlob, &local)

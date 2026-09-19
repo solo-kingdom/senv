@@ -66,6 +66,10 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	if err != nil {
 		return tui.Managers{}, nil, err
 	}
+	backupMgr, err := getBackupManager()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
 	sshMgr, err := getSSHManager()
 	if err != nil {
 		return tui.Managers{}, nil, err
@@ -96,6 +100,7 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	return tui.Managers{
 		Env:           envMgr,
 		Text:          textMgr,
+		Backup:        backupMgr,
 		Config:        configMgr,
 		SSH:           sshMgr,
 		LLM:           llmMgr,

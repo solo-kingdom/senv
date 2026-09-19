@@ -169,6 +169,45 @@ func (m *Manager) RenameTextGroup(oldGroup, newGroup string) error {
 	return renameEntry(root, []string{TextDirName, oldGroup}, []string{TextDirName, newGroup}, true)
 }
 
+func (m *Manager) RenameBackupFile(group, oldKey, newKey string) error {
+	if err := validateBackupIdentity(group, oldKey); err != nil {
+		return err
+	}
+	if err := validateBackupIdentity(group, newKey); err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameBackupFile(group, oldKey, newKey) })
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return renameEntry(root,
+		[]string{BackupDirName, group, oldKey + BackupFileSuffix},
+		[]string{BackupDirName, group, newKey + BackupFileSuffix},
+		false)
+}
+
+func (m *Manager) RenameBackupGroup(oldGroup, newGroup string) error {
+	if err := ValidateName(oldGroup); err != nil {
+		return fmt.Errorf("invalid backup group %q: %w", oldGroup, err)
+	}
+	if err := ValidateName(newGroup); err != nil {
+		return fmt.Errorf("invalid backup group %q: %w", newGroup, err)
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.RenameBackupGroup(oldGroup, newGroup) })
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return renameEntry(root, []string{BackupDirName, oldGroup}, []string{BackupDirName, newGroup}, true)
+}
+
 // RenameConfigFile renames one config ciphertext and repoints its index entry.
 // The file moves first; if the index rewrite fails the move is rolled back so
 // the on-disk index stays authoritative (same discipline as config repair).

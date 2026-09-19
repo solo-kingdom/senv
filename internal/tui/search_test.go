@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/storage"
@@ -21,6 +22,7 @@ func newTestManagers(t *testing.T) Managers {
 	return Managers{
 		Env:    env.NewManager(sm, "pw"),
 		Text:   text.NewManager(sm, "pw"),
+		Backup: backup.NewManager(sm, "pw"),
 		Config: config.NewManager(sm, "pw"),
 	}
 }
@@ -47,6 +49,10 @@ func TestSearchGathersKeysAndNamesOnly(t *testing.T) {
 	if err := mgrs.Text.Set("default", "readme", "contains topsecret-value too"); err != nil {
 		t.Fatalf("text set: %v", err)
 	}
+	note := "weekly dump"
+	if err := mgrs.Backup.SetWithDescription("default", "DUMP", "topsecret-backup-body", &note); err != nil {
+		t.Fatalf("backup set: %v", err)
+	}
 	src := writeSourceFile(t, "topsecret-value in config body")
 	if err := mgrs.Config.Create("app", src, "/etc/app.conf", "", ""); err != nil {
 		t.Fatalf("config create: %v", err)
@@ -69,19 +75,19 @@ func TestSearchGathersKeysAndNamesOnly(t *testing.T) {
 	for _, r := range all {
 		keys[r.key] = true
 	}
-	for _, want := range []string{"API_KEY", "DB_URL", "readme", "app"} {
+	for _, want := range []string{"API_KEY", "DB_URL", "readme", "DUMP", "app"} {
 		if !keys[want] {
 			t.Errorf("expected key %q in search inventory, missing", want)
 		}
 	}
 
-	// Cross-type aggregation: all three types are represented.
+	// Cross-type aggregation: env/text/backup/config are represented.
 	seen := map[string]bool{}
 	for _, r := range all {
 		seen[r.resultType] = true
 	}
-	if !(seen[typeEnv] && seen[typeText] && seen[typeConfig]) {
-		t.Errorf("expected all three result types, got %+v", seen)
+	if !seen[typeEnv] || !seen[typeText] || !seen[typeBackup] || !seen[typeConfig] {
+		t.Errorf("expected env/text/backup/config types, got %+v", seen)
 	}
 }
 
@@ -104,6 +110,21 @@ func TestSearchNeverMatchesValues(t *testing.T) {
 	s.refilter()
 	if len(s.results) != 1 || s.results[0].key != "API_KEY" {
 		t.Errorf("key search failed: %+v", s.results)
+	}
+
+	if err := mgrs.Backup.SetWithDescription("default", "DUMP", "topsecret-backup-body", ptr("weekly dump")); err != nil {
+		t.Fatalf("backup set: %v", err)
+	}
+	s.gathered = gatherAll(t, mgrs)
+	s.input = "topsecret-backup-body"
+	s.refilter()
+	if len(s.results) != 0 {
+		t.Errorf("backup value search leaked %d results: %+v", len(s.results), s.results)
+	}
+	s.input = "weekly dump"
+	s.refilter()
+	if len(s.results) != 1 || s.results[0].key != "DUMP" {
+		t.Errorf("backup description search failed: %+v", s.results)
 	}
 
 	// Empty input restores the full inventory.
@@ -153,3 +174,5 @@ func TestSearchEscCloses(t *testing.T) {
 		t.Fatalf("esc should yield searchCloseMsg")
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

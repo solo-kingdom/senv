@@ -124,7 +124,7 @@ type HostEntry struct {
 	IdentityKey string `json:"identity_key,omitempty"`
 	// Group is the single-value group membership (empty = ungrouped). It is
 	// not rendered into ssh config exports or materialized files.
-	Group     string            `json:"group,omitempty"`
+	Group       string            `json:"group,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Extra       map[string]string `json:"extra,omitempty"`
@@ -201,6 +201,19 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 
 // MaxTextSize is the maximum allowed size for a text value (512KB)
 const MaxTextSize = 512 * 1024
+
+// MaxBackupSize is the maximum allowed size for a backup value (512KB).
+// Independent of MaxTextSize so the two kinds can diverge later.
+const MaxBackupSize = 512 * 1024
+
+// BackupEntry is the decrypted JSON payload of a backup ciphertext.
+// Same shape as TextEntry; a distinct name keeps call sites explicit.
+type BackupEntry = TextEntry
+
+// NewBackupEntry creates a backup payload from a value string.
+func NewBackupEntry(value string) *BackupEntry {
+	return NewTextEntry(value)
+}
 
 // NewTextEntry creates a new TextEntry from a value string
 func NewTextEntry(value string) *TextEntry {

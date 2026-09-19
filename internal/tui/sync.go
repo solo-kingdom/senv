@@ -135,7 +135,7 @@ func shortReason(err error) string {
 // 改名前的缓存。
 func writeDoneMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case envReloadMsg, textReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg, mcpReloadMsg, renameDoneMsg:
+	case envReloadMsg, textReloadMsg, backupReloadMsg, configReloadMsg, configCreatedMsg, sshReloadMsg, aiProviderReloadMsg, mcpReloadMsg, renameDoneMsg:
 		return true
 	}
 	return false

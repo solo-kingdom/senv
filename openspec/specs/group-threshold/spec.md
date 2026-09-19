@@ -1,10 +1,10 @@
 # group-threshold Specification
 
 ## Purpose
-抬高 env/text 新建组门槛：禁止隐式建组、新建组必填说明，并让多个已激活组同名 key 的覆盖关系在 export 与 activate 时对用户可见。
+抬高 env/text/backup 新建组门槛：禁止隐式建组、新建组必填说明，并让多个已激活组同名 key 的覆盖关系在 export 与 activate 时对用户可见。
 ## Requirements
 ### Requirement: 禁止隐式创建 env/text 组
-向不存在的 env 或 text 组写入条目时，系统 MUST 失败并提示先显式创建组，MUST NOT 自动创建组目录或组元数据。该规则 MUST 覆盖 CLI、TUI、MCP 与 manager 公共写入入口（含 import、编辑器 set）。`default` 组在 vault 初始化时已存在，向 `default` 写入 MUST 成功。
+向不存在的 env、text 或 backup 组写入条目时，系统 MUST 失败并提示先显式创建组，MUST NOT 自动创建组目录或组元数据。该规则 MUST 覆盖 CLI、TUI、MCP 与 manager 公共写入入口（含 import、编辑器 set）。`default` 组在 vault 初始化时已存在（backup 的 `default` 亦可由 Manager 打开时幂等补建），向 `default` 写入 MUST 成功。
 
 #### Scenario: env set 到不存在的组
 - **WHEN** 用户执行 `senv env set -g newsvc FOO bar` 且 `newsvc` 不存在
@@ -22,8 +22,12 @@
 - **WHEN** 组 `svc` 已存在
 - **THEN** `senv env set -g svc FOO bar` 成功
 
+#### Scenario: backup set 到不存在的组
+- **WHEN** 用户执行 `senv backup set -g newnotes KEY val` 且 `newnotes` 不存在
+- **THEN** 命令非 0 退出，不创建该组
+
 ### Requirement: 新建 env/text 组必填说明
-`env group add` 与 `text group add`（含 TUI `+`、MCP `senv_group_add`）MUST 要求非空说明（去空白后长度大于 0，且不超过说明上限）。缺说明或仅空白 MUST 拒绝且不创建组。存量组无说明 MUST 仍可列出、读取、写入条目、重命名与删除。
+`env group add`、`text group add` 与 `backup group add`（含 TUI `+`、MCP `senv_group_add`）MUST 要求非空说明（去空白后长度大于 0，且不超过说明上限）。缺说明或仅空白 MUST 拒绝且不创建组。存量组无说明 MUST 仍可列出、读取、写入条目、重命名与删除。
 
 #### Scenario: CLI 带说明建组
 - **WHEN** 用户执行 `senv env group add svc --description "自建服务存档，key 带服务前缀"`
@@ -40,6 +44,10 @@
 #### Scenario: 存量无说明组仍可写入
 - **WHEN** 旧组 `feg` 无说明
 - **THEN** 向其 set 条目成功，不必先补说明
+
+#### Scenario: backup 缺说明拒绝
+- **WHEN** 用户执行 `senv backup group add secrets` 且未提供说明
+- **THEN** 命令非 0 退出，不创建目录
 
 ### Requirement: 激活组同名 key 可见
 当多个已激活 env 组（含始终激活的 `default`）含相同 key 时，`senv env export` MUST 向 stderr 写出 warning，列出 key 与参与组以及最终覆盖者，MUST NOT 因此非 0 退出，stdout 仍按既有后者覆盖语义输出。`senv env group activate` 若激活后会产生此类冲突，MUST 同样 warning。无冲突时 MUST NOT 输出该 warning。

@@ -1,13 +1,13 @@
 ---
 name: senv-cli
-description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
+description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、备份块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.19"
+  version: "1.22"
 ---
 
 # senv：agent 使用指南
 
-senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、配置文件（config），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
+senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
 
 ## 维护约定（给开发本仓库的 agent）
 
@@ -17,7 +17,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 21 个：env/text/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 25 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi>`。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
@@ -28,7 +28,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - senv 解密需要密码，提示走 TTY。**管道/脚本环境里任何可能触发密码提示的命令都会卡住**——执行前先 `senv session status` 确认有活跃会话（它同时给出状态、原因与下一步）；没有会话就停下来让用户 `senv session start`。会话只是临近到期而非失效时，可用 `senv session refresh` 免密延长（见「会话（session）」）；agent 不要尝试替用户输密码。
 - 需要 env 注入 shell 时用 `eval "$(senv env export --if-session)"`：无会话时静默退出 0，不会卡。
-- 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
+- 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set` / `senv backup set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
 - Linux 无安全内存存储时：交互式（TTY）`senv session start` 在检测失败后先弹 y/N 确认，同意即写磁盘逃生舱（密钥明文 0600，附一次警告）完成初始化，拒绝才报错；无 TTY（管道/CI）仍直接报错，须显式 `senv session start --insecure-cache`（密钥落盘 0600）。落盘仅在用户明确要求/确认时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
 - `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv host export`（应用模式）、`senv host unexport`、`senv keypair export`/`set-default`/`clear-default`、`senv keypair prune`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
@@ -55,8 +55,8 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。TUI 界面语言为英文；底栏展开当前场景的操作快捷键（如 `e edit · n new · d delete · / filter · ?`），随焦点栏/表单/确认/向导/过滤切换；导航键与次要动词不进底栏，完整键位按分组列在 `?` 总览里。Search/`?` overlay 打开时底栏改用 overlay 自身键位。
 
-- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname/group/tags、provider alias、MCP 档案 alias/command，不匹配值/私钥/凭据/MCP env 值）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
-- Env/Text/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text，**必填说明**）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname/group/tags、provider alias、MCP 档案 alias/command、backup 的 group/key/description，不匹配值/私钥/凭据/MCP env 值/backup 正文）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
+- Env/Text/Backup/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text/Backup 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text/backup，**必填说明**）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Backup 同 Text 但无 `D`；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。
 - 多选：条目栏 `space` 勾选/取消、`a` 全选当前过滤可见集（再按取消）；选择跨过滤持久，面板标题提示「已选 N（M 被过滤）」。批量安全动词（Env/Text/SSH `d`、Text/SSH `x`、Config `i`/`u`、MCP `x`/`u`/`X`/`U`）作用于多选集，走既有确认/计划流；选择集为空回落游标单条；`e`/`r`/`m`/详情需单选；提交后清空选择集。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；Env `n` 新建与 Config `n` 创建也走结构化表单（Config 收集名称/源路径/target/分组/描述；Env 的 value 为遮蔽输入，说明可选），创建失败可在表单内修正。重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。Host/KeyPair/AI Provider 表单同样有可选说明。
 - SSH Tab：两栏（分组侧栏 / host）。侧栏：All 伪组置顶 → 组名字母序 → 「未分组」置底（仅在有未归类 host 时出现），选中组决定 host 栏集合，`←→/hl` 两栏切焦点（切入 host 栏定位该组第一条）。host 栏 `n` 新建、`e` 表单编辑（含 group 自由文本与 tags 字段）、`d` 删除、`x` 导出选中 host 的 OpenSSH 片段（焦点在侧栏时导出全部；预览超高时可 ↑↓/jk/PgUp/PgDn/`g`/`G` 滚动，`w` 再填目标文件写入；批量/单条导出表单拒绝 `~/.ssh/senv` 内部路径——该树由应用导出自持、外来文件会被幽灵清理，提示改用 `A`）、`A` 应用导出（与 `senv host export` 同一 `Manager.Apply` 编排：host 栏重建游标 host 所在组的整组片段，侧栏重建选中组、All = 全量重建并清理幽灵组片段；确认框列出组片段数/待落盘私钥数/Include 注册状态/warning 计数，`enter`/`y` 执行、`esc`/`n` 取消，结果以摘要 toast 呈现），`u` 撤回导出（两栏均可用；异步预检后若无可撤回项 toast 直达，否则确认框列出将移除的 Include 注册行、将删除的组片段数，并明示 `~/.ssh/senv/keys/` 落盘私钥保留；`enter`/`y` 执行与 `senv host unexport` 同一编排，`esc`/`n` 取消零副作用），行尾内联 tags（`#tag` 最多 2 个、超出 `+n`），行内 `key:name(fp)` 内联引用 keypair 名称与指纹摘要；`/` 过滤匹配 alias/hostname/tags/group；刷新统一 `Ctrl+R`。host 表单里 proxyJump/identityKey 用选择器关联，引用不存在会在表单内联报错且不写入；`extra` 走 `$EDITOR`。
@@ -71,14 +71,15 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 ## 关键行为
 
 - **寻址**：多数命令接受 `group:key` 地址（如 `prod:API_KEY`），地址中的 group 优先于 `-g/--group`。
-- **快捷写入的两种语义**：根命令 `senv <group:key> [value]` 是 **text 写入**（如 `senv notes:TODO "内容"`）；env 写入的快捷形式是 `senv env <group:key> <value>`（如 `senv env prod:API_KEY "sk-xxx"`）。不带值的根快捷形式会走 stdin/编辑器，agent 避免使用。
-- **引用解析**：存储值可含 `{{env:g:k}}` / `{{text:g:k}}`。`get` 默认原样输出，加 `-d/--decode` 解析；解析失败报错，加 `--loose` 保留未解析引用。`env export` 与 MCP `senv_env_export` 自动解析；**引用目标缺失时保留 `{{...}}` 模板、stderr 打 warning（含 env key 名）、命令仍 exit 0**；循环引用与超深度仍失败。
+- **快捷写入的两种语义**：根命令 `senv <group:key> [value]` 是 **text 写入**（如 `senv notes:TODO "内容"`），MUST NOT 写入 backup；env 写入的快捷形式是 `senv env <group:key> <value>`（如 `senv env prod:API_KEY "sk-xxx"`）；backup 用 `senv backup <group:key> [value]` 或 `senv backup set`。不带值的根快捷形式会走 stdin/编辑器，agent 避免使用。
+- **引用解析**：存储值可含 `{{env:g:k}}` / `{{text:g:k}}`。`get` 默认原样输出，加 `-d/--decode` 解析；解析失败报错，加 `--loose` 保留未解析引用。`{{backup:…}}` 不是合法 type，保持字面量、不会去取 backup 正文。`env export` 与 MCP `senv_env_export` 自动解析；**引用目标缺失时保留 `{{...}}` 模板、stderr 打 warning（含 env key 名）、命令仍 exit 0**；循环引用与超深度仍失败。
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **text import/export**：`senv text import <key|group:key> --file <path>` 把文件内容加密入库（upsert：已存在 key 直接覆盖并刷新 `updated_at`，无确认提示；源文件保持不动；`--file` 必填，缺失即报错，不回落 stdin/编辑器）。`senv text export <key|group:key> --path <path>` 把明文值原子落盘，固定 0600（覆盖既有宽松文件会收紧；目标或父目录为符号链接时拒绝；内容逐字节原样导出、**不经引用解析**——要解码导出用 `text get -d -o`）；成功只打印路径、不回显明文；导出是读取面，不新增审计事件。export 写出明文文件，执行前先向用户确认。
-- **最小暴露**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`；`text list` 只显示 key、大小、更新时间（有说明则附上）。不要把 list 输出或密钥值复述进日志、回复。
-- **说明（vault note）**：env/text 条目、env/text 分组、config、Host、KeyPair、LLM Provider 档案、MCP Server 档案都可以带一段短说明（trim 后最多 2048 字节 UTF-8，不准当密钥用）。条目/档案的 `--description` 可省略（空说明合法）；**更新时未传 flag 则保留原说明**。MCP `senv_env_set` / `senv_text_set` 的 `description` 同理（省略 = 保留）。
-- **默认分组**：未指定时用 `default`；`env export` 只导出已 activate 的 env 分组（`senv env group activate <name>`）。init 会建 env `default` 与 text `default`、`llm-keys`。
-- **禁止隐式建组**：`env set` / `text set` / `text import` 在组不存在时失败，不再自动建组。新建 env/text 组必须显式：`senv env group add <name> --description "..."`、`senv text group add <name> --description "..."`、MCP `senv_group_add`（`description` 必填非空）。Host/KeyPair 组仍是档案上的自由文本，不走这套登记。
+- **backup**：独立 kind（`backups/{group}/{key}.enc`），不与 text 混用。上限 `MaxBackupSize`（512KB，只计 value 明文，超限拒绝不截断）。`senv backup set/get/list/delete/import/export` 与 `backup group list/add/delete`；`backup get` **无** `-d/--decode/--loose`；`backup list` 只显示 key、大小、时间与说明，不含正文。set 输入优先级与 text 相同（`--file` > stdin > 参数 > 编辑器）；import/export 语义与 text 对齐（`--file`/`--path` 必填、upsert 无确认、0600、拒符号链接、成功只打印路径）。backup 无 activate/deactivate，也不参与引用。
+- **最小暴露**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`；`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。不要把 list 输出或密钥值复述进日志、回复。
+- **说明（vault note）**：env/text/backup 条目、env/text/backup 分组、config、Host、KeyPair、LLM Provider 档案、MCP Server 档案都可以带一段短说明（trim 后最多 2048 字节 UTF-8，不准当密钥用）。条目/档案的 `--description` 可省略（空说明合法）；**更新时未传 flag 则保留原说明**。MCP `senv_env_set` / `senv_text_set` / `senv_backup_set` 的 `description` 同理（省略 = 保留）。
+- **默认分组**：未指定时用 `default`；`env export` 只导出已 activate 的 env 分组（`senv env group activate <name>`）。init 会建 env `default`、text `default`/`llm-keys`，以及 backup `default`（存量 vault 打开 backup Manager 时幂等补建）。
+- **禁止隐式建组**：`env set` / `text set` / `text import` / `backup set` / `backup import` 在组不存在时失败，不再自动建组。新建 env/text/backup 组必须显式：`senv env group add <name> --description "..."`、`senv text group add <name> --description "..."`、`senv backup group add <name> --description "..."`、MCP `senv_group_add`（`kind` 为 env/text/backup，`description` 必填非空）。Host/KeyPair 组仍是档案上的自由文本，不走这套登记。
 - **同名覆盖 warning**：多个已激活 env 组出现同名 key 时，`senv env export` 与 `senv env group activate` 在 stderr 打 warning（列出组名与 export 采用哪一组），命令仍 exit 0。MCP `senv_env_export` / `senv_group_activate` 成功时带 `warnings`。`default` 被后激活组覆盖是合法用法。
 - **分组命名（约定，软件不强制）**：env 组有两种用法，**先判断 key 再选组**。写入前 `group list`。组名禁止用 `/` 冒充层级。env 组与 text 组同名也不表示同一组。
 
@@ -98,7 +99,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
   | `ai` / `keys` / `notes` / `llm-keys` | 存量桶，复用、不开同义组 | — |
 
   `device-*` 只留「激活哪台机器就用哪套身份」的项；同一服务多台机器、脚本要同时看见两套密码时，用 key 前缀（`LNV_` / `MSABJ_`）放进存档组，不要再按机器拆组。SSH Host/KeyPair 仍按组织/项目（`feg` / `mv` / `ym` / `default`），不要每台主机一组。说明字段、禁止隐式建组、同名覆盖 warning 已落地（ADR-0026）。
-- **env/text 写入带说明**：`senv env set <group:key> <value> --description "..."`、`senv text set <group:key> --file … --description "..."`、`senv text import … --description "..."`。省略 `--description` 不改已有说明。
+- **env/text/backup 写入带说明**：`senv env set <group:key> <value> --description "..."`、`senv text set <group:key> --file … --description "..."`、`senv text import … --description "..."`、`senv backup set <group:key> --file … --description "..."`、`senv backup import … --description "..."`。省略 `--description` 不改已有说明。
 
 ## SSH 资产
 
@@ -147,7 +148,7 @@ git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
 - token 存储：server token 存 `<configPath>/server-token.json`（0600，机器本地），**不在 settings.json**——settings.json 会被 git provider 同步，token 绝不能进 git 远端；`.gitignore`（覆盖 `server-token.json`、`mcp-exports.json`）自动生成，`git add` 亦有排除路径规格兜底。旧版 settings 内嵌 token 在下次读取时自动迁移。
-- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖全部"配置源"：env/text/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用全量 SSH 资产，无需逐条重配；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）。
+- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖 env/text/backup/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用，含 `senv backup get`；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）；backup 冲突对齐 text（可解密对比，合并上限 512KB）。**含 `backup`/`backup_meta` 的 client 必须等 senv-server 镜像先升级**（白名单在 server 二进制里；发布顺序见 `docs/senv-server.md`，优先 iship 构建），否则整批 push 会被旧 server 拒绝。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
 - senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：
@@ -172,6 +173,12 @@ senv text set --file notes.md docs:README
 senv text get -d docs:README
 senv text import docs:README --file ./README.md   # 文件加密入库（upsert，源文件不动）
 senv text export secrets:KEY --path ./key.pem     # 0600 明文原子落盘（只打印路径）
+senv backup set --file dump.txt notes:DUMP        # 独立 backup kind；无 -d
+senv backup get notes:DUMP
+senv backup import notes:DUMP --file ./dump.txt
+senv backup export notes:DUMP --path ./dump.txt   # 0600，成功只打印路径
+senv backup list notes                            # 不含正文
+senv backup group add secrets --description "..."
 senv config list && senv config export <name> [--path <target>]
 senv config create <name> --source <file> --target <path>
 senv config install [--all|--group g] --dry-run   # 确认计划后加 --yes 执行

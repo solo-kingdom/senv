@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/text"
 )
@@ -24,22 +25,29 @@ type textSnap struct {
 	Items  map[string][]text.TextInfo
 }
 
-// snapshotRegistry holds the latest env/text snapshots, rebuilt under a mutex
+type backupSnap struct {
+	Groups []backup.GroupInfo
+	Items  map[string][]backup.BackupInfo
+}
+
+// snapshotRegistry holds the latest env/text/backup snapshots, rebuilt under a mutex
 // (single-flight) and atomically replaced. A nil registry falls back to a
 // direct Manager.Snapshot call so tests that skip New() still work.
 type snapshotRegistry struct {
-	mu       sync.Mutex
-	env      *env.Manager
-	text     *text.Manager
-	envSnap  *envSnap
-	textSnap *textSnap
+	mu         sync.Mutex
+	env        *env.Manager
+	text       *text.Manager
+	backup     *backup.Manager
+	envSnap    *envSnap
+	textSnap   *textSnap
+	backupSnap *backupSnap
 }
 
-func newSnapshotRegistry(envMgr *env.Manager, textMgr *text.Manager) *snapshotRegistry {
-	if envMgr == nil && textMgr == nil {
+func newSnapshotRegistry(envMgr *env.Manager, textMgr *text.Manager, backupMgr *backup.Manager) *snapshotRegistry {
+	if envMgr == nil && textMgr == nil && backupMgr == nil {
 		return nil
 	}
-	return &snapshotRegistry{env: envMgr, text: textMgr}
+	return &snapshotRegistry{env: envMgr, text: textMgr, backup: backupMgr}
 }
 
 func (r *snapshotRegistry) Get() (*envSnap, error) {
@@ -77,6 +85,23 @@ func (r *snapshotRegistry) GetText() (*textSnap, error) {
 	return r.textSnap, nil
 }
 
+func (r *snapshotRegistry) GetBackup() (*backupSnap, error) {
+	if r == nil || r.backup == nil {
+		return nil, fmt.Errorf("backup manager unavailable")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.backupSnap != nil {
+		return r.backupSnap, nil
+	}
+	snap, err := r.backup.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	r.backupSnap = &backupSnap{Groups: snap.Groups, Items: snap.Items}
+	return r.backupSnap, nil
+}
+
 // Invalidate 同时作废 env 与 text 快照：写操作与 pull 应用后由 model 调用。
 func (r *snapshotRegistry) Invalidate() {
 	if r == nil {
@@ -85,12 +110,13 @@ func (r *snapshotRegistry) Invalidate() {
 	r.mu.Lock()
 	r.envSnap = nil
 	r.textSnap = nil
+	r.backupSnap = nil
 	r.mu.Unlock()
 }
 
 // SeedFromCache 用快照缓存数据预热 memo（D4 首屏即时的前提）：首个 tab
 // load 命中 memo 立即渲染，真实解密在后台 VerifyCache 比对后进行。
-func (r *snapshotRegistry) SeedFromCache(env *envSnap, text *textSnap) {
+func (r *snapshotRegistry) SeedFromCache(env *envSnap, text *textSnap, backup *backupSnap) {
 	if r == nil {
 		return
 	}
@@ -101,6 +127,9 @@ func (r *snapshotRegistry) SeedFromCache(env *envSnap, text *textSnap) {
 	}
 	if text != nil {
 		r.textSnap = text
+	}
+	if backup != nil {
+		r.backupSnap = backup
 	}
 }
 
@@ -129,6 +158,15 @@ func (r *snapshotRegistry) VerifyCache() bool {
 			fresh := &textSnap{Groups: snap.Groups, Items: snap.Items}
 			if !reflect.DeepEqual(r.textSnap, fresh) {
 				r.textSnap = fresh
+				changed = true
+			}
+		}
+	}
+	if r.backup != nil {
+		if snap, err := r.backup.Snapshot(); err == nil {
+			fresh := &backupSnap{Groups: snap.Groups, Items: snap.Items}
+			if r.backupSnap == nil || !reflect.DeepEqual(r.backupSnap, fresh) {
+				r.backupSnap = fresh
 				changed = true
 			}
 		}
@@ -164,4 +202,18 @@ func textSnapshot(mgr Managers) (*text.Snapshot, error) {
 		return nil, fmt.Errorf("text manager unavailable")
 	}
 	return mgr.Text.Snapshot()
+}
+
+func backupSnapshot(mgr Managers) (*backup.Snapshot, error) {
+	if mgr.snap != nil {
+		snap, err := mgr.snap.GetBackup()
+		if err != nil {
+			return nil, err
+		}
+		return &backup.Snapshot{Groups: snap.Groups, Items: snap.Items}, nil
+	}
+	if mgr.Backup == nil {
+		return nil, fmt.Errorf("backup manager unavailable")
+	}
+	return mgr.Backup.Snapshot()
 }

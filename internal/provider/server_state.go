@@ -31,6 +31,8 @@ const (
 	KindMCPServer   = syncschema.KindMCPServer
 	KindSSHHost     = syncschema.KindSSHHost
 	KindSSHKeypair  = syncschema.KindSSHKeypair
+	KindBackup      = syncschema.KindBackup
+	KindBackupMeta  = syncschema.KindBackupMeta
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -149,6 +151,10 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TextDirName, grp, storage.EnvMetaFileName}}, nil
 	case KindText:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TextDirName, grp, key + storage.TextFileSuffix}}, nil
+	case KindBackupMeta:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.BackupDirName, grp, storage.EnvMetaFileName}}, nil
+	case KindBackup:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.BackupDirName, grp, key + storage.BackupFileSuffix}}, nil
 	case KindConfig:
 		return cacheLocation{root: cacheDataRoot, segments: []string{key + storage.ConfigFileSuffix}}, nil
 	case KindConfigIndex:
@@ -316,6 +322,37 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 				case strings.HasSuffix(file.Name, storage.TextFileSuffix):
 					key := strings.TrimSuffix(file.Name, storage.TextFileSuffix)
 					if err := add(KindText, group.Name, key, ident, dataRoot, storage.TextDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
+					}
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, reads, err
+	}
+
+	if groups, err := dataRoot.ReadDir(storage.BackupDirName); err == nil {
+		for _, group := range groups {
+			if !group.IsDir {
+				return nil, nil, reads, fmt.Errorf("invalid backup cache entry type")
+			}
+			files, err := dataRoot.ReadDir(storage.BackupDirName, group.Name)
+			if err != nil {
+				return nil, nil, reads, err
+			}
+			for _, file := range files {
+				if file.IsDir {
+					return nil, nil, reads, fmt.Errorf("invalid backup cache entry type")
+				}
+				ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+				switch {
+				case file.Name == storage.EnvMetaFileName:
+					if err := add(KindBackupMeta, group.Name, "", ident, dataRoot, storage.BackupDirName, group.Name, file.Name); err != nil {
+						return nil, nil, reads, err
+					}
+				case strings.HasSuffix(file.Name, storage.BackupFileSuffix):
+					key := strings.TrimSuffix(file.Name, storage.BackupFileSuffix)
+					if err := add(KindBackup, group.Name, key, ident, dataRoot, storage.BackupDirName, group.Name, file.Name); err != nil {
 						return nil, nil, reads, err
 					}
 				}

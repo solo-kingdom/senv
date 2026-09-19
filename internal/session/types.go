@@ -90,6 +90,7 @@ const (
 	// 绝不包含任何值或明文内容。
 	AuditOpEnv         AuditEventType = "op_env"
 	AuditOpText        AuditEventType = "op_text"
+	AuditOpBackup      AuditEventType = "op_backup"
 	AuditOpConfig      AuditEventType = "op_config"
 	AuditOpInstall     AuditEventType = "op_install"
 	AuditOpUninstall   AuditEventType = "op_uninstall"

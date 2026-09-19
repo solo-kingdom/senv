@@ -13,6 +13,7 @@ import (
 const (
 	typeEnv    = "Env"
 	typeText   = "Text"
+	typeBackup = "Backup"
 	typeConfig = "Cfg"
 	typeSSH    = "SSH"
 	typeAI     = "AI"
@@ -122,6 +123,19 @@ func (s *searchTab) gather() tea.Cmd {
 						all = append(all, searchResult{
 							resultType: typeText, group: g.Name, key: ti.Key,
 							preview: fmt.Sprintf("%db", ti.Size),
+						})
+					}
+				}
+			}
+		}
+		if mgr.Backup != nil {
+			if snap, err := backupSnapshot(mgr); err == nil {
+				for _, g := range snap.Groups {
+					for _, bi := range snap.Items[g.Name] {
+						all = append(all, searchResult{
+							resultType: typeBackup, group: g.Name, key: bi.Key,
+							preview: fmt.Sprintf("%db", bi.Size),
+							extra:   strings.TrimSpace(g.Name + " " + bi.Description),
 						})
 					}
 				}

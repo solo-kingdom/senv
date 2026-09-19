@@ -80,6 +80,41 @@ func TestModelSearchJumpSelectsEntry(t *testing.T) {
 	}
 }
 
+func TestModelSearchJumpSelectsBackup(t *testing.T) {
+	mgrs := newTestManagers(t)
+	note := "weekly dump"
+	if err := mgrs.Backup.SetWithDescription("default", "DUMP", "secret-body", &note); err != nil {
+		t.Fatalf("backup set: %v", err)
+	}
+
+	m := New(mgrs)
+	var backupIdx int
+	for i, tab := range m.tabs {
+		if tab.Title() == "Backup" {
+			backupIdx = i
+			break
+		}
+	}
+	m = flushModel(m, m.tabs[backupIdx].Init())
+
+	next, _ := m.Update(searchJumpMsg{resultType: typeBackup, group: "default", key: "DUMP"})
+	m = next.(Model)
+	if m.active != backupIdx {
+		t.Fatalf("active tab = %d, want %d (Backup)", m.active, backupIdx)
+	}
+	if m.search != nil {
+		t.Error("search overlay should be closed after jump")
+	}
+	tab := m.tabs[backupIdx].(*backupTab)
+	if tab.currentGroup() != "default" {
+		t.Fatalf("group = %q, want default", tab.currentGroup())
+	}
+	it, ok := tab.currentItem()
+	if !ok || it.key != "DUMP" {
+		t.Fatalf("item = %+v, want DUMP", it)
+	}
+}
+
 func TestModelSearchJumpSelectsMCP(t *testing.T) {
 	mgrs := newFullManagers(t)
 	if err := mgrs.MCP.Add(&storage.MCPServerEntry{

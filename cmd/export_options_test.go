@@ -96,6 +96,16 @@ func TestTextCLIExportModeFlag(t *testing.T) {
 	}
 }
 
+func TestBackupCLIExportModeFlag(t *testing.T) {
+	flag := backupGetCmd.Flags().Lookup("mode")
+	if flag == nil {
+		t.Fatal("backup get --mode flag is missing")
+	}
+	if flag.DefValue != "0600" {
+		t.Fatalf("backup get --mode default = %q, want 0600", flag.DefValue)
+	}
+}
+
 func TestConfigCLIFileModeFlags(t *testing.T) {
 	for name, command := range map[string]*cobra.Command{
 		"export":  configExportCmd,

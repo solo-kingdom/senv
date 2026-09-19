@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
@@ -23,6 +24,7 @@ import (
 type Managers struct {
 	Env    *env.Manager
 	Text   *text.Manager
+	Backup *backup.Manager
 	Config *config.Manager
 	SSH    *ssh.Manager
 	LLM    *llm.ProviderManager
@@ -127,20 +129,21 @@ func warnToast(text string) tea.Cmd {
 // only when supplied; this keeps existing tests and limited integrations stable.
 func New(mgr Managers) Model {
 	if mgr.snap == nil {
-		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text)
+		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text, mgr.Backup)
 	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
 	// 首屏即时（D4）：首个 tab load 之前尝试快照缓存解密并预热 memo；未
 	// 命中（缺失/损坏/指纹不符/开关关闭）静默回退直接解密路径。
 	if c := mgr.SnapshotCache; c != nil {
 		if payload := c.TryLoad(); payload != nil {
-			mgr.snap.SeedFromCache(payload.Env, payload.Text)
+			mgr.snap.SeedFromCache(payload.Env, payload.Text, payload.Backup)
 			m.cacheSeeded = true
 		}
 	}
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
+		newBackupTab(mgr),
 		newConfigTab(mgr),
 	}
 	if mgr.SSH != nil {
@@ -481,7 +484,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // 发出请求的那个 Tab，但后台 Tab 装载完成时用户可能已切走，需要广播投递。
 func isLoadBroadcastMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case envLoadedMsg, textLoadedMsg, configLoadedMsg, sshLoadedMsg,
+	case envLoadedMsg, textLoadedMsg, backupLoadedMsg, configLoadedMsg, sshLoadedMsg,
 		aiLoadedMsg, mcpLoadedMsg, auditLoadedMsg, historyLoadedMsg:
 		return true
 	}

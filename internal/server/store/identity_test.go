@@ -57,6 +57,52 @@ func TestPushEntrySSHAssetKinds(t *testing.T) {
 	})
 }
 
+func TestPushEntryBackupKinds(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("accepts backup and backup_meta entries", func(t *testing.T) {
+		st := newStore(t)
+		userID := newUser(t, st, "backup-kinds-accept")
+		seeded, latest, err := st.PushEntries(ctx, userID, "main", []Entry{
+			{Kind: syncschema.KindBackup, Grp: "notes", Key: "DUMP", Ciphertext: []byte("dump-blob")},
+			{Kind: syncschema.KindBackupMeta, Grp: "notes", Ciphertext: []byte("meta-blob")},
+		})
+		if err != nil {
+			t.Fatalf("PushEntries: %v", err)
+		}
+		if latest != 2 || len(seeded) != 2 {
+			t.Fatalf("latest = %d, seeded = %d, want 2/2", latest, len(seeded))
+		}
+		entries, _, err := st.PullEntries(ctx, userID, "main", 0)
+		if err != nil {
+			t.Fatalf("PullEntries: %v", err)
+		}
+		got := map[string]string{}
+		for _, e := range entries {
+			got[e.Kind+"/"+e.Grp+"/"+e.Key] = string(e.Ciphertext)
+		}
+		if got["backup/notes/DUMP"] != "dump-blob" || got["backup_meta/notes/"] != "meta-blob" {
+			t.Fatalf("pulled entries = %+v", got)
+		}
+	})
+
+	t.Run("rejects invalid backup identity with whole batch", func(t *testing.T) {
+		st := newStore(t)
+		userID := newUser(t, st, "backup-kinds-reject")
+		_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+			{Kind: syncschema.KindBackup, Grp: "notes", Key: "DUMP", Ciphertext: []byte("ok")},
+			{Kind: syncschema.KindBackupMeta, Grp: "notes", Key: "DUMP", Ciphertext: []byte("invalid")},
+		})
+		var validationErr *ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("PushEntries error = %v, want ValidationError", err)
+		}
+		if _, _, err := st.PullEntries(ctx, userID, "main", 0); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("PullEntries after rejection = %v, want ErrNotFound", err)
+		}
+	})
+}
+
 func TestPushEntryIdentity(t *testing.T) {
 	ctx := context.Background()
 

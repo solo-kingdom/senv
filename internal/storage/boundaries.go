@@ -74,6 +74,16 @@ func validateTextIdentity(group, key string) error {
 	return nil
 }
 
+func validateBackupIdentity(group, key string) error {
+	if err := ValidateName(group); err != nil {
+		return fmt.Errorf("invalid backup group %q: %w", group, err)
+	}
+	if err := ValidateName(key); err != nil {
+		return fmt.Errorf("invalid backup key %q: %w", key, err)
+	}
+	return nil
+}
+
 func validateConfigName(name string) error {
 	if err := ValidateName(name); err != nil {
 		return fmt.Errorf("invalid config name %q: %w", name, err)

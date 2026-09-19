@@ -57,6 +57,24 @@ func TestInitGuard_RefusesWhenOrphanedTextExists(t *testing.T) {
 	}
 }
 
+func TestInitGuard_RefusesWhenOrphanedBackupExists(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "cfg")
+	data := filepath.Join(tmp, "data")
+	backupGroup := filepath.Join(data, BackupDirName, "notes")
+	if err := os.MkdirAll(backupGroup, 0o700); err != nil {
+		t.Fatalf("mkdir backups: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(backupGroup, "DUMP"+BackupFileSuffix), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+
+	mgr := NewManager(cfg, data)
+	if err := mgr.Initialize("any-password"); !errors.Is(err, ErrOrphanedData) {
+		t.Fatalf("expected ErrOrphanedData for orphaned backup, got %v", err)
+	}
+}
+
 func TestInitGuard_EmptyDirsInitializeNormally(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "cfg")
@@ -210,6 +228,33 @@ func TestSaveTextGroupMetaRollsBackNewDirectory(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(mgr.dataPath, TextDirName, "scratch")); !os.IsNotExist(statErr) {
 		t.Fatal("failed meta write left an orphan text group directory")
+	}
+}
+
+func TestSaveBackupGroupMetaRollsBackNewDirectory(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+	original := mgr.openRoot
+	mgr.openRoot = func(path string) (securefs.TrustedRoot, error) {
+		root, err := original(path)
+		if err != nil {
+			return nil, err
+		}
+		return &failAtomicRoot{
+			TrustedRoot: root,
+			match: func(segments []string) bool {
+				return len(segments) == 3 && segments[0] == BackupDirName && segments[1] == "scratch" && segments[2] == EnvMetaFileName
+			},
+		}, nil
+	}
+	t.Cleanup(func() { mgr.openRoot = original })
+
+	err := mgr.SaveBackupGroupMetaWithKey("scratch", &EnvGroupMeta{Name: "scratch", CreatedAt: time.Now()}, key)
+	if err == nil {
+		t.Fatal("want injected write failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(mgr.dataPath, BackupDirName, "scratch")); !os.IsNotExist(statErr) {
+		t.Fatal("failed meta write left an orphan backup group directory")
 	}
 }
 

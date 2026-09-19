@@ -25,6 +25,7 @@ type ConsistencyReport struct {
 	MetadataKeyOK  bool
 	EnvFiles       FileProbes
 	TextFiles      FileProbes
+	BackupFiles    FileProbes
 	ConfigFiles    FileProbes
 	HostFiles      FileProbes
 	KeyPairFiles   FileProbes
@@ -41,6 +42,7 @@ func (r *ConsistencyReport) AllOK() bool {
 	return r.MetadataKeyOK &&
 		r.EnvFiles.OK == r.EnvFiles.Total &&
 		r.TextFiles.OK == r.TextFiles.Total &&
+		r.BackupFiles.OK == r.BackupFiles.Total &&
 		r.ConfigFiles.OK == r.ConfigFiles.Total &&
 		r.HostFiles.OK == r.HostFiles.Total &&
 		r.KeyPairFiles.OK == r.KeyPairFiles.Total &&
@@ -136,6 +138,30 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 				report.TextFiles.OK++
 			} else {
 				report.TextFiles.Failed = append(report.TextFiles.Failed, rel)
+			}
+		}
+	}
+
+	backupGroups, err := m.ListBackupGroups()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list backup groups: %w", err)
+	}
+	for _, group := range backupGroups {
+		keys, err := m.ListBackupFiles(group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list backup group %q: %w", group, err)
+		}
+		for _, name := range keys {
+			rel := filepath.Join(BackupDirName, group, name+BackupFileSuffix)
+			ciphertext, err := dataRoot.Read(BackupDirName, group, name+BackupFileSuffix)
+			if err != nil {
+				return nil, err
+			}
+			report.BackupFiles.Total++
+			if canDecrypt(key, string(ciphertext)) {
+				report.BackupFiles.OK++
+			} else {
+				report.BackupFiles.Failed = append(report.BackupFiles.Failed, rel)
 			}
 		}
 	}
@@ -272,6 +298,11 @@ func (m *Manager) HasOrphanedData() bool {
 					return true
 				}
 			}
+			if name == BackupDirName {
+				if hasBackupFiles(m.dataPath) {
+					return true
+				}
+			}
 			if name == EnvDirName {
 				if hasEnvVarFiles(m.dataPath) {
 					return true
@@ -340,6 +371,32 @@ func hasTextFiles(dataPath string) bool {
 		}
 		for _, f := range sub {
 			if strings.HasSuffix(f.Name(), TextFileSuffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasBackupFiles(dataPath string) bool {
+	backupsDir := filepath.Join(dataPath, BackupDirName)
+	entries, err := os.ReadDir(backupsDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			if strings.HasSuffix(e.Name(), BackupFileSuffix) {
+				return true
+			}
+			continue
+		}
+		sub, err := os.ReadDir(filepath.Join(backupsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range sub {
+			if strings.HasSuffix(f.Name(), BackupFileSuffix) {
 				return true
 			}
 		}

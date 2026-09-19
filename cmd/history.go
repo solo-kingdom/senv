@@ -142,13 +142,13 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 			return entry.Value
 		}
 		return contentPreviewString(plaintext)
-	case "text":
+	case "text", "backup":
 		var entry storage.TextEntry
 		if err := json.Unmarshal(plaintext, &entry); err == nil {
 			return entry.Value
 		}
 		return contentPreviewString(plaintext)
-	case "env_meta":
+	case "env_meta", "text_meta", "backup_meta":
 		var meta storage.EnvGroupMeta
 		if err := json.Unmarshal(plaintext, &meta); err == nil {
 			return meta.Name

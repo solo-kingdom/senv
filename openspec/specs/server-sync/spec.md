@@ -220,7 +220,7 @@ settings SHALL 支持按 vault 配置 `auto_sync`（server provider 下默认开
 
 ### Requirement: 同步条目标识遵守严格 schema
 
-server 与客户端 SHALL 仅接受已知 kind，并按 kind 校验 grp/key：`env` 要求 grp/key 均为安全单路径段；`env_meta` 要求 grp 为安全单路径段且 key 为空；`text` 要求 grp/key 均为安全单路径段；`config` 要求 grp 为空且 key 为安全单路径段；`config_index` 要求 grp/key 均为空；`llm_provider` 要求 grp 为空且 key 为安全单路径段（LLM Provider alias）；`mcp_server` 要求 grp 为空且 key 为安全单路径段（MCP Server alias）；`ssh_host` 要求 grp 为空且 key 为安全单路径段（Host alias）；`ssh_keypair` 要求 grp 为空且 key 为安全单路径段（KeyPair name）。未知 kind、缺失字段、额外身份字段或不安全路径段 MUST 被拒绝。
+server 与客户端 SHALL 仅接受已知 kind，并按 kind 校验 grp/key：`env` 要求 grp/key 均为安全单路径段；`env_meta` 要求 grp 为安全单路径段且 key 为空；`text` 要求 grp/key 均为安全单路径段；`config` 要求 grp 为空且 key 为安全单路径段；`config_index` 要求 grp/key 均为空；`llm_provider` 要求 grp 为空且 key 为安全单路径段（LLM Provider alias）；`mcp_server` 要求 grp 为空且 key 为安全单路径段（MCP Server alias）；`ssh_host` 要求 grp 为空且 key 为安全单路径段（Host alias）；`ssh_keypair` 要求 grp 为空且 key 为安全单路径段（KeyPair name）；`backup` 要求 grp/key 均为安全单路径段；`backup_meta` 要求 grp 为安全单路径段且 key 为空。未知 kind、缺失字段、额外身份字段或不安全路径段 MUST 被拒绝。
 
 #### Scenario: 五种合法 kind 被接受
 
@@ -251,6 +251,16 @@ server 与客户端 SHALL 仅接受已知 kind，并按 kind 校验 grp/key：`e
 
 - **WHEN** grp 或 key 为 `../x`、`a/../../x`、绝对路径、含 `/`、`\\`、NUL、`.` 或 `..`
 - **THEN** server 和客户端均返回验证错误，条目不会进入持久化或本地缓存
+
+#### Scenario: backup kind 被接受
+
+- **WHEN** push 或 pull 条目为 `backup` 且 grp/key 均为安全单路径段，或为 `backup_meta` 且 grp 为安全单路径段、key 为空
+- **THEN** 条目继续按正常同步流程处理
+
+#### Scenario: backup 身份非法
+
+- **WHEN** `backup` 缺 grp 或 key，或 `backup_meta` 携带 key
+- **THEN** 条目在访问文件系统前被拒绝
 
 ### Requirement: 客户端不信任远端同步身份
 
@@ -336,6 +346,19 @@ server SHALL 在创建 vault、推进 revision 或写入任一条目前验证 pu
 - **WHEN** pull 应用一条 `llm_provider` / `mcp_server` / `ssh_host` / `ssh_keypair` 档案
 - **THEN** 落盘内容为与其他 kind 一致的加密 blob（明文不出机），文件与目录权限与既有收集目录一致
 
+### Requirement: backup 条目随同步通道分发
+
+backup 条目与 backup 组元数据 SHALL 作为 vault 数据随同步通道双向分发：push 收集 `backups/` 下 `.enc`，pull 落回原路径。首次在新机器同步时 SHALL 默认拉取全部 backup 条目，不要求显式 opt-in。冲突 SHALL 沿用 revision 乐观锁；内容对比与合并对齐 text，合并后 value 超过 512KB 明文 MUST 拒绝该次合并。尚未扩容白名单的 server 遇到 `backup`/`backup_meta` 时 MUST 拒绝整批 push。
+
+#### Scenario: backup 目录被收集并落地
+
+- **WHEN** 本机 `backups/notes/DUMP.enc` 有变更并执行同步，对端缓存为空
+- **THEN** 对端落盘同路径档案（0600），之后 `senv backup get notes:DUMP` 可读
+
+#### Scenario: 旧 server 拒绝新 kind
+
+- **WHEN** 新 client 向尚未扩容白名单的 server 推送含 `backup` 的批次
+- **THEN** server 拒绝整批 push，客户端不丢本地文件
 
 ### Requirement: 机器本地工件不进入同步集合
 
