@@ -15,4 +15,4 @@ LLM Provider 新增可选字段 `api_shape`（`openai-chat` | `openai-responses`
 
 ## Status
 
-采纳，后经 [ADR-0027](./0027-provider-per-shape-urls.md) 修订：显式形态地址（per-shape URLs）的存在即「该族被服务」的声明，`switch` 门禁在目标族有显式地址时放行；`api_shape` 的职责收敛为 OpenAI 族内选线协议与无显式地址时的兼容判据。
+采纳，后经 [ADR-0027](./0027-provider-per-shape-urls.md) 修订：显式形态地址（per-shape URLs）的存在即「该族被服务」的声明，`switch` 门禁在目标族有显式地址时放行；`api_shape` 的职责收敛为 OpenAI 族内选线协议与无显式地址时的兼容判据。codex 的线协议经 [ADR-0028](./0028-codex-responses-only-wire.md) 钉死为 responses，不再是选线协议的消费方。

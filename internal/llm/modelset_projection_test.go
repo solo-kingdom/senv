@@ -302,8 +302,8 @@ func TestAdapterDeclaredShapePicksWireProtocol(t *testing.T) {
 	}
 	codexCfg := readTOMLFile(t, codex.ConfigPath(home))
 	codexProv := codexCfg["model_providers"].(map[string]any)["senv-main"].(map[string]any)
-	if codexProv["wire_api"] != "chat" {
-		t.Fatalf("codex wire_api = %v, want chat for declared openai-chat", codexProv["wire_api"])
+	if codexProv["wire_api"] != "responses" {
+		t.Fatalf("codex wire_api = %v, want responses (chat wire removed upstream)", codexProv["wire_api"])
 	}
 
 	opencode := opencodeAdapter()

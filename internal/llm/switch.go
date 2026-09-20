@@ -51,8 +51,9 @@ type SwitchRequest struct {
 	// ModelMetadata 是本次模型集在模型目录里的元数据（可缺失），供各适配器
 	// 填充 agent 原生格式需要的字段。
 	ModelMetadata map[string]ModelMetadata
-	// APIShape 是档案显式声明的接口形态（已归一；空表示未声明）。适配器用它
-	// 在 OpenAI 兼容族内选择 chat / responses 线协议（ADR-0006 的落点）。
+	// APIShape 是档案显式声明的接口形态（已归一；空表示未声明）。kimi/pi/
+	// opencode 用它在 OpenAI 兼容族内选 chat / responses 线协议（ADR-0006 的
+	// 落点）；codex 只讲 responses，不消费该值。
 	APIShape string
 	// PriorProvider/PriorModels 是上一次成功切换的本机记录，作为清理差集的
 	// 依据；首次切换时为零值。
@@ -431,7 +432,7 @@ func codexAdapter() AgentAdapter {
 					"name":                 "senv " + req.ProviderAlias,
 					"base_url":             req.BaseURL,
 					"env_key":              req.Credential,
-					"wire_api":             codexWireAPI(req.APIShape),
+					"wire_api":             "responses",
 					"requires_openai_auth": false,
 				})
 				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
@@ -521,16 +522,6 @@ func kimiProviderType(declaredShape string) string {
 		return "openai_responses"
 	}
 	return "openai"
-}
-
-// codexWireAPI 返回 codex model_provider 的 wire_api：声明 openai-chat 的
-// 档案只讲 Chat Completions，必须写 chat；其余维持 responses（未声明时的
-// 既有默认）。
-func codexWireAPI(declaredShape string) string {
-	if declaredShape == storage.LLMAPIShapeOpenAIChat {
-		return "chat"
-	}
-	return "responses"
 }
 
 // opencodeProviderNPM 返回 opencode provider 的 npm 适配包：声明
@@ -975,8 +966,8 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 
 	// 形态地址门禁：目标协议族存在显式形态地址时放行——该地址的存在本身就是
 	// 「该族被服务」的声明，不受 api_shape 声明影响；否则维持 ADR-0006 的声明
-	// 判据，拒绝文案给三个可行动作。声明值同时传给适配器，用于在 OpenAI 兼容
-	// 族内选 chat / responses 线协议。
+	// 判据，拒绝文案给三个可行动作。声明值同时传给适配器，供 OpenAI 兼容族内
+	// 仍支持 chat 线协议的 agent（kimi/pi/opencode）选线协议。
 	shape, err := ParseAPIShape(entry.APIShape)
 	if err != nil {
 		return nil, err
@@ -988,6 +979,15 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 				"provider %q declares api_shape %s, which is incompatible with agent %s (%s); change the provider api_shape, add a shape URL for the agent's family via --shape-url <api_shape>=<url>, or switch to a different provider",
 				providerAlias, shape, adapter.Name, DescribeProtocol(adapter.Protocol))
 		}
+	}
+	// codex 上游已移除 chat 线协议（openai/codex#7782），只讲 Responses：声明
+	// openai-chat 的档案若没有 responses 接入地址，写出的配置必然不可用，
+	// fail-closed 拒绝而非写坏。已有 responses_base_url 的档案视为同时服务
+	// Responses 形态（ADR-0027），照常放行。
+	if adapter.ID == "codex" && shape == APIShapeOpenAIChat && entry.ResponsesBaseURL == "" {
+		return nil, fmt.Errorf(
+			"provider %q declares api_shape openai-chat, which codex can no longer use (chat wire protocol removed upstream); add a responses_base_url via --shape-url openai-responses=<url>, change the provider api_shape, or switch to a different provider",
+			providerAlias)
 	}
 
 	// 凭据决议先于任何写回：Inline 族取明文，EnvVar 族（codex）取 env_key 名并

@@ -77,16 +77,19 @@ func familyHasExplicitShapeURL(entry *storage.LLMProviderEntry, family ProtocolF
 }
 
 // agentPrefersChatWire 返回 OpenAI 兼容族 agent 在当前声明形态下是否走 Chat
-// Completions 线协议。与各适配器的线协议字段选择保持一致：codex 默认 responses
-// （仅显式 openai-chat 时走 chat）；kimi/pi/opencode 默认 chat（仅显式
+// Completions 线协议。与各适配器的线协议字段选择保持一致：codex 只讲
+// Responses（上游已移除 chat 线协议，声明 openai-chat 且无 responses_base_url
+// 的档案在 switch 门禁处拒绝）；kimi/pi/opencode 默认 chat（仅显式
 // openai-responses 时走 responses）。anthropic 声明不约束本族选择。
 func agentPrefersChatWire(agentID string, declaredShape APIShape) bool {
-	useChat := agentID != "codex"
+	if agentID == "codex" {
+		return false
+	}
 	switch declaredShape {
 	case APIShapeOpenAIChat:
 		return true
 	case APIShapeOpenAIResponses:
 		return false
 	}
-	return useChat
+	return true
 }

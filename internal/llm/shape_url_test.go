@@ -212,18 +212,35 @@ func TestSwitchShapeURLResolution(t *testing.T) {
 		t.Fatalf("BaseURL/Source = %q / %q", out.BaseURL, out.BaseURLSource)
 	}
 
-	// codex：声明 openai-chat 时取 chat_base_url；未设时回落 BaseURL 并标注推断。
+	// codex 只讲 Responses：声明 openai-chat 且仅有 chat_base_url 的档案在门禁
+	// 处拒绝，文案给可行动作。
 	mgr2, _, _ := newTestProviderManager(t)
 	addTestProvider(t, mgr2, AddProviderOptions{
 		Alias: "main", BaseURL: "https://api.example.com", APIShape: "openai-chat",
 		APIKey: "sk-secret", Models: []string{"m1"},
 		ShapeURLs: map[string]string{"openai-chat": "https://chat.example.com/v1"},
 	})
-	out2, err := NewSwitchManager(mgr2, "", t.TempDir()).Switch("codex", "main", nil, "")
-	if err != nil {
-		t.Fatalf("Switch(codex) error = %v", err)
+	if _, err := NewSwitchManager(mgr2, "", t.TempDir()).Switch("codex", "main", nil, ""); err == nil ||
+		!strings.Contains(err.Error(), "openai-chat") ||
+		!strings.Contains(err.Error(), "--shape-url") {
+		t.Fatalf("Switch(codex) error = %v, want chat-wire rejection", err)
 	}
-	if out2.BaseURL != "https://chat.example.com/v1" || out2.BaseURLSource != "chat_base_url" {
+
+	// 同一档案补 responses_base_url 后放行：codex 取 responses 地址而非 chat。
+	mgr2b, _, _ := newTestProviderManager(t)
+	addTestProvider(t, mgr2b, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIShape: "openai-chat",
+		APIKey: "sk-secret", Models: []string{"m1"},
+		ShapeURLs: map[string]string{
+			"openai-chat":      "https://chat.example.com/v1",
+			"openai-responses": "https://resp.example.com/v1",
+		},
+	})
+	out2, err := NewSwitchManager(mgr2b, "", t.TempDir()).Switch("codex", "main", nil, "")
+	if err != nil {
+		t.Fatalf("Switch(codex with responses url) error = %v", err)
+	}
+	if out2.BaseURL != "https://resp.example.com/v1" || out2.BaseURLSource != "responses_base_url" {
 		t.Fatalf("codex BaseURL/Source = %q / %q", out2.BaseURL, out2.BaseURLSource)
 	}
 

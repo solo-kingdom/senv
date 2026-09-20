@@ -210,9 +210,16 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(statErr) {
 			t.Fatalf("config written despite incompatible shape (stat err = %v)", statErr)
 		}
-		// 同一形态对 OpenAI 兼容 agent 合法。
-		if _, err := sm.Switch("codex", "main", nil, ""); err != nil {
-			t.Fatalf("Switch(codex) error = %v", err)
+		// 同一形态对仍支持 chat 线协议的 OpenAI 兼容 agent（kimi）合法。
+		if _, err := sm.Switch("kimi", "main", nil, ""); err != nil {
+			t.Fatalf("Switch(kimi) error = %v", err)
+		}
+		// codex 只讲 Responses：chat-only 档案拒绝且不写文件。
+		if _, err := sm.Switch("codex", "main", nil, ""); err == nil || !strings.Contains(err.Error(), "openai-chat") {
+			t.Fatalf("Switch(codex) error = %v, want chat-wire rejection", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(statErr) {
+			t.Fatalf("codex config written despite chat-only shape (stat err = %v)", statErr)
 		}
 	})
 
