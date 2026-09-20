@@ -643,7 +643,22 @@ func piAdapter() AgentAdapter {
 					"baseUrl": req.BaseURL,
 					"api":     piAPIType(req.APIShape),
 					"apiKey":  req.Credential,
-					"models":  models,
+					// compat 是 provider 级兼容声明，不是模型元数据投影，因此不受
+					// 上面「元数据缺失就省略字段」规则的约束。pi 以
+					// model.reasoning && compat.supportsDeveloperRole 决定 system
+					// prompt 用 developer 还是 system 角色，而 supportsDeveloperRole
+					// 的缺省推断只认一份硬编码的 base URL/provider 特征名单：senv 写
+					// 入的自建网关（new-api 等）不在名单内，会被当成标准 OpenAI，使
+					// 被投影为 reasoning 的模型发出上游不接受的 developer 角色
+					// （Moonshot/Kimi 等报 400 role 'developer' is not allowed）。
+					// 一律写 false：system 是所有 OpenAI 兼容端点的公共子集，真
+					// OpenAI 也接受它；写在 provider 级才能覆盖全部模型（含重跑新增
+					// 的），也不必跟着 pi 的名单漂移。注意 senv 整体拥有该 provider
+					// 对象，用户手工补的 compat 会被下次切换覆盖，所以开关必须在这里。
+					// 不写 supportsReasoningEffort：它是 reasoning_effort 的透传开关，
+					// 一刀切关掉会让指向真 OpenAI 的档案失去推理档位。
+					"compat": map[string]any{"supportsDeveloperRole": false},
+					"models": models,
 				}
 				return nil
 			}, req.tx); err != nil {

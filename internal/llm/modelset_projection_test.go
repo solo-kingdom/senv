@@ -228,12 +228,31 @@ func TestPiAndOpencodeProjectModelSets(t *testing.T) {
 	if m1["reasoning"] != true {
 		t.Fatalf("pi m1 reasoning = %v, want true with efforts", m1["reasoning"])
 	}
+	// provider 级 compat 与模型级 reasoning 投影并存：compat 是兼容声明而非
+	// 模型元数据，既不参与「缺失即省略」，也不下放到模型条目。
+	compat, ok := prov["compat"].(map[string]any)
+	if !ok || compat["supportsDeveloperRole"] != false {
+		t.Fatalf("pi provider compat = %v, want supportsDeveloperRole:false at provider level", prov["compat"])
+	}
+	for _, raw := range list {
+		if entry, ok := raw.(map[string]any); ok {
+			if _, has := entry["compat"]; has {
+				t.Fatalf("pi compat must stay provider-level, not per-model: %v", entry)
+			}
+		}
+	}
 	if _, ok := list[1].(map[string]any)["contextWindow"]; ok {
 		t.Fatalf("pi m2 should omit unknown contextWindow: %v", list[1])
+	}
+	if len(list[1].(map[string]any)) != 2 {
+		t.Fatalf("pi m2 should stay id+name only, got extra projected fields: %v", list[1])
 	}
 	settings := readJSONFile(t, filepath.Join(filepath.Dir(pi.ConfigPath(home)), "settings.json"))
 	if settings["defaultProvider"] != "senv-main" || settings["defaultModel"] != "m2" {
 		t.Fatalf("pi settings = %v", settings)
+	}
+	if _, ok := settings["compat"]; ok {
+		t.Fatalf("compat must not leak into settings.json: %v", settings)
 	}
 
 	opencode := opencodeAdapter()
@@ -280,6 +299,10 @@ func TestAdapterDeclaredShapePicksWireProtocol(t *testing.T) {
 	piProv := readJSONFile(t, pi.ConfigPath(home))["providers"].(map[string]any)["senv-main"].(map[string]any)
 	if piProv["api"] != "openai-responses" {
 		t.Fatalf("pi api = %v, want openai-responses for declared shape", piProv["api"])
+	}
+	// 两条线协议路径共用 compat.supportsDeveloperRole，声明 responses 时同样投影。
+	if compat, ok := piProv["compat"].(map[string]any); !ok || compat["supportsDeveloperRole"] != false {
+		t.Fatalf("pi compat = %v, want provider-level supportsDeveloperRole:false for responses too", piProv["compat"])
 	}
 
 	kimi := kimiAdapter()

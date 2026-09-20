@@ -333,10 +333,28 @@ func TestPiAdapterWritesBothFiles(t *testing.T) {
 	if prov["baseUrl"] != "https://api.example.com" || prov["apiKey"] != "sk-secret" || prov["api"] != "openai-completions" {
 		t.Fatalf("pi provider = %v", prov)
 	}
+	// pi 以 model.reasoning && compat.supportsDeveloperRole 决定 system prompt
+	// 的角色；supportsDeveloperRole 的缺省推断只看 base URL 特征名单，senv 写入
+	// 的自建网关会被误判成标准 OpenAI，使被投影为 reasoning 的模型发出上游不
+	// 接受的 developer 角色（400 role 'developer' is not allowed）。该开关是
+	// provider 级兼容声明，必须覆盖该 provider 下全部模型。
+	compat, ok := prov["compat"].(map[string]any)
+	if !ok {
+		t.Fatalf("pi provider compat = %v, want provider-level compat map", prov["compat"])
+	}
+	if compat["supportsDeveloperRole"] != false {
+		t.Fatalf("pi compat.supportsDeveloperRole = %v, want false", compat["supportsDeveloperRole"])
+	}
+	if _, ok := compat["supportsReasoningEffort"]; ok {
+		t.Fatalf("pi compat must not disable reasoning_effort passthrough: %v", compat)
+	}
 	list := prov["models"].([]any)
 	entry := list[0].(map[string]any)
 	if entry["id"] != "m1" {
 		t.Fatalf("pi model entry = %v", entry)
+	}
+	if _, ok := entry["compat"]; ok {
+		t.Fatalf("pi compat must stay provider-level, not per-model: %v", entry)
 	}
 	settings := string(mustRead(t, filepath.Join(filepath.Dir(configPath), "settings.json")))
 	var sroot map[string]any
