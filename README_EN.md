@@ -392,7 +392,7 @@ Write operations in the TUI (env/text/config/SSH/AI/MCP) are recorded in the loc
 
 ### 10. MCP integration (let AI agents call senv)
 
-senv ships a built-in **stdio MCP server** that exposes env/text/config capabilities as tools for local AI agents (Claude Code/Desktop, Cursor, Codex, ZCode, Kimi, PI, etc.) to call directly.
+senv ships a built-in **stdio MCP server** that exposes env/text/backup/config capabilities as tools for local AI agents (Claude Code/Desktop, Cursor, Codex, ZCode, Kimi, PI, etc.) to call directly.
 
 **How it works**: the MCP server runs as a child process of the agent, carrying JSON-RPC over stdin/stdout, and **cannot pop up a password prompt**. Therefore the server reuses senv's session authentication at startup — open a session in the terminal first; afterwards every tool request re-verifies via `keyHash + saltHash + dataPathHash` that the credential is still bound to the same vault (the session ID only goes into the audit log). **Re-running `senv session start` on the same vault does not revoke a running MCP**; only `senv session clear`, expiry, or a salt change (`passwd` / rekey) rejects requests — in that case open a new session and restart the MCP server.
 
@@ -415,11 +415,22 @@ senv mcp install codex --print            # Print a paste-ready config snippet o
 senv mcp list-tools                       # Show the tools exposed via MCP
 ```
 
-Exposed tools (18 total): `senv_env_get/set/delete/list/export`, `senv_text_get/set/delete/list`, `senv_config_list/get/export`, `senv_group_list/add/activate/deactivate`, plus read-only `ssh_host_list/get`. Keys accept the `group:key` shorthand address; `get` supports `decode=true` to dereference `{{env:...}}`/`{{text:...}}`.
+Exposed tools (25 total): `senv_env_get/set/delete/list/export`, `senv_text_get/set/delete/list`, `senv_backup_get/set/delete/list`, `senv_config_list/get/export`, `senv_group_list/add/activate/deactivate`, plus read-only `ssh_host_list/get`, `llm_provider_list`, `llm_agent_status`, `mcp_server_list`. Keys accept the `group:key` shorthand address; env/text `get` supports `decode=true` to dereference `{{env:...}}`/`{{text:...}}` (backup has no decode; `backup list` never returns values).
 
 > SSH MCP tools return only whitelisted host connection metadata and fingerprints — **no tool ever returns private key plaintext**.
 
 > Security note: writing into an agent's config hands senv's read/write capabilities to the model in that agent's context. Use as needed; for sensitive writes, check the audit log (`~/.log/senv/audit.log`).
+
+### 11. Agent Skill (teach coding agents how to use senv)
+
+The repo ships an [Agent Skills](https://skills.sh)-standard skill at `.agents/skills/senv-cli/`: it teaches coding agents to drive the senv CLI/MCP safely and non-interactively (session rules, `group:key` addressing, reference resolution, no implicit group creation, credentials never in argv, etc.). Install it into supported agents (Claude Code, Codex, Cursor, …) with the [skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add solo-kingdom/senv --skill senv-cli            # into the current project
+npx skills add solo-kingdom/senv --skill senv-cli --global   # user-level, available across projects
+```
+
+The skill is maintained in lockstep with the commands under `cmd/`; an installed copy may lag behind the latest release — re-run the command above to update.
 
 ## How It Works
 

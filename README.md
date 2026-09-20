@@ -386,7 +386,7 @@ TUI 内的写操作（env/text/config/SSH/AI/MCP）会写入本机操作审计�
 
 ### 10. MCP 集成（让 AI agent 调用 senv）
 
-senv 内置一个 **stdio MCP server**，把 env/text/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
+senv 内置一个 **stdio MCP server**，把 env/text/backup/config 能力暴露为工具，供本地 AI agent（Claude Code/Desktop、Cursor、Codex、ZCode、Kimi、PI 等）直接调用。
 
 **工作模型**：MCP server 作为 agent 的子进程启动，其 stdin/stdout 承载 JSON-RPC，**无法弹出密码框**。因此 server 启动时复用 senv 的 session 鉴权——先在终端开一个 session；之后每个工具请求都会按 `keyHash + saltHash + dataPathHash` 重新验证凭证仍绑定在同一个 vault 上（session ID 只进审计）。**同一 vault 重新 `senv session start` 不会吊销正在运行的 MCP**；只有 `senv session clear`、到期或 salt 变化（`passwd` / rekey）才会拒绝请求，此时需重新开 session 并重启 MCP server。
 
@@ -409,11 +409,22 @@ senv mcp install codex --print            # 只打印可粘贴的配置片段，
 senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 ```
 
-暴露的工具（共 18 个）：`senv_env_get/set/delete/list/export`、`senv_text_get/set/delete/list`、`senv_config_list/get/export`、`senv_group_list/add/activate/deactivate`、只读 `ssh_host_list/get`。键支持 `group:key` 简写地址；`get` 支持 `decode=true` 解引用 `{{env:...}}`/`{{text:...}}`。
+暴露的工具（共 25 个）：`senv_env_get/set/delete/list/export`、`senv_text_get/set/delete/list`、`senv_backup_get/set/delete/list`、`senv_config_list/get/export`、`senv_group_list/add/activate/deactivate`，只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。键支持 `group:key` 简写地址；env/text 的 `get` 支持 `decode=true` 解引用 `{{env:...}}`/`{{text:...}}`（backup 无 decode，`backup list` 不含正文）。
 
 > SSH MCP 工具只返回 host 连接元数据与指纹的白名单字段，**不提供任何返回 private key 明文的工具**。
 
 > 安全提示：写入 agent 配置会把 senv 的读/写能力交给该 agent 上下文中的模型。按需使用；敏感写入建议结合审计日志（`~/.log/senv/audit.log`）核查。
+
+### 11. Agent Skill（让 coding agent 学会用 senv）
+
+仓库内 `.agents/skills/senv-cli/` 是一份 [Agent Skills](https://skills.sh) 标准的 skill：教 coding agent 非交互、安全地驱动 senv CLI/MCP（会话规则、`group:key` 寻址、引用解析、禁止隐式建组、不进 argv 的凭据处理等）。用 [skills CLI](https://github.com/vercel-labs/skills) 一条命令装进支持的 agent（Claude Code、Codex、Cursor 等）：
+
+```bash
+npx skills add solo-kingdom/senv --skill senv-cli            # 装到当前项目
+npx skills add solo-kingdom/senv --skill senv-cli --global   # 装到用户级，跨项目可用
+```
+
+skill 与 `cmd/` 下的命令行为同步维护；已安装的副本可能落后于最新 release，重跑上面的命令即可更新。
 
 ## 工作原理
 
