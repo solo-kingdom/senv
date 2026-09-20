@@ -61,3 +61,32 @@ func DescribeProtocol(family ProtocolFamily) string {
 	}
 	return "openai-compatible"
 }
+
+// baseURLSourceInferred 是 switch 输出中的地址来源标注：无显式形态地址、
+// 由 BaseURL 按协议族推断。
+const baseURLSourceInferred = "由 BaseURL 推断"
+
+// familyHasExplicitShapeURL 报告目标协议族在档案上是否存在显式形态地址
+// （Anthropic 族看 anthropic_base_url；OpenAI 兼容族看 chat_base_url 或
+// responses_base_url 任一）。这是 switch 门禁的放行条件之一。
+func familyHasExplicitShapeURL(entry *storage.LLMProviderEntry, family ProtocolFamily) bool {
+	if family == ProtocolAnthropic {
+		return entry.AnthropicBaseURL != ""
+	}
+	return entry.ChatBaseURL != "" || entry.ResponsesBaseURL != ""
+}
+
+// agentPrefersChatWire 返回 OpenAI 兼容族 agent 在当前声明形态下是否走 Chat
+// Completions 线协议。与各适配器的线协议字段选择保持一致：codex 默认 responses
+// （仅显式 openai-chat 时走 chat）；kimi/pi/opencode 默认 chat（仅显式
+// openai-responses 时走 responses）。anthropic 声明不约束本族选择。
+func agentPrefersChatWire(agentID string, declaredShape APIShape) bool {
+	useChat := agentID != "codex"
+	switch declaredShape {
+	case APIShapeOpenAIChat:
+		return true
+	case APIShapeOpenAIResponses:
+		return false
+	}
+	return useChat
+}

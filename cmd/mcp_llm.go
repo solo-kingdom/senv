@@ -9,11 +9,21 @@ import (
 	"github.com/wii/senv/internal/storage"
 )
 
+// llmProviderShapeURLs 是 llm_provider_list 响应中的形态地址视图（键各自
+// omitempty；全空时整个对象省略）。地址与 base_url 同级按非密钥处理。
+type llmProviderShapeURLs struct {
+	Chat      string `json:"chat,omitempty"`
+	Responses string `json:"responses,omitempty"`
+	Anthropic string `json:"anthropic,omitempty"`
+}
+
 // llmProviderView 是 MCP 响应的显式白名单：档案本身不存凭据明文，这里
 // 再裁剪一层，从结构上排除任何密钥字段。
 type llmProviderView struct {
 	Alias         string                          `json:"alias"`
 	BaseURL       string                          `json:"base_url"`
+	ShapeURLs     *llmProviderShapeURLs           `json:"shape_urls,omitempty"`
+	APIShape      string                          `json:"api_shape,omitempty"`
 	CredentialRef string                          `json:"credential_ref"`
 	Catalog       string                          `json:"catalog_provider,omitempty"`
 	DefaultModel  string                          `json:"default_model,omitempty"`
@@ -25,9 +35,10 @@ type llmProviderView struct {
 }
 
 func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
-	return llmProviderView{
+	view := llmProviderView{
 		Alias:         e.Alias,
 		BaseURL:       e.BaseURL,
+		APIShape:      e.APIShape,
 		CredentialRef: e.CredentialRef,
 		Catalog:       e.CatalogProvider,
 		DefaultModel:  e.DefaultModel,
@@ -37,6 +48,14 @@ func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 		CreatedAt:     e.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     e.UpdatedAt.Format(time.RFC3339),
 	}
+	if e.ChatBaseURL != "" || e.ResponsesBaseURL != "" || e.AnthropicBaseURL != "" {
+		view.ShapeURLs = &llmProviderShapeURLs{
+			Chat:      e.ChatBaseURL,
+			Responses: e.ResponsesBaseURL,
+			Anthropic: e.AnthropicBaseURL,
+		}
+	}
+	return view
 }
 
 // llmAgentStatusView 描述单个 agent 的当前指向；pointer 未切换时为 null。

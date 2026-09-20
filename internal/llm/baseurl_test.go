@@ -72,3 +72,25 @@ func TestBaseURLForFamilyIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeAnthropicShapeURL(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"普通前缀原样", "https://gw.example.com/api/anthropic", "https://gw.example.com/api/anthropic"},
+		{"尾斜杠收敛", "https://gw.example.com/api/anthropic/", "https://gw.example.com/api/anthropic"},
+		{"多重尾斜杠收敛", "https://gw.example.com/api/anthropic//", "https://gw.example.com/api/anthropic"},
+		{"带 /v1 原样保留", "https://gw.example.com/api/anthropic/v1", "https://gw.example.com/api/anthropic/v1"},
+		{"空白收敛", "  https://gw.example.com/api/anthropic  ", "https://gw.example.com/api/anthropic"},
+		{"空值", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeAnthropicShapeURL(tc.raw); got != tc.want {
+				t.Errorf("normalizeAnthropicShapeURL(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

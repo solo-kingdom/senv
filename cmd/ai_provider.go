@@ -65,6 +65,7 @@ var (
 	providerAddModelModalities    []string
 	providerAddDefault            string
 	providerAddAPIShape           string
+	providerAddShapeURLs          []string
 	providerAddDescription        string
 	providerAddForce              bool
 
@@ -83,6 +84,7 @@ var (
 	providerEditModelModalities    []string
 	providerEditDefault            string
 	providerEditAPIShape           string
+	providerEditShapeURLs          []string
 	providerEditDescription        string
 
 	// providerCredentialReader is a test seam; production input never becomes
@@ -105,7 +107,12 @@ appended when missing unless the path already ends in a version segment such
 as /v1 or /v4; trailing slashes are trimmed) so every agent can derive its own
 shape at switch time; the command reports the normalized value.
 --api-shape optionally declares the wire protocol (openai-chat | openai-responses
-| anthropic); leave it empty to keep deriving the shape from the target agent.`,
+| anthropic); leave it empty to keep deriving the shape from the target agent.
+--shape-url <api_shape>=<url> (repeatable) declares a per-shape base URL: when a
+target agent's family has one, it is used as-is and the profile may serve
+multiple families. openai-chat / openai-responses URLs are normalized like the
+base URL; the anthropic URL is stored verbatim (only trailing slashes trimmed)
+because claude-code appends /v1/messages to it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		modelContexts, err := llm.ParseModelContexts(providerAddModelCtx)
@@ -125,6 +132,10 @@ shape at switch time; the command reports the normalized value.
 			return err
 		}
 		modelModalities, err := llm.ParseModelModalities(providerAddModelModalities)
+		if err != nil {
+			return err
+		}
+		shapeURLs, err := llm.ParseShapeURLs(providerAddShapeURLs)
 		if err != nil {
 			return err
 		}
@@ -158,6 +169,7 @@ shape at switch time; the command reports the normalized value.
 			RequireModelMetadata:  true,
 			DefaultModel:          providerAddDefault,
 			APIShape:              providerAddAPIShape,
+			ShapeURLs:             shapeURLs,
 			Description:           providerAddDescription,
 			Force:                 providerAddForce,
 		})
@@ -202,8 +214,8 @@ Passing a model metadata flag with no usable values (for example
 --model-output "") clears that metadata dimension from the profile; the TUI
 edit form clears a dimension the same way when its field is emptied.
 
-The base URL and api_shape are validated exactly like add. Any failure leaves
-the profile, credential and references untouched.`,
+The base URL, api_shape and --shape-url values are validated exactly like add.
+Any failure leaves the profile, credential and references untouched.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var modelContexts map[string]int
@@ -259,6 +271,14 @@ the profile, credential and references untouched.`,
 		}
 		if cmd.Flags().Changed("api-shape") {
 			opts.APIShape = &providerEditAPIShape
+		}
+		if cmd.Flags().Changed("shape-url") {
+			shapeURLs, err := llm.ParseShapeURLs(providerEditShapeURLs)
+			if err != nil {
+				return err
+			}
+			// flag 已给但无有效值（如 --shape-url ""）表示清空全部形态地址。
+			opts.ShapeURLs = llm.ClearingMap(shapeURLs)
 		}
 		if cmd.Flags().Changed("description") {
 			opts.Description = &providerEditDescription
@@ -349,8 +369,9 @@ var aiProviderListCmd = &cobra.Command{
 		}
 		out := cmd.OutOrStdout()
 		for _, e := range entries {
-			fmt.Fprintf(out, "%s\t%s\t模型数 %d\t默认 %s\t形态 %s\t目录 %s\t%s\n",
-				e.Alias, e.BaseURL, len(e.Models), orDash(e.DefaultModel), orDash(e.APIShape), orDash(e.CatalogProvider), orDash(e.Description))
+			fmt.Fprintf(out, "%s\t%s\t模型数 %d\t默认 %s\t形态 %s\t形态地址 %s\t目录 %s\t%s\n",
+				e.Alias, e.BaseURL, len(e.Models), orDash(e.DefaultModel), orDash(e.APIShape),
+				shapeURLsSummary(e), orDash(e.CatalogProvider), orDash(e.Description))
 		}
 		return nil
 	},
@@ -375,6 +396,7 @@ var aiProviderShowCmd = &cobra.Command{
 		fmt.Fprintf(out, "凭据引用：%s\n", e.CredentialRef)
 		fmt.Fprintf(out, "目录 provider：%s\n", orDash(e.CatalogProvider))
 		fmt.Fprintf(out, "接入形态：%s\n", orDash(e.APIShape))
+		fmt.Fprintf(out, "形态地址：%s\n", shapeURLsSummary(e))
 		fmt.Fprintf(out, "模型（%d）：%s\n", len(e.Models), strings.Join(e.Models, ", "))
 		if len(e.ModelInfo) > 0 {
 			fmt.Fprintln(out, "模型信息：")
@@ -484,6 +506,12 @@ func modelInfoDetails(info storage.LLMModelInfo) string {
 	return strings.Join(parts, " ")
 }
 
+// shapeURLsSummary 渲染三个形态地址（未设显示 -）；list 摘要与 show 详情共用。
+func shapeURLsSummary(e *storage.LLMProviderEntry) string {
+	return fmt.Sprintf("chat=%s responses=%s anthropic=%s",
+		orDash(e.ChatBaseURL), orDash(e.ResponsesBaseURL), orDash(e.AnthropicBaseURL))
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "-"
@@ -538,6 +566,7 @@ func init() {
 	aiProviderAddCmd.Flags().StringArrayVar(&providerAddModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefault, "default-model", "", "default model (must be in the model set)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty derives it from the target agent)")
+	aiProviderAddCmd.Flags().StringArrayVar(&providerAddShapeURLs, "shape-url", nil, "per-shape base URL: <api_shape>=<url> (repeatable; "+llm.APIShapeList()+"; anthropic is stored verbatim as the base claude-code appends /v1/messages to)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDescription, "description", "", "optional vault note on the provider profile (not model catalog text)")
 	aiProviderAddCmd.Flags().BoolVar(&providerAddForce, "force", false, "overwrite an existing profile")
 	aiProviderEditCmd.Flags().StringVar(&providerEditBaseURL, "base-url", "", "new provider base URL (https)")
@@ -555,6 +584,7 @@ func init() {
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
+	aiProviderEditCmd.Flags().StringArrayVar(&providerEditShapeURLs, "shape-url", nil, "per-shape base URL: <api_shape>=<url> (repeatable; empty <url> clears that shape; omitted shapes keep their value)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDescription, "description", "", "replace the provider profile note (empty clears it)")
 	aiProviderCmd.AddCommand(aiProviderAddCmd, aiProviderEditCmd, aiProviderRenameCmd, aiProviderListCmd, aiProviderShowCmd, aiProviderRemoveCmd)
 }

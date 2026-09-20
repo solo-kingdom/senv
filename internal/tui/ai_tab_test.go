@@ -1063,3 +1063,78 @@ func TestAITabLoadingStateBeforeLoad(t *testing.T) {
 		t.Fatalf("provider list missing after load: %q", clipRunesT(out, 120))
 	}
 }
+
+func TestAITabProviderFormShapeURLs(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+
+	out, _ := tab.Update(runeKey("n"))
+	tab = out.(*aiTab)
+	if tab.form.fieldIndex("chat_base_url") == -1 || tab.form.fieldIndex("responses_base_url") == -1 ||
+		tab.form.fieldIndex("anthropic_base_url") == -1 {
+		t.Fatal("provider form must expose the three shape URL fields")
+	}
+	tab = submitAIForm(t, tab, map[string]string{
+		"alias":              "gw",
+		"base_url":           "https://api.example.com",
+		"chat_base_url":      "https://chat.example.com",
+		"anthropic_base_url": "https://gw.example.com/api/anthropic/",
+		"models":             "m1",
+		"model_contexts":     "m1=128000",
+		"credential":         aiNewCredential,
+		"api_key":            "sk-shape-secret",
+	})
+	if tab.form != nil {
+		t.Fatalf("form should close after a successful create: %#v", tab.form.errs)
+	}
+	p := tab.providerByAlias("gw")
+	if p == nil {
+		t.Fatalf("provider not created: %#v", tab.providers)
+	}
+	// openai 族补版本段；anthropic 原样仅收敛尾斜杠；未填为空。
+	if p.ChatBaseURL != "https://chat.example.com/v1" || p.ResponsesBaseURL != "" ||
+		p.AnthropicBaseURL != "https://gw.example.com/api/anthropic" {
+		t.Fatalf("shape URLs = %q / %q / %q", p.ChatBaseURL, p.ResponsesBaseURL, p.AnthropicBaseURL)
+	}
+
+	// 详情弹层展示形态地址。
+	detail := strings.Join(tab.providerDetailLines(p), "\n")
+	if !strings.Contains(detail, "anthropic_url:") || !strings.Contains(detail, "https://gw.example.com/api/anthropic\n") ||
+		!strings.Contains(detail, "chat_url:") || !strings.Contains(detail, "https://chat.example.com/v1") ||
+		!strings.Contains(detail, "responses_url:") {
+		t.Fatalf("detail lines missing shape URLs:\n%s", detail)
+	}
+
+	// 编辑：清空 chat、保留 anthropic。
+	tab.providerIndex = -1
+	for i, prov := range tab.providers {
+		if prov.Alias == "gw" {
+			tab.providerIndex = i
+			break
+		}
+	}
+	if tab.providerIndex < 0 {
+		t.Fatal("gw provider not found in list")
+	}
+	out, _ = tab.Update(runeKey("e"))
+	tab = out.(*aiTab)
+	if tab.form == nil {
+		t.Fatal("e should open the provider edit form")
+	}
+	tab = submitAIForm(t, tab, map[string]string{
+		"base_url":           p.BaseURL,
+		"chat_base_url":      "",
+		"anthropic_base_url": "https://gw.example.com/api/anthropic",
+		"models":             strings.Join(p.Models, ", "),
+		"model_contexts":     "m1=128000",
+		"credential":         p.CredentialRef,
+	})
+	if tab.form != nil {
+		t.Fatalf("edit form should close: %#v", tab.form.errs)
+	}
+	p = tab.providerByAlias("gw")
+	if p.ChatBaseURL != "" || p.AnthropicBaseURL != "https://gw.example.com/api/anthropic" {
+		t.Fatalf("after edit shape URLs = %q / %q", p.ChatBaseURL, p.AnthropicBaseURL)
+	}
+}

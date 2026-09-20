@@ -939,8 +939,10 @@ type SwitchOutput struct {
 	Provider     string
 	Models       []string
 	DefaultModel string
-	// BaseURL 是按该 agent 协议族转换后实际写入配置的接入地址。
-	BaseURL       string
+	// BaseURL 是按该 agent 协议族解析后实际写入配置的接入地址。
+	BaseURL string
+	// BaseURLSource 标注地址来源：显式形态地址字段名，或「由 BaseURL 推断」。
+	BaseURLSource string
 	ConfigPath    string
 	CredentialEnv string // 非空表示凭据需经该环境变量暴露
 	Warnings      []string
@@ -971,18 +973,19 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		return nil, err
 	}
 
-	// api_shape 显式声明时，形态必须与目标 agent 的协议族一致；不兼容时拒绝
-	// 且不写任何文件（ADR-0006）。空值走既有行为：只按 agent 协议族归一。
-	// 声明值同时传给适配器，用于在 OpenAI 兼容族内选 chat / responses 线协议。
+	// 形态地址门禁：目标协议族存在显式形态地址时放行——该地址的存在本身就是
+	// 「该族被服务」的声明，不受 api_shape 声明影响；否则维持 ADR-0006 的声明
+	// 判据，拒绝文案给三个可行动作。声明值同时传给适配器，用于在 OpenAI 兼容
+	// 族内选 chat / responses 线协议。
 	shape, err := ParseAPIShape(entry.APIShape)
 	if err != nil {
 		return nil, err
 	}
-	if shape != "" {
+	if !familyHasExplicitShapeURL(entry, adapter.Protocol) && shape != "" {
 		family, ok := shape.Protocol()
 		if !ok || family != adapter.Protocol {
 			return nil, fmt.Errorf(
-				"provider %q declares api_shape %s, which is incompatible with agent %s (%s); change the provider api_shape or switch to a different provider",
+				"provider %q declares api_shape %s, which is incompatible with agent %s (%s); change the provider api_shape, add a shape URL for the agent's family via --shape-url <api_shape>=<url>, or switch to a different provider",
 				providerAlias, shape, adapter.Name, DescribeProtocol(adapter.Protocol))
 		}
 	}
@@ -1011,9 +1014,25 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		credential = plan.Name
 	}
 
-	// 档案接入地址统一按 OpenAI 兼容形态落库，写进配置前按该 agent 的协议族
-	// 转换（Anthropic 族剥离末段 /v1）。归一幂等，存量档案无需迁移。
-	baseURL := baseURLForFamily(entry.BaseURL, adapter.Protocol)
+	// 地址解析：目标族显式形态地址优先——anthropic_base_url 原样写回（不剥
+	// 版本段），OpenAI 族按已解析线协议取 chat_base_url / responses_base_url；
+	// 未设回落 BaseURL 按协议族转换（Anthropic 族剥离末段 /v1）。归一幂等，
+	// 存量档案无需迁移；来源随输出可见。
+	var explicitURL, explicitField string
+	switch {
+	case adapter.Protocol == ProtocolAnthropic:
+		explicitURL, explicitField = entry.AnthropicBaseURL, "anthropic_base_url"
+	case agentPrefersChatWire(agentID, shape):
+		explicitURL, explicitField = entry.ChatBaseURL, "chat_base_url"
+	default:
+		explicitURL, explicitField = entry.ResponsesBaseURL, "responses_base_url"
+	}
+	var baseURL, baseURLSource string
+	if explicitURL != "" {
+		baseURL, baseURLSource = explicitURL, explicitField
+	} else {
+		baseURL, baseURLSource = baseURLForFamily(entry.BaseURL, adapter.Protocol), baseURLSourceInferred
+	}
 
 	// 指针先读后写：既取上一次指向作为清理依据，也保证损坏的指针文件在写
 	// 配置之前就暴露出来。
@@ -1094,13 +1113,14 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	}
 
 	out := &SwitchOutput{
-		AgentID:      agentID,
-		AgentName:    adapter.Name,
-		Provider:     providerAlias,
-		Models:       agentModels,
-		DefaultModel: defaultModel,
-		BaseURL:      baseURL,
-		ConfigPath:   configPath,
+		AgentID:       agentID,
+		AgentName:     adapter.Name,
+		Provider:      providerAlias,
+		Models:        agentModels,
+		DefaultModel:  defaultModel,
+		BaseURL:       baseURL,
+		BaseURLSource: baseURLSource,
+		ConfigPath:    configPath,
 	}
 	if adapter.Credential == CredentialEnvVar {
 		out.CredentialEnv = credential

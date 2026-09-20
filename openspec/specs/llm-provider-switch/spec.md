@@ -2,7 +2,9 @@
 
 ## Purpose
 把「切换 coding agent 的 LLM Provider」从手工改配置文件变成一条 senv 命令：以本机指针记录每个 agent 当前指向，切换时从 vault 解密凭据并按 agent 原生格式原子写回配置，失败不留半写状态。
+
 ## Requirements
+
 ### Requirement: 切换 agent 指向
 `senv ai switch <agent> <provider>` SHALL 校验 agent 属于支持的注册表（claude-code、codex、zcode、kimi、pi、opencode）且 provider 档案存在。切换 SHALL 把 provider 指向、**Agent 模型集**（默认取 Provider 模型集全集，显式给出时取保序子集）与**默认模型**写入该 agent 的原生配置，使该 agent 自己的模型选择器能在集合内切换：claude-code 写 `modelPicker`（每行 SHALL 带 `behavesAs`，映射到该版本已知模型或其 1M 形态），codex 写指向 senv 生成 catalog 文件的 `model_catalog_json`，kimi 为每个模型写一条 `[models.*]`，pi 写 `providers.<id>.models[]` 并在既有 `enabledModels` 非空时把默认模型 scope 置顶，opencode 写 `provider.<id>.models{}`。Agent 模型集 MUST NOT 为空，每个模型 MUST 属于档案模型集；默认模型 MUST 属于 Agent 模型集。模型元数据 SHALL 优先取档案内的 per-model 信息，缺失字段才回退 models.dev 缓存；旧档案没有该信息时 MUST 保持可切换，MUST NOT 回写档案。已解析的元数据 SHALL 按各 agent 原生字段投影，避免落到 agent 内置默认：context window 写 pi `contextWindow`、opencode `limit.context`、kimi `max_context_size`、codex catalog `context_window`；输出上限写 pi `maxTokens`、opencode `limit.output`、kimi `max_output_size`；推理档位非空时写 pi/opencode `reasoning: true`、kimi `capabilities` 含 `thinking` 与 `support_efforts`、codex catalog `supported_reasoning_levels`；已声明的默认推理档写 codex `default_reasoning_level`（MUST 属于档位列表）；输入模态写 codex `input_modalities`、kimi `capabilities` 的 `image_in`/`video_in`（当模态含 image/video）、pi `input`、opencode `modalities.input`。某模型缺失某项元数据时该字段 MUST 省略而不是写 0/false/空数组，但 codex catalog 的推理档位与输入模态除外：无档位或旧档案缺默认推理档时 MUST 写入单档 `none` 并设 `default_reasoning_level` 为 `none`（MUST NOT 取档位列表首项）；缺输入模态时 MUST 写入 `["text"]`。这两处是 agent 投影模板，不是 senv 对模型事实的推断。空的 `supported_reasoning_levels` 会使 Codex 会话内 `/model` 选择器无法关闭。切换 SHALL 清理上一次由 senv 写入、本次不再需要的条目与不再被指向的 `senv-<alias>` catalog 文件。切换前 SHALL 校验档案 `api_shape`（若声明）与目标 agent 协议族的兼容性，不兼容时 MUST 拒绝且不写任何文件；协议族内兼容时 SHALL 把声明值投影为该 agent 的线协议字段：pi `api` 写 `openai-responses`、kimi provider `type` 写 `openai_responses`、codex `wire_api` 写 `chat`（声明 `openai-chat`）、opencode npm 写 `@ai-sdk/openai`（声明 `openai-responses`）；未声明 `api_shape` 时各字段 SHALL 维持既有默认（pi `openai-completions`、kimi `openai`、codex `responses`、opencode `@ai-sdk/openai-compatible`）。校验通过后 SHALL 解密凭据引用并调用该 agent 的适配器写回配置，再更新本机指针。对已指向同一 provider 的 agent，以新默认模型重跑切换 SHALL 仅更换默认模型，Agent 模型集、provider 指向与配置中的其它字段保持不变；pi 为让默认模型在非空 `enabledModels` 中优先生效而重排 senv scope 时，用户其他 scope 不受影响。以显式模型集重跑 SHALL 按新集合重算并清理差集。TUI SHALL 提供等价的「仅换默认模型」入口。
 
@@ -239,33 +241,56 @@
 - **THEN** 正常显示指针状态，不提示口令
 
 ### Requirement: 接入地址按协议族写回
-`senv ai switch` SHALL 按目标 agent 的协议族转换档案接入地址后再写配置：Anthropic Messages 族（claude-code）写不带版本段的形态，OpenAI 兼容族（codex/kimi/pi/opencode）写带末段 `/v1` 的形态。转换 SHALL 在写回前完成且幂等：档案接入地址已归一或未归一的结果一致，重复切换不产生配置漂移。转换 MUST 只处理路径末段并保留 query 与 fragment；解析失败或缺少 scheme/host 时 SHALL 原样写回，由既有校验路径报错。命令成功输出 SHALL 包含实际写入的接入地址。本要求 MUST NOT 改变档案在 vault 中的存储值，也 MUST NOT 要求迁移存量档案。
+
+`senv ai switch` SHALL 先解析本次写回的接入地址，再按目标 agent 的协议族转换后写配置。地址来源 SHALL 为：目标 agent 协议族的显式形态地址存在时优先——Anthropic Messages 族（claude-code）用档案 `anthropic_base_url` 并原样写回（MUST NOT 剥离或改写任何路径段）；OpenAI 兼容族（codex/kimi/pi/opencode）按已解析线协议取对应形态字段（线协议为 chat 取 `chat_base_url`，为 responses 取 `responses_base_url`）。目标族无显式形态地址时回落 `BaseURL` 并按协议族转换：Anthropic 族写不带版本段的形态，OpenAI 兼容族写带末段 `/v1` 的形态。转换 SHALL 在写回前完成且幂等：档案接入地址已归一或未归一的结果一致，重复切换不产生配置漂移。转换 MUST 只处理路径末段并保留 query 与 fragment；解析失败或缺少 scheme/host 时 SHALL 原样写回，由既有校验路径报错。命令成功输出 SHALL 包含实际写入的接入地址及其来源（显式形态地址字段名，或「由 BaseURL 推断」）。本要求 MUST NOT 改变档案在 vault 中的存储值，也 MUST NOT 要求迁移存量档案。
 
 #### Scenario: claude-code 剥离版本段
-- **WHEN** 档案接入地址为 `https://api.example.com/v1` 且执行 `senv ai switch claude-code <provider>`
-- **THEN** `ANTHROPIC_BASE_URL` 写为 `https://api.example.com`，输出显示该实际写入值
+
+- **WHEN** 档案接入地址为 `https://api.example.com/v1` 且未设置 `anthropic_base_url`，执行 `senv ai switch claude-code <provider>`
+- **THEN** `ANTHROPIC_BASE_URL` 写为 `https://api.example.com`，输出显示该实际写入值与「由 BaseURL 推断」来源
+
+#### Scenario: 显式 anthropic 形态地址原样写回
+
+- **WHEN** 档案 `anthropic_base_url` 为 `https://gw.example.com/api/anthropic`，执行 `senv ai switch claude-code <provider>`
+- **THEN** `ANTHROPIC_BASE_URL` 写为 `https://gw.example.com/api/anthropic`（原样，不剥离、不追加版本段），输出显示该值与显式来源
+
+#### Scenario: OpenAI 族显式形态地址优先
+
+- **WHEN** 档案声明 `api_shape=openai-chat` 且 `chat_base_url` 为 `https://chat.example.com/v1`、`BaseURL` 为 `https://gw.example.com/v1`，切换 codex
+- **THEN** TOML `base_url` 写为 `https://chat.example.com/v1`，输出显示该值与显式来源
+
+#### Scenario: OpenAI 族字段未设回落 BaseURL
+
+- **WHEN** 档案声明 `api_shape=openai-chat` 且 `chat_base_url` 未设置，切换 codex
+- **THEN** 写回 `BaseURL`（带版本段形态），输出显示来源为「由 BaseURL 推断」
 
 #### Scenario: Anthropic 族剥离是无损变换
-- **WHEN** 档案接入地址为 `https://api.example.com/v1` 或 `https://api.example.com`
+
+- **WHEN** 档案接入地址为 `https://api.example.com/v1` 或 `https://api.example.com` 且未设置形态地址
 - **THEN** claude-code 最终请求的 URL 均为 `https://api.example.com/v1/messages`
 
 #### Scenario: OpenAI 兼容族补版本段
+
 - **WHEN** 存量档案接入地址为 `https://api.example.com`（无版本段）且执行 `senv ai switch codex <provider>`
 - **THEN** TOML `base_url` 写为 `https://api.example.com/v1`，输出显示该实际写入值
 
 #### Scenario: 带路径前缀的接入地址
+
 - **WHEN** 档案接入地址为 `https://api.example.com/api/llm/v1` 且执行 `senv ai switch claude-code <provider>`
 - **THEN** 写为 `https://api.example.com/api/llm`，中间路径段不被改动
 
 #### Scenario: query 与 fragment 保留
+
 - **WHEN** 档案接入地址为 `https://api.example.com/v1?key=abc`
 - **THEN** OpenAI 兼容族写回后 query 仍在，Anthropic 族剥离版本段后 query 仍随 base 保留
 
 #### Scenario: 非 v1 版本段不被猜测
+
 - **WHEN** 档案接入地址为 `https://api.example.com/v1beta`
 - **THEN** Anthropic 族原样写回，OpenAI 兼容族补为 `https://api.example.com/v1beta/v1`，不做协议探测
 
 #### Scenario: 重复切换幂等
+
 - **WHEN** 对同一 agent 连续执行两次相同 `switch`
 - **THEN** 第二次写回的接入地址与第一次相同，配置无漂移
 
@@ -306,3 +331,27 @@
 #### Scenario: 无指针文件仍可 rename
 - **WHEN** 本机尚无 agent 指针文件，执行 rename
 - **THEN** 档案（及适用时的自有凭据）改名成功，受影响指针数为 0
+
+### Requirement: 形态地址门禁
+
+`senv ai switch` SHALL 在写配置前判定目标 agent 协议族（Anthropic 族：claude-code；OpenAI 兼容族：codex/kimi/pi/opencode）的兼容性：目标族存在显式形态地址（Anthropic 族为档案 `anthropic_base_url` 非空；OpenAI 兼容族为 `chat_base_url` 或 `responses_base_url` 任一非空）时 SHALL 放行，MUST NOT 受档案 `api_shape` 声明影响；目标族无显式形态地址时 SHALL 维持既有判定（`api_shape` 未声明放行；声明族与目标族不兼容时 MUST 拒绝且不写任何文件）。拒绝时错误信息 SHALL 给出三个可行动作：改档案形态、补配该族形态地址（`--shape-url <api_shape>=<url>`）、换 provider。形态地址的存在性 MUST NOT 反向决定 OpenAI 族内的线协议选择；线协议仍由档案 `api_shape`（openai-* 声明）或 agent 既有默认决定。MUST NOT 从 URL 内容推断形态。
+
+#### Scenario: 显式 anthropic 地址放行 openai-chat 声明
+
+- **WHEN** 档案 `api_shape` 为 `openai-chat` 且 `anthropic_base_url` 已设置，用户执行 `senv ai switch claude-code <provider>`
+- **THEN** 切换成功，claude-code 写入 `anthropic_base_url` 的原样值
+
+#### Scenario: 无显式地址维持拒绝
+
+- **WHEN** 档案 `api_shape` 为 `openai-chat`、三个形态地址均未设置，用户切换 claude-code
+- **THEN** 命令以非 0 退出，错误给出改档案形态、补 `--shape-url`、换 provider 三个动作，不写任何文件
+
+#### Scenario: OpenAI 族地址存在即放行 anthropic 声明
+
+- **WHEN** 档案 `api_shape` 为 `anthropic` 且 `responses_base_url` 已设置，用户切换 codex
+- **THEN** 门禁放行，codex 线协议维持其既有默认，不因形态地址存在而改变
+
+#### Scenario: 未声明且无显式地址维持旧行为
+
+- **WHEN** 档案 `api_shape` 未设置且三个形态地址均未设置，切换任一 agent
+- **THEN** 行为与本要求生效前一致

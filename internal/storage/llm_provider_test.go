@@ -226,3 +226,48 @@ func TestLLMModelInfoDefaultReasoningAndModalitiesRoundTrip(t *testing.T) {
 		t.Fatalf("InputModalities = %v", info.InputModalities)
 	}
 }
+
+func TestValidateLLMProviderShapeURLs(t *testing.T) {
+	// 合法形态地址通过校验，空值合法（未声明）。
+	entry := validProviderEntry("main")
+	entry.ChatBaseURL = "https://chat.example.com/v1"
+	entry.ResponsesBaseURL = "http://intranet.example.com/v1"
+	entry.AnthropicBaseURL = "https://gw.example.com/api/anthropic/v1"
+	if err := entry.ValidateLLMProvider(); err != nil {
+		t.Fatalf("ValidateLLMProvider() error = %v", err)
+	}
+
+	// 非法形态地址按字段名拒绝；存量档案（无新字段）不受影响。
+	cases := []struct {
+		name  string
+		clock func(*LLMProviderEntry)
+		want  string
+	}{
+		{"chat_base_url 非法", func(e *LLMProviderEntry) { e.ChatBaseURL = "ftp://x" }, "chat_base_url"},
+		{"responses_base_url 空 host", func(e *LLMProviderEntry) { e.ResponsesBaseURL = "https://" }, "responses_base_url"},
+		{"anthropic_base_url userinfo", func(e *LLMProviderEntry) { e.AnthropicBaseURL = "https://u:p@gw.example.com" }, "anthropic_base_url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := validProviderEntry("main")
+			tc.clock(e)
+			err := e.ValidateLLMProvider()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateLLMProvider() error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+
+	// 落库往返保留形态地址。
+	mgr, _ := setupTestManager(t)
+	if err := mgr.SaveLLMProvider("main", entry, "test-password"); err != nil {
+		t.Fatalf("SaveLLMProvider: %v", err)
+	}
+	got, err := mgr.LoadLLMProvider("main", "test-password")
+	if err != nil {
+		t.Fatalf("LoadLLMProvider: %v", err)
+	}
+	if got.ChatBaseURL != entry.ChatBaseURL || got.ResponsesBaseURL != entry.ResponsesBaseURL || got.AnthropicBaseURL != entry.AnthropicBaseURL {
+		t.Fatalf("shape URLs round-trip mismatch: %+v", got)
+	}
+}
