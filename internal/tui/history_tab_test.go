@@ -18,6 +18,8 @@ type fakeHistorySource struct {
 	rows     []provider.HistoryVersion
 	restored []provider.HistoryVersion
 	restoreE error
+	// value 非空时 DecryptHistory 一律返回它（用于构造长值/多行值）。
+	value string
 }
 
 func (f *fakeHistorySource) History(ctx context.Context, flt provider.HistoryFilter) ([]provider.HistoryVersion, error) {
@@ -36,6 +38,9 @@ func (f *fakeHistorySource) History(ctx context.Context, flt provider.HistoryFil
 func (f *fakeHistorySource) DecryptHistory(v provider.HistoryVersion) (string, error) {
 	if v.Kind == "env" && string(v.Ciphertext) == "bad" {
 		return "", errors.New("无法解密")
+	}
+	if f.value != "" {
+		return f.value, nil
 	}
 	return fmt.Sprintf("value-of-rev-%d", v.Revision), nil
 }
@@ -220,8 +225,104 @@ func TestHistoryTabPaneFillsContentArea(t *testing.T) {
 	}
 }
 
-// TestHistoryTabDetailStaysInsidePane 校验 detail/confirm 附加行渲染在面板内部
-// 且面板总高不超出内容区（tui-tab-consistency-render）。
+// TestHistoryTabDetailOpensScrollableOverlay 校验详情走共享滚动弹层：内容
+// 顶替整个面板位、长值不被面板底边裁掉且可滚动到尾部（tui-viewer 规约
+// 「完整内容 SHALL 通过 enter 打开的详情弹层查看」）。
+func TestHistoryTabDetailOpensScrollableOverlay(t *testing.T) {
+	var value strings.Builder
+	for i := 1; i <= 60; i++ {
+		fmt.Fprintf(&value, "line-%02d\n", i)
+	}
+	var tab Tab = newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows(), value: value.String()})
+	tab.SetSize(78, 17)
+	tab.(*historyTab).visited = true
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // recent → entry
+	out := tab.View()
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("entry pane size = %dx%d, want 78x19", w, h)
+	}
+
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail 弹层
+	ht := tab.(*historyTab)
+	if ht.detail == nil {
+		t.Fatal("enter should open the detail overlay")
+	}
+	out = tab.View()
+	if !strings.Contains(out, "line-01") {
+		t.Fatalf("detail overlay should show the value head: %q", clipRunesT(out, 80))
+	}
+	// 弹层占用与面板完全相同的位置（78×17 内容区 → 78×19 面板槽）。
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("detail overlay size = %dx%d, want 78x19", w, h)
+	}
+
+	// 尾部内容初始不可见，PgDn 滚动后可见（旧的内联详情在这里被面板底边裁掉）。
+	if strings.Contains(out, "line-60") {
+		t.Fatal("tail must not be visible before scrolling")
+	}
+	for i := 0; i < 10; i++ {
+		tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	if out = tab.View(); !strings.Contains(out, "line-60") {
+		t.Fatalf("scrolling should reveal the value tail: %q", clipRunesT(out, 80))
+	}
+
+	// esc 关闭弹层并回到时间线（不再直接回到 recent）。
+	tab, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if msg := drainCmd(t, cmd); msg != nil {
+		tab, _ = tab.Update(msg)
+	}
+	if ht.detail != nil {
+		t.Fatal("esc should close the overlay")
+	}
+	if ht.mode != historyModeEntry {
+		t.Fatalf("after closing detail: mode %d, want entry", ht.mode)
+	}
+
+	tab, _ = tab.Update(runeKey("R")) // entry → confirm
+	out = tab.View()
+	if !strings.Contains(out, "[y/N]") {
+		t.Fatalf("confirm prompt missing: %q", clipRunesT(out, 80))
+	}
+	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
+		t.Fatalf("confirm pane size = %dx%d, want 78x19", w, h)
+	}
+}
+
+// TestHistoryTabRowsFillPaneWidth 校验列表行按面板实际宽度分配列宽：宽终端
+// 下预览不再钉死在 30 rune（此前整行只用到约一半宽度就把数据截断）。
+func TestHistoryTabRowsFillPaneWidth(t *testing.T) {
+	long := strings.Repeat("A", 120)
+	var tab Tab = newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows(), value: long})
+	tab.SetSize(160, 20)
+	tab.(*historyTab).visited = true
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+
+	out := tab.View()
+	// 预览列宽随面板放大：30 rune 之外的内容必须可见。
+	if !strings.Contains(out, strings.Repeat("A", 60)) {
+		t.Fatalf("preview should use the widened column: %q", clipRunesT(out, 200))
+	}
+	// 整行铺满面板内容宽（面板 158 列含 2 列边框，行内容 156 列）。
+	row := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "AAA") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatal("data row not found in view")
+	}
+	if w := lipgloss.Width(row); w < 150 {
+		t.Fatalf("row width = %d, want ~156 (fills the pane)", w)
+	}
+}
+
+// TestHistoryTabDetailStaysInsidePane 校验 confirm/flash 附加行仍渲染在面板
+// 内部且面板总高不超出内容区（tui-tab-consistency-render）。
 func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 	var tab Tab = newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows()})
 	tab.SetSize(78, 17)
@@ -234,17 +335,7 @@ func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 		t.Fatalf("entry pane size = %dx%d, want 78x19", w, h)
 	}
 
-	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail
-	out = tab.View()
-	if !strings.Contains(out, "value-of-rev-") {
-		t.Fatalf("detail content missing: %q", clipRunesT(out, 80))
-	}
-	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
-		t.Fatalf("detail pane size = %dx%d, want 78x19 (extras clipped inside pane)", w, h)
-	}
-
-	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEscape}) // detail → entry
-	tab, _ = tab.Update(runeKey("R"))                    // entry → confirm
+	tab, _ = tab.Update(runeKey("R")) // entry → confirm
 	out = tab.View()
 	if !strings.Contains(out, "[y/N]") {
 		t.Fatalf("confirm prompt missing: %q", clipRunesT(out, 80))

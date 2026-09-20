@@ -5,22 +5,22 @@
 
 ## Requirements
 
-### Requirement: AI Tab 注册
-`senv tui` 在 vault 解锁后 SHALL 注册 AI Tab；`tui.Managers` 的 LLM 管理器为 nil（如 git 模式）时 SHALL 跳过注册且不影响其他 Tab。
+### Requirement: LLM Tab 注册
+`senv tui` 在 vault 解锁后 SHALL 注册 LLM Tab；`tui.Managers` 的 LLM 管理器为 nil（如 git 模式）时 SHALL 跳过注册且不影响其他 Tab。
 
 #### Scenario: 已解锁进入 TUI
 - **WHEN** 用户解锁 vault 后启动 `senv tui`
-- **THEN** Tab 栏出现 AI Tab，可切入浏览
+- **THEN** Tab 栏出现 LLM Tab，可切入浏览
 
 #### Scenario: git 模式无 vault
 - **WHEN** LLM 管理器为 nil 时启动 TUI
-- **THEN** AI Tab 不注册，TUI 正常启动无报错
+- **THEN** LLM Tab 不注册，TUI 正常启动无报错
 
 ### Requirement: 浏览 provider 与当前指向
-AI Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模型、模型数、被哪些 agent 指向的标记），右栏为 agent 列表（agent id、当前指向 `provider / model`、未切换/不支持）。`←→/hl` SHALL 在左右栏之间切换焦点并给出可见高亮，`↑↓` SHALL 只作用于当前焦点栏。provider 详情（base_url、模型集、凭据引用、`api_shape`、目录来源、各模型已保存的 context window / 输出上限 / 推理档位 / 默认推理档 / 输入模态）SHALL 由 `enter` 打开的详情弹层展示，列表行 SHALL 按截断规则显示，MUST NOT 因长值折行或撑高面板。浏览视图 MUST NOT 展示凭据明文。
+LLM Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模型、模型数、被哪些 agent 指向的标记），右栏为 agent 列表（agent id、当前指向 `provider / model`、未切换/不支持）。`←→/hl` SHALL 在左右栏之间切换焦点并给出可见高亮，`↑↓` SHALL 只作用于当前焦点栏。provider 详情（base_url、模型集、凭据引用、`api_shape`、目录来源、各模型已保存的 context window / 输出上限 / 推理档位 / 默认推理档 / 输入模态）SHALL 由 `enter` 打开的详情弹层展示，列表行 SHALL 按截断规则显示，MUST NOT 因长值折行或撑高面板。浏览视图 MUST NOT 展示凭据明文。
 
 #### Scenario: 浏览列表与详情
-- **WHEN** 存在档案 main（default m1、3 个模型）且用户进入 AI Tab
+- **WHEN** 存在档案 main（default m1、3 个模型）且用户进入 LLM Tab
 - **THEN** 左栏出现 main 行，右栏显示各 agent 的当前指向；按 `enter` 弹出详情层显示 base_url、模型集、凭据引用与 `api_shape`，且不出现任何 key 明文
 
 #### Scenario: 详情展示默认推理档与输入模态
@@ -28,7 +28,7 @@ AI Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模
 - **THEN** 详情弹层的模型列表展示这两项
 
 #### Scenario: 焦点切换生效
-- **WHEN** 用户在 AI Tab 按 `→/l` 再按 `↓/j`
+- **WHEN** 用户在 LLM Tab 按 `→/l` 再按 `↓/j`
 - **THEN** 焦点移到右栏且高亮指示跟随，光标在 agent 列表中下移，provider 选择不变
 
 #### Scenario: 长值不折行
@@ -41,7 +41,15 @@ AI Tab SHALL 采用两栏布局：左栏为 provider 列表（别名、默认模
 
 ### Requirement: Tab 内切换操作
 
-AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provider 为目标，对右栏选中的 agent 执行切换——先多选 Agent 模型集（space 逐个勾选/取消，进入时默认全选 Provider 模型集），再选定默认模型（默认取档案默认模型）后确认；`M` 对右栏已指向某 provider 的 agent 仅更换默认模型（与 `s` 成对，大写为变体语义），候选限定在该 provider 当前写入该 agent 的 Agent 模型集内，不改动模型集；两者均复用 SwitchManager 的原子写回与回滚。模型集为空时 MUST NOT 提交切换。成功后 SHALL 刷新指针展示并提示结果（含模型集条数与默认模型；codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
+LLM Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provider 为目标执行切换——焦点在左栏时 SHALL 先弹出 agent 多选（`space` 勾选/取消、`a` 全选再按取消、`enter` 下一步、`esc` 取消且零副作用；进入时勾选真实状态，即已经指向该 provider 的 agent；空集 MUST NOT 提交），焦点在右栏时跳过该步、直接作用于右栏光标 agent；随后多选 Agent 模型集（space 逐个勾选/取消，进入时默认全选 Provider 模型集），再选定默认模型（默认取档案默认模型）后确认。选中多个 agent 时 SHALL 逐个执行写回并按 agent 汇总结果：单个失败 MUST NOT 中止其余，提示 SHALL 覆盖成功的每个 agent（含其 warning），失败经统一提示条回显并列出失败的 agent。`M` 对右栏已指向某 provider 的 agent 仅更换默认模型（与 `s` 成对，大写为变体语义），候选限定在该 provider 当前写入该 agent 的 Agent 模型集内，不改动模型集，MUST NOT 弹 agent 多选。两者均复用 SwitchManager 的原子写回与回滚。模型集为空时 MUST NOT 提交切换。成功后 SHALL 刷新指针展示并提示结果（含模型集条数与默认模型；codex 场景 SHALL 提示需暴露的环境变量名）；失败 SHALL 经统一提示条回显原因且指针与配置不变。
+
+#### Scenario: 左栏发起切换先选 agent
+- **WHEN** 焦点在左栏，用户对 provider main 按 `s`
+- **THEN** 弹出 agent 多选，已指向 main 的 agent 默认勾选；勾选两个 agent 并完成模型集与默认模型选择后确认，两个 agent 的配置都被写回，提示逐条覆盖两个 agent
+
+#### Scenario: 右栏发起切换不弹 agent 多选
+- **WHEN** 焦点在右栏且光标在 claude-code，用户按 `s`
+- **THEN** 直接进入模型集选择步骤，范围只有 claude-code
 
 #### Scenario: 切换成功
 - **WHEN** 用户对 provider main 按 `s` 并在右栏选中 claude-code，勾选两个模型、选定默认模型后确认
@@ -75,8 +83,8 @@ AI Tab SHALL 提供切换与换默认模型键位：`s` 以左栏选中的 provi
 - **WHEN** 指针中的 Agent 模型集与 provider 档案当前模型集不一致
 - **THEN** agent 行附带漂移提示，判定不依赖解析 agent 配置文件
 
-### Requirement: AI Tab 切换结果提示完整性
-AI Tab 的切换成功提示 SHALL 使用本次切换返回的确切信息：当目标 agent 为 codex 时 SHALL 含写进 `env_key` 的环境变量名，且该名字 MUST 取自切换结果而非固定前缀示例；本次切换返回的全部 warning（凭据组未激活、模型元数据缺失等）SHALL 全部出现在提示中，MUST NOT 只展示第一条。切换失败时 MUST NOT 展示任何凭据暴露提示。
+### Requirement: LLM Tab 切换结果提示完整性
+LLM Tab 的切换成功提示 SHALL 使用本次切换返回的确切信息：当目标 agent 为 codex 时 SHALL 含写进 `env_key` 的环境变量名，且该名字 MUST 取自切换结果而非固定前缀示例；本次切换返回的全部 warning（凭据组未激活、模型元数据缺失等）SHALL 全部出现在提示中，MUST NOT 只展示第一条。切换失败时 MUST NOT 展示任何凭据暴露提示。
 
 #### Scenario: codex 提示使用实际写入的名字
 - **WHEN** 用户切换 codex 至 `credential_ref` 为 `env:ai/DEEPSEEK_API_KEY` 的 provider
@@ -91,21 +99,21 @@ AI Tab 的切换成功提示 SHALL 使用本次切换返回的确切信息：当
 - **THEN** 成功提示不含环境变量暴露指引
 
 ### Requirement: 凭据安全
-AI Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭据解密 SHALL 仅在 SwitchManager 内部完成，不进入 TUI 状态；新建凭据的遮蔽输入 MUST NOT 被写入任何渲染文本、日志或提示条。
+LLM Tab 全程 MUST NOT 在渲染文本中输出凭据明文；切换所需的凭据解密 SHALL 仅在 SwitchManager 内部完成，不进入 TUI 状态；新建凭据的遮蔽输入 MUST NOT 被写入任何渲染文本、日志或提示条。
 
 #### Scenario: 全界面无明文
-- **WHEN** 用户在 AI Tab 内浏览并完成任意操作
+- **WHEN** 用户在 LLM Tab 内浏览并完成任意操作
 - **THEN** 界面渲染与状态中均不含 key 明文（凭据引用文本除外）
 
 #### Scenario: 遮蔽输入不落渲染
 - **WHEN** 用户通过遮蔽输入新建凭据并提交成功
 - **THEN** 成功提示只包含别名与来源类型，不含任何 key 片段
 
-### Requirement: AI Tab 档案写操作
-AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`r` 重命名选中档案（表单只收集新别名，调用与 CLI 相同的 rename 语义）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段（格式 `<model>=<tokens>`）、模型输出上限字段（格式 `<model>=<tokens>`）、模型推理档位字段（格式 `<model>=<effort>[;<effort>...]`）、默认推理档字段（格式 `<model>=<effort>` 或集合级单一档位）与输入模态字段（格式 `<model>=<mod>[,<mod>...]`）；编辑表单 SHALL 用档案既有元数据预填这些字段。编辑表单中某个元数据字段被清空后提交，SHALL 等价于通过 `EditProvider` 显式清空该元数据：档案对应条目被移除、详情不再展示，MUST NOT 回填编辑前旧值。新建或改动模型集/元数据时缺失 context window，或某模型已填推理档位但缺默认推理档，SHALL 经统一提示条回显并保持在表单内修正。provider 详情 SHALL 在模型列表中展示已保存的 context window、输出上限、推理档位、默认推理档与输入模态。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。重命名成功后左栏 SHALL 刷新到新别名，提示可含受影响指针数与「需重跑 switch」提醒，MUST NOT 含凭据明文。多选状态下 `r` SHALL 要求收窄到单选（与既有单选写动词一致）。
+### Requirement: LLM Tab 档案写操作
+LLM Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字段后调用 `AddProvider`）、`e` 编辑选中档案（别名只读，调用 `EditProvider`）、`r` 重命名选中档案（表单只收集新别名，调用与 CLI 相同的 rename 语义）、`d` 删除（确认后调用 `RemoveProvider`，沿用自有凭据处理语义）。表单 SHALL 包含模型 context window 字段（格式 `<model>=<tokens>`）、模型输出上限字段（格式 `<model>=<tokens>`）、模型推理档位字段（格式 `<model>=<effort>[;<effort>...]`）、默认推理档字段（格式 `<model>=<effort>` 或集合级单一档位）与输入模态字段（格式 `<model>=<mod>[,<mod>...]`）；编辑表单 SHALL 用档案既有元数据预填这些字段。编辑表单中某个元数据字段被清空后提交，SHALL 等价于通过 `EditProvider` 显式清空该元数据：档案对应条目被移除、详情不再展示，MUST NOT 回填编辑前旧值。新建或改动模型集/元数据时缺失 context window，或某模型已填推理档位但缺默认推理档，SHALL 经统一提示条回显并保持在表单内修正。provider 详情 SHALL 在模型列表中展示已保存的 context window、输出上限、推理档位、默认推理档与输入模态。写操作 SHALL 记入操作审计（`op_llm_provider`），失败 SHALL 经统一提示条回显且不改变既有档案。重命名成功后左栏 SHALL 刷新到新别名，提示可含受影响指针数与「需重跑 switch」提醒，MUST NOT 含凭据明文。多选状态下 `r` SHALL 要求收窄到单选（与既有单选写动词一致）。
 
 #### Scenario: TUI 新建档案
-- **WHEN** 用户在 AI Tab 按 `n` 并填写别名、base_url、模型集、模型 context window 与凭据来源后提交
+- **WHEN** 用户在 LLM Tab 按 `n` 并填写别名、base_url、模型集、模型 context window 与凭据来源后提交
 - **THEN** 调用 `AddProvider` 保存档案，左栏出现新档案，提示成功
 
 #### Scenario: TUI 缺少模型 context window
@@ -153,7 +161,7 @@ AI Tab SHALL 提供 provider 档案的写操作：`n` 新建（读取表单字�
 - **THEN** 审计中出现 `op_llm_provider` 事件，Audit Tab 可查到，且不含凭据明文
 
 ### Requirement: 凭据录入
-AI Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>/<key>` 或 `text:<group>/<key>` 的引用选择器）与遮蔽输入新建自有凭据（`text:llm-keys/<alias>`）。遮蔽输入 SHALL 以掩码回显，明文 MUST NOT 进入 TUI 状态、提示文本或渲染输出；提交后仅保存引用。
+LLM Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>/<key>` 或 `text:<group>/<key>` 的引用选择器）与遮蔽输入新建自有凭据（`text:llm-keys/<alias>`）。遮蔽输入 SHALL 以掩码回显，明文 MUST NOT 进入 TUI 状态、提示文本或渲染输出；提交后仅保存引用。
 
 #### Scenario: 选择既有条目
 - **WHEN** 用户在凭据字段选择已有 `env:llm/KEY` 条目
@@ -164,23 +172,23 @@ AI Tab SHALL 支持两种凭据来源：选择既有 vault 条目（`env:<group>
 - **THEN** 输入以掩码回显，提交后 `text:llm-keys/<alias>` 保存密文，TUI 不再持有明文
 
 #### Scenario: 全界面无明文
-- **WHEN** 用户在 AI Tab 内浏览并完成任意操作
+- **WHEN** 用户在 LLM Tab 内浏览并完成任意操作
 - **THEN** 界面渲染与状态中均不含 key 明文（凭据引用文本除外）
 
-### Requirement: AI Tab 可编辑档案说明
+### Requirement: LLM Tab 可编辑档案说明
 新建与编辑 Provider 表单 SHALL 包含说明字段（可选）。详情 SHALL 展示档案说明。说明超限时 SHALL 留在表单内修正，不写档案。
 
 #### Scenario: TUI 新建含说明
-- **WHEN** 用户在 AI Tab 新建档案并填写说明后提交成功
+- **WHEN** 用户在 LLM Tab 新建档案并填写说明后提交成功
 - **THEN** 档案保存该说明，详情可见
 
 #### Scenario: TUI 清空说明
 - **WHEN** 用户编辑表单清空说明并提交
 - **THEN** 档案说明变为空，其他字段不受影响
 
-### Requirement: AI Tab 形态地址表单与详情
+### Requirement: LLM Tab 形态地址表单与详情
 
-TUI AI Tab 的 provider 表单（新建与编辑）SHALL 提供三个形态地址字段：`chat_base_url`、`responses_base_url`、`anthropic_base_url`，语义与 CLI `--shape-url` 一致（留空 = 不设置/清除；`anthropic_base_url` 不做版本段归一）。编辑表单 SHALL 用档案既有值预填；某形态地址字段被清空后提交，SHALL 等价于显式清除该字段，MUST NOT 回填旧值。非法取值（非 https 且未走既有 HTTP 门禁、空 host、userinfo）SHALL 内联报错且不写入。provider 详情 SHALL 展示三个形态地址（未设显示 `-`），MUST NOT 含凭据明文。表单字段说明 SHALL 提示 anthropic 地址是 claude-code 拼 `/v1/messages` 的 base，应填 root 而非带 `/v1` 的端点。
+TUI LLM Tab 的 provider 表单（新建与编辑）SHALL 提供三个形态地址字段：`chat_base_url`、`responses_base_url`、`anthropic_base_url`，语义与 CLI `--shape-url` 一致（留空 = 不设置/清除；`anthropic_base_url` 不做版本段归一）。编辑表单 SHALL 用档案既有值预填；某形态地址字段被清空后提交，SHALL 等价于显式清除该字段，MUST NOT 回填旧值。非法取值（非 https 且未走既有 HTTP 门禁、空 host、userinfo）SHALL 内联报错且不写入。provider 详情 SHALL 展示三个形态地址（未设显示 `-`），MUST NOT 含凭据明文。表单字段说明 SHALL 提示 anthropic 地址是 claude-code 拼 `/v1/messages` 的 base，应填 root 而非带 `/v1` 的端点。
 
 #### Scenario: TUI 设置形态地址
 

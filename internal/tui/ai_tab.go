@@ -56,6 +56,12 @@ type aiTab struct {
 	flowAgent     int    // rows 下标（右栏选中的 agent）
 	flowProvider  string // 目标 provider alias
 	flowOnlyModel bool   // true = m（仅换默认模型），false = s（完整切换）
+	// flowAgents 是本次向导要写回的 agent（有序，元素为 AgentID）。左栏按 s
+	// 时是 agent 多选步骤的结果；右栏按 s 时只有右栏光标那一个。
+	flowAgents []string
+	// flowAgentSel 与 flowAgentCursor 是 agent 多选步骤的勾选状态与游标。
+	flowAgentSel    map[string]bool
+	flowAgentCursor int
 	// flowCandidates 是本次向导的候选模型（保序）；flowSelected 是多选步骤的
 	// 勾选状态；flowCursor 是当前步骤列表里的游标。
 	flowCandidates []string
@@ -80,6 +86,7 @@ type aiFlow int
 
 const (
 	aiFlowNone aiFlow = iota
+	aiFlowSelectAgents
 	aiFlowSelectModel
 	aiFlowSelectDefault
 	aiFlowConfirm
@@ -93,10 +100,17 @@ type aiLoadedMsg struct {
 	err            error
 }
 
-// aiSwitchResultMsg carries one switch (or model-only change) result.
-type aiSwitchResultMsg struct {
-	out       *llm.SwitchOutput
-	err       error
+// aiSwitchOutcome 是批量切换里单个 agent 的写回结果。
+type aiSwitchOutcome struct {
+	agentID string
+	out     *llm.SwitchOutput
+	err     error
+}
+
+// aiSwitchBatchResultMsg 承载一次向导对 N 个 agent 的写回结果（右栏起步时
+// N=1，与旧行为等价）。
+type aiSwitchBatchResultMsg struct {
+	results   []aiSwitchOutcome
 	onlyModel bool
 }
 
@@ -128,7 +142,7 @@ func newAITab(mgr Managers) *aiTab {
 	return &aiTab{mgr: mgr, focusLeft: true}
 }
 
-func (t *aiTab) Title() string { return "AI" }
+func (t *aiTab) Title() string { return "LLM" }
 
 func (t *aiTab) Bindings() []KeyAction {
 	if t.detail != nil {
@@ -141,6 +155,14 @@ func (t *aiTab) Bindings() []KeyAction {
 		return filterBindings(true)
 	}
 	switch t.flow {
+	case aiFlowSelectAgents:
+		return []KeyAction{
+			{[]string{"space"}, "toggle", grpWizard, false},
+			{[]string{"a"}, "toggle all", grpWizard, false},
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "cancel", grpWizard, false},
+		}
 	case aiFlowSelectModel:
 		return []KeyAction{
 			{[]string{"space"}, "toggle", grpWizard, false},
@@ -162,13 +184,13 @@ func (t *aiTab) Bindings() []KeyAction {
 	}
 	return append(navBindings(true),
 		actDetail,
-		KeyAction{[]string{"n"}, "new provider", grpItem, false},
-		KeyAction{[]string{"e"}, "edit provider", grpItem, false},
+		KeyAction{[]string{"n"}, "new", grpItem, false},
+		KeyAction{[]string{"e"}, "edit", grpItem, false},
 		actRename,
-		KeyAction{[]string{"d"}, "delete provider", grpItem, false},
-		KeyAction{[]string{"s"}, "switch (model set + default)", grpItem, false},
-		KeyAction{[]string{"M"}, "default model only", grpItem, false},
-		KeyAction{[]string{"R"}, "refresh catalog (network)", grpItem, false},
+		KeyAction{[]string{"d"}, "delete", grpItem, false},
+		KeyAction{[]string{"s"}, "switch", grpItem, false},
+		KeyAction{[]string{"M"}, "default model", grpItem, false},
+		KeyAction{[]string{"R"}, "refresh catalog", grpItem, false},
 		actFilter, actRefresh,
 	)
 }
@@ -381,26 +403,8 @@ func (t *aiTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.load(),
 		)
 
-	case aiSwitchResultMsg:
-		if msg.err != nil {
-			err := msg.err
-			return t, func() tea.Msg { return errMsg{err: err} }
-		}
-		out := msg.out
-		notice := fmt.Sprintf("%s → %s (default %s, %d models)",
-			out.AgentName, out.Provider, out.DefaultModel, len(out.Models))
-		if msg.onlyModel {
-			notice = fmt.Sprintf("%s default model only → %s", out.AgentName, out.DefaultModel)
-		}
-		if out.CredentialEnv != "" {
-			notice += fmt.Sprintf("; %s reads credentials from env %s", out.AgentName, out.CredentialEnv)
-		}
-		// 全部 warning 都要可见：凭据组未激活、名字被占用、模型元数据缺失等提示
-		// 被截断等于静默坏状态。
-		if len(out.Warnings) > 0 {
-			notice += "; " + strings.Join(out.Warnings, "; ")
-		}
-		return t, tea.Batch(okToast(notice), t.load())
+	case aiSwitchBatchResultMsg:
+		return t, t.reportBatchSwitch(msg)
 
 	case detailCloseMsg:
 		t.detail = nil
@@ -541,6 +545,51 @@ func (t *aiTab) jumpFocus(idx int) {
 
 func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch t.flow {
+	case aiFlowSelectAgents:
+		switch msg.String() {
+		case "up", "k":
+			if t.flowAgentCursor > 0 {
+				t.flowAgentCursor--
+			}
+		case "down", "j":
+			if t.flowAgentCursor < len(t.rows)-1 {
+				t.flowAgentCursor++
+			}
+		case " ":
+			if id := t.cursorFlowAgent(); id != "" {
+				if t.flowAgentSel[id] {
+					delete(t.flowAgentSel, id)
+				} else {
+					t.flowAgentSel[id] = true
+				}
+			}
+		case "a":
+			// a=全选/再按取消全部（与列表多选语义一致）。
+			selectAll := len(t.flowSelectedAgents()) < len(t.rows)
+			t.flowAgentSel = map[string]bool{}
+			if selectAll {
+				for _, r := range t.rows {
+					t.flowAgentSel[r.AgentID] = true
+				}
+			}
+		case "enter":
+			agents := t.flowSelectedAgents()
+			if len(agents) == 0 {
+				return t, warnToast("select at least one agent to switch")
+			}
+			entry := t.providerByAlias(t.flowProvider)
+			if entry == nil || len(entry.Models) == 0 {
+				return t, warnToast("provider " + t.flowProvider + " has no usable models")
+			}
+			t.flowAgents = agents
+			t.flowAgent = t.rowIndexOf(agents[0])
+			t.flowCandidates = append([]string(nil), entry.Models...)
+			t.flowSelected = allModelsSelected(entry.Models)
+			t.flowCursor = 0
+			t.flow = aiFlowSelectModel
+		case "esc":
+			t.cancelMode()
+		}
 	case aiFlowSelectModel:
 		switch msg.String() {
 		case "up", "k":
@@ -627,6 +676,9 @@ func (t *aiTab) cancelMode() {
 	t.flow = aiFlowNone
 	t.flowProvider = ""
 	t.flowOnlyModel = false
+	t.flowAgents = nil
+	t.flowAgentSel = nil
+	t.flowAgentCursor = 0
 	t.flowCandidates = nil
 	t.flowSelected = nil
 	t.flowCursor = 0
@@ -663,6 +715,7 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 	t.flowProvider = alias
 	t.flowAgent = clamp(t.agentIndex, 0, len(t.rows)-1)
 	t.flowOnlyModel = onlyModel
+	t.flowAgents = []string{row.AgentID}
 	if onlyModel {
 		// m 只在已写入该 agent 的 Agent 模型集内换默认模型，不动模型集。
 		candidates := append([]string(nil), row.Pointer.Models...)
@@ -673,6 +726,20 @@ func (t *aiTab) startSwitch(onlyModel bool) (Tab, tea.Cmd) {
 		t.flowSelected = allModelsSelected(candidates)
 		t.flowCursor = t.defaultModelCursor()
 		t.flow = aiFlowSelectDefault
+		return t, nil
+	}
+	// 左栏焦点：先弹 agent 多选，再走模型集步骤——「把哪些 agent 切到这个
+	// provider」由用户显式挑。进入时勾选的是真实状态：已指向本 provider 的
+	// agent。右栏焦点保持原样：直接作用于右栏光标那个 agent。
+	if t.focusLeft {
+		t.flowAgentSel = map[string]bool{}
+		for _, r := range t.rows {
+			if r.Pointer != nil && r.Pointer.Provider == alias {
+				t.flowAgentSel[r.AgentID] = true
+			}
+		}
+		t.flowAgentCursor = 0
+		t.flow = aiFlowSelectAgents
 		return t, nil
 	}
 	t.flowCandidates = append([]string(nil), entry.Models...)
@@ -705,6 +772,50 @@ func (t *aiTab) flowRow() *llm.StatusRow {
 		return nil
 	}
 	return &t.rows[t.flowAgent]
+}
+
+// cursorFlowAgent 返回 agent 多选步骤游标所在行的 AgentID。
+func (t *aiTab) cursorFlowAgent() string {
+	if t.flowAgentCursor < 0 || t.flowAgentCursor >= len(t.rows) {
+		return ""
+	}
+	return t.rows[t.flowAgentCursor].AgentID
+}
+
+// flowSelectedAgents 返回勾选的 agent（按列表顺序，保序）。
+func (t *aiTab) flowSelectedAgents() []string {
+	var out []string
+	for _, r := range t.rows {
+		if t.flowAgentSel[r.AgentID] {
+			out = append(out, r.AgentID)
+		}
+	}
+	return out
+}
+
+// rowIndexOf 返回 AgentID 在右栏列表中的下标（找不到返回 0）。
+func (t *aiTab) rowIndexOf(agentID string) int {
+	for i, r := range t.rows {
+		if r.AgentID == agentID {
+			return i
+		}
+	}
+	return 0
+}
+
+// flowAgentsLabel 是向导标题里的操作对象：单个 agent 显示其 ID，多个显示数量。
+func (t *aiTab) flowAgentsLabel() string {
+	switch len(t.flowAgents) {
+	case 0:
+		if row := t.flowRow(); row != nil {
+			return row.AgentID
+		}
+		return "agent"
+	case 1:
+		return t.flowAgents[0]
+	default:
+		return fmt.Sprintf("%d agents", len(t.flowAgents))
+	}
 }
 
 // flowSelectedModels 返回当前勾选的 Agent 模型集（按候选顺序，保序）。
@@ -744,18 +855,68 @@ func (t *aiTab) defaultModelCursor() int {
 
 func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	models := t.flowSelectedModels()
-	row := t.flowRow()
-	if len(models) == 0 || row == nil {
+	agents := t.flowAgents
+	if len(agents) == 0 {
+		if row := t.flowRow(); row != nil {
+			agents = []string{row.AgentID}
+		}
+	}
+	if len(models) == 0 || len(agents) == 0 {
 		return nil
 	}
-	agentID := row.AgentID
 	provider := t.flowProvider
 	defaultModel := models[clamp(t.flowCursor, 0, len(models)-1)]
 	sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 	return func() tea.Msg {
-		out, err := sm.Switch(agentID, provider, models, defaultModel)
-		return aiSwitchResultMsg{out: out, err: err, onlyModel: onlyModel}
+		out := aiSwitchBatchResultMsg{onlyModel: onlyModel}
+		for _, agentID := range agents {
+			res, err := sm.Switch(agentID, provider, models, defaultModel)
+			out.results = append(out.results, aiSwitchOutcome{agentID: agentID, out: res, err: err})
+		}
+		return out
 	}
+}
+
+// reportBatchSwitch 汇总 N 个 agent 的写回：成功逐条提示（含全部 warning），
+// 失败汇总成错误栏——单个 agent 的失败保持原始错误文本，不被包装。
+func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
+	var notices, failures []string
+	for _, r := range msg.results {
+		if r.err != nil {
+			failures = append(failures, r.agentID+": "+r.err.Error())
+			continue
+		}
+		out := r.out
+		notice := fmt.Sprintf("%s → %s (default %s, %d models)",
+			out.AgentName, out.Provider, out.DefaultModel, len(out.Models))
+		if msg.onlyModel {
+			notice = fmt.Sprintf("%s default model only → %s", out.AgentName, out.DefaultModel)
+		}
+		if out.CredentialEnv != "" {
+			notice += fmt.Sprintf("; %s reads credentials from env %s", out.AgentName, out.CredentialEnv)
+		}
+		// 全部 warning 都要可见：凭据组未激活、名字被占用、模型元数据缺失等提示
+		// 被截断等于静默坏状态。
+		if len(out.Warnings) > 0 {
+			notice += "; " + strings.Join(out.Warnings, "; ")
+		}
+		notices = append(notices, notice)
+	}
+	cmds := []tea.Cmd{t.load()}
+	if len(notices) > 0 {
+		cmds = append(cmds, okToast(strings.Join(notices, " | ")))
+	}
+	if len(failures) > 0 {
+		var err error
+		if len(msg.results) == 1 {
+			err = msg.results[0].err
+		} else {
+			err = fmt.Errorf("%d/%d agents failed: %s",
+				len(failures), len(msg.results), strings.Join(failures, "; "))
+		}
+		cmds = append(cmds, func() tea.Msg { return errMsg{err: err} })
+	}
+	return tea.Batch(cmds...)
 }
 
 // --- provider write flows ---
@@ -1505,14 +1666,14 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("AI") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
+		return paneTitleStyle.Render("LLM") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
 	}
 	if t.detail != nil {
 		return t.detail.View()
 	}
 	if t.loaded && len(t.providers) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
-			paneTitleStyle.Render("AI"),
+			paneTitleStyle.Render("LLM"),
 			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then R to refresh catalog"))
 	}
 	overlay := ""
@@ -1636,11 +1797,27 @@ func (t *aiTab) renderModal() string {
 // the final confirmation. The full model list is windowed so a large model set
 // cannot push the modal off-screen.
 func (t *aiTab) renderFlow() string {
-	agent := "agent"
-	if row := t.flowRow(); row != nil {
-		agent = row.AgentID
-	}
+	agent := t.flowAgentsLabel()
 	switch t.flow {
+	case aiFlowSelectAgents:
+		lines := make([]string, 0, len(t.rows))
+		for i, r := range t.rows {
+			mark := "[ ]"
+			if t.flowAgentSel[r.AgentID] {
+				mark = "[x]"
+			}
+			// 行内带上当前指向，便于确认哪些是「已经在用本 provider」的。
+			state := r.AgentID
+			if r.Pointer != nil {
+				state += " ← " + r.Pointer.Provider
+			}
+			label := mark + " " + truncateWidth(state, maxInt(t.width-14, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowAgentCursor, 0, len(t.rows)-1)))
+		}
+		title := fmt.Sprintf("choose agents (selected %d/%d) → %s",
+			len(t.flowSelectedAgents()), len(t.rows), t.flowProvider)
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"),
+			"space toggle · a all · ↑↓/jk move · enter next · esc cancel")
 	case aiFlowConfirm:
 		models := t.flowSelectedModels()
 		model := "-"
@@ -1649,7 +1826,7 @@ func (t *aiTab) renderFlow() string {
 		}
 		action := "switch"
 		if t.flowOnlyModel {
-			action = "default model only"
+			action = "default model"
 		}
 		return modalBox(t.width, t.height, "confirm"+action,
 			fmt.Sprintf("%s → %s / %s (%d models)", agent, t.flowProvider, model, len(models)),

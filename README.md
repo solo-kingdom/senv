@@ -14,7 +14,7 @@
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
-- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/AI/MCP Server 档案，敏感值默认遮蔽防肩窥
+- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/LLM/MCP Server 档案，敏感值默认遮蔽防肩窥
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
@@ -332,17 +332,17 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
-| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略；9 Tab 时 `5`=KeyPair、`6`=AI、`7`=MCP、`8`=History、`9`=Audit） |
+| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略）。顺序为 Env、Text、Config、SSH、KeyPair、LLM、MCP、History、Audit、Backup——Backup 恒在末位，全部注册时它是第 10 个、无数字键，用 `Tab` 到达 |
 | `↑` `↓` / `j` `k` | 列表导航 |
-| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / AI / MCP Tab） |
-| `enter` | 打开详情弹层（Config / SSH / AI / MCP）／解开当前 env 明文 |
+| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / LLM / MCP Tab） |
+| `enter` | 打开详情弹层（Config / SSH / LLM / MCP / History，长内容可滚动）／解开当前 env 明文 |
 | `v` | Env：单条切换当前值明文/遮蔽（光标移开自动重新遮蔽）；KeyPair：按需预览私钥 |
-| `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，KeyPair=keypair 分组，AI=provider 表单，MCP=档案表单） |
-| `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；AI=新建 provider；MCP=新建档案） |
+| `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，KeyPair=keypair 分组，LLM=provider 表单，MCP=档案表单） |
+| `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；LLM=新建 provider；MCP=新建档案） |
 | `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
 | `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`） |
-| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览（超高可 ↑↓/PgUp/PgDn 滚动），`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案到当前 agent（`X`=全部 agent），先出计划页 |
+| `x` | SSH Tab：导出 OpenSSH 片段（主机栏=选中 host，焦点在分组栏=全部），先预览（超高可 ↑↓/PgUp/PgDn 滚动），`w` 后再填目标文件写入；导出表单拒绝 `~/.ssh/senv` 内部路径（该树由应用导出自持，提示改用 `A`）；MCP Tab：导出当前档案——焦点在右栏时作用于当前 agent、`X`=全部 agent，焦点在左栏时先弹 agent 多选（进入时勾选该档案已导出到的 agent，`a` 全选等价于原 `X`）；先出计划页 |
 | `A` | SSH Tab：应用导出（等价 `senv host export`）——主机栏重建游标 host 所在组，分组栏重建选中组（All=全量重建并清理幽灵片段）；确认框列组片段/待落盘私钥/Include 注册/warning 计数，`y` 执行、`esc`/`n` 取消，结果 toast 摘要。KeyPair Tab：落盘当前密钥（等价 `senv keypair export`，确认后写到 `~/.ssh/senv/keys/<分组>/<名>` 0600 与 `<名>.pub` 0644） |
 | `u` / `U` | MCP Tab：撤回当前档案从当前/全部 agent（计划页确认；被改过的条目逐条 `y/n`） |
 | `t` | 激活/停用 env 分组（仅 Env Tab，default 不可停用） |
@@ -354,10 +354,10 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `x` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
 | `f` | Audit Tab：循环预设过滤（全部 / 操作 / 会话） |
-| `s` | AI Tab：以左栏选中的 provider 对右栏选中的 agent 切换（多选 Agent 模型集，进入时默认全选 → 选定默认模型 → 确认；codex 凭据走环境变量，不写入配置） |
-| `M` | AI Tab：对右栏已指向某 provider 的 agent 仅更换默认模型，候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
+| `s` | LLM Tab：以左栏选中的 provider 执行切换——焦点在左栏时先弹 agent 多选（`space` 勾选、`a` 全选，进入时勾选已指向该 provider 的 agent；空集不可提交），焦点在右栏时直接作用于右栏光标 agent；随后多选 Agent 模型集（进入时默认全选）→ 选定默认模型 → 确认；选中多个 agent 时逐个写回（单个失败不中止其余）；codex 凭据走环境变量，不写入配置 |
+| `M` | LLM Tab：对右栏已指向某 provider 的 agent 仅更换默认模型（不弹 agent 多选），候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
 | `ctrl+r` | 刷新当前 Tab（条目栏 `r` = 重命名） |
-| `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/AI/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
+| `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/LLM/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
 | `?` | 键位总览 overlay（全局键 + 当前 Tab 键位） |
 | `esc` | 关闭 overlay / 取消操作 |
 | `q` | 退出 TUI（仍有待推送时会先提示一次，再按一次才退出） |
@@ -366,7 +366,7 @@ SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host�
 
 KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`A` 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>` 0600 与 `<名>.pub` 0644）、`D` 设/取消本机默认（`Host *`，写 `groups/_default.conf`）、`enter` 详情（公钥无缩进，展示 OpenSSH comment/邮箱）、`v` 按需预览私钥（详情弹层，关闭即丢弃）；行内展示指纹摘要、被引用计数（`被 N 个 Host 引用`）与 `default` 标记，零引用灰显「未被引用」。列表永不渲染私钥；导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
-AI Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
+LLM Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
 MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
@@ -374,7 +374,7 @@ MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且�
 
 面板内容一律在宽度内截断（超长以 `…` 结尾，长 `base_url`/模型列表/路径不会折行），完整内容按 `enter` 在详情弹层查看。所有 Tab 的操作结果统一走底部提示条：错误 > 警告 > 成功，成功提示超时自动消失。
 
-TUI 内的写操作（env/text/config/SSH/AI/MCP）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，启动时在后台拉取远端变更（2 秒预算，`--refresh` 绕过节流窗口），写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态，也不发起后台拉取。
+TUI 内的写操作（env/text/config/SSH/LLM/MCP）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，启动时在后台拉取远端变更（2 秒预算，`--refresh` 绕过节流窗口），写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态，也不发起后台拉取。
 
 #### 安全设计
 

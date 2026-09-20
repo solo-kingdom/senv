@@ -51,7 +51,7 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 			if r.preview != "deploy@10.0.0.9:2222" {
 				t.Fatalf("unexpected host preview: %q", r.preview)
 			}
-		case r.resultType == typeAI && r.key == "main":
+		case r.resultType == typeLLM && r.key == "main":
 			sawProvider = true
 		case r.resultType == typeMCP && r.key == "github":
 			sawMCP = true

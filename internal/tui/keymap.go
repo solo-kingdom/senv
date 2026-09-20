@@ -66,7 +66,7 @@ var (
 	actApply     = KeyAction{[]string{"A"}, "apply export", grpItem, false}
 	actImport    = KeyAction{[]string{"i"}, "import", grpItem, false}
 	actSelect    = KeyAction{[]string{"space"}, "toggle select", grpItem, false}
-	actSelectAll = KeyAction{[]string{"a"}, "select all visible", grpItem, false}
+	actSelectAll = KeyAction{[]string{"a"}, "select all", grpItem, false}
 	actRefresh   = KeyAction{[]string{"ctrl+r"}, "refresh", grpFilter, true}
 	actFilter    = KeyAction{[]string{"/"}, "filter", grpFilter, false}
 	actDetail    = KeyAction{[]string{"enter"}, "view", grpItem, false}

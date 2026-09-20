@@ -16,7 +16,7 @@ const (
 	typeBackup = "Backup"
 	typeConfig = "Cfg"
 	typeSSH    = "SSH"
-	typeAI     = "AI"
+	typeLLM    = "LLM"
 	typeMCP    = "MCP"
 )
 
@@ -172,13 +172,13 @@ func (s *searchTab) gather() tea.Cmd {
 				}
 			}
 		}
-		// AI: provider aliases only. Credentials live in the vault and are
+		// LLM: provider aliases only. Credentials live in the vault and are
 		// referenced by name, so they are structurally out of reach here.
 		if mgr.LLM != nil {
 			if providers, err := mgr.LLM.ListProviders(); err == nil {
 				for _, p := range providers {
 					all = append(all, searchResult{
-						resultType: typeAI, key: p.Alias,
+						resultType: typeLLM, key: p.Alias,
 						preview: fmt.Sprintf("%d models", len(p.Models)),
 					})
 				}

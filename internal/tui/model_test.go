@@ -23,7 +23,7 @@ func TestNewDefaultsToEnvTab(t *testing.T) {
 	if m.tabs[0].Title() != "Env" {
 		t.Fatalf("tab 0 title = %q, want Env", m.tabs[0].Title())
 	}
-	if m.tabs[1].Title() != "Text" || m.tabs[2].Title() != "Backup" || m.tabs[3].Title() != "Config" {
+	if m.tabs[1].Title() != "Text" || m.tabs[2].Title() != "Config" || m.tabs[3].Title() != "Backup" {
 		t.Fatalf("unexpected tab titles: %q %q %q", m.tabs[1].Title(), m.tabs[2].Title(), m.tabs[3].Title())
 	}
 }

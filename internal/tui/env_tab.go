@@ -110,7 +110,7 @@ func (t *envTab) Bindings() []KeyAction {
 	if t.focusLeft {
 		// 侧栏：组操作进底栏；仍可从侧栏触发的条目动词只进 `?`
 		groupOps := []KeyAction{
-			{[]string{"t"}, "toggle group active", grpGroup, false},
+			{[]string{"t"}, "toggle active", grpGroup, false},
 			actRename, actDelete,
 			{[]string{"+"}, "new group", grpGroup, false},
 		}
@@ -130,10 +130,10 @@ func (t *envTab) Bindings() []KeyAction {
 	return append(nav,
 		actEdit, actNew, actDelete, actRename,
 		actSelect, actSelectAll,
-		KeyAction{[]string{"v"}, "toggle value visibility", grpItem, false},
+		KeyAction{[]string{"v"}, "show/hide", grpItem, false},
 		KeyAction{[]string{"y"}, "copy", grpItem, false},
 		KeyAction{[]string{"D"}, "deref on/off", grpGroup, false},
-		KeyAction{[]string{"t"}, "toggle group active", grpGroup, true},
+		KeyAction{[]string{"t"}, "toggle active", grpGroup, true},
 		KeyAction{[]string{"+"}, "new group", grpGroup, true},
 		actFilter, actRefresh,
 	)
@@ -1056,7 +1056,7 @@ func (t *envTab) doActivate() tea.Cmd {
 			recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, false, "activate failed")
 			return errMsg{err: err}
 		}
-		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "activate")
+		recordAudit(mgrs, session.AuditOpEnv, "env:group:"+name, true, "toggle active")
 		return envReloadMsg{}
 	}
 }

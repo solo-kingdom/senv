@@ -19,7 +19,7 @@ func TestMCPScopeToggleUpdatesTitleAndStatus(t *testing.T) {
 		t.Fatalf("default title must show user scope:\n%s", tab.View())
 	}
 
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
@@ -74,7 +74,7 @@ func TestMCPProjectScopeExportWritesCursorProjectFile(t *testing.T) {
 	out, _ := tab.Update(runeKey("s"))
 	tab = out.(*mcpTab)
 
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	if tab.exportPlan == nil || len(tab.exportPlan.Items) != 1 {
 		t.Fatalf("export plan = %+v", tab.exportPlan)
@@ -106,7 +106,7 @@ func TestMCPUserScopeExportPathUnchanged(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
 
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	want := agentConfigPath(t, home, "cursor")
 	if tab.exportPlan == nil || tab.exportPlan.Items[0].Path != want {
@@ -125,7 +125,7 @@ func TestMCPProjectScopeUnexportUsesSamePath(t *testing.T) {
 
 	out, _ := tab.Update(runeKey("s"))
 	tab = out.(*mcpTab)
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
@@ -137,7 +137,7 @@ func TestMCPProjectScopeUnexportUsesSamePath(t *testing.T) {
 
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd = tab.Update(runeKey("u"))
+	out, cmd = pressAgentExport(t, tab, "u")
 	tab = flushTab(out, cmd).(*mcpTab)
 	if tab.unexportPlan == nil || len(tab.unexportPlan.Items) == 0 {
 		t.Fatalf("unexport plan empty: %+v", tab.unexportPlan)
@@ -158,14 +158,14 @@ func TestMCPUserScopeUnexportPathUnchanged(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
 
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
 
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd = tab.Update(runeKey("u"))
+	out, cmd = pressAgentExport(t, tab, "u")
 	tab = flushTab(out, cmd).(*mcpTab)
 	want := agentConfigPath(t, home, "cursor")
 	if tab.unexportPlan == nil || tab.unexportPlan.Items[0].Path != want {
@@ -181,7 +181,7 @@ func TestMCPProjectScopeLeavesOtherAgentsUnchanged(t *testing.T) {
 
 	out, _ := tab.Update(runeKey("s"))
 	tab = out.(*mcpTab)
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	codex, ok := agentcfg.Find("codex")
 	if !ok {

@@ -45,15 +45,15 @@ TBD - created by archiving change add-tui-viewer. Update Purpose after archive.
 
 ### Requirement: Tab 切换
 
-TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、KeyPair、AI、MCP、History、Audit）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
+TUI SHALL 提供多个标签页（Env、Text、Config 及注入时注册的 SSH、KeyPair、LLM、MCP、History、Audit，外加最后注册的 Backup）。用户 MUST 能通过 `Tab`/`Shift+Tab` 循环切换，并通过数字键 `1`–`9` 直达按注册顺序编号的 Tab。数字键 MUST 按已注册 Tab 数动态生效，越界数字 MUST 被忽略且不改变当前 Tab。每个 Tab MUST 有专属于该数据类型的布局和动作栏。
 
 #### Scenario: 切换标签
 - **WHEN** 用户在 Env Tab 按下 `Tab` 键或 `2` 键
 - **THEN** 界面切换到 Text Tab，显示 text 分组与文本块列表
 
 #### Scenario: 数字键直达全部 Tab
-- **WHEN** 全部 Tab 已注册（注册顺序 Env、Text、Config、SSH、KeyPair、AI、MCP、History、Audit），用户按 `6`
-- **THEN** 界面切换到 AI Tab
+- **WHEN** 全部 Tab 已注册（注册顺序 Env、Text、Config、SSH、KeyPair、LLM、MCP、History、Audit、Backup），用户按 `6`
+- **THEN** 界面切换到 LLM Tab
 
 #### Scenario: 越界数字不生效
 - **WHEN** 仅注册 4 个 Tab，用户按 `7`
@@ -229,7 +229,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: Tab 内过滤
 
-每个 Tab SHALL 支持按 `/` 键触发当前 Tab 内的过滤，仅匹配 key/name 等标识字段（不匹配值），匹配大小写不敏感。单栏 Tab 过滤作用于其主列表；SSH/AI/MCP 双栏 Tab 过滤作用于左栏主列表，右栏 SHALL 随左栏当前选中项联动；Config Tab 的过滤与侧栏计数行为见 config-tui 能力规约；Audit Tab 的预设过滤快捷键 SHALL 保留并与自由文本过滤叠加。`esc` SHALL 清除过滤并恢复完整列表。
+每个 Tab SHALL 支持按 `/` 键触发当前 Tab 内的过滤，仅匹配 key/name 等标识字段（不匹配值），匹配大小写不敏感。单栏 Tab 过滤作用于其主列表；SSH/LLM/MCP 双栏 Tab 过滤作用于左栏主列表，右栏 SHALL 随左栏当前选中项联动；Config Tab 的过滤与侧栏计数行为见 config-tui 能力规约；Audit Tab 的预设过滤快捷键 SHALL 保留并与自由文本过滤叠加。`esc` SHALL 清除过滤并恢复完整列表。
 
 #### Scenario: 过滤当前列表
 - **WHEN** 用户在 Env Tab 按 `/` 键并输入 `DATABASE`
@@ -245,7 +245,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: 全局跨类型搜索
 
-TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/AI/MCP/Backup 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command、backup 的 group/key/description），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/AI/MCP/Backup 结果跳转到对应 Tab 并定位光标）。
+TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/LLM/MCP/Backup 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command、backup 的 group/key/description），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/LLM/MCP/Backup 结果跳转到对应 Tab 并定位光标）。
 
 #### Scenario: 触发全局搜索
 - **WHEN** 用户按 `S` 键
@@ -255,7 +255,7 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SS
 - **WHEN** 用户输入 `database` 且数据中存在匹配的 env key、text key、config name
 - **THEN** 结果列表显示所有匹配项，每项标注类型（Env/Text/Cfg）、分组（若适用）、key/name，值部分遮蔽（env 显示 `***`，text 显示 size，config 显示 target）
 
-#### Scenario: SSH 与 AI 结果
+#### Scenario: SSH 与 LLM 结果
 - **WHEN** 用户输入某 host alias 或 provider alias 的前缀
 - **THEN** 结果显示对应 SSH host 或 LLM provider 条目，`enter` 后跳转到对应 Tab 并选中该条目
 
@@ -388,7 +388,7 @@ TUI SHALL 提供键位总览 overlay（触发键 `?`），列出全局键位与�
 
 ### Requirement: 面板内容截断与详情
 
-TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与详情行 SHALL 在面板宽度内截断（超长以 `…` 结尾），完整内容 SHALL 通过 `enter` 打开的详情弹层查看。任何面板 MUST NOT 因长值（base_url、模型列表、hostname、路径）而撑高或折行。
+TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与详情行 SHALL 在面板宽度内截断（超长以 `…` 结尾），完整内容 SHALL 通过 `enter` 打开的详情弹层查看。任何面板 MUST NOT 因长值（base_url、模型列表、hostname、路径）而撑高或折行。详情弹层 SHALL 占用与被它顶替的面板相同的位置（同宽、同高，含边框），且在滚动或内容不足一页时 MUST NOT 改变尺寸——滚动时窗口边缘固定不动。
 
 #### Scenario: 长值截断
 - **WHEN** provider 的模型列表或 base_url 超过所在面板宽度
@@ -397,6 +397,10 @@ TUI 的所有面板内容 MUST 不依赖 lipgloss `Width` 换行：列表行与�
 #### Scenario: 详情弹层看全文
 - **WHEN** 用户在列表上按 `enter`
 - **THEN** 弹出详情层展示未截断的完整字段，`esc` 关闭并回到列表
+
+#### Scenario: 详情弹层几何稳定
+- **WHEN** 用户打开详情弹层并在其中上下滚动，或所看内容不足一页
+- **THEN** 弹层的四边位置不变（与打开前该面板的外框重合），只有正文行内容随滚动变化
 
 ### Requirement: 同步状态可见性
 
@@ -453,7 +457,7 @@ TUI 启动 SHALL NOT 发起 History 查询；History 数据 SHALL 在用户首�
 
 ### Requirement: env 数据单趟加载与共享快照
 
-TUI 对 vault 数据的全量消费 SHALL 通过单趟加载构建的内存快照完成：一次遍历读取每个条目的密文文件至多一次。env Tab 列表、全局搜索、AI Tab 凭据引用收集等消费方 SHALL 复用同一份快照，MUST NOT 各自重复全量遍历。写操作成功后快照 SHALL 失效并在后台单趟重建；单条读写路径（如 `senv env get`）行为不变。
+TUI 对 vault 数据的全量消费 SHALL 通过单趟加载构建的内存快照完成：一次遍历读取每个条目的密文文件至多一次。env Tab 列表、全局搜索、LLM Tab 凭据引用收集等消费方 SHALL 复用同一份快照，MUST NOT 各自重复全量遍历。写操作成功后快照 SHALL 失效并在后台单趟重建；单条读写路径（如 `senv env get`）行为不变。
 
 #### Scenario: 启动只读每个条目一次
 
@@ -467,7 +471,7 @@ TUI 对 vault 数据的全量消费 SHALL 通过单趟加载构建的内存快�
 
 ### Requirement: 多选集与批量操作
 
-TUI 列表（Env 变量、Text 文本块、SSH host/keypair、Config 条目、MCP 档案）SHALL 支持 `space` 勾选/取消勾选光标条目形成多选集；`a` SHALL 全选当前过滤可见集，再按一次取消全选可见集。多选集 SHALL 跨过滤条件变化持久，被过滤隐藏的已选项 MUST 保持选中，状态栏 SHALL 提示已选总数与被过滤隐藏数（无勾选时不显示）。批量安全写动词（删除、导出、安装/卸载、导出/撤回）在多选集非空时 SHALL 作用于多选集，为空时 SHALL 回落为游标单条（纯单选行为不变）；批量执行 SHALL 复用既有确认流（计划预览、逐条确认或删除二次确认），MUST NOT 出现免确认批量写，单条失败 MUST NOT 中止其余并在结束时汇总。单实体操作（编辑、重命名、meta、详情）仅在选择数 ≤1 时可用。多选集 MUST NOT 跨栏（双栏 Tab 的侧栏/次栏不参与勾选）；批量操作提交后 SHALL 清空多选集。AI Tab 切换向导内的模型勾选保持自有流程，MUST NOT 与列表多选集混淆。
+TUI 列表（Env 变量、Text 文本块、SSH host/keypair、Config 条目、MCP 档案）SHALL 支持 `space` 勾选/取消勾选光标条目形成多选集；`a` SHALL 全选当前过滤可见集，再按一次取消全选可见集。多选集 SHALL 跨过滤条件变化持久，被过滤隐藏的已选项 MUST 保持选中，状态栏 SHALL 提示已选总数与被过滤隐藏数（无勾选时不显示）。批量安全写动词（删除、导出、安装/卸载、导出/撤回）在多选集非空时 SHALL 作用于多选集，为空时 SHALL 回落为游标单条（纯单选行为不变）；批量执行 SHALL 复用既有确认流（计划预览、逐条确认或删除二次确认），MUST NOT 出现免确认批量写，单条失败 MUST NOT 中止其余并在结束时汇总。单实体操作（编辑、重命名、meta、详情）仅在选择数 ≤1 时可用。多选集 MUST NOT 跨栏（双栏 Tab 的侧栏/次栏不参与勾选）；批量操作提交后 SHALL 清空多选集。LLM Tab 切换向导内的模型勾选保持自有流程，MUST NOT 与列表多选集混淆。
 
 #### Scenario: 勾选并批量删除
 - **WHEN** 用户在 Env Tab 对 3 个变量按 `space` 勾选后按 `d` 并确认
@@ -493,17 +497,17 @@ TUI 列表（Env 变量、Text 文本块、SSH host/keypair、Config 条目、MC
 - **WHEN** 用户在 SSH Tab 勾选 3 个 host 按 `x`
 - **THEN** 确认页列出将生成的全部目标路径，确认后逐条导出，单条失败不中止其余并汇总结果
 
-#### Scenario: AI 向导不混淆
-- **WHEN** 用户在 AI 切换向导的模型集步骤按 `space`
+#### Scenario: LLM 向导不混淆
+- **WHEN** 用户在 LLM 切换向导的模型集步骤按 `space`
 - **THEN** 勾选的是向导内的候选模型，与列表多选集无关
 
 ### Requirement: Tab 加载态
 
 TUI 的每个 Tab SHALL 区分加载态与空态：数据装载完成前，Tab SHALL 在常驻面板几何内显示加载提示（与既有 Tab 的 `loading groups…` 同风格、同界面语言），MUST NOT 显示携带操作指引的空态文案（如 "no LLM provider profiles yet; … press n to create"）；空态文案与操作指引 SHALL 仅在装载完成后、数据集确实为空时出现。加载提示的呈现方式与 env/text/config 既有范式一致。错误态（装载失败）SHALL 展示失败原因，与加载态、空态区分。
 
-#### Scenario: AI Tab 装载期间显示加载态
+#### Scenario: LLM Tab 装载期间显示加载态
 
-- **WHEN** 用户切换到 AI Tab 且 provider 数据尚未装载完成
+- **WHEN** 用户切换到 LLM Tab 且 provider 数据尚未装载完成
 - **THEN** 内容区渲染常驻面板几何，框内显示加载提示，不出现 "no LLM provider profiles yet" 等空态指引
 
 #### Scenario: MCP Tab 装载期间显示加载态
@@ -518,7 +522,7 @@ TUI 的每个 Tab SHALL 区分加载态与空态：数据装载完成前，Tab S
 
 #### Scenario: 装载完成后空态恢复指引
 
-- **WHEN** AI/MCP/SSH Tab 数据装载完成且数据集为空
+- **WHEN** LLM/MCP/SSH Tab 数据装载完成且数据集为空
 - **THEN** 显示既有空态文案与操作指引（如 "press n to create"），布局与装载期间一致、无跳动
 
 #### Scenario: History Tab 装载期间显示加载态

@@ -124,8 +124,8 @@ func TestTabSeparatorsPresent(t *testing.T) {
 	}
 	segment := tabRow[envIdx:configIdx]
 	sep := strings.Count(segment, "│")
-	if sep != 3 {
-		t.Errorf("tab separators between Env and Config = %d, want 3 (row: %q)", sep, clipRunesT(tabRow, 60))
+	if sep != 2 {
+		t.Errorf("tab separators between Env and Config = %d, want 2 (row: %q)", sep, clipRunesT(tabRow, 60))
 	}
 }
 

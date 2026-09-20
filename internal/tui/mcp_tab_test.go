@@ -127,6 +127,70 @@ func readJSONServerCommand(t *testing.T, path, alias string) (string, bool) {
 	return cmd, true
 }
 
+// pressAgentExport 在右栏（agent）焦点下按导出/撤回键：焦点在左栏时这些键会
+// 先弹 agent 多选，而这些用例验证的是「作用于右栏光标 agent」的语义。
+func pressAgentExport(t *testing.T, tab *mcpTab, key string) (Tab, tea.Cmd) {
+	t.Helper()
+	tab.focusLeft = false
+	return tab.Update(runeKey(key))
+}
+
+// TestMCPLeftPaneExportPicksAgents 覆盖左栏焦点按导出键：先弹 agent 多选（进入
+// 时勾选真实状态=已导出到的 agent），确认后只写入选中的 agent。
+func TestMCPLeftPaneExportPicksAgents(t *testing.T) {
+	tab, _, home := newMCPTestTab(t)
+	addMCPProfile(t, tab, "github", "npx", nil)
+	tab = loadMCPTab(t, tab)
+	tab.focusLeft = true
+
+	out, _ := tab.Update(runeKey("x"))
+	tab = out.(*mcpTab)
+	if tab.mode != mcpModeSelectAgents {
+		t.Fatalf("mode = %v, want the agent picker", tab.mode)
+	}
+	if got := tab.pickedAgentIDs(); len(got) != 0 {
+		t.Fatalf("nothing is exported yet, picker must start empty, got %v", got)
+	}
+
+	// 只勾第一个 agent，导出后只有它的配置被写。
+	out, _ = tab.Update(runeKey(" "))
+	tab = out.(*mcpTab)
+	picked := tab.pickedAgentIDs()
+	if len(picked) != 1 {
+		t.Fatalf("picked = %v, want 1 agent", picked)
+	}
+	first := tab.agents[0].ID
+	if picked[0] != first {
+		t.Fatalf("picked = %v, want the cursor row %s", picked, first)
+	}
+
+	out, cmd := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab = flushTab(out, cmd).(*mcpTab)
+	if tab.mode != mcpModePlan {
+		t.Fatalf("mode = %v, want plan", tab.mode)
+	}
+	out, cmd = tab.Update(runeKey("y"))
+	tab = flushTab(out, cmd).(*mcpTab)
+
+	if _, err := os.Stat(agentConfigPath(t, home, first)); err != nil {
+		t.Fatalf("picked agent %s must be exported: %v", first, err)
+	}
+	srv := tab.currentServer()
+	if srv == nil {
+		t.Fatal("profile missing after export")
+	}
+	if got := tab.exportedAgents(srv.Alias); len(got) != 1 || got[0] != first {
+		t.Fatalf("exportedAgents = %v, want only %s", got, first)
+	}
+
+	// 再次打开：这次勾选的是真实状态（已导出的那个）。
+	out, _ = tab.Update(runeKey("x"))
+	tab = out.(*mcpTab)
+	if got := tab.pickedAgentIDs(); len(got) != 1 || got[0] != first {
+		t.Fatalf("picker must pre-check the exported agent, got %v", got)
+	}
+}
+
 func TestMCPTabRegistration(t *testing.T) {
 	m := New(Managers{})
 	if len(m.tabs) != 4 {
@@ -146,7 +210,7 @@ func TestMCPTabRegistration(t *testing.T) {
 	for i, tab := range full.tabs {
 		titles[i] = tab.Title()
 	}
-	want := []string{"Env", "Text", "Backup", "Config", "SSH", "KeyPair", "AI", "MCP", "History", "Audit"}
+	want := []string{"Env", "Text", "Config", "SSH", "KeyPair", "LLM", "MCP", "History", "Audit", "Backup"}
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("tab order = %v, want %v", titles, want)
 	}
@@ -177,7 +241,7 @@ func TestMCPTwoPanesStatusAndFocus(t *testing.T) {
 	}
 
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	if tab.mode != mcpModePlan {
 		t.Fatalf("mode = %d, want plan", tab.mode)
@@ -312,7 +376,7 @@ func TestMCPDeleteDoesNotUnexport(t *testing.T) {
 	addMCPProfile(t, tab, "github", "npx", map[string]string{"GITHUB_TOKEN": mcpSecret})
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
@@ -348,7 +412,7 @@ func TestMCPExportPlanCancelAndCurrentAliasOnly(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
 
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	plan := tab.View()
 	if !strings.Contains(plan, "export plan") || !strings.Contains(plan, "[plaintext]") {
@@ -372,7 +436,7 @@ func TestMCPExportPlanCancelAndCurrentAliasOnly(t *testing.T) {
 		t.Fatalf("cancel wrote cursor config: %v", err)
 	}
 
-	out, cmd = tab.Update(runeKey("X"))
+	out, cmd = pressAgentExport(t, tab, "X")
 	tab = flushTab(out, cmd).(*mcpTab)
 	all := tab.View()
 	for _, id := range agentcfg.IDs() {
@@ -397,7 +461,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 	addMCPProfile(t, tab, "github", "npx", nil)
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
@@ -419,7 +483,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 	}
 
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd = tab.Update(runeKey("x"))
+	out, cmd = pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	if !strings.Contains(tab.View(), "drift") {
 		t.Fatalf("plan should mark drift:\n%s", tab.View())
@@ -430,7 +494,7 @@ func TestMCPExportForceCoversDrift(t *testing.T) {
 		t.Fatalf("confirm without F overwrote drift: %q", cmd)
 	}
 
-	out, cmd = tab.Update(runeKey("x"))
+	out, cmd = pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, _ = tab.Update(runeKey("F"))
 	tab = out.(*mcpTab)
@@ -451,7 +515,7 @@ func TestMCPUnexportChangedConfirm(t *testing.T) {
 	addMCPProfile(t, tab, "github", "npx", nil)
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd := tab.Update(runeKey("x"))
+	out, cmd := pressAgentExport(t, tab, "x")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	tab = flushTab(out, cmd).(*mcpTab)
@@ -470,7 +534,7 @@ func TestMCPUnexportChangedConfirm(t *testing.T) {
 
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd = tab.Update(runeKey("u"))
+	out, cmd = pressAgentExport(t, tab, "u")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, _ = tab.Update(runeKey("y"))
 	tab = out.(*mcpTab)
@@ -491,12 +555,12 @@ func TestMCPUnexportChangedConfirm(t *testing.T) {
 func TestMCPExportRequiresSelection(t *testing.T) {
 	tab, _, _ := newMCPTestTab(t)
 	tab = loadMCPTab(t, tab)
-	_, cmd := tab.Update(runeKey("x"))
+	_, cmd := pressAgentExport(t, tab, "x")
 	texts := toastTexts(cmd)
 	if len(texts) == 0 || !strings.Contains(texts[0], "no profile to export") {
 		t.Fatalf("empty export toast = %v", texts)
 	}
-	_, cmd = tab.Update(runeKey("u"))
+	_, cmd = pressAgentExport(t, tab, "u")
 	texts = toastTexts(cmd)
 	if len(texts) == 0 || !strings.Contains(texts[0], "no profile to unexport") {
 		t.Fatalf("empty unexport toast = %v", texts)
@@ -534,7 +598,7 @@ func TestMCPUnexportChangedConfirmEscCancelsAll(t *testing.T) {
 	for _, agent := range []string{"claude-code", "cursor"} {
 		tab = loadMCPTab(t, tab)
 		selectMCPAgent(t, tab, agent)
-		out, cmd := tab.Update(runeKey("x"))
+		out, cmd := pressAgentExport(t, tab, "x")
 		tab = flushTab(out, cmd).(*mcpTab)
 		out, cmd = tab.Update(runeKey("y"))
 		tab = flushTab(out, cmd).(*mcpTab)
@@ -555,7 +619,7 @@ func TestMCPUnexportChangedConfirmEscCancelsAll(t *testing.T) {
 
 	tab = loadMCPTab(t, tab)
 	selectMCPAgent(t, tab, "cursor")
-	out, cmd := tab.Update(runeKey("U"))
+	out, cmd := pressAgentExport(t, tab, "U")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, _ = tab.Update(runeKey("y"))
 	tab = out.(*mcpTab)
@@ -599,7 +663,7 @@ func TestMCPUnexportAbsentOnlyDoesNotFakeSuccess(t *testing.T) {
 	selectMCPAgent(t, tab, "cursor")
 
 	// 从未导出：撤回计划只含 absent 条目。
-	out, cmd := tab.Update(runeKey("u"))
+	out, cmd := pressAgentExport(t, tab, "u")
 	tab = flushTab(out, cmd).(*mcpTab)
 	out, cmd = tab.Update(runeKey("y"))
 	texts := toastTexts(cmd)

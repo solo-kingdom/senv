@@ -148,9 +148,20 @@ func TestMCPMultiSelectBatchExportPlan(t *testing.T) {
 		t.Fatalf("selection = %d, want 2", tab.sel.SelectionCount())
 	}
 
-	// X：计划范围 = 选择集 × 全部 agent
+	// X：左栏焦点下先弹 agent 多选（勾选真实状态=已导出的 agent，此处为空），
+	// a 全选后进入计划。
 	next, _ := tab.Update(runeKey("X"))
 	nextTab := next.(*mcpTab)
+	if nextTab.mode != mcpModeSelectAgents {
+		t.Fatalf("mode = %v, want the agent picker", nextTab.mode)
+	}
+	if len(nextTab.pickedAgentIDs()) != 0 {
+		t.Fatalf("nothing is exported yet, picker must start empty, got %v", nextTab.pickedAgentIDs())
+	}
+	next, _ = nextTab.Update(runeKey("a"))
+	nextTab = next.(*mcpTab)
+	next, _ = nextTab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	nextTab = next.(*mcpTab)
 	if nextTab.mode != mcpModePlan {
 		t.Fatalf("mode = %v, want plan", nextTab.mode)
 	}

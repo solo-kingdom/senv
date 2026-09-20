@@ -38,14 +38,15 @@ func TestAITabSwitchCodexUsesReferencedEnvName(t *testing.T) {
 	}
 
 	msg := driveAISwitch(t, tab, 1, 0, "s") // codex + deepseek
-	result, ok := msg.(aiSwitchResultMsg)
-	if !ok || result.err != nil {
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
+	if result.err != nil {
 		t.Fatalf("switch msg = %#v", msg)
 	}
 	if result.out.CredentialEnv != "DEEPSEEK_API_KEY" {
 		t.Fatalf("CredentialEnv = %q", result.out.CredentialEnv)
 	}
-	notice := strings.Join(collectAIToasts(t, tab, result), "; ")
+	notice := strings.Join(collectAIToasts(t, tab, batch), "; ")
 	if !strings.Contains(notice, "reads credentials from env DEEPSEEK_API_KEY") {
 		t.Fatalf("notice = %q, want the referenced env name", notice)
 	}
@@ -83,14 +84,15 @@ func TestAITabSwitchCodexShowsEveryWarning(t *testing.T) {
 	runAITabLoad(t, tab)
 
 	msg := driveAISwitch(t, tab, 1, 0, "s") // codex + deepseek
-	result, ok := msg.(aiSwitchResultMsg)
-	if !ok || result.err != nil {
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
+	if result.err != nil {
 		t.Fatalf("switch msg = %#v", msg)
 	}
 	if len(result.out.Warnings) < 2 {
 		t.Fatalf("warnings = %v, want both the group and metadata warning", result.out.Warnings)
 	}
-	notice := strings.Join(collectAIToasts(t, tab, result), "; ")
+	notice := strings.Join(collectAIToasts(t, tab, batch), "; ")
 	// 组未激活是第二条 warning，旧实现只展示第一条时本断言会失败。
 	if !strings.Contains(notice, "senv env group activate dev") {
 		t.Fatalf("notice = %q, missing the activation warning", notice)
@@ -132,14 +134,15 @@ func TestAITabSwitchPiHasNoCredentialHint(t *testing.T) {
 	runAITabLoad(t, tab)
 
 	msg := driveAISwitch(t, tab, 3, 0, "s") // pi + main
-	result, ok := msg.(aiSwitchResultMsg)
-	if !ok || result.err != nil {
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
+	if result.err != nil {
 		t.Fatalf("switch msg = %#v", msg)
 	}
 	if result.out.CredentialEnv != "" {
 		t.Fatalf("CredentialEnv = %q, want none for an inline-credential agent", result.out.CredentialEnv)
 	}
-	notice := strings.Join(collectAIToasts(t, tab, result), "; ")
+	notice := strings.Join(collectAIToasts(t, tab, batch), "; ")
 	if strings.Contains(notice, "reads credentials from env") {
 		t.Fatalf("notice = %q, must not mention env credentials", notice)
 	}

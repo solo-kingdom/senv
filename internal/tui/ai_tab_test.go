@@ -77,10 +77,12 @@ func TestAITabRegistration(t *testing.T) {
 		t.Fatalf("base tab count = %d, want 4 (no AI without LLM)", len(tabs.tabs))
 	}
 	m := New(Managers{LLM: &llm.ProviderManager{}})
-	last := m.tabs[len(m.tabs)-1]
-	if last.Title() != "AI" {
-		t.Fatalf("last tab = %q, want AI", last.Title())
+	for _, tab := range m.tabs {
+		if tab.Title() == "LLM" {
+			return
+		}
 	}
+	t.Fatal("LLM tab should be registered when the LLM manager is present")
 }
 
 func TestAITabBrowseNoSecretLeak(t *testing.T) {
@@ -196,16 +198,130 @@ func collectAIToasts(t *testing.T, tab *aiTab, msg tea.Msg) []string {
 	return notices
 }
 
+// switchOutcome 取出右栏起步（单 agent）向导的结果批次，并校验恰好一条结果。
+func switchOutcome(t *testing.T, msg tea.Msg) aiSwitchBatchResultMsg {
+	t.Helper()
+	batch, ok := msg.(aiSwitchBatchResultMsg)
+	if !ok {
+		t.Fatalf("expected aiSwitchBatchResultMsg, got %T", msg)
+	}
+	if len(batch.results) != 1 {
+		t.Fatalf("expected 1 outcome, got %d", len(batch.results))
+	}
+	return batch
+}
+
+// TestAITabLeftPaneSwitchPicksAgents 覆盖左栏焦点按 s：先弹 agent 多选，进入时
+// 勾选真实状态（已指向本 provider 的 agent），确认后对选中的每个 agent 逐个写回；
+// 右栏焦点的单 agent 行为由 driveAISwitch 系列的用例守着。
+func TestAITabLeftPaneSwitchPicksAgents(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = true
+	tab.providerIndex = 0
+
+	if _, cmd := tab.Update(runeKey("s")); cmd != nil {
+		t.Fatal("opening the agent picker must not run a command")
+	}
+	if tab.flow != aiFlowSelectAgents {
+		t.Fatalf("flow = %v, want selectAgents", tab.flow)
+	}
+	if got := tab.flowSelectedAgents(); len(got) != 0 {
+		t.Fatalf("no agent points at main yet, picker must start empty, got %v", got)
+	}
+
+	// 勾选前两个 agent。
+	tab.Update(runeKey(" "))
+	tab.Update(runeKey("j"))
+	tab.Update(runeKey(" "))
+	picked := tab.flowSelectedAgents()
+	if len(picked) != 2 {
+		t.Fatalf("picked = %v, want 2 agents", picked)
+	}
+
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 模型集（默认全选）
+	if tab.flow != aiFlowSelectModel {
+		t.Fatalf("flow = %v, want selectModel", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("flow = %v, want confirm", tab.flow)
+	}
+	_, cmd := tab.Update(runeKey("y"))
+	if cmd == nil {
+		t.Fatal("confirm did not return a switch command")
+	}
+	batch, ok := cmd().(aiSwitchBatchResultMsg)
+	if !ok {
+		t.Fatal("expected an aiSwitchBatchResultMsg")
+	}
+	if len(batch.results) != 2 {
+		t.Fatalf("outcomes = %d, want 2", len(batch.results))
+	}
+	for _, r := range batch.results {
+		if r.err != nil {
+			t.Fatalf("agent %s: %v", r.agentID, r.err)
+		}
+	}
+
+	// 回读后指针都指向 main（提示文案用展示名，这里以指针为准）。
+	collectAIToasts(t, tab, batch)
+	for _, id := range picked {
+		var row *llm.StatusRow
+		for i := range tab.rows {
+			if tab.rows[i].AgentID == id {
+				row = &tab.rows[i]
+			}
+		}
+		if row == nil {
+			t.Fatalf("agent %s missing from rows", id)
+		}
+		if row.Pointer == nil || row.Pointer.Provider != "main" {
+			t.Fatalf("%s pointer = %+v, want main", id, row.Pointer)
+		}
+	}
+}
+
+// TestAITabAgentPickerPrechecksCurrentProvider 覆盖「回显真实状态」：已经指向
+// 本 provider 的 agent 在弹层里默认勾选，未指向的不勾。
+func TestAITabAgentPickerPrechecksCurrentProvider(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+
+	// 先把 claude-code 切到 main（右栏路径），并把结果回灌让 tab 回读指针。
+	msg := driveAISwitch(t, tab, 0, 0, "s")
+	batch, ok := msg.(aiSwitchBatchResultMsg)
+	if !ok || len(batch.results) != 1 || batch.results[0].err != nil {
+		t.Fatalf("initial switch = %#v", msg)
+	}
+	collectAIToasts(t, tab, batch)
+
+	tab.focusLeft = true
+	tab.providerIndex = 0
+	if _, cmd := tab.Update(runeKey("s")); cmd != nil {
+		t.Fatal("opening the picker must not run a command")
+	}
+	if tab.flow != aiFlowSelectAgents {
+		t.Fatalf("flow = %v, want selectAgents", tab.flow)
+	}
+	picked := tab.flowSelectedAgents()
+	if len(picked) != 1 || picked[0] != tab.rows[0].AgentID {
+		t.Fatalf("picked = %v, want only the agent already on main", picked)
+	}
+}
+
 func TestAITabSwitchSuccess(t *testing.T) {
 	tab, home, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 
 	msg := driveAISwitch(t, tab, 0, 0, "s") // claude-code + m1
-	result, ok := msg.(aiSwitchResultMsg)
-	if !ok || result.err != nil {
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
+	if result.err != nil {
 		t.Fatalf("switch msg = %#v", msg)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "Claude Code → main") {
+	if notices := collectAIToasts(t, tab, batch); !strings.Contains(strings.Join(notices, ";"), "Claude Code → main") {
 		t.Fatalf("notice = %q", notices)
 	}
 	if !strings.Contains(tab.View(), "claude-code") || !strings.Contains(tab.View(), "main / m1") {
@@ -229,16 +345,24 @@ func TestAITabSwitchFailureBanner(t *testing.T) {
 	tab.mgr.LLMPointer = filepath.Join(blocker, "pointers.json")
 
 	msg := driveAISwitch(t, tab, 0, 0, "s")
-	result := msg.(aiSwitchResultMsg)
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
 	if result.err == nil {
 		t.Fatal("switch unexpectedly succeeded")
 	}
-	_, cmd := tab.Update(result)
+	_, cmd := tab.Update(batch)
 	if cmd == nil {
 		t.Fatal("failure did not produce error banner command")
 	}
-	if _, ok := cmd().(errMsg); !ok {
-		t.Fatalf("banner msg = %#v", cmd())
+	msgs := runCmd(cmd)
+	banner := false
+	for _, m := range msgs {
+		if _, ok := m.(errMsg); ok {
+			banner = true
+		}
+	}
+	if !banner {
+		t.Fatalf("failure must surface an error banner, got %#v", msgs)
 	}
 }
 
@@ -247,11 +371,12 @@ func TestAITabSwitchCodexGuidance(t *testing.T) {
 	runAITabLoad(t, tab)
 
 	msg := driveAISwitch(t, tab, 1, 1, "s") // codex + m2
-	result := msg.(aiSwitchResultMsg)
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
 	if result.err != nil {
 		t.Fatalf("switch error: %v", result.err)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "SENV_MAIN_API_KEY") {
+	if notices := collectAIToasts(t, tab, batch); !strings.Contains(strings.Join(notices, ";"), "SENV_MAIN_API_KEY") {
 		t.Fatalf("codex guidance missing: %q", notices)
 	}
 	raw, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
@@ -269,8 +394,8 @@ func TestAITabModelOnlyChange(t *testing.T) {
 	_ = home
 
 	// 先切换到 main/m1。
-	first := driveAISwitch(t, tab, 0, 0, "s").(aiSwitchResultMsg)
-	if first.err != nil {
+	first := switchOutcome(t, driveAISwitch(t, tab, 0, 0, "s"))
+	if first.results[0].err != nil {
 		t.Fatalf("initial switch: %#v", first)
 	}
 	collectAIToasts(t, tab, first)
@@ -280,14 +405,15 @@ func TestAITabModelOnlyChange(t *testing.T) {
 
 	// M：仅换模型到 m2（grill D7：model-only 键 m→M）。
 	msg := driveAISwitch(t, tab, 0, 1, "M")
-	result := msg.(aiSwitchResultMsg)
+	batch := switchOutcome(t, msg)
+	result := batch.results[0]
 	if result.err != nil {
 		t.Fatalf("model-only change error: %v", result.err)
 	}
-	if !result.onlyModel || result.out.Provider != "main" || result.out.DefaultModel != "m2" {
+	if !batch.onlyModel || result.out.Provider != "main" || result.out.DefaultModel != "m2" {
 		t.Fatalf("model-only result = %+v", result.out)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "default model only") {
+	if notices := collectAIToasts(t, tab, batch); !strings.Contains(strings.Join(notices, ";"), "default model only") {
 		t.Fatalf("notice = %q", notices)
 	}
 	if !strings.Contains(tab.View(), "main / m2") {
@@ -782,14 +908,15 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirm did not return a switch command")
 	}
-	result := cmd().(aiSwitchResultMsg)
+	batch := switchOutcome(t, cmd())
+	result := batch.results[0]
 	if result.err != nil {
 		t.Fatalf("switch error: %v", result.err)
 	}
 	if got := strings.Join(result.out.Models, ","); got != "m1" {
 		t.Fatalf("switched models = %q, want the selected subset", got)
 	}
-	if notices := collectAIToasts(t, tab, result); !strings.Contains(strings.Join(notices, ";"), "1 models") {
+	if notices := collectAIToasts(t, tab, batch); !strings.Contains(strings.Join(notices, ";"), "1 models") {
 		t.Fatalf("notice should include the model count: %q", notices)
 	}
 	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
@@ -886,11 +1013,12 @@ func TestAITabModelOnlyCandidatesLimitedToPointer(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirm did not return a switch command")
 	}
-	result := cmd().(aiSwitchResultMsg)
+	batch := switchOutcome(t, cmd())
+	result := batch.results[0]
 	if result.err != nil {
 		t.Fatalf("model-only change error: %v", result.err)
 	}
-	if !result.onlyModel || strings.Join(result.out.Models, ",") != "m2" || result.out.DefaultModel != "m2" {
+	if !batch.onlyModel || strings.Join(result.out.Models, ",") != "m2" || result.out.DefaultModel != "m2" {
 		t.Fatalf("model-only result = %+v, want the pointer set unchanged", result.out)
 	}
 }
@@ -900,17 +1028,17 @@ func TestAITabModelOnlyCandidatesLimitedToPointer(t *testing.T) {
 func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
-	result := driveAISwitch(t, tab, 0, 0, "s").(aiSwitchResultMsg)
-	if result.err != nil {
-		t.Fatalf("switch error: %v", result.err)
+	batch := switchOutcome(t, driveAISwitch(t, tab, 0, 0, "s"))
+	if batch.results[0].err != nil {
+		t.Fatalf("switch error: %v", batch.results[0].err)
 	}
-	collectAIToasts(t, tab, result)
+	collectAIToasts(t, tab, batch)
 	view := tab.View()
 	if !strings.Contains(view, "main / m1 (2 models)") {
 		t.Fatalf("agent row missing the model count:\n%s", view)
 	}
 	if strings.Contains(view, "sk-tui-secret") {
-		t.Fatal("credential rendered into the AI tab")
+		t.Fatal("credential rendered into the LLM tab")
 	}
 
 	if _, err := tab.mgr.LLM.EditProvider(llm.EditProviderOptions{

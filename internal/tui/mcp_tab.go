@@ -56,6 +56,12 @@ type mcpTab struct {
 	changedIdx     int
 	changedAllowed map[string]bool
 	importReport   *mcpImportDoneMsg
+
+	// agentPickKind 与 agentPick / agentPickCursor 是「左栏发起导出/撤回时的
+	// agent 多选」状态：kind 取 "export" | "unexport"，agentPick 是勾选集。
+	agentPickKind   string
+	agentPick       map[string]bool
+	agentPickCursor int
 }
 
 type mcpMode int
@@ -66,6 +72,7 @@ const (
 	mcpModePlan
 	mcpModeChangedConfirm
 	mcpModeImportReport
+	mcpModeSelectAgents
 )
 
 type mcpAgentStatus struct {
@@ -137,28 +144,36 @@ func (t *mcpTab) Bindings() []KeyAction {
 	case mcpModePlan:
 		return []KeyAction{
 			{[]string{"enter/y"}, "confirm", grpConfirm, false},
-			{[]string{"F"}, "force overwrite drift", grpConfirm, false},
+			{[]string{"F"}, "force", grpConfirm, false},
 			{[]string{"esc/n"}, "cancel", grpConfirm, false},
 		}
 	case mcpModeChangedConfirm:
 		return []KeyAction{
 			{[]string{"y"}, "delete this one", grpConfirm, false},
 			{[]string{"n"}, "skip", grpConfirm, false},
-			{[]string{"esc"}, "cancel entire revert", grpConfirm, false},
+			{[]string{"esc"}, "cancel", grpConfirm, false},
 		}
 	case mcpModeImportReport:
 		return []KeyAction{{[]string{"esc/enter"}, "close", grpConfirm, false}}
+	case mcpModeSelectAgents:
+		return []KeyAction{
+			{[]string{"space"}, "toggle", grpWizard, false},
+			{[]string{"a"}, "toggle all", grpWizard, false},
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "cancel", grpWizard, false},
+		}
 	}
 	return append(navBindings(true),
 		actDetail,
-		KeyAction{[]string{"n"}, "new profile", grpItem, false},
-		KeyAction{[]string{"e"}, "edit profile", grpItem, false},
-		KeyAction{[]string{"d"}, "delete profile", grpItem, false},
+		KeyAction{[]string{"n"}, "new", grpItem, false},
+		KeyAction{[]string{"e"}, "edit", grpItem, false},
+		KeyAction{[]string{"d"}, "delete", grpItem, false},
 		actSelect, actSelectAll,
 		KeyAction{[]string{"i"}, "import", grpItem, false},
-		KeyAction{[]string{"s"}, "switch export scope", grpItem, false},
-		KeyAction{[]string{"x/X"}, "export (current/all agents)", grpItem, false},
-		KeyAction{[]string{"u/U"}, "revert (current/all agents)", grpItem, false},
+		KeyAction{[]string{"s"}, "scope", grpItem, false},
+		KeyAction{[]string{"x/X"}, "export", grpItem, false},
+		KeyAction{[]string{"u/U"}, "revert", grpItem, false},
 		actFilter, actRefresh,
 	)
 }
@@ -503,13 +518,13 @@ func (t *mcpTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		}
 		t.syncStatus()
 	case "x":
-		return t.startExport(false)
+		return t.beginExport(false)
 	case "X":
-		return t.startExport(true)
+		return t.beginExport(true)
 	case "u":
-		return t.startUnexport(false)
+		return t.beginUnexport(false)
 	case "U":
-		return t.startUnexport(true)
+		return t.beginUnexport(true)
 	case "g":
 		t.jumpFocus(0)
 	case "G":
@@ -560,6 +575,8 @@ func (t *mcpTab) syncStatus() {
 func (t *mcpTab) updateMode(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	key := msg.String()
 	switch t.mode {
+	case mcpModeSelectAgents:
+		return t.updateAgentPick(msg)
 	case mcpModeDelete:
 		if key == "y" || key == "enter" {
 			alias := t.pendingAlias
@@ -627,6 +644,9 @@ func (t *mcpTab) cancelMode() {
 	t.changedIdx = 0
 	t.changedAllowed = nil
 	t.importReport = nil
+	t.agentPickKind = ""
+	t.agentPick = nil
+	t.agentPickCursor = 0
 }
 
 func (t *mcpTab) currentServer() *mcp.Server {
@@ -1010,7 +1030,11 @@ func (t *mcpTab) startExport(allAgents bool) (Tab, tea.Cmd) {
 	if len(aliases) == 0 {
 		return t, warnToast("no profile to export")
 	}
-	targets := t.exportTargets(allAgents)
+	return t.planExport(aliases, t.exportTargets(allAgents))
+}
+
+// planExport 用给定档案集与目标 agent 集出导出计划（进入计划页）。
+func (t *mcpTab) planExport(aliases []string, targets []agentcfg.Target) (Tab, tea.Cmd) {
 	if len(targets) == 0 {
 		return t, warnToast("no target agent to export")
 	}
@@ -1038,7 +1062,11 @@ func (t *mcpTab) startUnexport(allAgents bool) (Tab, tea.Cmd) {
 	if len(aliases) == 0 {
 		return t, warnToast("no profile to unexport")
 	}
-	targets := t.exportTargets(allAgents)
+	return t.planUnexport(aliases, t.exportTargets(allAgents))
+}
+
+// planUnexport 用给定档案集与目标 agent 集出撤回计划（进入计划页）。
+func (t *mcpTab) planUnexport(aliases []string, targets []agentcfg.Target) (Tab, tea.Cmd) {
 	if len(targets) == 0 {
 		return t, warnToast("no target agent to unexport")
 	}
@@ -1089,6 +1117,136 @@ func (t *mcpTab) exportTargets(all bool) []agentcfg.Target {
 		return nil
 	}
 	return []agentcfg.Target{cur}
+}
+
+// beginExport / beginUnexport 路由导出与撤回的起点：焦点在左栏（档案栏）时
+// 先弹 agent 多选，由用户勾选要作用的 agent；焦点在右栏时保持原语义——
+// x/u 作用于右栏光标 agent，X/U 作用于全部 agent。
+func (t *mcpTab) beginExport(allAgents bool) (Tab, tea.Cmd) {
+	if t.focusLeft {
+		return t.openAgentPicker("export")
+	}
+	return t.startExport(allAgents)
+}
+
+func (t *mcpTab) beginUnexport(allAgents bool) (Tab, tea.Cmd) {
+	if t.focusLeft {
+		return t.openAgentPicker("unexport")
+	}
+	return t.startUnexport(allAgents)
+}
+
+// openAgentPicker 打开 agent 多选步骤。进入时勾选的是真实状态：这些档案
+// 当前已经导出到的 agent（与详情页 "exported to" 同一口径）。
+func (t *mcpTab) openAgentPicker(kind string) (Tab, tea.Cmd) {
+	if len(t.agents) == 0 {
+		return t, warnToast("no target agent to " + kind)
+	}
+	aliases := t.planAliases()
+	if len(aliases) == 0 {
+		return t, warnToast("no profile to " + kind)
+	}
+	t.agentPick = map[string]bool{}
+	for _, alias := range aliases {
+		for _, id := range t.exportedAgents(alias) {
+			t.agentPick[id] = true
+		}
+	}
+	t.agentPickCursor = 0
+	t.agentPickKind = kind
+	t.mode = mcpModeSelectAgents
+	return t, nil
+}
+
+// pickedAgentIDs 返回勾选的 agent（按 agent 列表顺序，保序）。
+func (t *mcpTab) pickedAgentIDs() []string {
+	var out []string
+	for _, a := range t.agents {
+		if t.agentPick[a.ID] {
+			out = append(out, a.ID)
+		}
+	}
+	return out
+}
+
+// targetsForIDs 把 agent id 映射回 Target（保 t.agents 顺序）。
+func (t *mcpTab) targetsForIDs(ids []string) []agentcfg.Target {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var out []agentcfg.Target
+	for _, a := range t.agents {
+		if want[a.ID] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// updateAgentPick 处理 agent 多选步骤的按键。
+func (t *mcpTab) updateAgentPick(msg tea.KeyMsg) (Tab, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if t.agentPickCursor > 0 {
+			t.agentPickCursor--
+		}
+	case "down", "j":
+		if t.agentPickCursor < len(t.agents)-1 {
+			t.agentPickCursor++
+		}
+	case " ", "space":
+		if t.agentPickCursor >= 0 && t.agentPickCursor < len(t.agents) {
+			id := t.agents[t.agentPickCursor].ID
+			if t.agentPick[id] {
+				delete(t.agentPick, id)
+			} else {
+				t.agentPick[id] = true
+			}
+		}
+	case "a":
+		// a=全选/再按取消全部（与列表多选语义一致）。
+		selectAll := len(t.pickedAgentIDs()) < len(t.agents)
+		t.agentPick = map[string]bool{}
+		if selectAll {
+			for _, a := range t.agents {
+				t.agentPick[a.ID] = true
+			}
+		}
+	case "enter":
+		ids := t.pickedAgentIDs()
+		if len(ids) == 0 {
+			return t, warnToast("select at least one agent")
+		}
+		kind := t.agentPickKind
+		aliases := t.planAliases()
+		targets := t.targetsForIDs(ids)
+		t.cancelMode()
+		if kind == "unexport" {
+			return t.planUnexport(aliases, targets)
+		}
+		return t.planExport(aliases, targets)
+	case "esc":
+		t.cancelMode()
+	}
+	return t, nil
+}
+
+// renderAgentPicker 渲染 agent 多选弹层。
+func (t *mcpTab) renderAgentPicker() string {
+	lines := make([]string, 0, len(t.agents))
+	for i, a := range t.agents {
+		mark := "[ ]"
+		if t.agentPick[a.ID] {
+			mark = "[x]"
+		}
+		lines = append(lines, cursorLine(mark+" "+truncateWidth(a.Name, maxInt(t.width-14, 12)),
+			i == clamp(t.agentPickCursor, 0, len(t.agents)-1)))
+	}
+	title := fmt.Sprintf("choose agents to %s (selected %d/%d)",
+		t.agentPickKind, len(t.pickedAgentIDs()), len(t.agents))
+	return modalBox(t.width, t.height, title, strings.Join(lines, "\n"),
+		"space toggle · a all · ↑↓/jk move · enter next · esc cancel")
 }
 
 // selectionDivergesFromCursor 报告「恰好选中 1 条且不是游标所在档案」——
@@ -1354,6 +1512,8 @@ func (t *mcpTab) View() string {
 		overlay = t.renderDelete()
 	case t.mode == mcpModeImportReport:
 		overlay = t.renderImportReport()
+	case t.mode == mcpModeSelectAgents:
+		overlay = t.renderAgentPicker()
 	}
 	if t.width > 0 && overlay != "" {
 		overlay = lipgloss.NewStyle().MaxWidth(t.width).Render(overlay)

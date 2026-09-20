@@ -41,7 +41,7 @@ func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
 			d.top--
 		}
 	case "down", "j":
-		if d.top < len(d.lines)-1 {
+		if d.top < d.maxTop() {
 			d.top++
 		}
 	case "pgup":
@@ -51,27 +51,34 @@ func (d *detailOverlay) Update(msg tea.Msg) (*detailOverlay, tea.Cmd) {
 		}
 	case "pgdown":
 		d.top += d.pageSize()
-		if d.top > len(d.lines)-1 {
-			d.top = maxInt(len(d.lines)-1, 0)
+		if d.top > d.maxTop() {
+			d.top = d.maxTop()
 		}
 	}
 	return d, nil
 }
 
 // pageSize is the number of content rows that fit in the overlay body. The
-// overlay box owns the tab's whole pane slot (d.height+2 rows incl. borders,
-// 4 of them overlay chrome), and the body chrome (title, two blanks, status
-// bar) takes another 4.
+// overlay owns the tab's whole pane slot — the same d.width × (d.height+2) box
+// every tab pane renders — so the frame does not shift when it opens. Of those
+// rows, 4 are overlay chrome (border + vertical padding) and 4 are fixed body
+// chrome (title, blank, blank, status bar), leaving d.height-6 scrolling rows.
 func (d *detailOverlay) pageSize() int {
-	if d.height <= 8 {
+	if d.height <= 6 {
 		return 1
 	}
-	return d.height - 8
+	return d.height - 6
+}
+
+// maxTop is the start row of the last full page: scrolling stops with the final
+// line at the bottom edge instead of leaving one line above a blank tail.
+func (d *detailOverlay) maxTop() int {
+	return maxInt(len(d.lines)-d.pageSize(), 0)
 }
 
 func (d *detailOverlay) View() string {
 	page := d.pageSize()
-	start := clamp(d.top, 0, maxInt(len(d.lines)-1, 0))
+	start := clamp(d.top, 0, d.maxTop())
 	end := start + page
 	if end > len(d.lines) {
 		end = len(d.lines)
@@ -80,19 +87,22 @@ func (d *detailOverlay) View() string {
 	if len(d.lines) > page && page > 0 {
 		title = fmt.Sprintf("%s  %d–%d/%d", d.title, start+1, end, len(d.lines))
 	}
-	body := ""
+	body := make([]string, 0, page)
 	if end > start {
-		body = strings.Join(d.lines[start:end], "\n")
+		body = append(body, d.lines[start:end]...)
+	}
+	// 补齐到整页：框高固定，滚动时下边缘不动（内容不足一页时也不缩框）。
+	for len(body) < page {
+		body = append(body, "")
 	}
 	box := searchOverlayStyle
 	if d.width > 14 {
-		// Bound the box so long values wrap inside it instead of pushing the
-		// frame wider: overlay chrome is 6 cols, so Width(d.width-6) makes the
-		// rendered box exactly d.width (the pane slot's width).
-		box = box.Width(d.width - 6)
+		// lipgloss v1 的 Width 不含边框：留 2 列给边框，整框宽度 = d.width。
+		box = box.Width(d.width - 2)
 	}
 	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Bold(true).Render(title), "", body, "",
+		lipgloss.NewStyle().Bold(true).Render(title), "",
+		strings.Join(body, "\n"), "",
 		statusBarStyle.Render("↑↓/PgUp/PgDn scroll · esc close")))
 	return clipLines(out, maxInt(d.height+2, 2))
 }

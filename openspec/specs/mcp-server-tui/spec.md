@@ -5,7 +5,7 @@
 ## Requirements
 ### Requirement: MCP Tab 注册
 
-`senv tui` 在 vault 解锁后 SHALL 注册 MCP Tab，位置在 AI Tab 之后、History Tab 之前。`tui.Managers` 的 MCP 管理器为 nil 时 SHALL 跳过注册且不影响其他 Tab。
+`senv tui` 在 vault 解锁后 SHALL 注册 MCP Tab，位置在 LLM Tab 之后、History Tab 之前。`tui.Managers` 的 MCP 管理器为 nil 时 SHALL 跳过注册且不影响其他 Tab。
 
 #### Scenario: 已解锁进入 TUI
 
@@ -77,16 +77,24 @@ MCP Tab SHALL 提供档案写操作：`n` 新建、`e` 编辑选中档案、`d` 
 
 ### Requirement: 导出与撤回
 
-MCP Tab SHALL 提供导出与撤回：`x`/`u` 以左栏当前档案与右栏当前 agent 为范围，`X`/`U` 以左栏当前档案与全部导出目标 agent 为范围；范围 MUST 不依赖焦点在哪一栏。执行前 SHALL 展示计划页，逐条列出 agent、路径、动作（create / update / skip / drift / error）及是否标注「明文 env」；`enter`/`y` 确认后才写入，`esc`/`n` 取消且 MUST NOT 写盘。计划中的漂移与外部条目默认 skip；用户在计划页按 `F` 后 SHALL 将这些条目标为覆盖并刷新计划。撤回时，内容与 senv 期望一致的条目直接删除；被本地修改过的条目 SHALL 逐条 `y/n` 确认后才删除；逐条确认阶段（含帮助文案）`esc` SHALL 取消整个撤回操作——所有条目（含已回答 `y` 的）均不删除，并给出已取消提示；逐条确认阶段除 `y` 外的其余按键 MUST NOT 被解释为对整个操作的放行。计划中不存在任何需要写入的条目时，SHALL 提示无需写入且 MUST NOT 记录成功审计。导出与撤回 MUST 复用既有导出器（同一台账、同一 user 级全局配置、同一明文落盘语义）。
+MCP Tab SHALL 提供导出与撤回：`x`/`u` 以左栏当前档案与右栏当前 agent 为范围，`X`/`U` 以左栏当前档案与全部导出目标 agent 为范围。焦点在右栏时按上述语义直接进入计划页；焦点在左栏时这四个键 SHALL 先弹出 agent 多选（`space` 勾选/取消、`a` 全选再按取消、`enter` 下一步、`esc` 取消且零副作用；进入时勾选真实状态，即该档案集当前已导出到的 agent；空集 MUST NOT 提交），确认后以勾选的 agent 集合为范围进入计划页——`x`/`X` 的「全部 agent」差异由多选步骤里的 `a` 表达。执行前 SHALL 展示计划页，逐条列出 agent、路径、动作（create / update / skip / drift / error）及是否标注「明文 env」；`enter`/`y` 确认后才写入，`esc`/`n` 取消且 MUST NOT 写盘。计划中的漂移与外部条目默认 skip；用户在计划页按 `F` 后 SHALL 将这些条目标为覆盖并刷新计划。撤回时，内容与 senv 期望一致的条目直接删除；被本地修改过的条目 SHALL 逐条 `y/n` 确认后才删除；逐条确认阶段（含帮助文案）`esc` SHALL 取消整个撤回操作——所有条目（含已回答 `y` 的）均不删除，并给出已取消提示；逐条确认阶段除 `y` 外的其余按键 MUST NOT 被解释为对整个操作的放行。计划中不存在任何需要写入的条目时，SHALL 提示无需写入且 MUST NOT 记录成功审计。导出与撤回 MUST 复用既有导出器（同一台账、同一 user 级全局配置、同一明文落盘语义）。
+
+#### Scenario: 左栏发起导出先选 agent
+- **WHEN** 焦点在左栏且选中档案 github，用户按 `x`
+- **THEN** 弹出 agent 多选，github 已导出到的 agent 默认勾选；勾选两个 agent 并确认后，计划页只覆盖这两个 agent
+
+#### Scenario: 右栏发起导出不弹 agent 多选
+- **WHEN** 焦点在右栏且光标在 cursor，用户按 `x`
+- **THEN** 直接进入计划页，范围只有 cursor
 
 #### Scenario: 导出当前 agent
 
-- **WHEN** 左栏选中 github、右栏选中 cursor，用户按 `x` 并在计划页确认
+- **WHEN** 焦点在右栏、左栏选中 github、右栏选中 cursor，用户按 `x` 并在计划页确认
 - **THEN** 仅 cursor 的全局配置被写入 github 条目，台账更新，右栏 cursor 显示已导出
 
 #### Scenario: 导出全部 agent
 
-- **WHEN** 左栏选中 github，用户按 `X` 并确认计划
+- **WHEN** 焦点在右栏、左栏选中 github，用户按 `X` 并确认计划
 - **THEN** 计划覆盖全部导出目标 agent，确认后逐个写入（单个失败不中止其余）
 
 #### Scenario: 漂移默认跳过

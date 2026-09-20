@@ -117,7 +117,7 @@
 - **THEN** 它们原样保留：senv 只改自己命名空间与本次必须改的键，不删除自有 catalog 文件
 
 #### Scenario: TUI 仅换模型
-- **WHEN** 用户在 AI Tab 对右栏已指向某 provider 的 agent 按 `m` 并在其 Agent 模型集内选择另一个模型
+- **WHEN** 用户在 LLM Tab 对右栏已指向某 provider 的 agent 按 `m` 并在其 Agent 模型集内选择另一个模型
 - **THEN** 指针与配置文件中的默认模型更新，Agent 模型集与 provider 指向不变，成功后刷新展示
 
 ### Requirement: 原子写回与失败回滚

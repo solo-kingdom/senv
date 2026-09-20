@@ -47,7 +47,7 @@ var keymapConsistencyContract = []struct {
 		},
 		want: []string{"enter", "y", "esc", "n", "F"},
 		wantDesc: [][2]string{
-			{"F", "force delete (clear host identityKey)"},
+			{"F", "force delete"},
 		},
 	},
 	{

@@ -95,19 +95,6 @@ func clipLines(s string, n int) string {
 	return strings.Join(lines[:n], "\n")
 }
 
-// fitLines truncates every line to at most width runes. Applied to *unstyled*
-// text before styling, so lipgloss Width can never wrap a row into extra rows.
-func fitLines(lines []string, width int) []string {
-	if width <= 1 {
-		return lines
-	}
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		out = append(out, truncateWidth(l, width))
-	}
-	return out
-}
-
 // truncateWidth truncates s to at most maxCols display columns, appending "…".
 // Unlike truncateRunes it accounts for double-width (CJK) runes, so a line can
 // never be wider on screen than the pane it is rendered into.

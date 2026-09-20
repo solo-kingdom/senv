@@ -118,7 +118,7 @@ func (t *keyPairTab) Bindings() []KeyAction {
 		return []KeyAction{
 			{[]string{"enter/y"}, "confirm", grpConfirm, false},
 			{[]string{"esc/n"}, "cancel", grpConfirm, false},
-			{[]string{"F"}, "force delete (clear host identityKey)", grpConfirm, false},
+			{[]string{"F"}, "force delete", grpConfirm, false},
 		}
 	case kpModeMaterialize, kpModePrune:
 		return confirmBindings()
@@ -127,13 +127,13 @@ func (t *keyPairTab) Bindings() []KeyAction {
 	prune := KeyAction{[]string{"p"}, "prune", grpItem, false}
 	if t.focus == kpPaneList {
 		return append(append(nav,
-			KeyAction{[]string{"n", "i"}, "import keypair", grpItem, false},
-			KeyAction{[]string{"r"}, "rename keypair", grpItem, false},
+			KeyAction{[]string{"n", "i"}, "import", grpItem, false},
+			KeyAction{[]string{"r"}, "rename", grpItem, false},
 			KeyAction{[]string{"e"}, "edit group", grpItem, false},
 			KeyAction{[]string{"d"}, "delete", grpItem, false},
 			actApply,
 			KeyAction{[]string{"D"}, "toggle default", grpItem, false},
-			KeyAction{[]string{"v"}, "preview private key", grpItem, false},
+			KeyAction{[]string{"v"}, "preview key", grpItem, false},
 			prune,
 		), actRefresh, actFilter)
 	}
@@ -577,7 +577,7 @@ func (t *keyPairTab) enterImportKeyPair() (Tab, tea.Cmd) {
 	for _, k := range t.keyPairs {
 		siblings = append(siblings, k.Name)
 	}
-	f := newForm("import keypair",
+	f := newForm("import",
 		formField{
 			key: "name", label: "name", kind: formText, placeholder: "web-key",
 			validate: func(v string) error {
