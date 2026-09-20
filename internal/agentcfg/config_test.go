@@ -146,7 +146,7 @@ func TestJSONServerDottedKey(t *testing.T) {
 }
 
 func TestRenderTOMLServerBlockRemote(t *testing.T) {
-	block := RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "streamable-http", URL: "https://api.example.com/mcp"}, true)
+	block := RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "streamable-http", URL: "https://api.example.com/mcp"}, true, "headers")
 	for _, want := range []string{`[mcp_servers.web]`, `transport = "streamable-http"`, `url = "https://api.example.com/mcp"`} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("block missing %q:\n%s", want, block)
@@ -158,7 +158,7 @@ func TestRenderTOMLServerBlockRemote(t *testing.T) {
 }
 
 func TestTOMLServersRoundTrip(t *testing.T) {
-	src := "model = \"gpt\"\n" + RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "http", URL: "https://api.example.com/mcp"}, true) + "\n" + RenderTOMLServerBlock("mcp_servers", "gh", Server{Command: "npx"}, true)
+	src := "model = \"gpt\"\n" + RenderTOMLServerBlock("mcp_servers", "web", Server{Transport: "http", URL: "https://api.example.com/mcp"}, true, "headers") + "\n" + RenderTOMLServerBlock("mcp_servers", "gh", Server{Command: "npx"}, true, "headers")
 	servers, err := TOMLServers(src, "mcp_servers")
 	if err != nil {
 		t.Fatalf("TOMLServers: %v", err)
@@ -203,7 +203,7 @@ func TestRemoteErrorMatrix(t *testing.T) {
 		{"cursor", sse, false},
 		{"codex", httpPlain, false},
 		{"codex", sse, false},
-		{"codex", httpHeaders, true},
+		{"codex", httpHeaders, false},
 		{"zcode", httpHeaders, false},
 		{"zcode", sse, true},
 		{"kimi", httpHeaders, false},
@@ -245,10 +245,10 @@ func TestRemoteErrorMatrix(t *testing.T) {
 
 func TestRenderTOMLServerBlockTypeKey(t *testing.T) {
 	srv := Server{Transport: "http", URL: "https://api.example.com/mcp"}
-	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, true); !strings.Contains(block, `transport = "http"`) {
+	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, true, "headers"); !strings.Contains(block, `transport = "http"`) {
 		t.Fatalf("typeKey=true block = %q", block)
 	}
-	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, false); strings.Contains(block, "transport") {
+	if block := RenderTOMLServerBlock("mcp_servers", "web", srv, false, "headers"); strings.Contains(block, "transport") {
 		t.Fatalf("typeKey=false block = %q", block)
 	}
 }

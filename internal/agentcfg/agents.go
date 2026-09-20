@@ -63,12 +63,26 @@ type RemoteRender struct {
 	SSE bool
 	// Headers accepts per-entry custom headers on remote entries.
 	Headers bool
+	// HeaderKey is the config key those headers live under. Empty means the
+	// cross-agent default "headers" (the JSON family). Codex spells the same
+	// capability "http_headers" in its TOML config, so the key is per-target
+	// rather than hardcoded at the render site.
+	HeaderKey string
 	// TypeKey renders the transport type key ("type" in JSON configs,
 	// "transport" in TOML configs) on remote entries. Targets that auto-detect
 	// the transport and have no documented type key set this false.
 	TypeKey bool
 	// Reason explains a missing capability, for export plan errors.
 	Reason string
+}
+
+// HeadersKey returns the config key custom headers are stored under, falling
+// back to the cross-agent "headers" when the target names no other key.
+func (t Target) HeadersKey() string {
+	if t.Remote.Headers && t.Remote.HeaderKey != "" {
+		return t.Remote.HeaderKey
+	}
+	return "headers"
 }
 
 // Prerequisite is an external component a target needs for senv's config to
@@ -163,9 +177,16 @@ func Supported() []Target {
 			ConfigPath:    func(home, _ string) string { return filepath.Join(home, ".codex", "config.toml") },
 			TOMLTableName: "mcp_servers",
 			Note:          "Restart Codex for the server to load.",
+			// Codex stores remote-entry headers under "http_headers" (verified
+			// against codex-cli 0.153.4: `codex mcp get` reports the parsed
+			// entries). "bearer_token_env_var" is codex's dedicated shorthand for
+			// a single Authorization: Bearer credential, but it names an env var
+			// rather than carrying a value, so senv writes the literal header and
+			// leaves that key to whoever wants it.
 			Remote: RemoteRender{
 				HTTP: true, SSE: true, TypeKey: true,
-				Reason: "codex mcp_servers entries have no headers key; put the token into the url or use codex mcp login",
+				Headers: true, HeaderKey: "http_headers",
+				Reason: "codex remote entries are written as streamable HTTP tables",
 			},
 		},
 		{

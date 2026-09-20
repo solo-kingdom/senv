@@ -446,9 +446,9 @@ func (f *agentFile) entry(name string) (agentcfg.Server, bool) {
 		ok  bool
 	)
 	if f.isJSON {
-		srv, ok = agentcfg.JSONServer(f.jsonRoot, f.target.JSONServersKey, name)
+		srv, ok = agentcfg.JSONServerFor(f.jsonRoot, f.target.JSONServersKey, name, f.target.HeadersKey())
 	} else {
-		srv, ok = agentcfg.TOMLServer(f.tomlSrc, f.target.TOMLTableName, name)
+		srv, ok = agentcfg.TOMLServerFor(f.tomlSrc, f.target.TOMLTableName, name, f.target.HeadersKey())
 	}
 	if !ok {
 		return agentcfg.Server{}, false
@@ -461,7 +461,7 @@ func (f *agentFile) set(name string, server agentcfg.Server) {
 		agentcfg.SetJSONServer(f.jsonRoot, f.target.JSONServersKey, name, server, f.target.Remote.TypeKey)
 		return
 	}
-	block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server, f.target.Remote.TypeKey)
+	block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server, f.target.Remote.TypeKey, f.target.HeadersKey())
 	updated, err := agentcfg.UpsertTOMLServer(f.tomlSrc, f.target.TOMLTableName, name, block)
 	if err != nil {
 		// Upsert only fails on impossible inputs; keep the previous text so the

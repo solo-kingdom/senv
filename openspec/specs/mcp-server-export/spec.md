@@ -76,6 +76,11 @@
 - **WHEN** 导出 `http` 档案到 codex
 - **THEN** `[mcp_servers.<alias>]` 表按 codex 的 remote 键名矩阵写入，既有表内容保留
 
+#### Scenario: codex remote 档案携带 header
+
+- **WHEN** 导出 `http` 档案到 codex 且档案含 `headers`
+- **THEN** 写入 `http_headers = { Name = "Value" }`（codex 的原生键名，不是 JSON 族的 `headers`），既有表内容保留
+
 #### Scenario: 目标不支持该传输报错
 
 - **WHEN** 某 agent 的配置格式无法表达 `sse` 档案时导出该档案

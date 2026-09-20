@@ -189,16 +189,25 @@ func DeleteJSONServer(root map[string]any, serversKey, name string) bool {
 
 // JSONServer reads one server entry back into a Server, for drift checks.
 func JSONServer(root map[string]any, serversKey, name string) (Server, bool) {
+	return JSONServerFor(root, serversKey, name, "headers")
+}
+
+// JSONServerFor is JSONServer with an explicit header key, so a target that
+// spells custom headers differently reads back the same Server it wrote.
+func JSONServerFor(root map[string]any, serversKey, name, headersKey string) (Server, bool) {
 	raw, ok := JSONServers(root, serversKey)[name].(map[string]any)
 	if !ok {
 		return Server{}, false
 	}
-	return serverFromMap(raw), true
+	return serverFromMap(raw, "", headersKey), true
 }
 
 // serverFromMap converts a decoded JSON/TOML server object into the canonical
-// subset, ignoring keys senv does not manage.
-func serverFromMap(raw map[string]any) Server {
+// subset, ignoring keys senv does not manage. transportKey/headersKey are the
+// target's native spellings ("type"/"transport", "headers"/"http_headers");
+// the cross-agent defaults are always accepted too so a profile read back from
+// any target compares equal to the one senv would write there.
+func serverFromMap(raw map[string]any, transportKey, headersKey string) Server {
 	srv := Server{Env: map[string]string{}}
 	if command, ok := raw["command"].(string); ok {
 		srv.Command = command
@@ -234,18 +243,23 @@ func serverFromMap(raw map[string]any) Server {
 	if url, ok := raw["url"].(string); ok {
 		srv.URL = url
 	}
-	switch headers := raw["headers"].(type) {
-	case map[string]any:
-		srv.Headers = map[string]string{}
-		for key, value := range headers {
-			if s, ok := value.(string); ok {
-				srv.Headers[key] = s
+	for _, key := range dedupeKeys(headersKey, "headers") {
+		switch headers := raw[key].(type) {
+		case map[string]any:
+			srv.Headers = map[string]string{}
+			for headerKey, value := range headers {
+				if s, ok := value.(string); ok {
+					srv.Headers[headerKey] = s
+				}
+			}
+		case map[string]string:
+			srv.Headers = map[string]string{}
+			for headerKey, value := range headers {
+				srv.Headers[headerKey] = value
 			}
 		}
-	case map[string]string:
-		srv.Headers = map[string]string{}
-		for key, value := range headers {
-			srv.Headers[key] = value
+		if len(srv.Headers) > 0 {
+			break
 		}
 	}
 	if len(srv.Headers) == 0 {
@@ -259,6 +273,21 @@ func serverFromMap(raw map[string]any) Server {
 		}
 	}
 	return srv
+}
+
+// dedupeKeys returns the given keys, dropping empties and later duplicates so
+// callers can try a target's native spelling and the shared default in turn.
+func dedupeKeys(keys ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
 }
 
 // EncodeJSON renders a config root the way senv writes JSON configs.
@@ -278,9 +307,9 @@ func EncodeJSON(root map[string]any) ([]byte, error) {
 // [mcp_servers.<name>] convention. stdio entries keep the historical
 // command/args/env shape; remote entries render the documented url/transport
 // keys (transport only for targets with a transport type key). Custom headers
-// are not rendered: only targets whose RemoteRender accepts headers get them,
-// and those are JSON targets today.
-func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool) string {
+// render as an inline table under the target's header key, in sorted order so
+// repeated renders of the same profile stay byte-identical.
+func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool, headersKey string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s.%s]\n", table, name)
 	if srv.URL != "" {
@@ -288,6 +317,18 @@ func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool) string 
 			fmt.Fprintf(&b, "transport = %q\n", srv.Transport)
 		}
 		fmt.Fprintf(&b, "url = %q\n", srv.URL)
+		if headersKey != "" && len(srv.Headers) > 0 {
+			keys := make([]string, 0, len(srv.Headers))
+			for key := range srv.Headers {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			pairs := make([]string, 0, len(keys))
+			for _, key := range keys {
+				pairs = append(pairs, fmt.Sprintf("%s = %q", key, srv.Headers[key]))
+			}
+			fmt.Fprintf(&b, "%s = { %s }\n", headersKey, strings.Join(pairs, ", "))
+		}
 		return b.String()
 	}
 	fmt.Fprintf(&b, "command = %q\n", srv.Command)
@@ -373,6 +414,12 @@ func replaceTOMLBlock(src, tableHeader, subtablePrefix string, replacement *stri
 // TOMLServer parses one [<table>.<name>] entry back into a Server, for drift
 // checks. A missing or malformed entry reports false.
 func TOMLServer(src, table, name string) (Server, bool) {
+	return TOMLServerFor(src, table, name, "headers")
+}
+
+// TOMLServerFor is TOMLServer with an explicit header key (codex spells it
+// "http_headers"), so drift checks see the same Server senv would render.
+func TOMLServerFor(src, table, name, headersKey string) (Server, bool) {
 	servers, err := TOMLServers(src, table)
 	if err != nil {
 		return Server{}, false
@@ -381,7 +428,7 @@ func TOMLServer(src, table, name string) (Server, bool) {
 	if !ok {
 		return Server{}, false
 	}
-	return serverFromMap(raw), true
+	return serverFromMap(raw, "", headersKey), true
 }
 
 // TOMLServers parses every [<table>.<name>] entry of a TOML config, keyed by

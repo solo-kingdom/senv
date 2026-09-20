@@ -145,7 +145,7 @@ func printRequirement(out interface{ Write([]byte) (int, error) }, t agentTarget
 // installTOML handles the Codex-style [mcp_servers.<name>] config. It preserves
 // all other tables and only upserts the senv server block.
 func installTOML(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
-	block := agentcfg.RenderTOMLServerBlock(t.TOMLTableName, "senv", spec, t.Remote.TypeKey)
+	block := agentcfg.RenderTOMLServerBlock(t.TOMLTableName, "senv", spec, t.Remote.TypeKey, t.HeadersKey())
 	if printOnly {
 		fmt.Fprintf(out, "# %s — add to %s\n%s", t.Name, cfgPath, block)
 		printRequirement(out, t)

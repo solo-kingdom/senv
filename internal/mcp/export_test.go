@@ -561,7 +561,10 @@ func TestExportRemoteCodexTOML(t *testing.T) {
 	}
 }
 
-func TestExportRemoteHeadersToCodexIsAnError(t *testing.T) {
+// codex stores remote-entry headers under "http_headers" (not the JSON
+// family's "headers"), so the export must render that key and read it back
+// unchanged — otherwise every subsequent export would see drift.
+func TestExportRemoteHeadersToCodex(t *testing.T) {
 	mgr, dir := newTestManager(t)
 	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp",
 		map[string]string{"Authorization": "Bearer token-1"})
@@ -572,10 +575,6 @@ func TestExportRemoteHeadersToCodexIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfgPath, []byte("[mcp_servers.other]\ncommand = \"uvx\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(cfgPath)
-	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -593,30 +592,45 @@ func TestExportRemoteHeadersToCodexIsAnError(t *testing.T) {
 			claudeItem = &plan.Items[i]
 		}
 	}
-	if codexItem == nil || codexItem.Action != ActionError || !strings.Contains(codexItem.Reason, "headers") {
+	if codexItem == nil || codexItem.Action != ActionCreate {
 		t.Fatalf("codex plan item = %+v", codexItem)
+	}
+	if !codexItem.Plaintext {
+		t.Fatal("codex header export must be flagged as writing plaintext")
 	}
 	if claudeItem == nil || claudeItem.Action != ActionCreate {
 		t.Fatalf("claude-code plan item = %+v", claudeItem)
 	}
 
 	report, err := exporter.Execute(plan)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
+	if err != nil || report.Failures != 0 {
+		t.Fatalf("Execute = %+v, %v", report, err)
 	}
-	if report.Failures == 0 {
-		t.Fatal("expected failures for the codex target")
-	}
-	after, err := os.ReadFile(cfgPath)
+	content, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(before) != string(after) {
-		t.Fatalf("codex config changed despite the error:\n%s", after)
+	text := string(content)
+	if !strings.Contains(text, `http_headers = { Authorization = "Bearer token-1" }`) {
+		t.Fatalf("codex block missing http_headers:\n%s", text)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(cfgPath), ".claude.json")); !os.IsNotExist(err) {
-		// claude-code lives under a different path; just ensure no crash above.
-		_ = err
+	// The JSON family keeps "headers"; codex must not carry that key.
+	if strings.Contains(text, "\nheaders ") {
+		t.Fatalf("codex block carries the JSON-family headers key:\n%s", text)
+	}
+	if !strings.Contains(text, "[mcp_servers.other]") {
+		t.Fatalf("existing table was dropped:\n%s", text)
+	}
+
+	// The written file must round-trip: a second plan sees the entry as
+	// already up to date rather than as drift.
+	reopened := testExporter(t, mgr, dir, ExporterOptions{})
+	second, err := reopened.Plan([]agentcfg.Target{codex}, nil)
+	if err != nil {
+		t.Fatalf("re-plan: %v", err)
+	}
+	if len(second.Items) != 1 || second.Items[0].Action != ActionSkip {
+		t.Fatalf("codex re-export is not stable: %+v", second.Items)
 	}
 }
 
