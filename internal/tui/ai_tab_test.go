@@ -171,6 +171,10 @@ func driveAISwitch(t *testing.T, tab *aiTab, agentSteps, modelSteps int, trigger
 		tab.Update(runeKey("j"))
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// 含 claude-code 的完整切换多一步后台模型（ADR-0029）；M 与其他 agent 没有。
+	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
 	if tab.flow != aiFlowConfirm {
 		t.Fatalf("flow = %v, want confirm", tab.flow)
 	}
@@ -244,7 +248,10 @@ func TestAITabLeftPaneSwitchPicksAgents(t *testing.T) {
 		t.Fatalf("flow = %v, want selectModel", tab.flow)
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
-	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 后台模型（含 claude-code）或确认
+	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
+	}
 	if tab.flow != aiFlowConfirm {
 		t.Fatalf("flow = %v, want confirm", tab.flow)
 	}
@@ -904,6 +911,9 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 		t.Fatalf("selected = %q, want m1 only", got)
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 后台模型步骤（claude-code）
+	}
 	_, cmd := tab.Update(runeKey("y"))
 	if cmd == nil {
 		t.Fatal("confirm did not return a switch command")
@@ -925,6 +935,103 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"m1"`) || strings.Contains(string(raw), `"m2"`) {
 		t.Fatalf("settings.json should only carry the subset:\n%s", raw)
+	}
+}
+
+// TestAITabSwitchBackgroundModelStep 覆盖 ADR-0029 的向导步骤：含 claude-code
+// 的完整切换在默认模型之后出现后台模型步骤（候选为 Provider 模型集全集、
+// 初始游标在默认模型），esc 返回默认模型步骤，选中值写入
+// ANTHROPIC_SMALL_FAST_MODEL。
+func TestAITabSwitchBackgroundModelStep(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("s"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 模型集（默认全选）→ 默认模型
+	if tab.flow != aiFlowSelectDefault {
+		t.Fatalf("flow = %v, want selectDefault", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 后台模型
+	if tab.flow != aiFlowSelectBackground {
+		t.Fatalf("flow = %v, want selectBackground", tab.flow)
+	}
+	if got := strings.Join(tab.flowBackgroundCandidates(), ","); got != "m1,m2" {
+		t.Fatalf("background candidates = %q, want the full provider set", got)
+	}
+	if tab.flowBackgroundCursor != 0 {
+		t.Fatalf("initial cursor = %d, want 0 (default model m1)", tab.flowBackgroundCursor)
+	}
+	// esc 回到默认模型步骤，默认模型游标不被后台步骤触碰。
+	tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if tab.flow != aiFlowSelectDefault {
+		t.Fatalf("esc: flow = %v, want selectDefault", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab.Update(runeKey("j")) // 选 m2 作为后台模型
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("flow = %v, want confirm", tab.flow)
+	}
+	if tab.flowBackground != "m2" {
+		t.Fatalf("flowBackground = %q, want m2", tab.flowBackground)
+	}
+	_, cmd := tab.Update(runeKey("y"))
+	if cmd == nil {
+		t.Fatal("confirm did not return a switch command")
+	}
+	batch := switchOutcome(t, cmd())
+	if batch.results[0].err != nil {
+		t.Fatalf("switch error: %v", batch.results[0].err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"ANTHROPIC_SMALL_FAST_MODEL": "m2"`) ||
+		!strings.Contains(string(raw), `"ANTHROPIC_DEFAULT_HAIKU_MODEL": "m2"`) {
+		t.Fatalf("settings.json missing the background model:\n%s", raw)
+	}
+}
+
+// TestAITabSwitchBackgroundStepSkippedForCodex 覆盖步骤的出现条件：不消费
+// 后台模型的 agent 不出现该步骤；仅换默认模型（M）也不出现。
+func TestAITabSwitchBackgroundStepSkippedForCodex(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "codex")
+
+	tab.Update(runeKey("s"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 直接确认
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("codex must skip the background step, flow = %v", tab.flow)
+	}
+}
+
+// TestAITabSwitchBackgroundStepPrefillsDeclared 覆盖初始游标：档案声明了后台
+// 模型时预填声明值而非默认模型。
+func TestAITabSwitchBackgroundStepPrefillsDeclared(t *testing.T) {
+	tab, _, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	declared := "m2"
+	if _, err := tab.mgr.LLM.EditProvider(llm.EditProviderOptions{Alias: "main", BackgroundModel: &declared}); err != nil {
+		t.Fatalf("EditProvider: %v", err)
+	}
+	runAITabLoad(t, tab)
+
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+	tab.Update(runeKey("s"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowSelectBackground {
+		t.Fatalf("flow = %v, want selectBackground", tab.flow)
+	}
+	if tab.flowBackgroundCursor != 1 {
+		t.Fatalf("initial cursor = %d, want 1 (declared m2)", tab.flowBackgroundCursor)
 	}
 }
 

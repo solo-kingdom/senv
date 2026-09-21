@@ -84,7 +84,7 @@ func TestSwitchMissingCredentialWritesNothing(t *testing.T) {
 	}
 	home := t.TempDir()
 	sm := NewSwitchManager(pm, "", home)
-	_, err := sm.Switch("claude-code", "remote-synced", nil, "")
+	_, err := sm.Switch("claude-code", "remote-synced", nil, "", "")
 	if err == nil {
 		t.Fatal("Switch() unexpectedly succeeded without the credential")
 	}

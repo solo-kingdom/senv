@@ -485,10 +485,10 @@ func TestSwitchShrinksModelSetAndKeepsUserEntries(t *testing.T) {
 	}
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("kimi", "main", []string{"m1", "m2"}, "m2"); err != nil {
+	if _, err := sm.Switch("kimi", "main", []string{"m1", "m2"}, "m2", ""); err != nil {
 		t.Fatalf("first Switch() error = %v", err)
 	}
-	if _, err := sm.Switch("kimi", "main", []string{"m2"}, "m2"); err != nil {
+	if _, err := sm.Switch("kimi", "main", []string{"m2"}, "m2", ""); err != nil {
 		t.Fatalf("second Switch() error = %v", err)
 	}
 
@@ -524,10 +524,10 @@ func TestSwitchProviderChangeCleansOldNamespace(t *testing.T) {
 	home := t.TempDir()
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("kimi", "main", nil, ""); err != nil {
+	if _, err := sm.Switch("kimi", "main", nil, "", ""); err != nil {
 		t.Fatalf("Switch(main) error = %v", err)
 	}
-	if _, err := sm.Switch("kimi", "alt", nil, ""); err != nil {
+	if _, err := sm.Switch("kimi", "alt", nil, "", ""); err != nil {
 		t.Fatalf("Switch(alt) error = %v", err)
 	}
 
@@ -559,13 +559,13 @@ func TestSwitchRemovesStaleCodexCatalog(t *testing.T) {
 	home := t.TempDir()
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("codex", "main", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "main", nil, "", ""); err != nil {
 		t.Fatalf("Switch(main) error = %v", err)
 	}
 	if _, err := os.Stat(codexCatalogPath(home, "main")); err != nil {
 		t.Fatalf("catalog for main missing: %v", err)
 	}
-	if _, err := sm.Switch("codex", "alt", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "alt", nil, "", ""); err != nil {
 		t.Fatalf("Switch(alt) error = %v", err)
 	}
 	if _, err := os.Stat(codexCatalogPath(home, "main")); !os.IsNotExist(err) {
@@ -589,13 +589,13 @@ func TestStaleCodexCatalogKeptWhileOtherAgentPointsAtProvider(t *testing.T) {
 	home := t.TempDir()
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("codex", "main", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "main", nil, "", ""); err != nil {
 		t.Fatalf("Switch(codex, main) error = %v", err)
 	}
-	if _, err := sm.Switch("claude-code", "main", nil, ""); err != nil {
+	if _, err := sm.Switch("claude-code", "main", nil, "", ""); err != nil {
 		t.Fatalf("Switch(claude-code, main) error = %v", err)
 	}
-	if _, err := sm.Switch("codex", "alt", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "alt", nil, "", ""); err != nil {
 		t.Fatalf("Switch(codex, alt) error = %v", err)
 	}
 	if _, err := os.Stat(codexCatalogPath(home, "main")); err != nil {
@@ -620,7 +620,7 @@ func TestSwitchRollsBackNewCatalogOnConfigFailure(t *testing.T) {
 	}
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("codex", "main", nil, ""); err == nil {
+	if _, err := sm.Switch("codex", "main", nil, "", ""); err == nil {
 		t.Fatal("Switch() unexpectedly succeeded on broken config")
 	}
 	if got := string(mustRead(t, configPath)); got != broken {
@@ -643,13 +643,13 @@ func TestSwitchToleratesMissingStaleArtifacts(t *testing.T) {
 	home := t.TempDir()
 
 	sm := NewSwitchManager(pm, "", home)
-	if _, err := sm.Switch("codex", "main", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "main", nil, "", ""); err != nil {
 		t.Fatalf("Switch(main) error = %v", err)
 	}
 	if err := os.Remove(codexCatalogPath(home, "main")); err != nil {
 		t.Fatalf("Remove(catalog) error = %v", err)
 	}
-	if _, err := sm.Switch("codex", "alt", nil, ""); err != nil {
+	if _, err := sm.Switch("codex", "alt", nil, "", ""); err != nil {
 		t.Fatalf("Switch(alt) with missing stale artifact error = %v", err)
 	}
 }

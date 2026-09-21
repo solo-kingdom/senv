@@ -153,9 +153,13 @@ type LLMProviderEntry struct {
 	Models       []string                `json:"models"`
 	ModelInfo    map[string]LLMModelInfo `json:"model_info,omitempty"`
 	DefaultModel string                  `json:"default_model,omitempty"`
-	Description  string                  `json:"description,omitempty"`
-	CreatedAt    time.Time               `json:"created_at"`
-	UpdatedAt    time.Time               `json:"updated_at"`
+	// BackgroundModel 是档案显式声明的后台模型（ADR-0029）：Coding Agent 后台
+	// 任务（如 claude-code 会话压缩）使用的模型，必须属于 Models；空值表示
+	// 未声明，切换时回退默认模型。
+	BackgroundModel string    `json:"background_model,omitempty"`
+	Description     string    `json:"description,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // LLMModelInfo is the per-model metadata senv persists with a provider profile.
@@ -219,6 +223,9 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 	}
 	if e.DefaultModel != "" && !slices.Contains(e.Models, e.DefaultModel) {
 		return fmt.Errorf("provider %q default model %q is not in models", e.Alias, e.DefaultModel)
+	}
+	if e.BackgroundModel != "" && !slices.Contains(e.Models, e.BackgroundModel) {
+		return fmt.Errorf("provider %q background model %q is not in models", e.Alias, e.BackgroundModel)
 	}
 	return nil
 }

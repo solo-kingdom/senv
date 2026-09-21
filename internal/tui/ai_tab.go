@@ -67,6 +67,11 @@ type aiTab struct {
 	flowCandidates []string
 	flowSelected   map[string]bool
 	flowCursor     int
+	// flowBackground 是后台模型步骤选中的值（ADR-0029）；flowBackgroundCursor
+	// 独立于 flowCursor——确认页渲染与 switchCmd 仍用 flowCursor 作默认模型
+	// 游标，后台模型步骤不得覆盖它。
+	flowBackground       string
+	flowBackgroundCursor int
 
 	// catalogURL 覆盖联网刷新的源；空则用 llm.DefaultCatalogURL。测试用
 	// httptest.Server 注入，生产路径保持零值。
@@ -89,6 +94,9 @@ const (
 	aiFlowSelectAgents
 	aiFlowSelectModel
 	aiFlowSelectDefault
+	// aiFlowSelectBackground 是后台模型步骤（ADR-0029）：只在含 claude-code
+	// 的完整切换里出现，候选为 Provider 模型集全集。
+	aiFlowSelectBackground
 	aiFlowConfirm
 )
 
@@ -171,6 +179,12 @@ func (t *aiTab) Bindings() []KeyAction {
 			{[]string{"esc"}, "cancel", grpWizard, false},
 		}
 	case aiFlowSelectDefault:
+		return []KeyAction{
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "back", grpWizard, false},
+		}
+	case aiFlowSelectBackground:
 		return []KeyAction{
 			actUp, actDown,
 			{[]string{"enter"}, "next", grpWizard, false},
@@ -631,7 +645,12 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			}
 		case "enter":
 			if len(models) > 0 {
-				t.flow = aiFlowConfirm
+				if t.flowNeedsBackground() {
+					t.flowBackgroundCursor = t.backgroundModelCursor()
+					t.flow = aiFlowSelectBackground
+				} else {
+					t.flow = aiFlowConfirm
+				}
 			}
 		case "esc":
 			if t.flowOnlyModel {
@@ -641,6 +660,26 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			// 回到多选步骤重挑 Agent 模型集。
 			t.flow = aiFlowSelectModel
 			t.flowCursor = 0
+		}
+	case aiFlowSelectBackground:
+		candidates := t.flowBackgroundCandidates()
+		switch msg.String() {
+		case "up", "k":
+			if t.flowBackgroundCursor > 0 {
+				t.flowBackgroundCursor--
+			}
+		case "down", "j":
+			if t.flowBackgroundCursor < len(candidates)-1 {
+				t.flowBackgroundCursor++
+			}
+		case "enter":
+			if len(candidates) > 0 {
+				t.flowBackground = candidates[clamp(t.flowBackgroundCursor, 0, len(candidates)-1)]
+				t.flow = aiFlowConfirm
+			}
+		case "esc":
+			// 回到默认模型步骤；flowCursor 仍是默认模型游标，本步骤未触碰它。
+			t.flow = aiFlowSelectDefault
 		}
 	case aiFlowConfirm:
 		switch msg.String() {
@@ -682,6 +721,8 @@ func (t *aiTab) cancelMode() {
 	t.flowCandidates = nil
 	t.flowSelected = nil
 	t.flowCursor = 0
+	t.flowBackground = ""
+	t.flowBackgroundCursor = 0
 }
 
 // startSwitch begins the switch (onlyModel=false) or default-model-change
@@ -853,6 +894,54 @@ func (t *aiTab) defaultModelCursor() int {
 	return 0
 }
 
+// flowNeedsBackground 报告本次向导是否需要后台模型步骤（ADR-0029）：完整
+// 切换且选中的 agent 里有消费后台模型的（目前仅 claude-code）。仅换默认
+// 模型（m）不展示该步骤，后台模型按档案声明/新默认模型静默解析。
+func (t *aiTab) flowNeedsBackground() bool {
+	if t.flowOnlyModel {
+		return false
+	}
+	for _, id := range t.flowAgents {
+		if adapter, ok := llm.LookupAgent(id); ok && adapter.ProjectsBackgroundModel {
+			return true
+		}
+	}
+	return false
+}
+
+// flowBackgroundCandidates 返回后台模型步骤的候选：Provider 模型集全集——
+// 后台模型只需属于档案，不要求进入 Agent 模型集。
+func (t *aiTab) flowBackgroundCandidates() []string {
+	if entry := t.providerByAlias(t.flowProvider); entry != nil {
+		return entry.Models
+	}
+	return nil
+}
+
+// backgroundModelCursor 返回后台模型步骤的初始游标：优先档案声明的后台模型，
+// 其次本次选中的默认模型（即缺省回退值）。
+func (t *aiTab) backgroundModelCursor() int {
+	candidates := t.flowBackgroundCandidates()
+	if len(candidates) == 0 {
+		return 0
+	}
+	preferred := ""
+	if entry := t.providerByAlias(t.flowProvider); entry != nil {
+		preferred = entry.BackgroundModel
+	}
+	if preferred == "" {
+		if models := t.flowSelectedModels(); len(models) > 0 {
+			preferred = models[clamp(t.flowCursor, 0, len(models)-1)]
+		}
+	}
+	for i, model := range candidates {
+		if model == preferred {
+			return i
+		}
+	}
+	return 0
+}
+
 func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	models := t.flowSelectedModels()
 	agents := t.flowAgents
@@ -866,11 +955,12 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	}
 	provider := t.flowProvider
 	defaultModel := models[clamp(t.flowCursor, 0, len(models)-1)]
+	backgroundModel := t.flowBackground
 	sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 	return func() tea.Msg {
 		out := aiSwitchBatchResultMsg{onlyModel: onlyModel}
 		for _, agentID := range agents {
-			res, err := sm.Switch(agentID, provider, models, defaultModel)
+			res, err := sm.Switch(agentID, provider, models, defaultModel, backgroundModel)
 			out.results = append(out.results, aiSwitchOutcome{agentID: agentID, out: res, err: err})
 		}
 		return out
@@ -1022,6 +1112,10 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			key: "default_model", label: "default model", kind: formText, value: base.DefaultModel,
 			placeholder: "m1 (optional)",
 		},
+		formField{
+			key: "background_model", label: "background model", kind: formText, value: base.BackgroundModel,
+			placeholder: "m1 (optional; claude-code compaction, empty = default model)",
+		},
 		optionalDescriptionField(base.Description),
 		formField{
 			key: "credential", label: "credential source", kind: formRef, value: credentialValue,
@@ -1131,6 +1225,10 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if catalog == "" && defaultModel != "" && !containsString(models, defaultModel) {
 		return reopen("default_model", fmt.Errorf("default model %s not in model set", defaultModel))
 	}
+	backgroundModel := strings.TrimSpace(values["background_model"])
+	if catalog == "" && backgroundModel != "" && !containsString(models, backgroundModel) {
+		return reopen("background_model", fmt.Errorf("background model %s not in model set", backgroundModel))
+	}
 	credential := strings.TrimSpace(values["credential"])
 	apiKey := strings.TrimSpace(values["api_key"])
 	switch {
@@ -1162,6 +1260,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			ModelModalities:       modelModalities,
 			RequireModelMetadata:  true,
 			DefaultModel:          defaultModel,
+			BackgroundModel:       backgroundModel,
 			APIShape:              apiShape,
 			ShapeURLs:             shapeURLs,
 			Description:           strings.TrimSpace(values["description"]),
@@ -1195,6 +1294,8 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		ShapeURLs:    editShapeURLs,
 		DefaultModel: &defaultModel,
 	}
+	// 表单是全量状态：后台模型与默认模型一样总是传入（空值 = 清除声明）。
+	opts.BackgroundModel = &backgroundModel
 	desc := strings.TrimSpace(values["description"])
 	opts.Description = &desc
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
@@ -1379,6 +1480,8 @@ func providerErrorField(err error) string {
 		return "api_shape"
 	case strings.Contains(msg, "default model"):
 		return "default_model"
+	case strings.Contains(msg, "background model"):
+		return "background_model"
 	case strings.Contains(msg, "credential"), strings.Contains(msg, "api key"), strings.Contains(msg, "key"):
 		return "api_key"
 	case strings.Contains(msg, "context"):
@@ -1430,6 +1533,7 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		"credential_ref: " + p.CredentialRef,
 		"catalog:        " + orDash(p.CatalogProvider),
 		"default_model:  " + orDash(p.DefaultModel),
+		"background_model: " + orDash(p.BackgroundModel),
 		"description:    " + orDash(p.Description),
 		fmt.Sprintf("models (%d):", len(p.Models)),
 	}
@@ -1828,9 +1932,28 @@ func (t *aiTab) renderFlow() string {
 		if t.flowOnlyModel {
 			action = "default model"
 		}
-		return modalBox(t.width, t.height, "confirm"+action,
-			fmt.Sprintf("%s → %s / %s (%d models)", agent, t.flowProvider, model, len(models)),
+		body := fmt.Sprintf("%s → %s / %s (%d models)", agent, t.flowProvider, model, len(models))
+		if t.flowBackground != "" {
+			body += fmt.Sprintf("\nbackground: %s", t.flowBackground)
+		}
+		return modalBox(t.width, t.height, "confirm"+action, body,
 			"enter/y confirm · esc/n cancel")
+	case aiFlowSelectBackground:
+		candidates := t.flowBackgroundCandidates()
+		lines := make([]string, 0, len(candidates)+2)
+		// 说明文案（「步骤必须呈现并给出说明」）：后台模型是什么、为什么
+		// 它必须真实存在于接入网关。
+		lines = append(lines,
+			mutedStyle().Render(truncateWidth("claude-code 后台任务（会话压缩、haiku 档位调用）使用的模型，", maxInt(t.width-10, 12))),
+			mutedStyle().Render(truncateWidth("写入 ANTHROPIC_SMALL_FAST_MODEL 与 ANTHROPIC_DEFAULT_HAIKU_MODEL；", maxInt(t.width-10, 12))),
+			mutedStyle().Render(truncateWidth("它必须真实存在于接入网关——缺省的 claude-haiku 不存在会让压缩静默失败。", maxInt(t.width-10, 12))),
+		)
+		for i, m := range candidates {
+			label := truncateWidth(m, maxInt(t.width-10, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowBackgroundCursor, 0, len(candidates)-1)))
+		}
+		title := fmt.Sprintf("choose background model (%d models) — %s → %s", len(candidates), agent, t.flowProvider)
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
 	case aiFlowSelectDefault:
 		models := t.flowSelectedModels()
 		lines := make([]string, 0, len(models))

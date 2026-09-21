@@ -13,7 +13,7 @@ func TestSwitchManagerFailsWithoutHome(t *testing.T) {
 	if _, _, err := sm.Status(); err == nil {
 		t.Fatal("Status() unexpectedly resolved paths without HOME")
 	}
-	if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m1"); err == nil {
+	if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m1", ""); err == nil {
 		t.Fatal("Switch() unexpectedly resolved paths without HOME")
 	}
 	wd, err := os.Getwd()

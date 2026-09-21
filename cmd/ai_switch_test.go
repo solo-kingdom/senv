@@ -39,6 +39,14 @@ func setAIRemovedModelFlag(t *testing.T) {
 	t.Cleanup(func() { lookup.Changed = old })
 }
 
+// setAISwitchBackgroundFlag 预置 --background-model（与 setAISwitchFlags 同风格）。
+func setAISwitchBackgroundFlag(t *testing.T, value string) {
+	t.Helper()
+	old := aiSwitchBackgroundModel
+	aiSwitchBackgroundModel = value
+	t.Cleanup(func() { aiSwitchBackgroundModel = old })
+}
+
 // runAISwitchCmd 分别捕获 stdout/stderr（codex 的凭据指引走 stderr）。
 func runAISwitchCmd(t *testing.T, cmd *cobra.Command, args []string) (string, string, error) {
 	t.Helper()
@@ -102,6 +110,14 @@ func TestAISwitchClaudeCodeEndToEnd(t *testing.T) {
 	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-secret-value" {
 		t.Fatalf("env token = %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
+	// 未声明后台模型时回退默认模型（ADR-0029），输出展示该键的归属。
+	if env["ANTHROPIC_SMALL_FAST_MODEL"] != "m1" || env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "m1" {
+		t.Fatalf("background env = %v / %v, want fallback to m1",
+			env["ANTHROPIC_SMALL_FAST_MODEL"], env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
+	}
+	if !strings.Contains(out, "后台模型：m1") {
+		t.Fatalf("switch output missing the background model line: %q", out)
+	}
 
 	// 指针落盘且不含凭据。
 	pointerRaw, err := os.ReadFile(agentPointerPath())
@@ -129,6 +145,48 @@ func TestAISwitchClaudeCodeEndToEnd(t *testing.T) {
 		if strings.Contains(statusOut, absent) {
 			t.Fatalf("status output must not contain %q:\n%s", absent, statusOut)
 		}
+	}
+}
+
+func TestAISwitchBackgroundModelFlag(t *testing.T) {
+	newAuditTestProject(t)
+	addAIProviderForSwitchTest(t, "main")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// --background-model 单次覆盖（不回写档案，ADR-0029）。
+	setAISwitchBackgroundFlag(t, "m2")
+	if _, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"claude-code", "main"}); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings["env"].(map[string]any)["ANTHROPIC_SMALL_FAST_MODEL"]; got != "m2" {
+		t.Fatalf("ANTHROPIC_SMALL_FAST_MODEL = %v, want m2", got)
+	}
+	if got := settings["env"].(map[string]any)["ANTHROPIC_DEFAULT_HAIKU_MODEL"]; got != "m2" {
+		t.Fatalf("ANTHROPIC_DEFAULT_HAIKU_MODEL = %v, want m2", got)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil || entry.BackgroundModel != "" {
+		t.Fatalf("profile must stay undeclared, got %q (%v)", entry.BackgroundModel, err)
+	}
+
+	// 不在模型集的显式值 fail-closed。
+	setAISwitchBackgroundFlag(t, "ghost")
+	if _, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"claude-code", "main"}); err == nil ||
+		!strings.Contains(err.Error(), "background model") {
+		t.Fatalf("ghost background err = %v, want membership error", err)
 	}
 }
 

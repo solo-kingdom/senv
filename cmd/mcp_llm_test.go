@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wii/senv/internal/llm"
 )
 
 func setupLLMMCPTest(t *testing.T) *managers {
@@ -43,7 +45,8 @@ func TestMCPLLMProviderListWhitelistedOnly(t *testing.T) {
 	}
 	allowed := map[string]bool{
 		"alias": true, "base_url": true, "credential_ref": true,
-		"catalog_provider": true, "default_model": true, "models": true,
+		"catalog_provider": true, "default_model": true, "background_model": true,
+		"models": true,
 		"model_info": true, "api_shape": true, "shape_urls": true,
 		"created_at": true, "updated_at": true,
 	}
@@ -57,6 +60,27 @@ func TestMCPLLMProviderListWhitelistedOnly(t *testing.T) {
 	}
 	if strings.Contains(text, "sk-secret-value") {
 		t.Fatal("MCP response leaked credential plaintext")
+	}
+}
+
+// TestMCPLLMProviderListBackgroundModel 覆盖 ADR-0029：档案声明的后台模型
+// 出现在只读视图里，未声明时字段省略。
+func TestMCPLLMProviderListBackgroundModel(t *testing.T) {
+	requestManagers := setupLLMMCPTest(t)
+	declared := "m2"
+	if _, err := requestManagers.llm.EditProvider(llm.EditProviderOptions{Alias: "main", BackgroundModel: &declared}); err != nil {
+		t.Fatalf("EditProvider: %v", err)
+	}
+	res, _, err := requestManagers.llmProviderList(context.Background(), nil, struct{}{})
+	if err != nil || res.IsError {
+		t.Fatalf("llm_provider_list = %v, %v", res, err)
+	}
+	var providers []map[string]any
+	if err := json.Unmarshal([]byte(textOf(t, res)), &providers); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(providers) != 1 || providers[0]["background_model"] != "m2" {
+		t.Fatalf("provider view = %v, want background_model m2", providers)
 	}
 }
 

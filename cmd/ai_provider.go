@@ -64,6 +64,7 @@ var (
 	providerAddDefaultReasoning   string
 	providerAddModelModalities    []string
 	providerAddDefault            string
+	providerAddBackground         string
 	providerAddAPIShape           string
 	providerAddShapeURLs          []string
 	providerAddDescription        string
@@ -83,6 +84,7 @@ var (
 	providerEditDefaultReasoning   string
 	providerEditModelModalities    []string
 	providerEditDefault            string
+	providerEditBackground         string
 	providerEditAPIShape           string
 	providerEditShapeURLs          []string
 	providerEditDescription        string
@@ -168,6 +170,7 @@ because claude-code appends /v1/messages to it.`,
 			ModelModalities:       modelModalities,
 			RequireModelMetadata:  true,
 			DefaultModel:          providerAddDefault,
+			BackgroundModel:       providerAddBackground,
 			APIShape:              providerAddAPIShape,
 			ShapeURLs:             shapeURLs,
 			Description:           providerAddDescription,
@@ -311,6 +314,9 @@ Any failure leaves the profile, credential and references untouched.`,
 		if cmd.Flags().Changed("default-model") {
 			opts.DefaultModel = &providerEditDefault
 		}
+		if cmd.Flags().Changed("background-model") {
+			opts.BackgroundModel = &providerEditBackground
+		}
 		if cmd.Flags().Changed("key-ref") {
 			opts.KeyRef = &providerEditKeyRef
 		}
@@ -413,6 +419,7 @@ var aiProviderShowCmd = &cobra.Command{
 			}
 		}
 		fmt.Fprintf(out, "默认模型：%s\n", orDash(e.DefaultModel))
+		fmt.Fprintf(out, "后台模型：%s\n", orDash(e.BackgroundModel))
 		fmt.Fprintf(out, "说明：%s\n", orDash(e.Description))
 		return nil
 	},
@@ -565,6 +572,7 @@ func init() {
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefaultReasoning, "default-reasoning", "", "collection default reasoning effort; fills models that have efforts but no resolved default")
 	aiProviderAddCmd.Flags().StringArrayVar(&providerAddModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDefault, "default-model", "", "default model (must be in the model set)")
+	aiProviderAddCmd.Flags().StringVar(&providerAddBackground, "background-model", "", "background model for agent background tasks, e.g. claude-code compaction (must be in the model set; empty falls back to the default model at switch time)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty derives it from the target agent)")
 	aiProviderAddCmd.Flags().StringArrayVar(&providerAddShapeURLs, "shape-url", nil, "per-shape base URL: <api_shape>=<url> (repeatable; "+llm.APIShapeList()+"; anthropic is stored verbatim as the base claude-code appends /v1/messages to)")
 	aiProviderAddCmd.Flags().StringVar(&providerAddDescription, "description", "", "optional vault note on the provider profile (not model catalog text)")
@@ -583,6 +591,7 @@ func init() {
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefaultReasoning, "default-reasoning", "", "collection default reasoning effort; fills models that have efforts but no resolved default")
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefault, "default-model", "", "default model (must be in the final model set); empty clears it")
+	aiProviderEditCmd.Flags().StringVar(&providerEditBackground, "background-model", "", "background model for agent background tasks, e.g. claude-code compaction (must be in the final model set); empty clears it")
 	aiProviderEditCmd.Flags().StringVar(&providerEditAPIShape, "api-shape", "", "API shape: "+llm.APIShapeList()+" (empty clears the field)")
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditShapeURLs, "shape-url", nil, "per-shape base URL: <api_shape>=<url> (repeatable; empty <url> clears that shape; omitted shapes keep their value)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDescription, "description", "", "replace the provider profile note (empty clears it)")

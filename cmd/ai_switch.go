@@ -33,6 +33,8 @@ const aiSwitchModelSetHint = 20
 var (
 	aiSwitchModels       []string
 	aiSwitchDefaultModel string
+	// aiSwitchBackgroundModel 是单次切换的后台模型覆盖（ADR-0029）。
+	aiSwitchBackgroundModel string
 	// aiSwitchModel 只为让已移除的 --model 给出可读错误而注册，不参与写入。
 	aiSwitchModel string
 )
@@ -57,6 +59,14 @@ offers); it accepts a comma-separated list and may be repeated, and defaults to
 the provider's full model set. --default-model picks the starting model and
 defaults to the profile's default. --model is removed.
 
+Claude Code also gets a background model for its background tasks (session
+compaction and other haiku-tier calls), written as ANTHROPIC_SMALL_FAST_MODEL
+and ANTHROPIC_DEFAULT_HAIKU_MODEL in settings.json and managed
+by senv: --background-model overrides it for this switch; otherwise the
+provider profile's background model is used, falling back to the default model.
+The fallback exists because Claude Code's built-in default (claude-haiku) does
+not exist on self-hosted gateways, which silently breaks auto-compaction.
+
 The provider's base URL is written in the shape the agent's API family
 expects: Claude Code without the /v1 suffix (its SDK appends /v1/messages),
 OpenAI-compatible agents with it.`,
@@ -76,7 +86,7 @@ OpenAI-compatible agents with it.`,
 			return err
 		}
 		sm := llm.NewSwitchManager(mgr, agentPointerPath(), home)
-		out, err := sm.Switch(args[0], args[1], models, defaultModel)
+		out, err := sm.Switch(args[0], args[1], models, defaultModel, strings.TrimSpace(aiSwitchBackgroundModel))
 		if err != nil {
 			auditOp(session.AuditOpLLMSwitch, "agent:"+args[0], false, "switch 失败")
 			return err
@@ -91,6 +101,10 @@ OpenAI-compatible agents with it.`,
 		if out.CredentialEnv != "" {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  凭据环境变量：%s（由 `senv env export` 提供，配置文件不含明文）\n", out.CredentialEnv)
+		}
+		if out.BackgroundModel != "" {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"  后台模型：%s（写入 ANTHROPIC_SMALL_FAST_MODEL 与 ANTHROPIC_DEFAULT_HAIKU_MODEL，由 senv 管理，覆盖手写值）\n", out.BackgroundModel)
 		}
 		if len(out.Models) > aiSwitchModelSetHint {
 			fmt.Fprintf(cmd.OutOrStdout(),
@@ -184,6 +198,8 @@ func init() {
 		"Agent model set to write (comma-separated, repeatable; default: the provider's full model set)")
 	aiSwitchCmd.Flags().StringVar(&aiSwitchDefaultModel, "default-model", "",
 		"starting model for the agent (default: the provider profile's default model)")
+	aiSwitchCmd.Flags().StringVar(&aiSwitchBackgroundModel, "background-model", "",
+		"background model for the agent's background tasks (claude-code only; default: the provider profile's background model, falling back to the default model)")
 	// --model 的旧语义是「只写这一个模型」，与新语义（选定集 + 默认）不同，
 	// 静默兼容会让旧脚本在无提示下改变写入结果，因此直接拒绝（grill D8）。
 	aiSwitchCmd.Flags().StringVar(&aiSwitchModel, "model", "",

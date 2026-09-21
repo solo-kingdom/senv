@@ -71,7 +71,7 @@ func TestCodexEnvKeyReusesReferencedEnvName(t *testing.T) {
 	})
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "deepseek", nil, "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "deepseek", nil, "", "")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCodexTextRefSeedsDefaultGroupReference(t *testing.T) {
 	envMgr := env.NewManager(store, "test-password")
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -164,7 +164,7 @@ func TestCodexEnvSeedKeepsExistingEntry(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCodexEnvKeyFromInactiveGroupWarns(t *testing.T) {
 	})
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "stag", nil, "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "stag", nil, "", "")
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -238,7 +238,7 @@ func TestCodexMissingCredentialWritesNothing(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	_, err := NewSwitchManager(pm, "", home).Switch("codex", "ghost", nil, "")
+	_, err := NewSwitchManager(pm, "", home).Switch("codex", "ghost", nil, "", "")
 	if err == nil {
 		t.Fatal("Switch() unexpectedly succeeded without the credential")
 	}
@@ -292,7 +292,7 @@ func TestCodexEnvSeedFailureWritesNothing(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	_, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "")
+	_, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
 	if err == nil {
 		t.Fatal("Switch() unexpectedly succeeded with an unwritable env group")
 	}

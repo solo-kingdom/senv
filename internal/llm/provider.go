@@ -145,6 +145,9 @@ type AddProviderOptions struct {
 	// 不影响模型集的编辑保持 false。
 	RequireModelMetadata bool
 	DefaultModel         string
+	// BackgroundModel 是档案显式声明的后台模型（ADR-0029），必须属于最终
+	// 模型集；空值表示未声明，切换时回退默认模型。
+	BackgroundModel string
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
 	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
 	APIShape string
@@ -206,6 +209,10 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if defaultModel != "" && !slices.Contains(models, defaultModel) {
 		return nil, fmt.Errorf("default model %q is not in the model set", defaultModel)
 	}
+	backgroundModel := strings.TrimSpace(opts.BackgroundModel)
+	if backgroundModel != "" && !slices.Contains(models, backgroundModel) {
+		return nil, fmt.Errorf("background model %q is not in the model set", backgroundModel)
+	}
 
 	now := time.Now().Truncate(time.Second).UTC()
 	entry := &storage.LLMProviderEntry{
@@ -217,6 +224,7 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		Models:          models,
 		ModelInfo:       modelInfo,
 		DefaultModel:    defaultModel,
+		BackgroundModel: backgroundModel,
 		Description:     desc,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -347,7 +355,10 @@ type EditProviderOptions struct {
 	// 或元数据时为 true，避免 editor 因旧档案缺元数据而无法修改其他字段。
 	RequireModelMetadata bool
 	DefaultModel         *string
-	APIShape             *string
+	// BackgroundModel 非 nil 时应用档案后台模型声明（ADR-0029）：指向空字符串
+	// 表示清除声明（切换回退默认模型）；nil 表示保留原值。
+	BackgroundModel *string
+	APIShape        *string
 	// ShapeURLs 非 nil 时应用形态地址：出现的 key 设置（空值清除），未出现的
 	// key 保留原值；nil 表示保留全部形态地址。
 	ShapeURLs map[string]string
@@ -460,6 +471,12 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 	}
 	if entry.DefaultModel != "" && !slices.Contains(entry.Models, entry.DefaultModel) {
 		return nil, fmt.Errorf("default model %q is not in the final model set", entry.DefaultModel)
+	}
+	if opts.BackgroundModel != nil {
+		entry.BackgroundModel = strings.TrimSpace(*opts.BackgroundModel)
+	}
+	if entry.BackgroundModel != "" && !slices.Contains(entry.Models, entry.BackgroundModel) {
+		return nil, fmt.Errorf("background model %q is not in the final model set", entry.BackgroundModel)
 	}
 
 	if apiKey != "" {

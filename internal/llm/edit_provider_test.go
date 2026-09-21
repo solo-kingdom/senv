@@ -203,7 +203,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		_, err := sm.Switch("claude-code", "main", nil, "")
+		_, err := sm.Switch("claude-code", "main", nil, "", "")
 		if err == nil || !strings.Contains(err.Error(), "incompatible") {
 			t.Fatalf("Switch error = %v", err)
 		}
@@ -211,11 +211,11 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 			t.Fatalf("config written despite incompatible shape (stat err = %v)", statErr)
 		}
 		// 同一形态对仍支持 chat 线协议的 OpenAI 兼容 agent（kimi）合法。
-		if _, err := sm.Switch("kimi", "main", nil, ""); err != nil {
+		if _, err := sm.Switch("kimi", "main", nil, "", ""); err != nil {
 			t.Fatalf("Switch(kimi) error = %v", err)
 		}
 		// codex 只讲 Responses：chat-only 档案拒绝且不写文件。
-		if _, err := sm.Switch("codex", "main", nil, ""); err == nil || !strings.Contains(err.Error(), "openai-chat") {
+		if _, err := sm.Switch("codex", "main", nil, "", ""); err == nil || !strings.Contains(err.Error(), "openai-chat") {
 			t.Fatalf("Switch(codex) error = %v, want chat-wire rejection", err)
 		}
 		if _, statErr := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(statErr) {
@@ -231,7 +231,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		out, err := sm.Switch("claude-code", "main", nil, "")
+		out, err := sm.Switch("claude-code", "main", nil, "", "")
 		if err != nil {
 			t.Fatalf("Switch error = %v", err)
 		}
@@ -248,7 +248,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 		})
 		home := t.TempDir()
 		sm := NewSwitchManager(pm, "", home)
-		out, err := sm.Switch("claude-code", "main", nil, "")
+		out, err := sm.Switch("claude-code", "main", nil, "", "")
 		if err != nil {
 			t.Fatalf("Switch error = %v", err)
 		}

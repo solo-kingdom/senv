@@ -20,33 +20,37 @@ type llmProviderShapeURLs struct {
 // llmProviderView 是 MCP 响应的显式白名单：档案本身不存凭据明文，这里
 // 再裁剪一层，从结构上排除任何密钥字段。
 type llmProviderView struct {
-	Alias         string                          `json:"alias"`
-	BaseURL       string                          `json:"base_url"`
-	ShapeURLs     *llmProviderShapeURLs           `json:"shape_urls,omitempty"`
-	APIShape      string                          `json:"api_shape,omitempty"`
-	CredentialRef string                          `json:"credential_ref"`
-	Catalog       string                          `json:"catalog_provider,omitempty"`
-	DefaultModel  string                          `json:"default_model,omitempty"`
-	Description   string                          `json:"description,omitempty"`
-	Models        []string                        `json:"models"`
-	ModelInfo     map[string]storage.LLMModelInfo `json:"model_info,omitempty"`
-	CreatedAt     string                          `json:"created_at"`
-	UpdatedAt     string                          `json:"updated_at"`
+	Alias         string                `json:"alias"`
+	BaseURL       string                `json:"base_url"`
+	ShapeURLs     *llmProviderShapeURLs `json:"shape_urls,omitempty"`
+	APIShape      string                `json:"api_shape,omitempty"`
+	CredentialRef string                `json:"credential_ref"`
+	Catalog       string                `json:"catalog_provider,omitempty"`
+	DefaultModel  string                `json:"default_model,omitempty"`
+	// BackgroundModel 是档案声明的后台模型（ADR-0029），空表示未声明
+	// （切换时回退默认模型）。
+	BackgroundModel string                          `json:"background_model,omitempty"`
+	Description     string                          `json:"description,omitempty"`
+	Models          []string                        `json:"models"`
+	ModelInfo       map[string]storage.LLMModelInfo `json:"model_info,omitempty"`
+	CreatedAt       string                          `json:"created_at"`
+	UpdatedAt       string                          `json:"updated_at"`
 }
 
 func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 	view := llmProviderView{
-		Alias:         e.Alias,
-		BaseURL:       e.BaseURL,
-		APIShape:      e.APIShape,
-		CredentialRef: e.CredentialRef,
-		Catalog:       e.CatalogProvider,
-		DefaultModel:  e.DefaultModel,
-		Description:   e.Description,
-		Models:        e.Models,
-		ModelInfo:     e.ModelInfo,
-		CreatedAt:     e.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     e.UpdatedAt.Format(time.RFC3339),
+		Alias:           e.Alias,
+		BaseURL:         e.BaseURL,
+		APIShape:        e.APIShape,
+		CredentialRef:   e.CredentialRef,
+		Catalog:         e.CatalogProvider,
+		DefaultModel:    e.DefaultModel,
+		BackgroundModel: e.BackgroundModel,
+		Description:     e.Description,
+		Models:          e.Models,
+		ModelInfo:       e.ModelInfo,
+		CreatedAt:       e.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       e.UpdatedAt.Format(time.RFC3339),
 	}
 	if e.ChatBaseURL != "" || e.ResponsesBaseURL != "" || e.AnthropicBaseURL != "" {
 		view.ShapeURLs = &llmProviderShapeURLs{

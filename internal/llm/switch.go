@@ -55,6 +55,10 @@ type SwitchRequest struct {
 	// opencode 用它在 OpenAI 兼容族内选 chat / responses 线协议（ADR-0006 的
 	// 落点）；codex 只讲 responses，不消费该值。
 	APIShape string
+	// BackgroundModel 是已解析的后台模型（ADR-0029），仅
+	// ProjectsBackgroundModel 的适配器消费（claude-code 投影为
+	// ANTHROPIC_SMALL_FAST_MODEL）。
+	BackgroundModel string
 	// PriorProvider/PriorModels 是上一次成功切换的本机记录，作为清理差集的
 	// 依据；首次切换时为零值。
 	PriorProvider string
@@ -78,6 +82,10 @@ type AgentAdapter struct {
 	Credential     CredentialMode
 	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
 	Protocol ProtocolFamily
+	// ProjectsBackgroundModel 为 true 时，SwitchManager 解析后台模型
+	// （ADR-0029：显式指定 > 档案声明 > 默认模型）并经 SwitchRequest 传入；
+	// 目前仅 claude-code 消费。
+	ProjectsBackgroundModel bool
 }
 
 // senvProviderID 返回该档案在各 agent 配置中的供应商标识。alias 已经过
@@ -335,8 +343,13 @@ func setTOMLPath(root map[string]any, path []string, value any) {
 
 // claudeCodeAdapter：~/.claude/settings.json 顶层 model（默认模型）+
 // modelPicker（Agent 模型集）+ env 块（ANTHROPIC_BASE_URL /
-// ANTHROPIC_AUTH_TOKEN），凭据内联。provider 是自定义接入地址，
-// replaceBuiltInOptions 让内置 lineup 不出现在选择器里（D5）。
+// ANTHROPIC_AUTH_TOKEN / ANTHROPIC_SMALL_FAST_MODEL /
+// ANTHROPIC_DEFAULT_HAIKU_MODEL），凭据内联。provider
+// 是自定义接入地址，replaceBuiltInOptions 让内置 lineup 不出现在选择器里
+// （D5）。ANTHROPIC_SMALL_FAST_MODEL 是后台（压缩）模型（ADR-0029）：缺省
+// 的 claude-haiku 在自建网关上不存在会让自动压缩静默失败，因此切换时总是
+// 写入解析结果，并同值写 ANTHROPIC_DEFAULT_HAIKU_MODEL 把 haiku 档位整体
+// 重映射；这两个键归 senv 拥有。
 const (
 	// claudeBehavesAsModel 是 Claude Code 已知的稳定模型，用作自定义模型
 	// 的客户端能力映射；behavesAs 只影响客户端行为，不改实际发送的模型 ID。
@@ -353,9 +366,10 @@ func claudeBehavesAs(meta ModelMetadata) string {
 
 func claudeCodeAdapter() AgentAdapter {
 	return AgentAdapter{
-		ID:       "claude-code",
-		Name:     "Claude Code",
-		Protocol: ProtocolAnthropic,
+		ID:                      "claude-code",
+		Name:                    "Claude Code",
+		Protocol:                ProtocolAnthropic,
+		ProjectsBackgroundModel: true,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".claude", "settings.json")
 		},
@@ -365,10 +379,15 @@ func claudeCodeAdapter() AgentAdapter {
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
-				root["model"] = req.DefaultModel
-				env := ensureSubMap(root, "env")
-				env["ANTHROPIC_BASE_URL"] = req.BaseURL
-				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+			root["model"] = req.DefaultModel
+			env := ensureSubMap(root, "env")
+			env["ANTHROPIC_BASE_URL"] = req.BaseURL
+			env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+			// 后台模型写两个键（ADR-0029）：SMALL_FAST 管压缩等后台任务，
+			// DEFAULT_HAIKU 把 haiku 档位整体重映射——网关上没有 haiku 时，
+			// 标题生成等 haiku 档位调用也会静默失败。
+			env["ANTHROPIC_SMALL_FAST_MODEL"] = req.BackgroundModel
+			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = req.BackgroundModel
 				options := make([]map[string]any, 0, len(req.Models))
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
@@ -945,6 +964,9 @@ type SwitchOutput struct {
 	Provider     string
 	Models       []string
 	DefaultModel string
+	// BackgroundModel 是本次写入的后台模型（ADR-0029）；仅
+	// ProjectsBackgroundModel 的 agent 非空。
+	BackgroundModel string
 	// BaseURL 是按该 agent 协议族解析后实际写入配置的接入地址。
 	BaseURL string
 	// BaseURLSource 标注地址来源：显式形态地址字段名，或「由 BaseURL 推断」。
@@ -955,7 +977,9 @@ type SwitchOutput struct {
 }
 
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
-func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string) (*SwitchOutput, error) {
+// backgroundModel 是单次切换的后台模型覆盖（ADR-0029），空值表示沿用档案
+// 声明或回退默认模型；只有 ProjectsBackgroundModel 的 agent 消费它。
+func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string, backgroundModel string) (*SwitchOutput, error) {
 	home, pointerPath, err := sm.resolvePaths()
 	if err != nil {
 		return nil, err
@@ -977,6 +1001,23 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	defaultModel, err = resolveDefaultModel(providerAlias, entry, agentModels, defaultModel)
 	if err != nil {
 		return nil, err
+	}
+
+	// 后台模型（ADR-0029）：仅消费它的 agent 解析；缺省回退默认模型并提示
+	// 声明更便宜的后台模型。显式值与档案声明都必须属于 Provider 模型集。
+	var backgroundWarnings []string
+	resolvedBackground := ""
+	if adapter.ProjectsBackgroundModel {
+		var fallback bool
+		resolvedBackground, fallback, err = resolveBackgroundModel(providerAlias, entry, backgroundModel, defaultModel)
+		if err != nil {
+			return nil, err
+		}
+		if fallback {
+			backgroundWarnings = append(backgroundWarnings, fmt.Sprintf(
+				"未声明后台模型，已回退默认模型 %s 作为 %s 的后台（压缩）模型；可用 `senv ai provider edit %s --background-model <model>` 声明更便宜的模型",
+				defaultModel, adapter.Name, providerAlias))
+		}
 	}
 
 	// 形态地址门禁：目标协议族存在显式形态地址时放行——该地址的存在本身就是
@@ -1085,19 +1126,20 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		}
 	}()
 	req := SwitchRequest{
-		AgentID:       agentID,
-		ProviderAlias: providerAlias,
-		BaseURL:       baseURL,
-		Models:        agentModels,
-		DefaultModel:  defaultModel,
-		Credential:    credential,
-		ConfigPath:    configPath,
-		Home:          home,
-		ModelMetadata: ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels),
-		APIShape:      string(shape),
-		PriorProvider: prior.Provider,
-		PriorModels:   prior.Models,
-		tx:            tx,
+		AgentID:         agentID,
+		ProviderAlias:   providerAlias,
+		BaseURL:         baseURL,
+		Models:          agentModels,
+		DefaultModel:    defaultModel,
+		Credential:      credential,
+		ConfigPath:      configPath,
+		Home:            home,
+		ModelMetadata:   ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels),
+		APIShape:        string(shape),
+		BackgroundModel: resolvedBackground,
+		PriorProvider:   prior.Provider,
+		PriorModels:     prior.Models,
+		tx:              tx,
 	}
 	if err := adapter.Apply(req); err != nil {
 		return nil, fmt.Errorf("write %s config: %w", agentID, err)
@@ -1128,19 +1170,21 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	}
 
 	out := &SwitchOutput{
-		AgentID:       agentID,
-		AgentName:     adapter.Name,
-		Provider:      providerAlias,
-		Models:        agentModels,
-		DefaultModel:  defaultModel,
-		BaseURL:       baseURL,
-		BaseURLSource: baseURLSource,
-		ConfigPath:    configPath,
+		AgentID:         agentID,
+		AgentName:       adapter.Name,
+		Provider:        providerAlias,
+		Models:          agentModels,
+		DefaultModel:    defaultModel,
+		BackgroundModel: resolvedBackground,
+		BaseURL:         baseURL,
+		BaseURLSource:   baseURLSource,
+		ConfigPath:      configPath,
 	}
 	if adapter.Credential == CredentialEnvVar {
 		out.CredentialEnv = credential
 	}
-	out.Warnings = append(credentialWarnings, metadataDeclarationWarnings(agentModels, req.ModelMetadata)...)
+	out.Warnings = append(credentialWarnings, backgroundWarnings...)
+	out.Warnings = append(out.Warnings, metadataDeclarationWarnings(agentModels, req.ModelMetadata)...)
 	return out, nil
 }
 
@@ -1400,6 +1444,29 @@ func resolveAgentModels(providerAlias string, entry *storage.LLMProviderEntry, m
 		return nil, fmt.Errorf("agent model set is empty")
 	}
 	return out, nil
+}
+
+// resolveBackgroundModel 按 ADR-0029 解析后台模型：单次切换显式指定 > 档案
+// 声明值 > 默认模型。显式值与档案声明都必须属于 Provider 模型集——fail-closed，
+// 因为「配置里写了网关不存在的模型」正是本决策要消除的事故形态。fallback 为
+// true 表示走了缺省回退（供调用方给 warning）。
+func resolveBackgroundModel(providerAlias string, entry *storage.LLMProviderEntry, explicit, defaultModel string) (resolved string, fallback bool, err error) {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		if !slices.Contains(entry.Models, explicit) {
+			return "", false, fmt.Errorf("background model %q is not in provider %q; available: %s",
+				explicit, providerAlias, strings.Join(entry.Models, ", "))
+		}
+		return explicit, false, nil
+	}
+	if declared := strings.TrimSpace(entry.BackgroundModel); declared != "" {
+		if !slices.Contains(entry.Models, declared) {
+			return "", false, fmt.Errorf(
+				"provider %q declares background model %q, which is not in its model set; fix it with `senv ai provider edit %s --background-model <model>`",
+				providerAlias, declared, providerAlias)
+		}
+		return declared, false, nil
+	}
+	return defaultModel, true, nil
 }
 
 // resolveDefaultModel 解析默认模型：显式值优先，其次档案默认模型，最后在

@@ -38,7 +38,8 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		modelModalities:    providerAddModelModalities,
 		apiShape:           providerAddAPIShape,
 		shapeURLs:          providerAddShapeURLs,
-		defaultModel:       providerAddDefault, force: providerAddForce,
+		defaultModel:       providerAddDefault, background: providerAddBackground,
+		force: providerAddForce,
 		stdin: providerAddAPIKeyStdin, allowHTTP: providerAddAllowHTTP,
 	}
 	set()
@@ -56,6 +57,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		providerAddAPIShape = old.apiShape
 		providerAddShapeURLs = old.shapeURLs
 		providerAddDefault = old.defaultModel
+		providerAddBackground = old.background
 		providerAddForce = old.force
 		providerAddAPIKeyStdin = old.stdin
 		providerAddAllowHTTP = old.allowHTTP
@@ -68,6 +70,7 @@ type providerAddFlags struct {
 	modelDefaultReason, modelModalities                      []string
 	apiShape                                                 string
 	shapeURLs                                                []string
+	background                                               string
 	force                                                    bool
 	stdin, allowHTTP                                         bool
 }
@@ -622,6 +625,72 @@ func TestAIProviderEditDefaultReasoning(t *testing.T) {
 	if strings.Join(entry.ModelInfo["m1"].ReasoningEfforts, ";") != "low;high" {
 		t.Fatalf("efforts changed: %v", entry.ModelInfo["m1"].ReasoningEfforts)
 	}
+}
+
+func TestAIProviderBackgroundModelFlag(t *testing.T) {
+	newAuditTestProject(t)
+	setProviderCredentialReader(t, "sk-secret-value")
+
+	// add：--background-model 声明进档案。
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1", "m2"}
+		providerAddModelCtx = []string{"m1=128000", "m2=128000"}
+		providerAddDefault = "m1"
+		providerAddBackground = "m2"
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"main"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	mgr, err := getAIProviderManager()
+	if err != nil {
+		t.Fatalf("getAIProviderManager: %v", err)
+	}
+	entry, err := mgr.GetProvider("main")
+	if err != nil || entry.BackgroundModel != "m2" {
+		t.Fatalf("background = %q, %v; want m2", entry.BackgroundModel, err)
+	}
+	showOut, err := runAIProviderCmd(t, aiProviderShowCmd, []string{"main"})
+	if err != nil || !strings.Contains(showOut, "后台模型：m2") {
+		t.Fatalf("show = %q, %v; want the background model line", showOut, err)
+	}
+
+	// add：声明不在模型集即拒绝。
+	setProviderAddFlags(t, func() {
+		providerAddBaseURL = "https://api.example.com"
+		providerAddModels = []string{"m1"}
+		providerAddModelCtx = []string{"m1=128000"}
+		providerAddBackground = "ghost"
+	})
+	if _, err := runAIProviderCmd(t, aiProviderAddCmd, []string{"other"}); err == nil ||
+		!strings.Contains(err.Error(), "background model") {
+		t.Fatalf("add ghost background err = %v, want membership error", err)
+	}
+
+	// edit：--background-model 覆盖；传空串清除声明。
+	setEditBackgroundFlag(t, "m1")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err != nil {
+		t.Fatalf("edit set: %v", err)
+	}
+	if entry, _ := mgr.GetProvider("main"); entry.BackgroundModel != "m1" {
+		t.Fatalf("edit set = %q, want m1", entry.BackgroundModel)
+	}
+	setEditBackgroundFlag(t, "")
+	if _, err := runAIProviderCmd(t, aiProviderEditCmd, []string{"main"}); err != nil {
+		t.Fatalf("edit clear: %v", err)
+	}
+	if entry, _ := mgr.GetProvider("main"); entry.BackgroundModel != "" {
+		t.Fatalf("edit clear = %q, want empty", entry.BackgroundModel)
+	}
+}
+
+// setEditBackgroundFlag 预置 edit 的 --background-model（值与 Changed 状态）。
+func setEditBackgroundFlag(t *testing.T, value string) {
+	t.Helper()
+	lookup := aiProviderEditCmd.Flags().Lookup("background-model")
+	old, oldChanged := providerEditBackground, lookup.Changed
+	providerEditBackground, lookup.Changed = value, true
+	t.Cleanup(func() { providerEditBackground, lookup.Changed = old, oldChanged })
 }
 
 func TestAIProviderRenameCLI(t *testing.T) {

@@ -46,7 +46,7 @@ func TestPointerVersion1Compat(t *testing.T) {
 func TestSwitchModelSetResolution(t *testing.T) {
 	t.Run("省略模型集取全集", func(t *testing.T) {
 		sm, _ := newTestSwitchManager(t)
-		out, err := sm.Switch("claude-code", "main", nil, "")
+		out, err := sm.Switch("claude-code", "main", nil, "", "")
 		if err != nil {
 			t.Fatalf("Switch() error = %v", err)
 		}
@@ -57,7 +57,7 @@ func TestSwitchModelSetResolution(t *testing.T) {
 
 	t.Run("显式子集保序", func(t *testing.T) {
 		sm, home := newTestSwitchManager(t)
-		out, err := sm.Switch("opencode", "main", []string{"m2", "m1"}, "m2")
+		out, err := sm.Switch("opencode", "main", []string{"m2", "m1"}, "m2", "")
 		if err != nil {
 			t.Fatalf("Switch() error = %v", err)
 		}
@@ -76,7 +76,7 @@ func TestSwitchModelSetResolution(t *testing.T) {
 
 	t.Run("含档案外模型", func(t *testing.T) {
 		sm, _ := newTestSwitchManager(t)
-		if _, err := sm.Switch("claude-code", "main", []string{"m1", "nope"}, ""); err == nil ||
+		if _, err := sm.Switch("claude-code", "main", []string{"m1", "nope"}, "", ""); err == nil ||
 			!strings.Contains(err.Error(), "available") {
 			t.Fatalf("Switch(bad model) error = %v", err)
 		}
@@ -84,7 +84,7 @@ func TestSwitchModelSetResolution(t *testing.T) {
 
 	t.Run("默认模型不在集合内", func(t *testing.T) {
 		sm, _ := newTestSwitchManager(t)
-		if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m2"); err == nil ||
+		if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m2", ""); err == nil ||
 			!strings.Contains(err.Error(), "not in the selected model set") {
 			t.Fatalf("Switch(default outside set) error = %v", err)
 		}
@@ -98,7 +98,7 @@ func TestSwitchModelSetResolution(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("save provider: %v", err)
 		}
-		if _, err := sm.Switch("claude-code", "nodefault", nil, ""); err == nil ||
+		if _, err := sm.Switch("claude-code", "nodefault", nil, "", ""); err == nil ||
 			!strings.Contains(err.Error(), "no default model") {
 			t.Fatalf("Switch(no default) error = %v", err)
 		}
@@ -115,7 +115,7 @@ func TestSwitchModelSetResolution(t *testing.T) {
 		if err := sm.providerManager.textManager().Set(LLMKeysGroup, "single", "sk-secret"); err != nil {
 			t.Fatalf("store credential: %v", err)
 		}
-		out, err := sm.Switch("claude-code", "single", nil, "")
+		out, err := sm.Switch("claude-code", "single", nil, "", "")
 		if err != nil {
 			t.Fatalf("Switch() error = %v", err)
 		}
