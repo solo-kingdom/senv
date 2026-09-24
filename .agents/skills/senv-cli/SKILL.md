@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、备份块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.25"
+  version: "1.26"
 ---
 
 # senv：agent 使用指南
@@ -31,6 +31,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 这些命令是交互式的，agent 不要用：`senv tui`、`senv interactive`、`senv config edit`、不带值/不带 `--file` 的 `senv text set` / `senv backup set`（TTY 下会开编辑器）、根快捷 `senv <group:key>` 不带值（同样可能开编辑器）。
 - Linux 无安全内存存储时：交互式（TTY）`senv session start` 在检测失败后先弹 y/N 确认，同意即写磁盘逃生舱（密钥明文 0600，附一次警告）完成初始化，拒绝才报错；无 TTY（管道/CI）仍直接报错，须显式 `senv session start --insecure-cache`（密钥落盘 0600）。落盘仅在用户明确要求/确认时使用。stock Darwin 无 tmpfs 时 `session start` 默认写入同一磁盘逃生舱，写入时警告一次，后续命令静默，不必每次加 flag。默认 `session.auto_start=false`：临时认证用完即弃，不会因为一次密码输入就落盘会话。旧版钥匙串会话不会被读取，需重新 `session start`。
 - 需要凭据的 LLM Provider 命令默认走 TTY prompt；非交互场景使用管道 stdin 或 `--key-ref`，不要把凭据放进 argv、日志或回复。
+- 掩码前先确认值块格式（URI 单行 vs 多行「一行一个字段」），两种形态的掩码正则都要写在同一条掩码命令里；不确定格式时只打印派生信息（长度、字段名）。具体配方见「关键行为 → 输出默认含明文值」三条硬规则。
 - `senv mcp install`、`senv mcp export/unexport`、`senv ai switch`、`senv host export`（应用模式）、`senv host unexport`、`senv keypair export`/`set-default`/`clear-default`、`senv keypair prune`、删除/覆盖/force push 都会写本机或外部状态。除只读查询外，先确认用户明确要求；不确定时先用 dry-run、`--print`、list/get 验证。
 
 ## 会话（session）
@@ -77,7 +78,12 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **text import/export**：`senv text import <key|group:key> --file <path>` 把文件内容加密入库（upsert：已存在 key 直接覆盖并刷新 `updated_at`，无确认提示；源文件保持不动；`--file` 必填，缺失即报错，不回落 stdin/编辑器）。`senv text export <key|group:key> --path <path>` 把明文值原子落盘，固定 0600（覆盖既有宽松文件会收紧；目标或父目录为符号链接时拒绝；内容逐字节原样导出、**不经引用解析**——要解码导出用 `text get -d -o`）；成功只打印路径、不回显明文；导出是读取面，不新增审计事件。export 写出明文文件，执行前先向用户确认。
 - **backup**：独立 kind（`backups/{group}/{key}.enc`），不与 text 混用。上限 `MaxBackupSize`（512KB，只计 value 明文，超限拒绝不截断）。`senv backup set/get/list/delete/import/export` 与 `backup group list/add/delete`；`backup get` **无** `-d/--decode/--loose`；`backup list` 只显示 key、大小、时间与说明，不含正文。set 输入优先级与 text 相同（`--file` > stdin > 参数 > 编辑器）；import/export 语义与 text 对齐（`--file`/`--path` 必填、upsert 无确认、0600、拒符号链接、成功只打印路径）。backup 无 activate/deactivate，也不参与引用。
-- **最小暴露**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`；`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。不要把 list 输出或密钥值复述进日志、回复。
+- **输出默认含明文值（最小暴露的前提）**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`；**没有只列键名的开关**。`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。取密钥三条硬规则：
+  1. **只要键名时不碰值**：列组用 `senv env group list`；列组内 key 用 `senv env list -g <g> | grep -oE '^[A-Z0-9_]+'`——只留行首键名，**永不把 `env list` / `senv_env_list` 的原始输出送进会话**；text/backup 的 `list` 本身不含值，可直接看。
+  2. **取值留在变量内、同一命令消费完，不回显**：`TOKEN="$(senv env get g:KEY)" && curl -H "Authorization: Bearer $TOKEN" …`。需要判断格式时只打印派生信息（`${#TOKEN}` 长度、字段名、掩码后前缀），且掩码必须同时覆盖两种值块形态——URI 内嵌凭据（`scheme://user:pass@host`）与多行块「一行一个字段」（`password: xxx`），两种形态都要在掩码命令里，例如：
+     `sed -E -e 's#(://[^:/@]+:)[^@[:space:]]+@#\1***@#g' -e 's#^((user(name)?|pass(word)?|token|secret|api[_-]?key|secret[_-]?key|access[_-]?key|authorization|credential)s?[[:space:]]*[:=][[:space:]]*).*$#\1***#i'`。
+     **掩码前先确认值块是哪种形态**；不确定就只打印长度/字段名，不打印值。
+  3. **输出里出现疑似凭据（24+ 字符高熵长串、token/secret/key 形态）时，本轮结束前必须向用户报告并建议轮换**，不得静默继续。list/get 的原始输出与密钥值一律不得复述进日志、回复或提交。
 - **说明（vault note）**：env/text/backup 条目、env/text/backup 分组、config、Host、KeyPair、LLM Provider 档案、MCP Server 档案都可以带一段短说明（trim 后最多 2048 字节 UTF-8，不准当密钥用）。条目/档案的 `--description` 可省略（空说明合法）；**更新时未传 flag 则保留原说明**。MCP `senv_env_set` / `senv_text_set` / `senv_backup_set` 的 `description` 同理（省略 = 保留）。
 - **默认分组**：未指定时用 `default`；`env export` 只导出已 activate 的 env 分组（`senv env group activate <name>`）。init 会建 env `default`、text `default`/`llm-keys`，以及 backup `default`（存量 vault 打开 backup Manager 时幂等补建）。
 - **禁止隐式建组**：`env set` / `text set` / `text import` / `backup set` / `backup import` 在组不存在时失败，不再自动建组。新建 env/text/backup 组必须显式：`senv env group add <name> --description "..."`、`senv text group add <name> --description "..."`、`senv backup group add <name> --description "..."`、MCP `senv_group_add`（`kind` 为 env/text/backup，`description` 必填非空）。Host/KeyPair 组仍是档案上的自由文本，不走这套登记。
@@ -172,7 +178,7 @@ senv session refresh [-t 8h]             # 免密延长当前 vault 会话（从
 senv session clear [--all]               # 默认只清当前 vault；--all 清所有槽位
 senv env get prod:API_KEY                # 取值（默认 raw；加 -d 解析引用）
 senv env set prod:API_KEY "sk-xxx"       # 写入（等价 -g prod API_KEY ...）
-senv env list [prod]                     # 输出 key=value（截断），勿复述进日志
+senv env list [prod]                     # 输出 key=value（截断）；只要键名时改走 | grep -oE '^[A-Z0-9_]+'，勿复述进日志
 senv text set --file notes.md docs:README
 senv text get -d docs:README
 senv text import docs:README --file ./README.md   # 文件加密入库（upsert，源文件不动）
