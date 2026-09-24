@@ -21,6 +21,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 TO senv_server;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO senv_server;
 
+-- schema 版本表：serve 启动即校验版本（migrate.CheckCurrent），缺 SELECT 会被
+-- 误判成「未初始化」并以「schema 版本不匹配」退出。迁移仍由高权限角色执行，
+-- 故这里只给 SELECT。每次 migrate 建新表后须重跑本文件补授权。
+GRANT SELECT ON schema_migrations TO senv_server;
+
 -- 访问日志：仅可追加（INSERT）与查询（SELECT），不可 UPDATE/DELETE——
 -- 拿到 serve DSN 无法抹除访问痕迹。
 -- 后果：serve 的 --logs-retain-days 自动清理在此角色下会权限失败

@@ -9,10 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/wii/senv/internal/server/store"
@@ -24,6 +27,8 @@ const (
 	// alertChanBuffer 检测队列上限：超限丢弃 + slog。告警是 best-effort，
 	// 宁可丢告警不可拖慢请求路径
 	alertChanBuffer = 256
+	// alertRespPeekBytes 投递结果判定时读取的响应体上限（只为看业务错误码）
+	alertRespPeekBytes = 512
 )
 
 // alertDetector 从安全事件流检测异常模式并投递 webhook
@@ -32,6 +37,9 @@ type alertDetector struct {
 	webhook   string
 	threshold int           // 同一来源连续 AUTH-FAILED 告警阈值
 	debounce  time.Duration // 同一 (类型, 对象) 最小通知间隔
+	// bodyTmpl 非 nil 时按模板渲染请求体（对接飞书/钉钉等要求固定 body 结构的
+	// 网关）；nil = 直接 POST alertPayload JSON
+	bodyTmpl *template.Template
 
 	ch chan store.AccessEvent
 
@@ -41,15 +49,16 @@ type alertDetector struct {
 	lastSent   map[string]time.Time // 去抖键 -> 上次通知时间
 }
 
-// newAlertDetector 创建检测器（调用方保证 webhook 非空）
-func newAlertDetector(st store.Store, webhook string, threshold int, debounce time.Duration) *alertDetector {
+// newAlertDetector 创建检测器（调用方保证 webhook 非空）；bodyTemplate 为空或
+// 解析失败时回落默认 JSON 载荷（解析失败会记 Error 日志，绝不静默）
+func newAlertDetector(st store.Store, webhook string, threshold int, debounce time.Duration, bodyTemplate string) *alertDetector {
 	if threshold <= 0 {
 		threshold = defaultAlertAuthFailThreshold
 	}
 	if debounce <= 0 {
 		debounce = defaultAlertDebounce
 	}
-	return &alertDetector{
+	d := &alertDetector{
 		store:      st,
 		webhook:    webhook,
 		threshold:  threshold,
@@ -59,6 +68,15 @@ func newAlertDetector(st store.Store, webhook string, threshold int, debounce ti
 		lastIP:     map[int64]string{},
 		lastSent:   map[string]time.Time{},
 	}
+	if bodyTemplate != "" {
+		tpl, err := template.New("alert-body").Option("missingkey=error").Parse(bodyTemplate)
+		if err != nil {
+			slog.Error("alert body template invalid, falling back to default JSON payload", "err", err)
+			return d
+		}
+		d.bodyTmpl = tpl
+	}
+	return d
 }
 
 // push 非阻塞投递事件；队列满丢弃并记日志（best-effort，见 alertChanBuffer）
@@ -181,17 +199,48 @@ func (d *alertDetector) debounced(alertType, key string) bool {
 	return true
 }
 
+// renderBody 生成请求体：有模板按模板渲染，否则保持原 JSON 载荷行为
+func (d *alertDetector) renderBody(p alertPayload) ([]byte, error) {
+	if d.bodyTmpl == nil {
+		return json.Marshal(p)
+	}
+	var buf bytes.Buffer
+	if err := d.bodyTmpl.Execute(&buf, alertTemplateData(p)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// alertTemplateData 把 payload 摊成模板取用的 map（键 = JSON 字段名），并补齐
+// 全部已知键：omitempty 会丢掉空字段，而 text/template 取缺失键渲染成
+// `<no value>`，会把脏字段写进通知正文。键不存在于本表 = 模板拼错，
+// missingkey=error 直接报渲染失败（宁可显式失败，不要静默降级）。
+func alertTemplateData(p alertPayload) map[string]any {
+	out := map[string]any{
+		"alert": "", "time": "", "ip": "",
+		"user_id": 0, "client_id": 0,
+		"user": "", "client": "", "reason": "", "count": 0,
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
 // deliver 投递 webhook：指数退避重试 ≤3 次后丢弃 + slog。独立 goroutine
 // 运行，阻塞不传染检测循环。
 func (d *alertDetector) deliver(ctx context.Context, p alertPayload) {
 	p.UserName, p.Client = d.resolveNames(ctx, p.UserID, p.ClientID)
-	body, err := json.Marshal(p)
+	body, err := d.renderBody(p)
 	if err != nil {
-		slog.Error("alert marshal failed", "err", err)
+		slog.Error("alert body render failed", "alert", p.Alert, "err", err)
 		return
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	backoff := time.Second
+	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.webhook, bytes.NewReader(body))
 		if err != nil {
@@ -201,19 +250,75 @@ func (d *alertDetector) deliver(ctx context.Context, p alertPayload) {
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err == nil {
+			peek, _ := io.ReadAll(io.LimitReader(resp.Body, alertRespPeekBytes))
 			resp.Body.Close()
-			if resp.StatusCode < 300 {
-				return
-			}
-			err = fmt.Errorf("webhook status %d", resp.StatusCode)
+			err = webhookResultError(resp.StatusCode, peek)
 		}
+		if err == nil {
+			return
+		}
+		lastErr = err
 		if attempt < 2 {
 			slog.Warn("alert delivery failed, retrying", "alert", p.Alert, "attempt", attempt+1, "err", err)
 			time.Sleep(backoff)
 			backoff *= 2
 		}
 	}
-	slog.Error("alert delivery dropped after retries", "alert", p.Alert, "ip", p.IP)
+	slog.Error("alert delivery dropped after retries", "alert", p.Alert, "ip", p.IP, "err", lastErr)
+}
+
+// webhookResultError 判定一次投递是否成功。飞书 / 企业微信 / 钉钉这类机器人
+// **回 HTTP 200 也可能带业务错误码**（如飞书关键词不命中 code=19024），只按
+// 状态码判会把被网关拒绝的告警当发送成功、日志无痕。
+func webhookResultError(status int, body []byte) error {
+	if status >= 300 {
+		return fmt.Errorf("webhook status %d%s", status, bodyHint(body))
+	}
+	if code, rejected := envelopeErrCode(body); rejected {
+		return fmt.Errorf("webhook rejected: code=%d%s", code, bodyHint(body))
+	}
+	return nil
+}
+
+// envelopeErrCode 从响应体取通用业务错误码字段（code / errcode / error_code）。
+// 非 JSON 对象、无这些字段、或码为 0 → rejected=false（视为成功，兼容自建网关）。
+func envelopeErrCode(body []byte) (int64, bool) {
+	var m map[string]any
+	if len(body) == 0 || json.Unmarshal(body, &m) != nil {
+		return 0, false
+	}
+	for _, k := range []string{"code", "errcode", "error_code"} {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			return int64(n), n != 0
+		case string:
+			parsed, err := strconv.ParseInt(n, 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return parsed, parsed != 0
+		default:
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// bodyHint 把响应体压成单行短提示，附在错误信息尾部（网关错误说明常在这里）
+func bodyHint(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return " body=" + s
 }
 
 // resolveNames 尽力解析用户/设备名（best-effort；解析失败留空）

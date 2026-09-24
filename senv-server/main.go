@@ -85,10 +85,15 @@ serve 专属:
   --alert-auth-fail-threshold N
                          连续 AUTH-FAILED 告警阈值（默认 10）
   --alert-debounce D     同类型同对象最小告警间隔（默认 5m）
+  --alert-body-template STR
+                         告警请求体模板（默认取 SENV_SERVER_ALERT_BODY_TEMPLATE；
+                         空=直接 POST 内置 JSON）。text/template，键为 JSON 字段名：
+                         alert/time/ip/user_id/client_id/user/client/reason/count
 
 环境变量（serve）:
   SENV_SERVER_TOKEN_PEPPER  token 哈希 HMAC pepper（可选；空=旧 SHA-256 行为；
                              启用后存量 token 走回退比对，请按文档指引尽快轮换）
+  SENV_SERVER_ALERT_BODY_TEMPLATE  同 --alert-body-template
 `)
 }
 
@@ -122,6 +127,8 @@ func runServe(args []string) {
 		"consecutive AUTH-FAILED per source IP before an alert fires")
 	alertDebounce := fs.Duration("alert-debounce", 5*time.Minute,
 		"minimum interval between repeated alerts of the same type and target")
+	alertBodyTemplate := fs.String("alert-body-template", os.Getenv("SENV_SERVER_ALERT_BODY_TEMPLATE"),
+		"webhook request body template (text/template over the alert fields: alert/time/ip/user_id/client_id/user/client/reason/count); empty posts the built-in JSON payload")
 	logsRetainDays := fs.Int("logs-retain-days", 90,
 		"access log retention in days (0 disables automatic pruning)")
 	fs.Parse(args)
@@ -169,6 +176,7 @@ func runServe(args []string) {
 		AlertWebhook:           *alertWebhook,
 		AlertAuthFailThreshold: *alertFailThreshold,
 		AlertDebounce:          *alertDebounce,
+		AlertBodyTemplate:      *alertBodyTemplate,
 	})
 
 	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。

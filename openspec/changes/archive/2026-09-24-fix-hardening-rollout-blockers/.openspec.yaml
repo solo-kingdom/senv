@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-24
+goal: 修复公网滚更实测暴露的两个部署阻塞缺陷——(1) 告警 body 可配置模板 + 投递结果按响应
+  envelope 判定（飞书一类网关 HTTP 200 带 code!=0 会静默丢告警）；(2) 受限运行角色可通过
+  schema 版本校验（roles.sql 补 schema_migrations SELECT 授权，CurrentVersion 按 SQLSTATE
+  而非错误信息子串判定未初始化）

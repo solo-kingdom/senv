@@ -40,6 +40,11 @@ type Options struct {
 	AlertAuthFailThreshold int
 	// AlertDebounce 同一 (告警类型, 对象) 最小通知间隔（0=默认 5 分钟）
 	AlertDebounce time.Duration
+	// AlertBodyTemplate 请求体模板（env SENV_SERVER_ALERT_BODY_TEMPLATE）。
+	// 空 = 直接 POST alertPayload JSON；非空 = 用 text/template 渲染，键取
+	// alertPayload 的 JSON 字段名（{{.alert}} {{.time}} {{.ip}} {{.user}}
+	// {{.client}} {{.reason}} {{.count}}…），用于对接只认自家 body 结构的机器人。
+	AlertBodyTemplate string
 }
 
 // withDefaults 补齐零值
@@ -83,7 +88,7 @@ func New(st store.Store, opts ...Options) *Server {
 	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
 		trustProxyHeaders: o.TrustProxyHeaders}
 	if o.AlertWebhook != "" {
-		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertDebounce)
+		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertDebounce, o.AlertBodyTemplate)
 		go s.alerts.run(context.Background())
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)

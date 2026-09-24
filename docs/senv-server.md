@@ -10,6 +10,7 @@ serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DS
 
 - 角色授权模板（单一事实源）：`senv-server/sql/roles.sql`——serve 角色 `senv_server` 对 `access_log` 仅 `INSERT`+`SELECT`；admin 角色 `senv_admin` 持有全量权限（`admin logs-prune` 与自动清理用）
 - 部署步骤：以超户/库属主创建两角色并执行模板 → serve 用 `senv_server` DSN → admin CLI / cron 用 `senv_admin` DSN
+- 模板已给 `senv_server` 授予 `schema_migrations` 的 SELECT：serve 启动即校验 schema 版本，缺该授权会被误判为「未初始化」并以「schema 版本不匹配」退出。**迁移后若新增了表，须重跑 `roles.sql` 补授权**（迁移本身仍由 `senv` 库属主角色执行）
 - 注意：受限角色下 serve 的 `--logs-retain-days` 自动清理会权限失败（best-effort 记日志，不影响服务）。生产应设 `--logs-retain-days 0`，由 cron 跑清理：
 
 ```bash
@@ -35,6 +36,17 @@ serve 支持通用 webhook（不内置任何第三方 provider，自行接 n8n/�
 ```
 
 触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问。payload 为 JSON，只含时间/IP/client/user 名等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+
+**HTTP 200 不等于送达**：飞书自定义机器人这类网关拒收时（缺群关键词、限流）返回 `200` + `{"code":19024,"msg":"Key Words Not Found"}`。serve 会读取响应体的 `code`/`errcode`/`error_code` 判定成败——非零即失败并重试，重试耗尽后日志带状态码与响应体片段。响应体不是 JSON 或没有这些字段时按成功处理（普通网关语义）。
+
+provider 格式不通用时用 body 模板适配（server 不内置任何厂商格式）：
+
+```bash
+./senv-server-bin serve --alert-webhook "$SENV_SERVER_ALERT_WEBHOOK"   --alert-body-template '{"msg_type":"text","content":{"text":"通知｜senv-server 告警 {{.alert}}｜{{.time}} ip={{.ip}} user={{.user}} client={{.client}} reason={{.reason}} count={{.count}}"}}'
+# 或环境变量 SENV_SERVER_ALERT_BODY_TEMPLATE
+```
+
+可用变量：`alert` / `time` / `ip` / `user_id` / `client_id` / `user` / `client` / `reason` / `count`。行为约定：不配置 → 投默认扁平 JSON；模板语法错误 → 启动时记一条日志并回退默认 JSON；引用不存在的字段 → 该条告警丢弃并记日志（宁可丢也不把 `<no value>` 送达）。飞书场景记得把群关键词写进模板文本里。
 
 ### token pepper
 

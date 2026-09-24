@@ -162,6 +162,7 @@ git provider 之外，vault 可托管在 senv-server 上：
   - `admin logs [--user u] [--client c] [--since d] [--until d] [--outcome OK|AUTH-FAILED|BLOCKED|RATE-LIMITED|ADMIN] [--limit n]`：查访问日志（outcome 含 `ADMIN`——admin 子命令操作审计：create-user / revoke-token / create-registration / block-client / unblock-client 成功后各写一条，reason 记操作类型与目标）；`admin logs-prune --before <YYYY-MM-DD>` 清理旧日志（需高权限角色，见 `senv-server/sql/roles.sql` 双角色模板：serve 角色对 access_log 仅 INSERT+SELECT，不可 UPDATE/DELETE，自动清理 `--logs-retain-days` 应设 0 改由 cron 跑 logs-prune）。
   - `serve` / `migrate`：启动服务（启动前校验 schema 版本）与应用迁移；flags 与构建发布流程见 `docs/senv-server.md`。
   - `serve` 告警 flags：`--alert-webhook URL`（默认取 `SENV_SERVER_ALERT_WEBHOOK`，空则告警关闭、零开销）——连续 `AUTH-FAILED` 超 `--alert-auth-fail-threshold`（默认 10）、client 被屏蔽、新 client 注册成功、client 换 IP 首次访问时向 webhook POST JSON（只含元数据，异步 goroutine 投递 + 去抖 `--alert-debounce` 默认 5m，失败丢弃记日志）。
+  - `serve` `--alert-body-template`（env `SENV_SERVER_ALERT_BODY_TEMPLATE`）：把告警 body 渲染成 provider 专有格式（飞书机器人需 `{"msg_type":"text","content":{"text":"…"}}` 且文本含群关键词）。变量 `{{.alert}}` `{{.time}}` `{{.ip}}` `{{.user_id}}` `{{.client_id}}` `{{.user}}` `{{.client}}` `{{.reason}}` `{{.count}}`；不配置则投默认扁平 JSON。注意 **HTTP 200 ≠ 送达**：飞书一类网关拒收时返回 200 + `{"code":19024,…}`，server 会读响应 envelope 里的 `code`/`errcode`/`error_code` 判失败并重试，最终丢弃的日志带状态码与响应体片段。
 
 ## 常用命令速查
 

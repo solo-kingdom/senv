@@ -4,12 +4,17 @@ package migrate
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// sqlStateUndefinedTable PostgreSQL 状态码：表不存在
+const sqlStateUndefinedTable = "42P01"
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -58,8 +63,12 @@ func CurrentVersion(ctx context.Context, db *pgx.Conn) (int, error) {
 	var version int
 	err := db.QueryRow(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version)
 	if err != nil {
-		// 表不存在（42P01）视为未初始化
-		if strings.Contains(err.Error(), "schema_migrations") {
+		// 表不存在（42P01）视为未初始化。按 SQLSTATE 判定而非错误信息子串——
+		// 受限角色下 `permission denied for table schema_migrations`（42501）
+		// 同样含表名，子串匹配会把权限不足误判成未初始化，
+		// 让 serve 报出误导性的「schema 版本不匹配」后退出。
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) && pe.Code == sqlStateUndefinedTable {
 			return 0, nil
 		}
 		return 0, err
