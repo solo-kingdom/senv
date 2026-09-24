@@ -67,6 +67,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// 身份写回 accessInfo：访问事件与告警因此带 client/user 归属
+	if info := accessInfoFrom(r.Context()); info != nil {
+		info.userID = client.UserID
+		info.clientID = client.ID
+	}
 	// 明文 token 只在注册响应中出现一次，库中仅存哈希
 	writeJSON(w, http.StatusCreated, registerResponse{Token: token, Client: *client})
 }

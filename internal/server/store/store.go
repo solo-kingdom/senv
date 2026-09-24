@@ -4,17 +4,20 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/syncschema"
+	"sync"
 )
 
 // 推送批量与单条大小上限（见 server-api spec：单条密文不超过 512KB）
@@ -127,6 +130,8 @@ type Store interface {
 	SetClientStatus(ctx context.Context, userID int64, name, status string) error
 	ListClients(ctx context.Context, userID int64) ([]Client, error)
 	UserIDByName(ctx context.Context, name string) (int64, error)
+	// UserIDByToken 按 token 解析归属用户（吊销审计用；token 行吊销后仍保留，可事后查询）
+	UserIDByToken(ctx context.Context, token string) (int64, error)
 	TouchClient(ctx context.Context, clientID int64)
 
 	// 访问日志
@@ -143,11 +148,63 @@ type Store interface {
 type pgStore struct {
 	pool          *pgxpool.Pool
 	historyRetain int
+
+	// tokenPepper 配置后 token 存储哈希为 HMAC-SHA256(pepper, token)；
+	// 空 = 原 SHA-256 行为。只驻留进程内存，绝不入库或入日志。
+	tokenPepper []byte
+	// legacyOK 旧 SHA-256 token 回退比对的正缓存（哈希 -> 窗口过期时刻），
+	// 命中后窗口内免回退查询，防 pepper 启用后认证路径放大 DB 查询
+	mu       sync.Mutex
+	legacyOK map[string]time.Time
 }
+
+// legacyFallbackWindow 旧 SHA-256 token 回退比对的进程内正缓存窗口：
+// 命中后该窗口内不再做回退查询（不放大 DB 查询），同时保持重复认证语义
+const legacyFallbackWindow = time.Minute
 
 // NewSQL 创建 pgStore（条目历史默认保留 DefaultHistoryRetain 版）
 func NewSQL(pool *pgxpool.Pool) *pgStore {
-	return &pgStore{pool: pool, historyRetain: DefaultHistoryRetain}
+	return &pgStore{pool: pool, historyRetain: DefaultHistoryRetain, legacyOK: map[string]time.Time{}}
+}
+
+// SetTokenPepper 配置 token 哈希 pepper（HMAC-SHA256 的 key）。空/未调用
+// 保持原 SHA-256 行为不变。pepper 只驻留进程内存，绝不入库或入日志。
+func (s *pgStore) SetTokenPepper(pepper []byte) {
+	s.tokenPepper = pepper
+}
+
+// hashTokenPeppered 按当前配置计算 token 的存储哈希：配置 pepper 时为
+// HMAC-SHA256(pepper, token)，否则为原 SHA-256。注册码等短生命周期凭证
+// 仍用裸 hashToken（见 clients.go）
+func (s *pgStore) hashTokenPeppered(token string) []byte {
+	if len(s.tokenPepper) == 0 {
+		return hashToken(token)
+	}
+	mac := hmac.New(sha256.New, s.tokenPepper)
+	mac.Write([]byte(token))
+	return mac.Sum(nil)
+}
+
+// legacyFallbackHash 回退比对键（裸 SHA-256）：正缓存与回退查询共用
+func (s *pgStore) legacyFallbackHit(legacyHash []byte) bool {
+	if len(s.tokenPepper) == 0 {
+		return false
+	}
+	key := string(legacyHash)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.legacyOK[key]; ok && time.Now().Before(t) {
+		return true
+	}
+	delete(s.legacyOK, key)
+	return false
+}
+
+// markLegacyFallback 记录一次回退比对命中（正缓存一个窗口）
+func (s *pgStore) markLegacyFallback(legacyHash []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.legacyOK[string(legacyHash)] = time.Now().Add(legacyFallbackWindow)
 }
 
 // New 是返回接口的兼容构造入口，等价于 NewSQL
@@ -199,7 +256,7 @@ func (s *pgStore) CreateUser(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("创建用户失败: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO tokens (user_id, token_hash) VALUES ($1, $2)`, userID, hashToken(token)); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO tokens (user_id, token_hash) VALUES ($1, $2)`, userID, s.hashTokenPeppered(token)); err != nil {
 		return "", fmt.Errorf("签发 token 失败: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -211,9 +268,17 @@ func (s *pgStore) CreateUser(ctx context.Context, name string) (string, error) {
 // RevokeToken 吊销指定 token（按哈希匹配），不影响同用户其他 token
 func (s *pgStore) RevokeToken(ctx context.Context, token string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE tokens SET revoked_at = $1 WHERE token_hash = $2 AND revoked_at IS NULL`,
-		time.Now(), hashToken(token))
+		time.Now(), s.hashTokenPeppered(token))
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 && len(s.tokenPepper) > 0 {
+		// 旧 SHA-256 时代的 token：回退比对一次（吊销同样要兼容存量）
+		tag, err = s.pool.Exec(ctx, `UPDATE tokens SET revoked_at = $1 WHERE token_hash = $2 AND revoked_at IS NULL`,
+			time.Now(), hashToken(token))
+		if err != nil {
+			return err
+		}
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("token 不存在或已吊销")
@@ -224,11 +289,40 @@ func (s *pgStore) RevokeToken(ctx context.Context, token string) error {
 	return nil
 }
 
-// Authenticate 用 token 换取 user_id；无效或已吊销返回 ErrNotFound（不泄露存在性）
+// Authenticate 用 token 换取 user_id；无效或已吊销返回 ErrNotFound（不泄露存在性）。
+// 配置 pepper 后对存量 SHA-256 哈希做一次回退比对（正缓存窗口内不重复查询），
+// 回退命中记慢日志提示轮换，响应语义与主路径完全一致。
 func (s *pgStore) Authenticate(ctx context.Context, token string) (int64, error) {
 	var userID int64
 	err := s.pool.QueryRow(ctx,
-		`SELECT user_id FROM tokens WHERE token_hash = $1 AND revoked_at IS NULL`, hashToken(token)).Scan(&userID)
+		`SELECT user_id FROM tokens WHERE token_hash = $1 AND revoked_at IS NULL`, s.hashTokenPeppered(token)).Scan(&userID)
+	if err == nil {
+		return userID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	legacy := hashToken(token)
+	if s.legacyFallbackHit(legacy) {
+		return s.queryUserByTokenHash(ctx, legacy)
+	}
+	if len(s.tokenPepper) == 0 {
+		return 0, ErrNotFound
+	}
+	userID, err = s.queryUserByTokenHash(ctx, legacy)
+	if err == nil {
+		s.markLegacyFallback(legacy)
+		slog.Warn("legacy sha256 token hash used, please rotate the token",
+			"user_id", userID)
+	}
+	return userID, err
+}
+
+// queryUserByTokenHash 按存储哈希查 token 归属用户（回退比对共用）
+func (s *pgStore) queryUserByTokenHash(ctx context.Context, tokenHash []byte) (int64, error) {
+	var userID int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT user_id FROM tokens WHERE token_hash = $1 AND revoked_at IS NULL`, tokenHash).Scan(&userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrNotFound

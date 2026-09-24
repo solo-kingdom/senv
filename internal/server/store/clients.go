@@ -4,6 +4,7 @@
 package store
 
 import (
+	"log/slog"
 	"context"
 	"errors"
 	"fmt"
@@ -175,6 +176,47 @@ func (s *pgStore) ListClients(ctx context.Context, userID int64) ([]Client, erro
 }
 
 // UserIDByName 按用户名查 id（admin 命令使用）；不存在返回 ErrNotFound
+// UserIDByToken 按 token 解析归属用户（吊销审计用）：不看 revoked_at，
+// 吊销后 token 行仍保留 user_id，可事后补记审计事件。兼容旧 SHA-256 哈希。
+func (s *pgStore) UserIDByToken(ctx context.Context, token string) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `SELECT user_id FROM tokens WHERE token_hash = $1`, s.hashTokenPeppered(token)).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+	legacy := hashToken(token)
+	if s.legacyFallbackHit(legacy) {
+		return s.queryUserIDByHash(ctx, legacy)
+	}
+	if len(s.tokenPepper) == 0 {
+		return 0, ErrNotFound
+	}
+	err = s.pool.QueryRow(ctx, `SELECT user_id FROM tokens WHERE token_hash = $1`, legacy).Scan(&id)
+	if err == nil {
+		s.markLegacyFallback(legacy)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return id, err
+}
+
+// queryUserIDByHash 按存储哈希查 token 归属用户（吊销审计回退共用，不看 revoked_at）
+func (s *pgStore) queryUserIDByHash(ctx context.Context, tokenHash []byte) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `SELECT user_id FROM tokens WHERE token_hash = $1`, tokenHash).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
 func (s *pgStore) UserIDByName(ctx context.Context, name string) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `SELECT id FROM users WHERE name = $1`, name).Scan(&id)
@@ -191,6 +233,30 @@ func (s *pgStore) UserIDByName(ctx context.Context, name string) (int64, error) 
 // 无效或已吊销返回 ErrNotFound（与 Authenticate 一致，不泄露存在性）。
 // 屏蔽状态不在此判定——client 被屏蔽时 token 仍能解析，由 HTTP 层返回 403。
 func (s *pgStore) AuthenticateWithClient(ctx context.Context, token string) (AuthResult, error) {
+	res, err := s.authenticateWithClientHash(ctx, s.hashTokenPeppered(token))
+	if err == nil || !errors.Is(err, ErrNotFound) {
+		return res, err
+	}
+	// 主路径未命中且配置了 pepper：回退比对旧 SHA-256 哈希（存量 token），
+	// 正缓存窗口内免重复查询；命中记慢日志提示轮换，语义与主路径一致
+	legacy := hashToken(token)
+	if s.legacyFallbackHit(legacy) {
+		return s.authenticateWithClientHash(ctx, legacy)
+	}
+	if len(s.tokenPepper) == 0 {
+		return AuthResult{}, ErrNotFound
+	}
+	res, err = s.authenticateWithClientHash(ctx, legacy)
+	if err == nil {
+		s.markLegacyFallback(legacy)
+		slog.Warn("legacy sha256 token hash used, please rotate the token",
+			"user_id", res.UserID, "client_id", res.ClientID)
+	}
+	return res, err
+}
+
+// authenticateWithClientHash 按存储哈希执行认证查询（主路径与回退共用）
+func (s *pgStore) authenticateWithClientHash(ctx context.Context, tokenHash []byte) (AuthResult, error) {
 	var res AuthResult
 	var clientID pgxNullInt64
 	var status pgxNullString
@@ -199,7 +265,7 @@ func (s *pgStore) AuthenticateWithClient(ctx context.Context, token string) (Aut
 		 FROM tokens t
 		 LEFT JOIN clients c ON c.id = t.client_id
 		 WHERE t.token_hash = $1 AND t.revoked_at IS NULL`,
-		hashToken(token)).Scan(&res.UserID, &clientID, &status)
+		tokenHash).Scan(&res.UserID, &clientID, &status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AuthResult{}, ErrNotFound

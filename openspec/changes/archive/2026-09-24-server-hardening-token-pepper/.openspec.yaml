@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-24
+goal: token 哈希改 HMAC + SENV_SERVER_TOKEN_PEPPER 环境变量（可空回退旧行为）；旧 SHA-256 哈希回退比对路径
+  + 慢日志标记提示轮换；轮换流程写入 docs/senv-server.md。设计依据见 server-hardening-driver/design.md
+  决策 3

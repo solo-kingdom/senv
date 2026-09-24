@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-24
+goal: 通用 webhook 告警：server 支持可配置 webhook URL（env SENV_SERVER_ALERT_WEBHOOK /
+  flag），异常事件 POST JSON（连续 AUTH-FAILED 超阈值、BLOCKED、新 client 注册成功、client 换 IP
+  首次访问）；检测器走 goroutine + channel 不传染请求路径；失败丢弃 + slog。设计依据见
+  server-hardening-driver/design.md 决策 2

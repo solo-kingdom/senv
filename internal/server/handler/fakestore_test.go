@@ -40,6 +40,8 @@ type fakeStore struct {
 
 	users    map[string]int64            // 用户名 -> id
 	tokens   map[string]store.AuthResult // 明文 token -> 认证结果（仅测试内存；键为明文只为构造方便）
+	regCodes map[int64][]string          // userID -> 未用注册码
+	nextCode int
 	revoked  map[string]bool
 	clients  map[int64]*store.Client
 	metadata map[int64][]byte
@@ -56,6 +58,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{
 		users:    map[string]int64{},
 		tokens:   map[string]store.AuthResult{},
+		regCodes: map[int64][]string{},
 		revoked:  map[string]bool{},
 		clients:  map[int64]*store.Client{},
 		metadata: map[int64][]byte{},
@@ -249,12 +252,35 @@ func (f *fakeStore) PullEntries(_ context.Context, userID int64, vault string, s
 	return out, f.seq[id], nil
 }
 
-func (f *fakeStore) CreateRegistrationCode(_ context.Context, _ int64, _ time.Duration) (string, error) {
-	return "", errors.New("fakeStore: not implemented")
+func (f *fakeStore) CreateRegistrationCode(_ context.Context, userID int64, _ time.Duration) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextCode++
+	code := fmt.Sprintf("code-%d", f.nextCode)
+	f.regCodes[userID] = append(f.regCodes[userID], code)
+	return code, nil
 }
 
-func (f *fakeStore) RegisterClient(_ context.Context, _, _ string) (string, *store.Client, error) {
-	return "", nil, errors.New("fakeStore: not implemented")
+func (f *fakeStore) RegisterClient(_ context.Context, code, name string) (string, *store.Client, error) {
+	f.mu.Lock()
+	for uid, codes := range f.regCodes {
+		for i, c := range codes {
+			if c == code {
+				f.regCodes[uid] = append(codes[:i], codes[i+1:]...)
+				f.mu.Unlock()
+				userName := ""
+				for n, id := range f.users {
+					if id == uid {
+						userName = n
+					}
+				}
+				clientID, token := f.addClientToken(userName, name, store.ClientStatusActive)
+				return token, &store.Client{ID: clientID, UserID: uid, Name: name, Status: store.ClientStatusActive}, nil
+			}
+		}
+	}
+	f.mu.Unlock()
+	return "", nil, store.ErrNotFound
 }
 
 func (f *fakeStore) SetClientStatus(_ context.Context, _ int64, _ string, _ string) error {
@@ -273,6 +299,19 @@ func (f *fakeStore) UserIDByName(_ context.Context, name string) (int64, error) 
 		return 0, store.ErrNotFound
 	}
 	return id, nil
+}
+
+func (f *fakeStore) UserIDByToken(_ context.Context, token string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.revoked[token] {
+		return 0, store.ErrNotFound
+	}
+	res, ok := f.tokens[token]
+	if !ok {
+		return 0, store.ErrNotFound
+	}
+	return res.UserID, nil
 }
 
 func (f *fakeStore) TouchClient(_ context.Context, clientID int64) {
