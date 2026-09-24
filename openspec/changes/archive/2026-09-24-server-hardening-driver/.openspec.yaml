@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-24
+goal: senv-server 公网加固：DB 角色隔离+admin 操作入审计、通用 webhook 告警、token HMAC
+  pepper、部署加固文档（systemd/反代推荐配置/多实例边界/元数据泄露边界）。决策与约束详见
+  tasks/ongoing/server-hardening/TASK.md
+skip_specs: true

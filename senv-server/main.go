@@ -67,7 +67,8 @@ Commands:
   admin unblock-client --client <name> [--user <user>]
                              解封 client
   admin logs [--user u] [--client c] [--since d] [--until d] [--outcome o] [--limit n]
-                             查询访问日志（时间/IP/身份/结果/原因，含日期）
+                             查询访问日志（时间/IP/身份/结果/原因，含日期；
+                             outcome 含 OK/AUTH-FAILED/BLOCKED/RATE-LIMITED/ADMIN）
   admin logs-prune --before <YYYY-MM-DD>
                              清理该日期之前的访问日志
 
@@ -79,6 +80,15 @@ serve 专属:
   --trust-proxy-headers  反代对端为 loopback/私网（同机或 docker 网桥）时采信
                          X-Real-IP/X-Forwarded-For（默认关闭）
   --logs-retain-days N   访问日志保留天数（默认 90，0 关闭自动清理）
+  --alert-webhook URL    告警 webhook（默认取 SENV_SERVER_ALERT_WEBHOOK；
+                         空则告警关闭）：连续爆破/屏蔽/新注册/换 IP 时 POST JSON
+  --alert-auth-fail-threshold N
+                         连续 AUTH-FAILED 告警阈值（默认 10）
+  --alert-debounce D     同类型同对象最小告警间隔（默认 5m）
+
+环境变量（serve）:
+  SENV_SERVER_TOKEN_PEPPER  token 哈希 HMAC pepper（可选；空=旧 SHA-256 行为；
+                             启用后存量 token 走回退比对，请按文档指引尽快轮换）
 `)
 }
 
@@ -106,6 +116,12 @@ func runServe(args []string) {
 		"history versions kept per entry (0 or negative disables entry history)")
 	trustProxy := fs.Bool("trust-proxy-headers", false,
 		"trust X-Real-IP/X-Forwarded-For only when the direct peer is loopback or a private address (same-host or private-network reverse proxy)")
+	alertWebhook := fs.String("alert-webhook", os.Getenv("SENV_SERVER_ALERT_WEBHOOK"),
+		"alert webhook URL (POST JSON on auth-failure storms, blocks, registrations, client IP changes); empty disables alerting")
+	alertFailThreshold := fs.Int("alert-auth-fail-threshold", 10,
+		"consecutive AUTH-FAILED per source IP before an alert fires")
+	alertDebounce := fs.Duration("alert-debounce", 5*time.Minute,
+		"minimum interval between repeated alerts of the same type and target")
 	logsRetainDays := fs.Int("logs-retain-days", 90,
 		"access log retention in days (0 disables automatic pruning)")
 	fs.Parse(args)
@@ -134,15 +150,25 @@ func runServe(args []string) {
 	}
 	defer pool.Close()
 
+	// token 哈希 pepper（可选）：配置后 token 存 HMAC-SHA256(pepper, token)，
+	// 空 = 原 SHA-256 行为。pepper 只进进程内存，绝不入库或入日志。
+	pg := store.NewSQL(pool)
+	if pep := os.Getenv("SENV_SERVER_TOKEN_PEPPER"); pep != "" {
+		pg.SetTokenPepper([]byte(pep))
+	}
+
 	// 认证结果与 vault seq 走进程内缓存（decorator），对外仍是同一个
 	// store.Store；失效广播监听在下方启动
-	st := store.WithCache(store.NewSQL(pool))
+	st := store.WithCache(pg)
 	st.SetHistoryRetain(*historyRetain)
 
 	srv := handler.New(st, handler.Options{
-		MaxBodyBytes:      *maxBodyMB,
-		AuthRateLimit:     *rateLimit,
-		TrustProxyHeaders: *trustProxy,
+		MaxBodyBytes:           *maxBodyMB,
+		AuthRateLimit:          *rateLimit,
+		TrustProxyHeaders:      *trustProxy,
+		AlertWebhook:           *alertWebhook,
+		AlertAuthFailThreshold: *alertFailThreshold,
+		AlertDebounce:          *alertDebounce,
 	})
 
 	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。
@@ -260,7 +286,7 @@ func runAdmin(args []string) {
 	expires := fs.String("expires", "30m", "注册码有效期（Go duration，如 30m、2h）")
 	clientName := fs.String("client", "", "client 设备名")
 	userFilter := fs.String("user", "", "限定用户名（缺省作用于全部用户）")
-	outcome := fs.String("outcome", "", "访问日志结果过滤（OK/AUTH-FAILED/BLOCKED/RATE-LIMITED）")
+	outcome := fs.String("outcome", "", "访问日志结果过滤（OK/AUTH-FAILED/BLOCKED/RATE-LIMITED/ADMIN）")
 	logsSince := fs.String("since", "", "起始日期（YYYY-MM-DD 或 RFC3339，含）")
 	logsUntil := fs.String("until", "", "结束日期（YYYY-MM-DD 或 RFC3339，含当天）")
 	logsBefore := fs.String("before", "", "清理该日期之前的日志（YYYY-MM-DD）")
@@ -288,6 +314,7 @@ func runAdmin(args []string) {
 			if err != nil {
 				return err
 			}
+			recordAdminAudit(st, "create-registration "+fs.Arg(0), userID, 0)
 			// 明文注册码只在此展示一次，库中仅存 SHA-256 哈希
 			fmt.Printf("✓ 已为用户 %q 签发一次性注册码（有效期 %s）:\n%s\n", fs.Arg(0), ttl, code)
 			fmt.Println("在客户端执行: senv server register --address <server> --code <注册码> --name <设备名>")
@@ -348,6 +375,12 @@ func runAdmin(args []string) {
 					return fmt.Errorf("client %q 不存在（可用 admin list-clients 核对设备名）", *clientName)
 				}
 				return err
+			}
+			// 审计用 client id 尽力解析（失败不影响审计本身）
+			if cid, err := resolveClientID(st, *clientName, *userFilter); err == nil {
+				recordAdminAudit(st, fmt.Sprintf("%s user=%s client=%s", sub, *userFilter, *clientName), userIDOrZero(userID), cid)
+			} else {
+				recordAdminAudit(st, fmt.Sprintf("%s user=%s client=%s", sub, *userFilter, *clientName), userIDOrZero(userID), 0)
 			}
 			fmt.Printf("✓ client %q %s\n", *clientName, hint)
 			return nil
@@ -435,6 +468,11 @@ func runAdmin(args []string) {
 			if err != nil {
 				return err
 			}
+			uid, err := st.UserIDByName(context.Background(), fs.Arg(0))
+			if err != nil {
+				uid = 0
+			}
+			recordAdminAudit(st, "create-user "+fs.Arg(0), uid, 0)
 			// 明文 token 只在此展示一次，库中仅存 SHA-256 哈希
 			fmt.Printf("✓ 用户 %q 已创建\nToken（仅展示一次，请妥善保存）:\n%s\n", fs.Arg(0), token)
 			return nil
@@ -464,12 +502,31 @@ func runAdmin(args []string) {
 			if err := st.RevokeToken(context.Background(), tokenArg); err != nil {
 				return err
 			}
+			uid, err := st.UserIDByToken(context.Background(), tokenArg)
+			if err != nil {
+				uid = 0
+			}
+			recordAdminAudit(st, "revoke-token", uid, 0)
 			fmt.Println("✓ token 已吊销")
 			return nil
 		})
 	default:
 		usage()
 		os.Exit(1)
+	}
+}
+
+// recordAdminAudit best-effort 写一条 ADMIN 审计事件：记录操作类型与目标对象。
+// 失败仅记服务端日志，不影响命令结果与退出码（access-log spec「管理员操作审计」）。
+// userID/clientID 填被操作对象（解析不到时传 0）。
+func recordAdminAudit(st store.Store, reason string, userID, clientID int64) {
+	err := st.RecordAccess(context.Background(), store.AccessEvent{
+		IP: "-", Method: "ADMIN", Path: "admin",
+		Outcome: store.AccessOutcomeAdmin, Reason: reason,
+		UserID: userID, ClientID: clientID,
+	})
+	if err != nil {
+		slog.Error("admin audit write failed", "reason", reason, "err", err)
 	}
 }
 
@@ -491,6 +548,14 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// userIDOrZero 把 admin 过滤用的 -1 哨兵（全部用户）规范为 0（未知）
+func userIDOrZero(id int64) int64 {
+	if id < 0 {
+		return 0
+	}
+	return id
 }
 
 // resolveClientID 按设备名解析 client id；同名跨用户时要求显式 --user

@@ -16,6 +16,9 @@ const (
 	AccessOutcomeAuthFailed  = "AUTH-FAILED"
 	AccessOutcomeBlocked     = "BLOCKED"
 	AccessOutcomeRateLimited = "RATE-LIMITED"
+	// AccessOutcomeAdmin 标记 admin CLI 操作审计事件（create-user / revoke /
+	// create-registration / block / unblock），与请求事件同表存储
+	AccessOutcomeAdmin = "ADMIN"
 )
 
 // 访问日志字段长度上限。path 来自请求 URL，认证前即可被攻击者注入最长
@@ -69,7 +72,8 @@ func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 	e.Path = truncateUTF8(e.Path, MaxAccessLogPathBytes)
 	e.Reason = truncateUTF8(e.Reason, MaxAccessLogReasonBytes)
 	if e.Outcome != AccessOutcomeOK && e.Outcome != AccessOutcomeAuthFailed &&
-		e.Outcome != AccessOutcomeBlocked && e.Outcome != AccessOutcomeRateLimited {
+		e.Outcome != AccessOutcomeBlocked && e.Outcome != AccessOutcomeRateLimited &&
+		e.Outcome != AccessOutcomeAdmin {
 		return validationErrorf("未知的访问结果 %q", e.Outcome)
 	}
 	_, err := s.pool.Exec(ctx,

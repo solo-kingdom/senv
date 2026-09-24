@@ -46,9 +46,10 @@ func outcomeFromStatus(status int) string {
 	}
 }
 
-// recordAccess 落一条安全事件；写入失败仅记服务端错误日志，不影响响应
+// recordAccess 落一条安全事件并推给告警检测器；两者皆 best-effort，
+// 失败仅记服务端错误日志，不影响响应
 func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder) {
-	err := s.store.RecordAccess(ctx, store.AccessEvent{
+	event := store.AccessEvent{
 		IP:       s.resolveRemoteIP(r),
 		Method:   r.Method,
 		Path:     r.URL.Path,
@@ -56,7 +57,12 @@ func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Req
 		UserID:   info.userID,
 		Outcome:  outcomeFromStatus(rec.status),
 		Reason:   info.reason,
-	})
+	}
+	// 告警检测在非阻塞 channel 上：队列满丢弃 + slog，绝不拖慢响应路径
+	if s.alerts != nil {
+		s.alerts.push(event)
+	}
+	err := s.store.RecordAccess(ctx, event)
 	if err != nil {
 		slog.Error("access log write failed", "err", err)
 	}

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-24
+goal: DB 角色权限隔离 + admin 操作入审计：serve 运行时角色对 access_log 仅 INSERT+SELECT；logs-prune
+  用单独 admin 角色并给 cron 示例；admin
+  子命令（create-user/revoke-token/create-registration/block/unblock）成功后写
+  access_log（outcome 新增 ADMIN 取值）。设计依据见 server-hardening-driver/design.md 决策 1

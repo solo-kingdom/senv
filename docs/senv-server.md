@@ -1,5 +1,94 @@
 # senv-server 部署
 
+## 公网加固
+
+单人/小团队自用部署到公网时的建议基线。四项能力已随代码落地：DB 双角色、admin 审计、webhook 告警、token pepper——本节是它们的部署操作手册。
+
+### 数据库双角色（日志不可篡改）
+
+serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DSN 即可 `UPDATE/DELETE access_log` 抹除访问痕迹。
+
+- 角色授权模板（单一事实源）：`senv-server/sql/roles.sql`——serve 角色 `senv_server` 对 `access_log` 仅 `INSERT`+`SELECT`；admin 角色 `senv_admin` 持有全量权限（`admin logs-prune` 与自动清理用）
+- 部署步骤：以超户/库属主创建两角色并执行模板 → serve 用 `senv_server` DSN → admin CLI / cron 用 `senv_admin` DSN
+- 注意：受限角色下 serve 的 `--logs-retain-days` 自动清理会权限失败（best-effort 记日志，不影响服务）。生产应设 `--logs-retain-days 0`，由 cron 跑清理：
+
+```bash
+# 每天凌晨清理 90 天前的访问日志（admin 角色 DSN）
+0 3 * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv'   /usr/local/bin/senv-server-bin admin logs-prune --before $(date -d '90 days ago' +%F)
+```
+
+### admin 操作审计
+
+`admin create-user / revoke-token / create-registration / block-client / unblock-client` 成功后各写一条 `outcome=ADMIN` 事件（reason 记操作类型与目标）。查询：
+
+```bash
+./senv-server-bin admin logs --outcome ADMIN
+```
+
+### 告警 webhook
+
+serve 支持通用 webhook（不内置任何第三方 provider，自行接 n8n/飞书机器人/Telegram gateway）：
+
+```bash
+./senv-server-bin serve --alert-webhook https://example.com/senv-alerts   --alert-auth-fail-threshold 10 --alert-debounce 5m
+# 或环境变量 SENV_SERVER_ALERT_WEBHOOK
+```
+
+触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问。payload 为 JSON，只含时间/IP/client/user 名等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+
+### token pepper
+
+serve 读 `SENV_SERVER_TOKEN_PEPPER`（可选）。配置后 token 存 `HMAC-SHA256(pepper, token)`——数据库整库泄露单独不足以离线验证 token。pepper 只驻留进程内存，**须与 DSN 凭证同级备份；丢失即全部 token 失效**。
+
+启用后存量 token 自动走回退比对（进程内正缓存 1 分钟），服务不中断；回退命中记 `legacy sha256 token hash used` 慢日志。请尽快轮换：
+
+```bash
+# 逐设备：吊销旧 token，重新签发注册码，客户端重新 register
+./senv-server-bin admin revoke-token <old-token>
+./senv-server-bin admin create-registration <user>
+# 客户端：senv server register --address <server> --code <注册码> --name <设备名>
+```
+
+### systemd 加固
+
+生产建议以专用动态用户运行（单元文件模板，按需调整路径）：
+
+```ini
+[Unit]
+Description=senv-server
+After=network.target postgresql.service
+
+[Service]
+ExecStart=/usr/local/bin/senv-server-bin serve --addr 127.0.0.1:8080 --logs-retain-days 0
+Restart=on-failure
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 反代推荐配置
+
+server 本身跑明文 HTTP，TLS 由反向代理终结（回环或内网监听）：
+
+- TLS 1.2+ only，现代 cipher；开 HSTS（`Strict-Transport-Security: max-age=63072000`）
+- 认证端点限速（nginx 示例）：`limit_req_zone $binary_remote_addr zone=senv_auth:10m rate=10r/m;` 作用于 `/v1/`
+- client_max_body_size 与 server `--max-body-bytes` 对齐（默认 64MB）
+
+### 单实例边界
+
+进程内认证失败限速器、告警去抖与旧哈希回退正缓存都是内存态：**不支持多实例部署**（多副本会出现限速/去抖各自为政、回退窗口重复查询）。需要高可用请先讨论架构变更。
+
+### 元数据泄露边界
+
+零知识架构保证 server 与 DB 持有者看不到条目内容，但以下元数据对「拿到数据库的人」可见：vault 名、条目数量、revision 变化频率、访问时间与来源 IP（access_log）。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+
+
 senv-server 是零知识密文托管服务端：独立二进制，与 `senv` CLI 同仓（`senv-server/` main 包），
 不经过 cobra，因此 `senv --help` 里没有它。所有持久化内容都是客户端产物（密文/不透明 blob），
 server 只存密文 + token 哈希。

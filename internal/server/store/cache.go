@@ -196,6 +196,10 @@ func (c *cachedStore) ListClients(ctx context.Context, userID int64) ([]Client, 
 }
 
 // UserIDByName 透传（admin 语义）
+func (c *cachedStore) UserIDByToken(ctx context.Context, token string) (int64, error) {
+	return c.inner.UserIDByToken(ctx, token)
+}
+
 func (c *cachedStore) UserIDByName(ctx context.Context, name string) (int64, error) {
 	return c.inner.UserIDByName(ctx, name)
 }

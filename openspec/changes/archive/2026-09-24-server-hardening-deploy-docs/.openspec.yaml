@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-09-24
+goal: docs/senv-server.md 新增「公网加固」节：systemd 加固、反代推荐配置（HSTS/limit_req/TLS 1.2+）、双
+  DSN cron 示例、单实例边界、元数据泄露边界（vault 名/同步频率可见）、pepper 启用后的轮换指引；含 GRANT 模板落点。设计依据见
+  server-hardening-driver/design.md 决策 4
+skip_specs: true

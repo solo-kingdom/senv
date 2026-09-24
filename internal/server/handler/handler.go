@@ -2,12 +2,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wii/senv/internal/server/store"
 )
@@ -31,6 +33,13 @@ type Options struct {
 	// 或 docker 网桥/内网反代拓扑）时，来源 IP 采信 X-Real-IP / X-Forwarded-For；
 	// 默认关闭（fail-closed），公网直连的伪造头一律不采信。
 	TrustProxyHeaders bool
+	// AlertWebhook 通用告警 webhook URL（env SENV_SERVER_ALERT_WEBHOOK）。
+	// 为空则告警功能完全关闭且零开销；检测器 goroutine 投递失败仅记日志。
+	AlertWebhook string
+	// AlertAuthFailThreshold 同一来源连续 AUTH-FAILED 告警阈值（0=默认 10）
+	AlertAuthFailThreshold int
+	// AlertDebounce 同一 (告警类型, 对象) 最小通知间隔（0=默认 5 分钟）
+	AlertDebounce time.Duration
 }
 
 // withDefaults 补齐零值
@@ -55,6 +64,7 @@ type Server struct {
 	limiter           *authRateLimiter
 	maxBody           int64
 	trustProxyHeaders bool
+	alerts            *alertDetector
 }
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
@@ -72,6 +82,10 @@ func New(st store.Store, opts ...Options) *Server {
 	}
 	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
 		trustProxyHeaders: o.TrustProxyHeaders}
+	if o.AlertWebhook != "" {
+		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertDebounce)
+		go s.alerts.run(context.Background())
+	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata", s.auth(s.handleGetMetadata))
