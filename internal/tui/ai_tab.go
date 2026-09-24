@@ -1770,7 +1770,7 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("LLM") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
+		return paneTitleStyle.Render("LLM") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()

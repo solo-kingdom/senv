@@ -1332,10 +1332,11 @@ func (t *configTab) renderItems(width, height int) string {
 // formatConfigItemLine builds one config list row. Every row starts with a
 // 2-column cursor prefix so name/desc/path/updated stay aligned across files.
 func formatConfigItemLine(name, desc, path, updated string, pathW, inner int, selected bool) string {
+	// padRight/truncateWidth 均按显示列计算：CJK 名称按 rune 对齐会撑破列宽。
 	line := fmt.Sprintf("%s %s %s %s",
-		padRunes(name, 22), padRunes(desc, 14),
-		padRunes(truncPathN(path, pathW), pathW), updated)
-	return cursorPrefix(selected) + truncateRunes(line, inner-2)
+		padRight(truncateWidth(name, 22), 22), padRight(truncateWidth(desc, 14), 14),
+		padRight(truncPathN(path, pathW), pathW), updated)
+	return cursorPrefix(selected) + truncateWidth(line, inner-2)
 }
 
 // renderPlan renders the install/uninstall plan preview and, during changed
@@ -1410,11 +1411,11 @@ func formatPlanLine(action, name, path, reason string, inner int) string {
 	if reasonW < 4 {
 		reasonW = 4
 	}
-	line := "  [" + padRunes(action, actionW) + "] " +
-		padRunes(name, nameW) + " -> " +
-		padRunes(truncPathN(path, pathW), pathW) +
-		" (" + truncRunes(reason, reasonW) + ")"
-	return truncateRunes(line, inner)
+	line := "  [" + padRight(truncateWidth(action, actionW), actionW) + "] " +
+		padRight(truncateWidth(name, nameW), nameW) + " -> " +
+		padRight(truncPathN(path, pathW), pathW) +
+		" (" + truncateWidth(reason, reasonW) + ")"
+	return truncateWidth(line, inner)
 }
 
 // truncRunes shortens a string to at most n runes with an ellipsis.

@@ -1201,7 +1201,7 @@ func (t *envTab) renderItems(width, height int) string {
 	items := t.filteredItems()
 	header := group
 	if row, ok := t.currentGroupRow(); ok && row.description != "" && !row.isAll {
-		header += " — " + truncateRunes(row.description, 40)
+		header += " — " + truncateWidth(row.description, 40)
 	}
 	if t.filterBox.Term() != "" {
 		header += "  /" + t.filterBox.Term()
@@ -1243,8 +1243,10 @@ func (t *envTab) renderItems(width, height int) string {
 		if failed {
 			keyLabel = "⚠ " + keyLabel
 		}
-		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the pane.
-		shown = truncateRunes(shown, maxInt(4, inner-2-len([]rune(keyLabel))-1))
+		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the
+		// pane. 预算按显示列（lipgloss.Width）算：CJK 键名/值 1 rune = 2 列，
+		// rune 口径会把行撑宽、被 pane 折行后顶高整个视图。
+		shown = truncateWidth(shown, maxInt(4, inner-2-lipgloss.Width(keyLabel)-1))
 		var line string
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ "+keyLabel+"=") + renderValue(shown, revealed)

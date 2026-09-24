@@ -390,7 +390,7 @@ func (t *historyTab) previewOf(row provider.HistoryVersion) string {
 	one := strings.ReplaceAll(strings.TrimSpace(text), "\n", "⏎")
 	// 上限只用于兜住超大值（backup 可达 512KB）的逐帧渲染成本，远大于任何
 	// 终端的预览列宽；真正的列宽截断由行渲染按面板宽度做。
-	return truncateRunes(one, 512)
+	return truncateWidth(one, 512)
 }
 
 // openDetail 打开滚动详情弹层，渲染选中版本的解密全文（不截断，超长可滚动）。

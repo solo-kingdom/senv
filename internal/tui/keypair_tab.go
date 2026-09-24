@@ -992,7 +992,7 @@ func (t *keyPairTab) clamp() {
 
 func (t *keyPairTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("KeyPair") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
+		return paneTitleStyle.Render("KeyPair") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()

@@ -652,7 +652,10 @@ func (m Model) View() string {
 	// outside Width/Height, so Width(m.width-2).Height(m.height-2) makes
 	// the frame's total rendered size exactly m.width x m.height.
 	inner := lipgloss.JoinVertical(lipgloss.Left, tabStrip, content, bottom)
-	return frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
+	framed := frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
+	// 最后一道防线：frame 的 Height 只补齐不裁剪，任何漏网超高内容都会让
+	// bubbletea 全量打印视图、把顶部 tab 栏顶出屏幕；这里按终端行数硬裁。
+	return clipLines(framed, m.height)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：

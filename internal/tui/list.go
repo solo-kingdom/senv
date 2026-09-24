@@ -16,7 +16,9 @@ func paneBudget(innerH int) int { return innerH + 2 }
 // prompt/flash stays inside the pane budget instead of pushing the list off-screen.
 func stackWithOverlay(innerH int, overlay string, renderBody func(h int) string) string {
 	if overlay == "" {
-		return renderBody(innerH)
+		// lipgloss Height 只补齐不裁剪：常态路径也要兜最终行数，否则任一
+		// 面板超高都会把整个 TUI 顶出屏幕（顶部 tab 栏被挤掉）。
+		return clipLines(renderBody(innerH), paneBudget(innerH))
 	}
 	oh := lipgloss.Height(overlay)
 	bodyH := innerH - oh
@@ -319,7 +321,7 @@ func renderSidebar(rows []SidebarRow, cursor, height, width int) string {
 	inner := width - 2
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
-		line := truncateRunes(fmt.Sprintf("%s %s  [%d]", r.Marker, r.Name, r.Count), inner-2)
+		line := truncateWidth(fmt.Sprintf("%s %s  [%d]", r.Marker, r.Name, r.Count), inner-2)
 		if r.Selected {
 			line = selectedLineStyle.Render(cursorPrefix(true) + line)
 		} else {

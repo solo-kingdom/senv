@@ -192,3 +192,51 @@ func TestLongItemListDoesNotOverflowOuterFrame(t *testing.T) {
 		t.Error("selected item missing from framed view")
 	}
 }
+
+// TestTextTabCJKKeysStayWithinPaneBudget 回归：CJK 键名 1 rune = 2 显示列，
+// 按 rune 截断会把行撑宽、被 pane 折行后顶高整个视图（lipgloss Height 只
+// 补齐不裁剪），导致顶部 tab 栏溢出屏幕。行宽必须按显示列截断。
+func TestTextTabCJKKeysStayWithinPaneBudget(t *testing.T) {
+	mgr := newTestTextManager(t)
+	for i := 0; i < 30; i++ {
+		if err := mgr.Set("default", fmt.Sprintf("中文键名很长很长_%02d", i), "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tab := newTextTab(Managers{Text: mgr})
+	const innerH = 15
+	tab.SetSize(80, innerH)
+	tab = flushText(tab, tab.load())
+	tab.focusLeft = false
+
+	if h := lipgloss.Height(tab.View()); h > paneBudget(innerH) {
+		t.Fatalf("CJK keys: view height %d exceeds pane budget %d; top of the TUI would scroll off screen",
+			h, paneBudget(innerH))
+	}
+}
+
+// TestSidebarCJKGroupNamesStayWithinPaneBudget 回归：侧栏分组名含 CJK 时
+// 同样不得让视图超高（renderSidebar 与各 Tab 列表行同一截断口径）。
+func TestSidebarCJKGroupNamesStayWithinPaneBudget(t *testing.T) {
+	mgr := newTestTextManager(t)
+	desc := "分组用途说明"
+	for i := 0; i < 25; i++ {
+		name := fmt.Sprintf("中文分组名称_%02d", i)
+		if err := mgr.AddGroup(name, desc); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.Set(name, "k", "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tab := newTextTab(Managers{Text: mgr})
+	const innerH = 15
+	tab.SetSize(80, innerH)
+	tab = flushText(tab, tab.load())
+	tab.focusLeft = true
+	tab.groupIndex = 24
+
+	if h := lipgloss.Height(tab.View()); h > paneBudget(innerH) {
+		t.Fatalf("CJK group names: view height %d exceeds pane budget %d", h, paneBudget(innerH))
+	}
+}

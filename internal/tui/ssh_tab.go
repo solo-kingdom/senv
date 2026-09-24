@@ -1490,7 +1490,7 @@ func (t *sshTab) clamp() {
 
 func (t *sshTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("SSH") + "\n" + truncateRunes("⚠ "+t.loadErr, maxInt(t.width, 1))
+		return paneTitleStyle.Render("SSH") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()

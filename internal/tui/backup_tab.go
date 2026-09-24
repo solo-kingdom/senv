@@ -1213,9 +1213,9 @@ func (t *backupTab) renderItems(width, height int) string {
 		if t.sel.IsSelected(it.group + "/" + it.key) {
 			keyLabel = "[x] " + keyLabel
 		}
-		line := truncateRunes(fmt.Sprintf("%-24s %8d b  %s", keyLabel, it.size, it.updatedAt), inner-2)
+		line := truncateWidth(fmt.Sprintf("%-24s %8d b  %s", keyLabel, it.size, it.updatedAt), inner-2)
 		if it.description != "" {
-			line = truncateRunes(line+"  "+it.description, inner-2)
+			line = truncateWidth(line+"  "+it.description, inner-2)
 		}
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ " + line)
