@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-09-24
+goal: admin CLI 与 serve 同源读取 SENV_SERVER_TOKEN_PEPPER——否则 pepper 启用后
+  `admin revoke-token` 算出裸 SHA-256 找不到 HMAC 存量 token(吊销静默失效),
+  `admin create-user` 会签出绕过 pepper 的 token

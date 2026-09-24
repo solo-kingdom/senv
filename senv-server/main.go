@@ -160,9 +160,7 @@ func runServe(args []string) {
 	// token 哈希 pepper（可选）：配置后 token 存 HMAC-SHA256(pepper, token)，
 	// 空 = 原 SHA-256 行为。pepper 只进进程内存，绝不入库或入日志。
 	pg := store.NewSQL(pool)
-	if pep := os.Getenv("SENV_SERVER_TOKEN_PEPPER"); pep != "" {
-		pg.SetTokenPepper([]byte(pep))
-	}
+	applyTokenPepper(pg)
 
 	// 认证结果与 vault seq 走进程内缓存（decorator），对外仍是同一个
 	// store.Store；失效广播监听在下方启动
@@ -545,9 +543,25 @@ func withStore(dsn string, fn func(store.Store) error) {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	if err := fn(store.NewSQL(pool)); err != nil {
+	pg := store.NewSQL(pool)
+	// admin 与 serve 必须同源读 pepper:启用后新签 token 存 HMAC 哈希,不带
+	// pepper 的 admin 算出的是裸 SHA-256,`revoke-token` 会报「token 不存在」
+	// 而静默失效,`create-user` 则会签出绕过 pepper 的 token。
+	applyTokenPepper(pg)
+	if err := fn(pg); err != nil {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+// pepperSetter 是 store 的 pepper 配置面(*store.pgStore 未导出,用最小接口接住)
+type pepperSetter interface{ SetTokenPepper([]byte) }
+
+// applyTokenPepper 按 SENV_SERVER_TOKEN_PEPPER 配置 token 哈希 pepper;
+// 未设置时保持原 SHA-256 行为
+func applyTokenPepper(st pepperSetter) {
+	if pep := os.Getenv("SENV_SERVER_TOKEN_PEPPER"); pep != "" {
+		st.SetTokenPepper([]byte(pep))
 	}
 }
 

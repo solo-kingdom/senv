@@ -52,6 +52,8 @@ provider 格式不通用时用 body 模板适配（server 不内置任何厂商�
 
 serve 读 `SENV_SERVER_TOKEN_PEPPER`（可选）。配置后 token 存 `HMAC-SHA256(pepper, token)`——数据库整库泄露单独不足以离线验证 token。pepper 只驻留进程内存，**须与 DSN 凭证同级备份；丢失即全部 token 失效**。
 
+`admin` 子命令读同名环境变量，两侧必须同源：给 admin 的容器/cron 也要注入 pepper，否则 `admin revoke-token` 按裸 SHA-256 找不到 HMAC 存储的 token（报「不存在」，吊销通道静默失效），`admin create-user` 还会签出绕过 pepper 的 token。
+
 启用后存量 token 自动走回退比对（进程内正缓存 1 分钟），服务不中断；回退命中记 `legacy sha256 token hash used` 慢日志。请尽快轮换：
 
 ```bash
