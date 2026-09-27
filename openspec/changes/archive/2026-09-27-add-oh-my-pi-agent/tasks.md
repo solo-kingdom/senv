@@ -20,4 +20,4 @@
 - [x] 3.3 `.agents/skills/senv-cli/SKILL.md`：agent 清单加 omp；pi 条目旁补 omp 差异（内置 MCP、models.yml/config.yml、modelRoles.default）；记录 omp 验证锚点（v18.3.3 + 上游文档/源码路径）
 - [x] 3.4 临时 HOME 冒烟（`HOME=/tmp/omp-smoke`）：测试 vault 切换 omp + `mcp install omp`，验证两个 YAML 与 mcp.json 落盘形状；用同 HOME 启动 omp 非交互模式确认配置被解析加载（schema 错在启动即报 vs 进入网络调用即为通过）；验证产物与命令记录留 `/tmp/omp-smoke/`
 - [x] 3.5 `make check`（fmt+vet+lint+test -race）全绿
-- [ ] 3.6 commit（跟随仓库 log 风格，说明写原因）；ADR-0030 状态 proposed→accepted 随实现更新；OpenSpec archive 走单独流程
+- [x] 3.6 commit（跟随仓库 log 风格，说明写原因）；ADR-0030 状态 proposed→accepted 随实现更新；OpenSpec archive 走单独流程
