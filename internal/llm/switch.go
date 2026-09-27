@@ -19,6 +19,7 @@ import (
 	"github.com/wii/senv/internal/ref"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
+	"gopkg.in/yaml.v3"
 )
 
 // CredentialMode 描述该 agent 凭据的归宿。
@@ -69,8 +70,11 @@ type SwitchRequest struct {
 
 // AgentAdapter 描述一个受支持的 coding agent 及其配置写回方式。
 type AgentAdapter struct {
-	ID         string
-	Name       string
+	ID   string
+	Name string
+	// Aliases 是查找时可接受的额外 id（大小写不敏感），只降低输入摩擦；
+	// 列表、报错与 TUI 展示只用规范 ID。
+	Aliases    []string
 	ConfigPath func(home string) string
 	// ConfigPaths returns every writable path (including ConfigPath).
 	ConfigPaths func(home string) []string
@@ -166,15 +170,22 @@ func SupportedAgents() []AgentAdapter {
 		codexAdapter(),
 		kimiAdapter(),
 		piAdapter(),
+		ompAdapter(),
 		opencodeAdapter(),
 	}
 }
 
-// LookupAgent 按 id 查找适配器。
+// LookupAgent 按 id 或别名查找适配器（大小写不敏感）。
 func LookupAgent(id string) (AgentAdapter, bool) {
+	lower := strings.ToLower(id)
 	for _, a := range SupportedAgents() {
-		if a.ID == id {
+		if strings.ToLower(a.ID) == lower {
 			return a, true
+		}
+		for _, alias := range a.Aliases {
+			if strings.ToLower(alias) == lower {
+				return a, true
+			}
 		}
 	}
 	return AgentAdapter{}, false
@@ -322,6 +333,31 @@ func applyTOMLMerge(path string, mutate func(root map[string]any) error, txs ...
 	return atomicWriteWithBackup(path, data)
 }
 
+// applyYAMLMerge 读取 path 的 YAML（不存在视为空对象），用 mutate 做结构
+// 性修改后编码写回；与 JSON/TOML 原语同一事务协议（备份 + temp + rename，
+// 权限 0600）。yaml.v3 重写不保注释——与 TOML 先例一致（ADR-0030）。
+func applyYAMLMerge(path string, mutate func(root map[string]any) error, txs ...*configTransaction) error {
+	root := map[string]any{}
+	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
+		if err := yaml.Unmarshal(existing, &root); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if err := mutate(root); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(root)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	if len(txs) > 0 && txs[0] != nil {
+		return txs[0].write(path, data)
+	}
+	return atomicWriteWithBackup(path, data)
+}
+
 // setTOMLPath updates one dotted path without interpreting literal values as
 // TOML source. Missing intermediate tables are created as maps.
 func setTOMLPath(root map[string]any, path []string, value any) {
@@ -379,15 +415,15 @@ func claudeCodeAdapter() AgentAdapter {
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
-			root["model"] = req.DefaultModel
-			env := ensureSubMap(root, "env")
-			env["ANTHROPIC_BASE_URL"] = req.BaseURL
-			env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
-			// 后台模型写两个键（ADR-0029）：SMALL_FAST 管压缩等后台任务，
-			// DEFAULT_HAIKU 把 haiku 档位整体重映射——网关上没有 haiku 时，
-			// 标题生成等 haiku 档位调用也会静默失败。
-			env["ANTHROPIC_SMALL_FAST_MODEL"] = req.BackgroundModel
-			env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = req.BackgroundModel
+				root["model"] = req.DefaultModel
+				env := ensureSubMap(root, "env")
+				env["ANTHROPIC_BASE_URL"] = req.BaseURL
+				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+				// 后台模型写两个键（ADR-0029）：SMALL_FAST 管压缩等后台任务，
+				// DEFAULT_HAIKU 把 haiku 档位整体重映射——网关上没有 haiku 时，
+				// 标题生成等 haiku 档位调用也会静默失败。
+				env["ANTHROPIC_SMALL_FAST_MODEL"] = req.BackgroundModel
+				env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = req.BackgroundModel
 				options := make([]map[string]any, 0, len(req.Models))
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
@@ -612,6 +648,57 @@ func kimiCapabilities(meta ModelMetadata) []string {
 // models.json 写 provider 定义（含 apiKey）、settings.json 写
 // defaultProvider/defaultModel。两份文件属于同一事务，第二份失败时第一份由
 // SwitchManager 统一回滚。agent dir 与 agentcfg 的 MCP 目标共用一处解析。
+// piStyleModelEntry 构造 pi/omp 共用的模型条目：id/name 必填；
+// contextWindow/maxTokens 只在已知正数时写入（写 0 会被 agent 拒绝）；
+// 推理档位非空写 reasoning: true；输入模态收敛到 text/image，全被过滤时
+// 省略 input（缺省即 text+image）。
+func piStyleModelEntry(model string, meta ModelMetadata) map[string]any {
+	entry := map[string]any{
+		"id":   model,
+		"name": modelLabel(model, meta),
+	}
+	if meta.ContextLimit > 0 {
+		entry["contextWindow"] = meta.ContextLimit
+	}
+	if meta.OutputLimit > 0 {
+		entry["maxTokens"] = meta.OutputLimit
+	}
+	if modelSupportsReasoning(meta) {
+		entry["reasoning"] = true
+	}
+	if input := piInputModalities(meta.InputModalities); len(input) > 0 {
+		entry["input"] = input
+	}
+	return entry
+}
+
+// piStyleProviderEntry 构造 pi/omp 共用的 provider 条目：baseUrl/api/apiKey +
+// provider 级 compat + models[]。compat.supportsDeveloperRole 恒为 false：
+// pi/omp 以 model.reasoning && compat.supportsDeveloperRole 决定 system
+// prompt 用 developer 还是 system 角色，而缺省推断只认一份硬编码的
+// base URL/provider 特征名单——senv 写入的自建网关不在名单内，会被当成
+// 标准 OpenAI，使被投影为 reasoning 的模型发出上游不接受的 developer 角色
+// （Moonshot/Kimi 等报 400 role 'developer' is not allowed）。一律写 false：
+// system 是所有 OpenAI 兼容端点的公共子集，真 OpenAI 也接受它。该声明是
+// provider 级兼容开关，不是模型元数据投影，因此不受「元数据缺失就省略」
+// 约束，且覆盖该 provider 下全部模型。不写 supportsReasoningEffort:false：
+// 它是 reasoning_effort 的透传开关，一刀切会剥夺指向真 OpenAI 的档案的
+// 推理档位。senv 整体拥有该 provider 对象，用户手工补的 compat 会被下次
+// 切换覆盖，开关必须在这里。（背景见 ADR-0030。）
+func piStyleProviderEntry(req SwitchRequest) map[string]any {
+	models := make([]map[string]any, 0, len(req.Models))
+	for _, model := range req.Models {
+		models = append(models, piStyleModelEntry(model, req.ModelMetadata[model]))
+	}
+	return map[string]any{
+		"baseUrl": req.BaseURL,
+		"api":     piAPIType(req.APIShape),
+		"apiKey":  req.Credential,
+		"compat":  map[string]any{"supportsDeveloperRole": false},
+		"models":  models,
+	}
+}
+
 func piAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "pi",
@@ -634,51 +721,7 @@ func piAdapter() AgentAdapter {
 				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
 					delete(providers, senvProviderID(prior))
 				}
-				models := make([]map[string]any, 0, len(req.Models))
-				for _, model := range req.Models {
-					meta := req.ModelMetadata[model]
-					entry := map[string]any{
-						"id":   model,
-						"name": modelLabel(model, meta),
-					}
-					// pi 对缺失字段用内置默认（contextWindow 128k、maxTokens
-					// 16k、reasoning false），只在已知时写入真实值；写 0 会被
-					// pi 直接拒绝。
-					if meta.ContextLimit > 0 {
-						entry["contextWindow"] = meta.ContextLimit
-					}
-					if meta.OutputLimit > 0 {
-						entry["maxTokens"] = meta.OutputLimit
-					}
-					if modelSupportsReasoning(meta) {
-						entry["reasoning"] = true
-					}
-					if input := piInputModalities(meta.InputModalities); len(input) > 0 {
-						entry["input"] = input
-					}
-					models = append(models, entry)
-				}
-				providers[id] = map[string]any{
-					"baseUrl": req.BaseURL,
-					"api":     piAPIType(req.APIShape),
-					"apiKey":  req.Credential,
-					// compat 是 provider 级兼容声明，不是模型元数据投影，因此不受
-					// 上面「元数据缺失就省略字段」规则的约束。pi 以
-					// model.reasoning && compat.supportsDeveloperRole 决定 system
-					// prompt 用 developer 还是 system 角色，而 supportsDeveloperRole
-					// 的缺省推断只认一份硬编码的 base URL/provider 特征名单：senv 写
-					// 入的自建网关（new-api 等）不在名单内，会被当成标准 OpenAI，使
-					// 被投影为 reasoning 的模型发出上游不接受的 developer 角色
-					// （Moonshot/Kimi 等报 400 role 'developer' is not allowed）。
-					// 一律写 false：system 是所有 OpenAI 兼容端点的公共子集，真
-					// OpenAI 也接受它；写在 provider 级才能覆盖全部模型（含重跑新增
-					// 的），也不必跟着 pi 的名单漂移。注意 senv 整体拥有该 provider
-					// 对象，用户手工补的 compat 会被下次切换覆盖，所以开关必须在这里。
-					// 不写 supportsReasoningEffort：它是 reasoning_effort 的透传开关，
-					// 一刀切关掉会让指向真 OpenAI 的档案失去推理档位。
-					"compat": map[string]any{"supportsDeveloperRole": false},
-					"models": models,
-				}
+				providers[id] = piStyleProviderEntry(req)
 				return nil
 			}, req.tx); err != nil {
 				return err
@@ -695,6 +738,53 @@ func piAdapter() AgentAdapter {
 					priorID = senvProviderID(req.PriorProvider)
 				}
 				updatePiEnabledModels(root, id, req.DefaultModel, priorID)
+				return nil
+			}, req.tx)
+		},
+	}
+}
+
+// ompAdapter：~/.omp/agent/models.yml providers.<senv id>（YAML，条目 schema
+// 与 pi 的 models.json 相同，构造复用 piStyle*）+ config.yml 的
+// modelRoles.default 选择子 "<id>/<默认模型>"。oh-my-pi（can1357/oh-my-pi）
+// 是 pi 的 fork，但 provider 配置已迁 models.yml（models.json 只在启动时
+// 一次性迁移），默认模型从 settings.json 迁到 config.yml 的 modelRoles；
+// 无 enabledModels 概念，不替用户管 allowlist。只写 default 角色——
+// smol/slow/plan 等角色与用户其它键原样保留，omp 未配置的角色回退
+// default（ADR-0029 的后台模型投影仍只 claude-code 消费）。
+func ompAdapter() AgentAdapter {
+	return AgentAdapter{
+		ID:       "omp",
+		Name:     "Oh My Pi",
+		Aliases:  []string{"oh-my-pi"},
+		Protocol: ProtocolOpenAICompatible,
+		ConfigPath: func(home string) string {
+			return filepath.Join(agentcfg.OmpAgentDir(home), "models.yml")
+		},
+		ConfigPaths: func(home string) []string {
+			dir := agentcfg.OmpAgentDir(home)
+			return []string{
+				filepath.Join(dir, "models.yml"),
+				filepath.Join(dir, "config.yml"),
+			}
+		},
+		Credential: CredentialInline,
+		Apply: func(req SwitchRequest) error {
+			id := senvProviderID(req.ProviderAlias)
+			if err := applyYAMLMerge(req.ConfigPath, func(root map[string]any) error {
+				providers := ensureSubMap(root, "providers")
+				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+					delete(providers, senvProviderID(prior))
+				}
+				providers[id] = piStyleProviderEntry(req)
+				return nil
+			}, req.tx); err != nil {
+				return err
+			}
+			settings := filepath.Join(filepath.Dir(req.ConfigPath), "config.yml")
+			return applyYAMLMerge(settings, func(root map[string]any) error {
+				roles := ensureSubMap(root, "modelRoles")
+				roles["default"] = id + "/" + req.DefaultModel
 				return nil
 			}, req.tx)
 		},
@@ -988,6 +1078,9 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	if !ok {
 		return nil, fmt.Errorf("agent %q is not supported; supported: %s", agentID, strings.Join(supportedAgentIDs(), ", "))
 	}
+	// 别名只在查找时接受；指针、输出与状态全部归一到规范 id（展示面不出现
+	// 别名，ADR-0030）。
+	agentID = adapter.ID
 	entry, err := sm.providerManager.GetProvider(providerAlias)
 	if err != nil {
 		return nil, err

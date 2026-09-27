@@ -278,3 +278,51 @@ func TestUpsertTomlServer_AppendToEmpty(t *testing.T) {
 		t.Fatalf("append to empty produced unexpected output:\n%s", got)
 	}
 }
+
+func TestInstallOmpBuiltInMCPNoPrerequisite(t *testing.T) {
+	t.Setenv("OMP_PROFILE", "")
+	t.Setenv("PI_PROFILE", "")
+	t.Setenv("PI_CONFIG_DIR", "")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	target, ok := findAgent("omp")
+	if !ok {
+		t.Fatal("omp not found")
+	}
+	cfgPath, out, _ := installWithHome(t, target, "user", false)
+	if !strings.HasSuffix(cfgPath, filepath.Join(".omp", "agent", "mcp.json")) {
+		t.Fatalf("omp config path = %q", cfgPath)
+	}
+	// omp 内置 MCP：输出不得出现前置依赖提示（区别于 pi 的 pi-mcp-adapter）。
+	if strings.Contains(out.String(), "Requires:") {
+		t.Fatalf("omp output must not list a prerequisite:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "/mcp reload") {
+		t.Fatalf("omp output missing the reload hint:\n%s", out.String())
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("config not valid JSON: %v\n%s", err, data)
+	}
+	senvEntry, ok := root["mcpServers"].(map[string]any)["senv"].(map[string]any)
+	if !ok {
+		t.Fatalf("senv server missing: %v", root)
+	}
+	if _, ok := senvEntry["type"]; ok {
+		t.Fatalf("stdio entry gained a type key: %v", senvEntry)
+	}
+}
+
+func TestInstallOmpAliasAndProjectScope(t *testing.T) {
+	alias, ok := findAgent("oh-my-pi")
+	if !ok || alias.ID != "omp" {
+		t.Fatalf("findAgent(oh-my-pi) = %+v, %v; want omp", alias, ok)
+	}
+	// project scope 解析到 CWD 相对的 .omp/mcp.json。
+	if path := alias.ResolveConfigPath("/home/u", "project"); path != ".omp/mcp.json" {
+		t.Fatalf("omp project path = %q", path)
+	}
+}

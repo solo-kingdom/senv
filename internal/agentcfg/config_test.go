@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -355,6 +357,107 @@ func TestAdapterTargetsDeclarePrerequisite(t *testing.T) {
 		}
 		if target.Prerequisite != nil {
 			t.Fatalf("%s: unexpected Prerequisite %+v", target.ID, target.Prerequisite)
+		}
+	}
+}
+
+func TestOmpTargetPaths(t *testing.T) {
+	t.Setenv("OMP_PROFILE", "")
+	t.Setenv("PI_PROFILE", "")
+	t.Setenv("PI_CONFIG_DIR", "")
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	target, ok := Find("omp")
+	if !ok {
+		t.Fatal("omp target missing")
+	}
+	if target.JSONServersKey != "mcpServers" {
+		t.Fatalf("JSONServersKey = %q, want mcpServers", target.JSONServersKey)
+	}
+	// OMP has built-in MCP support: no extension prerequisite, unlike pi.
+	if target.Prerequisite != nil {
+		t.Fatalf("omp must not declare a Prerequisite: %+v", target.Prerequisite)
+	}
+	if !target.Remote.TypeKey || !target.Remote.HTTP || !target.Remote.SSE || !target.Remote.Headers {
+		t.Fatalf("omp remote capability = %+v, want http+sse+headers+typekey", target.Remote)
+	}
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/.omp/agent/mcp.json" {
+		t.Fatalf("user config path = %q", path)
+	}
+	if path := target.ResolveConfigPath("/home/u", "project"); path != ".omp/mcp.json" {
+		t.Fatalf("project config path = %q", path)
+	}
+}
+
+func TestOmpAgentDirResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"default", nil, "/home/u/.omp/agent"},
+		{"omp profile", map[string]string{"OMP_PROFILE": "work"}, "/home/u/.omp/profiles/work/agent"},
+		{"pi profile fallback", map[string]string{"PI_PROFILE": "work"}, "/home/u/.omp/profiles/work/agent"},
+		{"omp wins over pi", map[string]string{"OMP_PROFILE": "work", "PI_PROFILE": "other"}, "/home/u/.omp/profiles/work/agent"},
+		{"empty omp disables pi", map[string]string{"OMP_PROFILE": "", "PI_PROFILE": "work"}, "/home/u/.omp/agent"},
+		{"default sentinel", map[string]string{"OMP_PROFILE": "default"}, "/home/u/.omp/agent"},
+		{"invalid profile uppercase", map[string]string{"OMP_PROFILE": "Work"}, "/home/u/.omp/agent"},
+		{"invalid profile trailing dot", map[string]string{"OMP_PROFILE": "work."}, "/home/u/.omp/agent"},
+		{"invalid profile windows reserved", map[string]string{"OMP_PROFILE": "CON"}, "/home/u/.omp/agent"},
+		{"config dir", map[string]string{"PI_CONFIG_DIR": ".omx"}, "/home/u/.omx/agent"},
+		{"agent dir override", map[string]string{"PI_CODING_AGENT_DIR": "/opt/omp-agent"}, "/opt/omp-agent"},
+		{"agent dir override ignores tilde", map[string]string{"PI_CODING_AGENT_DIR": "~/custom"}, "/home/u/current/~/custom"},
+		{"profile ignores agent dir override", map[string]string{"OMP_PROFILE": "work", "PI_CODING_AGENT_DIR": "/opt/omp-agent"}, "/home/u/.omp/profiles/work/agent"},
+	}
+	unsetenv := func(t *testing.T, key string) {
+		t.Helper()
+		old, had := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			if had {
+				os.Setenv(key, old)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 未设置的变量必须真正 unset：OMP_PROFILE 定义为空会压制
+			// PI_PROFILE，Setenv(key, "") 无法表达这个区别。
+			for _, key := range []string{"OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR"} {
+				unsetenv(t, key)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("Getwd() error = %v", err)
+			}
+			// 相对 PI_CODING_AGENT_DIR 锚定进程 cwd（镜像 omp 的 path.resolve）。
+			want := tc.want
+			if tc.name == "agent dir override ignores tilde" {
+				want = filepath.Join(cwd, "~/custom")
+			}
+			if got := OmpAgentDir("/home/u"); got != want {
+				t.Fatalf("OmpAgentDir = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestFindAcceptsAliasButIDsStayCanonical(t *testing.T) {
+	target, ok := Find("oh-my-pi")
+	if !ok || target.ID != "omp" {
+		t.Fatalf("Find(oh-my-pi) = %+v, %v; want omp", target, ok)
+	}
+	target, ok = Find("OH-MY-PI")
+	if !ok || target.ID != "omp" {
+		t.Fatalf("Find(OH-MY-PI) = %+v, %v; want omp", target, ok)
+	}
+	for _, id := range IDs() {
+		if id == "oh-my-pi" {
+			t.Fatal("IDs() must not contain alias oh-my-pi")
 		}
 	}
 }
