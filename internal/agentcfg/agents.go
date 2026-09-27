@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -29,6 +30,10 @@ type Target struct {
 	ID string
 	// Name is the display name shown in listings.
 	Name string
+	// Aliases are extra ids accepted by Find (case-insensitive). They exist
+	// only to lower input friction (e.g. "oh-my-pi" for omp); listings,
+	// help text, and error enumerations MUST show the canonical ID only.
+	Aliases []string
 	// Format is the config file format.
 	Format Format
 	// ConfigPath returns the absolute config file path. scope is "user" or
@@ -235,6 +240,31 @@ func Supported() []Target {
 			},
 			Remote: RemoteRender{HTTP: true, SSE: true, Headers: true},
 		},
+		{
+			// OMP (oh-my-pi, github.com/can1357/oh-my-pi) has built-in MCP:
+			// user-level mcp.json in the active agent dir and project
+			// .omp/mcp.json (verified against docs/mcp-config.md, v18.3.3).
+			// No extension adapter needed. Remote entries MUST carry the
+			// transport "type" key — omp cannot auto-detect http vs sse.
+			// sse is still accepted but deprecated upstream; new remote
+			// configs should prefer http.
+			ID:      "omp",
+			Name:    "Oh My Pi",
+			Aliases: []string{"oh-my-pi"},
+			Format:  FormatJSON,
+			ConfigPath: func(home, scope string) string {
+				if scope == "project" {
+					return ".omp/mcp.json"
+				}
+				return filepath.Join(OmpAgentDir(home), "mcp.json")
+			},
+			JSONServersKey: "mcpServers",
+			Note:           "Run /mcp reload in OMP (or restart) to load the server.",
+			Remote: RemoteRender{
+				HTTP: true, SSE: true, Headers: true, TypeKey: true,
+				Reason: "sse entries still load in omp but are deprecated upstream; prefer http",
+			},
+		},
 	}
 }
 
@@ -261,6 +291,65 @@ func PiAgentDir(home string) string {
 // piMCPConfigPath is the Pi global MCP override read by pi-mcp-adapter.
 func piMCPConfigPath(home, _ string) string {
 	return filepath.Join(PiAgentDir(home), "mcp.json")
+}
+
+// ompProfileNameRe / ompWindowsReservedRe mirror oh-my-pi
+// packages/utils/src/dirs.ts normalizeProfileName (v18.3.3).
+var (
+	ompProfileNameRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	ompWindowsReservedRe = regexp.MustCompile(`(?i)^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\..*)?$`)
+)
+
+// resolveOmpProfile mirrors oh-my-pi dirs.ts resolveProfileEnv +
+// readProfileFromEnvSafe: OMP_PROFILE wins when defined (even empty, which
+// selects the default profile rather than falling back to PI_PROFILE);
+// PI_PROFILE is the legacy fallback. An invalid name never errors — omp
+// silently uses the default profile, and so does senv.
+func resolveOmpProfile() string {
+	raw, ok := os.LookupEnv("OMP_PROFILE")
+	if !ok {
+		raw = os.Getenv("PI_PROFILE")
+	}
+	name := strings.TrimSpace(raw)
+	if name == "" || name == "default" {
+		return ""
+	}
+	if name == "." || name == ".." || strings.HasSuffix(name, ".") ||
+		!ompProfileNameRe.MatchString(name) || ompWindowsReservedRe.MatchString(name) {
+		return ""
+	}
+	return name
+}
+
+// OmpAgentDir resolves OMP's user-level agent directory, mirroring
+// oh-my-pi packages/utils/src/dirs.ts (DirResolver, v18.3.3):
+//   - named profile (OMP_PROFILE/PI_PROFILE): <root>/profiles/<name>/agent
+//   - default profile: PI_CODING_AGENT_DIR when set, else <root>/agent
+//
+// The config root is path.join(home, PI_CONFIG_DIR || ".omp"). Values are
+// used literally — Node path.join/path.resolve never expand "~", so omp
+// treats "~/x" as a literal relative segment; senv mirrors that rather than
+// guessing friendlier semantics the agent will not read. Relative
+// PI_CODING_AGENT_DIR anchors at the process working directory, exactly
+// like omp's path.resolve. Linux XDG redirection ($XDG_*_HOME/omp) is NOT
+// supported: omp only takes it after `omp config migrate`, which senv
+// cannot verify from here.
+func OmpAgentDir(home string) string {
+	rootName := os.Getenv("PI_CONFIG_DIR")
+	if rootName == "" {
+		rootName = ".omp"
+	}
+	root := filepath.Join(home, rootName)
+	if profile := resolveOmpProfile(); profile != "" {
+		return filepath.Join(root, "profiles", profile, "agent")
+	}
+	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			return abs
+		}
+		return filepath.Clean(dir)
+	}
+	return filepath.Join(root, "agent")
 }
 
 // RemoteError reports why srv cannot be exported to this target, or nil when
@@ -291,12 +380,18 @@ func (t Target) RemoteError(srv Server) error {
 	return nil
 }
 
-// Find looks up a target by id (case-insensitive).
+// Find looks up a target by id or alias (case-insensitive). Aliases are
+// lookup-only: every display surface (listings, errors) keeps using ID.
 func Find(id string) (Target, bool) {
 	lower := strings.ToLower(id)
 	for _, target := range Supported() {
 		if strings.ToLower(target.ID) == lower {
 			return target, true
+		}
+		for _, alias := range target.Aliases {
+			if strings.ToLower(alias) == lower {
+				return target, true
+			}
 		}
 	}
 	return Target{}, false

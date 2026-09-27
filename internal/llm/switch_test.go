@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/wii/senv/internal/agentcfg"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/storage"
+	"gopkg.in/yaml.v3"
 )
 
 func TestApplyJSONMergePreservesUnknownKeys(t *testing.T) {
@@ -699,5 +701,203 @@ func TestAddProviderNormalizesBaseURL(t *testing.T) {
 				t.Fatalf("warning %q does not mention %q", res.Warnings[0], tc.wantStored)
 			}
 		})
+	}
+}
+
+func TestApplyYAMLMergePreservesUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("theme: dark\nmodelRoles:\n  slow: custom/x\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := applyYAMLMerge(path, func(root map[string]any) error {
+		roles := ensureSubMap(root, "modelRoles")
+		roles["default"] = "senv-main/m1"
+		return nil
+	}); err != nil {
+		t.Fatalf("applyYAMLMerge() error = %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("perm = %o, want 600", got)
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(mustRead(t, path), &root); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if root["theme"] != "dark" {
+		t.Fatalf("theme = %v, want dark", root["theme"])
+	}
+	roles := root["modelRoles"].(map[string]any)
+	if roles["default"] != "senv-main/m1" || roles["slow"] != "custom/x" {
+		t.Fatalf("modelRoles = %v", roles)
+	}
+	if _, err := os.Stat(path + ".senv-bak"); !os.IsNotExist(err) {
+		t.Fatalf("backup must be removed after a successful write (stat err=%v)", err)
+	}
+}
+
+func readYAML(t *testing.T, path string) map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := yaml.Unmarshal(mustRead(t, path), &root); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v", path, err)
+	}
+	return root
+}
+
+func TestOmpAdapterWritesBothYAMLFiles(t *testing.T) {
+	a := ompAdapter()
+	out, configPath := applyAdapter(t, a, "sk-secret")
+	models := readYAML(t, configPath)
+	prov := models["providers"].(map[string]any)["senv-main"].(map[string]any)
+	if prov["baseUrl"] != "https://api.example.com" || prov["apiKey"] != "sk-secret" || prov["api"] != "openai-completions" {
+		t.Fatalf("omp provider = %v", prov)
+	}
+	// omp 沿用 pi 的 developer 角色判定（model.reasoning &&
+	// compat.supportsDeveloperRole），缺省推断同样只认硬编码名单，因此同样
+	// 必须写 provider 级 supportsDeveloperRole: false（ADR-0030）。
+	compat, ok := prov["compat"].(map[string]any)
+	if !ok || compat["supportsDeveloperRole"] != false {
+		t.Fatalf("omp compat = %v, want provider-level supportsDeveloperRole:false", prov["compat"])
+	}
+	if _, ok := compat["supportsReasoningEffort"]; ok {
+		t.Fatalf("omp compat must not disable reasoning_effort passthrough: %v", compat)
+	}
+	list := prov["models"].([]any)
+	entry := list[0].(map[string]any)
+	if entry["id"] != "m1" {
+		t.Fatalf("omp model entry = %v", entry)
+	}
+	settingsPath := filepath.Join(filepath.Dir(configPath), "config.yml")
+	roles := readYAML(t, settingsPath)["modelRoles"].(map[string]any)
+	if roles["default"] != "senv-main/m1" {
+		t.Fatalf("omp modelRoles = %v, want default senv-main/m1", roles)
+	}
+	// models.yml 是凭据落点，权限必须收敛 0600。
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("models.yml perm = %o, want 600", got)
+	}
+	_ = out
+}
+
+func TestOmpAdapterCleansPriorProvider(t *testing.T) {
+	home := t.TempDir()
+	a := ompAdapter()
+	modelsPath := a.ConfigPath(home)
+	req := SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "old", BaseURL: "https://old.example.com",
+		Models: []string{"m1"}, DefaultModel: "m1", Credential: "sk-old",
+		ConfigPath: modelsPath, Home: home,
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("first Apply() error = %v", err)
+	}
+	req = SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1", "m2"}, DefaultModel: "m2", Credential: "sk-secret",
+		ConfigPath: modelsPath, Home: home, PriorProvider: "old",
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("second Apply() error = %v", err)
+	}
+	providers := readYAML(t, modelsPath)["providers"].(map[string]any)
+	if _, ok := providers["senv-old"]; ok {
+		t.Fatalf("prior senv-old entry must be removed: %v", providers)
+	}
+	if _, ok := providers["senv-main"]; !ok {
+		t.Fatalf("senv-main entry missing: %v", providers)
+	}
+	roles := readYAML(t, filepath.Join(filepath.Dir(modelsPath), "config.yml"))["modelRoles"].(map[string]any)
+	if roles["default"] != "senv-main/m2" {
+		t.Fatalf("modelRoles.default = %v, want senv-main/m2", roles["default"])
+	}
+}
+
+func TestOmpAdapterKeepsUserSettings(t *testing.T) {
+	home := t.TempDir()
+	a := ompAdapter()
+	dir := agentcfg.OmpAgentDir(home)
+	settingsPath := filepath.Join(dir, "config.yml")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// 用户既有全局设置：其它顶层键、modelRoles 其它角色必须原样保留。
+	if err := os.WriteFile(settingsPath, []byte("theme: dark\nmodelRoles:\n  slow: custom/x\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	req := SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1"}, DefaultModel: "m1", Credential: "sk-secret",
+		ConfigPath: a.ConfigPath(home), Home: home,
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	root := readYAML(t, settingsPath)
+	if root["theme"] != "dark" {
+		t.Fatalf("theme = %v, want dark", root["theme"])
+	}
+	roles := root["modelRoles"].(map[string]any)
+	if roles["default"] != "senv-main/m1" || roles["slow"] != "custom/x" {
+		t.Fatalf("modelRoles = %v", roles)
+	}
+}
+
+func TestOmpAdapterWritesUnderActiveProfile(t *testing.T) {
+	t.Setenv("OMP_PROFILE", "work")
+	home := t.TempDir()
+	a := ompAdapter()
+	if path := a.ConfigPath(home); path != filepath.Join(home, ".omp", "profiles", "work", "agent", "models.yml") {
+		t.Fatalf("profile config path = %q", path)
+	}
+	_, configPath := applyAdapter(t, a, "sk-secret")
+	settingsPath := filepath.Join(filepath.Dir(configPath), "config.yml")
+	roles := readYAML(t, settingsPath)["modelRoles"].(map[string]any)
+	if roles["default"] != "senv-main/m1" {
+		t.Fatalf("modelRoles = %v", roles)
+	}
+}
+
+func TestSwitchAgentAliasEndToEnd(t *testing.T) {
+	sm, home := newTestSwitchManager(t)
+	out, err := sm.Switch("oh-my-pi", "main", nil, "", "")
+	if err != nil {
+		t.Fatalf("Switch(oh-my-pi) error = %v", err)
+	}
+	if out.AgentID != "omp" {
+		t.Fatalf("out.AgentID = %q, want omp", out.AgentID)
+	}
+	if !strings.Contains(out.ConfigPath, string(filepath.Separator)+".omp"+string(filepath.Separator)) {
+		t.Fatalf("config path = %q, want under .omp", out.ConfigPath)
+	}
+	pf, err := LoadPointers(DefaultPointerPath(home))
+	if err != nil {
+		t.Fatalf("LoadPointers() error = %v", err)
+	}
+	if _, ok := pf.Get("omp"); !ok {
+		t.Fatal("pointer must be keyed by canonical id omp")
+	}
+}
+
+func TestLookupAgentAliasStaysOutOfListings(t *testing.T) {
+	a, ok := LookupAgent("oh-my-pi")
+	if !ok || a.ID != "omp" {
+		t.Fatalf("LookupAgent(oh-my-pi) = %+v, %v; want omp", a, ok)
+	}
+	for _, id := range supportedAgentIDs() {
+		if id == "oh-my-pi" {
+			t.Fatal("supportedAgentIDs must not contain alias oh-my-pi")
+		}
 	}
 }

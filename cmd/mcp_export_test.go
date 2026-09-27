@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,5 +279,61 @@ func TestExportContinuesWhenPrerequisiteUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"senv"`) && !strings.Contains(string(data), "github") {
 		t.Fatalf("pi config does not contain the exported profile:\n%s", data)
+	}
+}
+
+func TestMCPExportWritesOmpWithTransportTypeKey(t *testing.T) {
+	newAuditTestProject(t)
+	resetMCPAddFlags(t)
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("PATH", t.TempDir())
+
+	// stdio 档案 + http 档案各一条。
+	mcpAddCommand = "npx"
+	mcpAddArgs = []string{"-y", "@modelcontextprotocol/server-github"}
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"github"}))
+	mcpAddTransport = "http"
+	mcpAddCommand, mcpAddArgs = "", nil
+	mcpAddURL = "https://api.example.com/mcp"
+	mcpAddHeaders = []string{"Authorization: Bearer tok"}
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"web"}))
+
+	mcpExportAgents, mcpExportAll = "omp", false
+	mcpExportDryRun, mcpExportYes, mcpExportPrint, mcpExportForce = false, true, false, false
+	mcpExportScope = "user"
+	t.Cleanup(func() {
+		mcpExportAgents, mcpExportAll = "", false
+		mcpExportDryRun, mcpExportYes, mcpExportPrint, mcpExportForce = false, false, false, false
+		mcpExportScope = "user"
+	})
+	captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+
+	ompPath := filepath.Join(dir, ".omp", "agent", "mcp.json")
+	data, err := os.ReadFile(ompPath)
+	if err != nil {
+		t.Fatalf("omp config was not written: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("omp config not valid JSON: %v\n%s", err, data)
+	}
+	servers := root["mcpServers"].(map[string]any)
+	stdio, ok := servers["github"].(map[string]any)
+	if !ok {
+		t.Fatalf("stdio entry missing: %v", servers)
+	}
+	if _, ok := stdio["type"]; ok {
+		t.Fatalf("stdio entry gained a type key: %v", stdio)
+	}
+	remote, ok := servers["web"].(map[string]any)
+	if !ok {
+		t.Fatalf("http entry missing: %v", servers)
+	}
+	// omp 对 remote 条目不能自动识别传输，type 键必须写出（区别于 pi）。
+	if remote["type"] != "http" || remote["url"] != "https://api.example.com/mcp" {
+		t.Fatalf("http entry = %v, want type+url", remote)
 	}
 }

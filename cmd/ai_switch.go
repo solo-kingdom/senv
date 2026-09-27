@@ -46,7 +46,7 @@ var aiSwitchCmd = &cobra.Command{
 native config files are merged in one transaction, rewritten with temporary
 backups, and backups are removed after the pointer is committed.
 
-Supported agents: claude-code, codex, kimi, pi, opencode. Codex reads its
+Supported agents: claude-code, codex, kimi, pi, omp, opencode. Codex reads its
 credential from an environment variable whose name senv picks so that
 "senv env export" already provides it: an env:<group>/<key> credential reuses
 <key> unchanged; a text:<group>/<key> credential gets SENV_<ALIAS>_API_KEY
