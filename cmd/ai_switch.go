@@ -67,6 +67,12 @@ provider profile's background model is used, falling back to the default model.
 The fallback exists because Claude Code's built-in default (claude-haiku) does
 not exist on self-hosted gateways, which silently breaks auto-compaction.
 
+Claude Code 1M context is turned on by a [1m] suffix on the model name actually
+sent: models whose declared context window is 1M or more get the suffix on the
+modelPicker row and the top-level default model, while behavesAs stays without
+it. The client strips the suffix before the request, so the gateway still
+receives the original model ID.
+
 The provider's base URL is written in the shape the agent's API family
 expects: Claude Code without the /v1 suffix (its SDK appends /v1/messages),
 OpenAI-compatible agents with it.`,

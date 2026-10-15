@@ -385,19 +385,27 @@ func setTOMLPath(root map[string]any, path []string, value any) {
 // （D5）。ANTHROPIC_SMALL_FAST_MODEL 是后台（压缩）模型（ADR-0029）：缺省
 // 的 claude-haiku 在自建网关上不存在会让自动压缩静默失败，因此切换时总是
 // 写入解析结果，并同值写 ANTHROPIC_DEFAULT_HAIKU_MODEL 把 haiku 档位整体
-// 重映射；这两个键归 senv 拥有。
+// 重映射；这两个键归 senv 拥有。1M 上下文（声明 context_window ≥ 1M 的模型）
+// 靠给「发送名」加 [1m] 后缀开启，见 claudeProjectedModel。
 const (
 	// claudeBehavesAsModel 是 Claude Code 已知的稳定模型，用作自定义模型
-	// 的客户端能力映射；behavesAs 只影响客户端行为，不改实际发送的模型 ID。
+	// 的客户端能力映射；behavesAs 只影响客户端能力解析，不改实际发送的模型 ID。
 	claudeBehavesAsModel = "claude-sonnet-4-5"
-	claudeContext1M      = 1_000_000
+	// claude1MSuffix 是 Claude Code 的 1M 上下文开关（2026-10 实测 2.1.300）。
+	// 客户端只用它判定「实际发送的模型名」：命中即按 1M 处理，并在发出请求前
+	// 把后缀剥掉。写在 behavesAs 上无效——behavesAs 不参与窗口判定。
+	claude1MSuffix  = "[1m]"
+	claudeContext1M = 1_000_000
 )
 
-func claudeBehavesAs(meta ModelMetadata) string {
+// claudeProjectedModel 返回写入 modelPicker 行与顶层 model 的「发送名」：声明
+// 上下文达到 1M 的模型带 [1m] 后缀，否则原样。窗口判定看的就是这个名字，
+// 而 behavesAs 不参与判定——这正是 1M 窗口在自建网关上能否生效的关键。
+func claudeProjectedModel(model string, meta ModelMetadata) string {
 	if meta.ContextLimit >= claudeContext1M {
-		return claudeBehavesAsModel + "[1m]"
+		return model + claude1MSuffix
 	}
-	return claudeBehavesAsModel
+	return model
 }
 
 func claudeCodeAdapter() AgentAdapter {
@@ -415,7 +423,7 @@ func claudeCodeAdapter() AgentAdapter {
 		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
-				root["model"] = req.DefaultModel
+				root["model"] = claudeProjectedModel(req.DefaultModel, req.ModelMetadata[req.DefaultModel])
 				env := ensureSubMap(root, "env")
 				env["ANTHROPIC_BASE_URL"] = req.BaseURL
 				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
@@ -428,9 +436,9 @@ func claudeCodeAdapter() AgentAdapter {
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
 					option := map[string]any{
-						"model":     model,
+						"model":     claudeProjectedModel(model, meta),
 						"label":     modelLabel(model, meta),
-						"behavesAs": claudeBehavesAs(meta),
+						"behavesAs": claudeBehavesAsModel,
 					}
 					if meta.Description != "" {
 						option["description"] = meta.Description

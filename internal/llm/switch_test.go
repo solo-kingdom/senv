@@ -171,6 +171,8 @@ func TestClaudeCodeAdapter(t *testing.T) {
 	}
 }
 
+// 1M 上下文靠「发送名」后缀开启：modelPicker 行的 model 与顶层 model 都要带
+// [1m]，behavesAs 保持不带后缀（它不参与窗口判定，见 claudeProjectedModel）。
 func TestClaudeCodeAdapterMaps1MContext(t *testing.T) {
 	home := t.TempDir()
 	a := claudeCodeAdapter()
@@ -189,9 +191,48 @@ func TestClaudeCodeAdapterMaps1MContext(t *testing.T) {
 	if err := json.Unmarshal(mustRead(t, req.ConfigPath), &root); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
+	if got := root["model"]; got != "m1"+claude1MSuffix {
+		t.Fatalf("top-level model = %v, want %q", got, "m1"+claude1MSuffix)
+	}
 	option := root["modelPicker"].(map[string]any)["options"].([]any)[0].(map[string]any)
-	if got := option["behavesAs"]; got != claudeBehavesAsModel+"[1m]" {
-		t.Fatalf("behavesAs = %v, want %q", got, claudeBehavesAsModel+"[1m]")
+	if got := option["model"]; got != "m1"+claude1MSuffix {
+		t.Fatalf("picker model = %v, want %q", got, "m1"+claude1MSuffix)
+	}
+	if got := option["behavesAs"]; got != claudeBehavesAsModel {
+		t.Fatalf("behavesAs = %v, want %q (no [1m] suffix)", got, claudeBehavesAsModel)
+	}
+}
+
+// 未声明 1M 的模型不得被加后缀：物理窗口不足时加 [1m] 会让自动压缩不触发，
+// 最终被上游以 Context Window Exceeded 打断。
+func TestClaudeCodeAdapterLeavesSub1MModelUnsuffixed(t *testing.T) {
+	home := t.TempDir()
+	a := claudeCodeAdapter()
+	req := SwitchRequest{
+		AgentID: a.ID, ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1", "m2"}, DefaultModel: "m2", Credential: "sk-secret",
+		ConfigPath: a.ConfigPath(home), Home: home,
+		ModelMetadata: map[string]ModelMetadata{
+			"m1": {ContextLimit: claudeContext1M},
+			"m2": {ContextLimit: 200_000},
+		},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(mustRead(t, req.ConfigPath), &root); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got := root["model"]; got != "m2" {
+		t.Fatalf("top-level model = %v, want bare m2", got)
+	}
+	options := root["modelPicker"].(map[string]any)["options"].([]any)
+	if got := options[0].(map[string]any)["model"]; got != "m1"+claude1MSuffix {
+		t.Fatalf("m1 picker model = %v, want suffixed", got)
+	}
+	if got := options[1].(map[string]any)["model"]; got != "m2" {
+		t.Fatalf("m2 picker model = %v, want bare", got)
 	}
 }
 
@@ -214,8 +255,11 @@ func TestSwitchUsesStoredModelMetadata(t *testing.T) {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
 	option := root["modelPicker"].(map[string]any)["options"].([]any)[0].(map[string]any)
-	if got := option["behavesAs"]; got != claudeBehavesAsModel+"[1m]" {
-		t.Fatalf("behavesAs = %v, want stored 1M context mapping", got)
+	if got := option["model"]; got != "custom-1"+claude1MSuffix {
+		t.Fatalf("picker model = %v, want stored 1M context to suffix the sent name", got)
+	}
+	if got := option["behavesAs"]; got != claudeBehavesAsModel {
+		t.Fatalf("behavesAs = %v, want %q (no [1m] suffix)", got, claudeBehavesAsModel)
 	}
 }
 
