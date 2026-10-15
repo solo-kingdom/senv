@@ -401,7 +401,7 @@ senv ships a built-in **stdio MCP server** that exposes env/text/backup/config c
 senv session start
 
 # 2) Write senv into the target agent's config (keeps other servers, backs up .bak automatically)
-senv mcp install claude-code     # or cursor / codex / claude-desktop / zcode / kimi / pi
+senv mcp install claude-code     # or cursor / codex / claude-desktop / zcode / kimi / pi / omp
 senv mcp install --all           # Write all supported agents in one go
 
 # 3) Restart the agent; the senv_* tools become available
@@ -658,7 +658,7 @@ senv ai switch codex acme --models m1,m2 --default-model m2
 senv ai status
 ```
 
-> The switch writes the **Agent model set** through each agent's native mechanism, after which models can be changed in the agent's own model picker: claude-code writes `modelPicker` (replacing the built-in lineup, mapping custom models via `behavesAs`), codex generates `~/.codex/model-catalogs/senv-<alias>.json` and points `model_catalog_json` at it, kimi gets one `[models.*]` entry per model, and pi/opencode get the provider's model table; when pi's existing `enabledModels` is non-empty, this run's default model is also pinned to the top to avoid the first scope item being selected at startup. `--default-model` only overrides the starting model written this time and does not change the profile. Switching cleans up entries and stale catalogs written by the previous senv switch that are no longer needed this time; user-owned entries and files stay untouched. `--model` has been removed: use `--models` for the model set and `--default-model` for the starting model.
+> The switch writes the **Agent model set** through each agent's native mechanism, after which models can be changed in the agent's own model picker: claude-code writes `modelPicker` (replacing the built-in lineup, mapping custom models via `behavesAs`), codex generates `~/.codex/model-catalogs/senv-<alias>.json` and points `model_catalog_json` at it, kimi gets one `[models.*]` entry per model, pi writes the provider model table to `models.json`, omp writes it to `models.yml` together with `modelRoles.default` in `config.yml`, and opencode writes `provider.<id>.models{}`; when pi's existing `enabledModels` is non-empty, this run's default model is also pinned to the top to avoid the first scope item being selected at startup. `--default-model` only overrides the starting model written this time and does not change the profile. Switching cleans up entries and stale catalogs written by the previous senv switch that are no longer needed this time; user-owned entries and files stay untouched. `--model` has been removed: use `--models` for the model set and `--default-model` for the starting model.
 
 ```
 senv init                          Initialize a project
@@ -710,7 +710,7 @@ senv sync --accept-remote          Take remote on server conflicts
 senv sync --force-push             Take local on server conflicts
 senv doctor                        Check metadata vs. data file consistency
 senv mcp serve                     Run as a stdio MCP server (for local agents)
-senv mcp install <agent>           Write the senv MCP server into an agent config (claude-code/claude-desktop/cursor/codex/zcode/kimi/pi)
+senv mcp install <agent>           Write the senv MCP server into an agent config (claude-code/claude-desktop/cursor/codex/zcode/kimi/pi/omp)
 senv mcp list-tools                List tools exposed via MCP
 ```
 
