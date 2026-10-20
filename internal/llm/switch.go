@@ -71,6 +71,9 @@ type SwitchRequest struct {
 	PriorModels   []string
 	// tx covers every file the adapter may touch; it is set by SwitchManager.
 	tx *configTransaction
+	// warnings 由 SwitchManager 注入，适配器自愈配置时追加提示；nil 表示
+	// 直接调用适配器（测试/工具），不产生提示。
+	warnings *[]string
 }
 
 // AgentAdapter 描述一个受支持的 coding agent 及其配置写回方式。
@@ -437,6 +440,22 @@ func claudeCodeAdapter() AgentAdapter {
 				// 标题生成等 haiku 档位调用也会静默失败。
 				env["ANTHROPIC_SMALL_FAST_MODEL"] = req.BackgroundModel
 				env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = req.BackgroundModel
+				// OPUS/SONNET 档位只在旧值失效时自愈（ADR-0029）：用户可把
+				// 档位单独钉到集内模型，有效值不能覆盖；档案缩集后旧值已不在
+				// 模型集内，继续保留只会让该档位请求网关不存在的模型。
+				replacement := claudeProjectedModel(req.DefaultModel, req.ModelMetadata[req.DefaultModel])
+				for _, key := range claudeTierModelKeys {
+					stale, ok := claudeStaleTierModel(env[key], req.Models)
+					if !ok {
+						continue
+					}
+					env[key] = replacement
+					if req.warnings != nil {
+						*req.warnings = append(*req.warnings, fmt.Sprintf(
+							"claude-code env.%s 原值 %q 不在本次模型集中，已自愈为 %q",
+							key, stale, replacement))
+					}
+				}
 				options := make([]map[string]any, 0, len(req.Models))
 				for _, model := range req.Models {
 					meta := req.ModelMetadata[model]
@@ -458,6 +477,28 @@ func claudeCodeAdapter() AgentAdapter {
 			}, req.tx)
 		},
 	}
+}
+
+// claudeTierModelKeys 是 Claude Code 的 opus/sonnet 档位环境变量。它们不像
+// 四键那样归 senv 全面接管，只在值失效时由切换自愈。
+var claudeTierModelKeys = []string{
+	"ANTHROPIC_DEFAULT_OPUS_MODEL",
+	"ANTHROPIC_DEFAULT_SONNET_MODEL",
+}
+
+// claudeStaleTierModel 判断 env 值是否指向本次模型集之外的模型。值按发送名
+// 比较：claudeProjectedModel 可能带 [1m] 后缀，后缀不属于模型 ID。空值或非
+// 字符串由 Claude Code 自行解释，senv 不碰。
+func claudeStaleTierModel(raw any, models []string) (string, bool) {
+	value, ok := raw.(string)
+	if !ok || value == "" {
+		return "", false
+	}
+	model := strings.TrimSuffix(value, claude1MSuffix)
+	if slices.Contains(models, model) {
+		return "", false
+	}
+	return value, true
 }
 
 // codexAdapter：~/.codex/config.toml 顶层 model/model_provider/
@@ -1269,6 +1310,8 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		PriorModels:           prior.Models,
 		tx:                    tx,
 	}
+	var adapterWarnings []string
+	req.warnings = &adapterWarnings
 	if err := adapter.Apply(req); err != nil {
 		return nil, fmt.Errorf("write %s config: %w", agentID, err)
 	}
@@ -1312,6 +1355,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		out.CredentialEnv = credential
 	}
 	out.Warnings = append(credentialWarnings, backgroundWarnings...)
+	out.Warnings = append(out.Warnings, adapterWarnings...)
 	out.Warnings = append(out.Warnings, metadataDeclarationWarnings(agentModels, req.ModelMetadata)...)
 	return out, nil
 }
