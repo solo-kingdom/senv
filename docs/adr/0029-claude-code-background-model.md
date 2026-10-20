@@ -1,6 +1,6 @@
 # 0029-claude-code-background-model
 
-LLM Provider 档案新增显式声明字段 `background_model`（必须属于该档案模型集），`senv ai switch claude-code` 按「`--background-model` 单次覆盖（不回写档案）> 档案声明值 > 默认模型」解析后台模型，写入 `~/.claude/settings.json` 的 `env.ANTHROPIC_SMALL_FAST_MODEL` 与同值的 `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`（后者把 haiku 档位整体重映射：网关上无 haiku 时，标题生成等 haiku 档位调用同样静默失败）；这两个键归 senv 拥有（边界同 ADR-0012），切换即覆盖用户手写值。动机是 2026-09 msa 事故：claude-code 自动压缩用后台小模型（缺省 `claude-haiku-4-5`），自建网关（new-api）无此模型，压缩永远 503 → context 无限膨胀、每轮全量重发（实测单会话 755k token）。根因是「后台模型缺省值在这类网关上必然不存在」，因此缺省回退默认模型保证任何档案切换后压缩可用，而不是不写该键。交互流程（TUI 向导、CLI 交互）里后台模型是 claude-code 的独立步骤，带说明文案、值可留空；非交互调用缺省回退默认模型并给 warning。目前仅 claude-code 消费该字段，其他 agent 出现同类机制时再投影。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 等其余 env 键明确不归 senv 管理：压缩阈值的 per-model 投影随 picker 逐模型生效，全局静态 env 与 picker 切模型会脱节。（补充 2026-10-15：窗口判定实际走「发送名」的 `[1m]` 后缀——`modelPicker.options[].model` 与顶层 `model` 带后缀，`behavesAs` 不参与判定；原判「走 `behavesAs`」有误，见下条。）
+LLM Provider 档案新增显式声明字段 `background_model`（必须属于该档案模型集），`senv ai switch claude-code` 按「`--background-model` 单次覆盖（不回写档案）> 档案声明值 > 默认模型」解析后台模型，写入 `~/.claude/settings.json` 的 `env.ANTHROPIC_SMALL_FAST_MODEL` 与同值的 `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`（后者把 haiku 档位整体重映射：网关上无 haiku 时，标题生成等 haiku 档位调用同样静默失败）；这两个键归 senv 拥有（边界同 ADR-0012），切换即覆盖用户手写值。动机是 2026-09 msa 事故：claude-code 自动压缩用后台小模型（缺省 `claude-haiku-4-5`），自建网关（new-api）无此模型，压缩永远 503 → context 无限膨胀、每轮全量重发（实测单会话 755k token）。根因是「后台模型缺省值在这类网关上必然不存在」，因此缺省回退默认模型保证任何档案切换后压缩可用，而不是不写该键。交互流程（TUI 向导、CLI 交互）里后台模型是 claude-code 的独立步骤，带说明文案、值可留空；非交互调用缺省回退默认模型并给 warning。目前仅 claude-code 消费该字段，其他 agent 出现同类机制时再投影。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 等其余 env 键不归 senv 全面管理：压缩阈值的 per-model 投影随 picker 逐模型生效，全局静态 env 与 picker 切模型会脱节。例外是 `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL`：用户可把它们单独钉到模型集内模型，senv 原样保留；只有值去掉 `[1m]` 后缀后已不在本次模型集内（档案缩集/改名留下的死引用）时，切换才把它自愈为本次默认模型的发送名，并在 stderr 提示键名、旧值与新值。（补充 2026-10-15：窗口判定实际走「发送名」的 `[1m]` 后缀——`modelPicker.options[].model` 与顶层 `model` 带后缀，`behavesAs` 不参与判定；原判「走 `behavesAs`」有误，见下条。）
 
 ## Considered Options
 
@@ -15,6 +15,7 @@ LLM Provider 档案新增显式声明字段 `background_model`（必须属于该
 - 回退路径用主模型做压缩，单次压缩更贵，但远比压缩失败后的全量重发便宜。
 - 双重 fail-closed 校验：`add/edit` 写档案时与切换时都要求后台模型属于 Provider 模型集（档案可能被旧版本写入）。
 - 用户手写在 settings.json 的 `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` 会被切换覆盖：`--help` 与 skill 文档须声明这两个键由 senv 管理。
+- `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` 仅在值失效时被切换自愈；有效的手写档位不会被覆盖。
 - 1M 上下文的投影通道是模型名的 `[1m]` 后缀，不是 `behavesAs`（2026-10-15 更正）：Claude Code 2.1.300 只用「实际发送的模型名」判定窗口，`behavesAs` 只影响客户端能力映射。senv 对声明 `context_window ≥ 1M` 的模型给 `modelPicker.options[].model` 与顶层 `model` 加 `[1m]`，`behavesAs` 保持不带后缀。声明值虚高（物理窗口不足却写 ≥1M）会让自动压缩不触发、被上游 `Context Window Exceeded` 打断，错在声明值，用 `senv ai provider edit` 修数据。
 
 ## Status
