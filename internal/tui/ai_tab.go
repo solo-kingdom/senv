@@ -1099,6 +1099,11 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			placeholder: "m1=low;high (reasoning effort, optional)",
 		},
 		formField{
+			key: "model_reasoning_support", label: "adaptive reasoning", kind: formText,
+			value:       formatModelReasoningSupport(base.Models, base.ModelInfo),
+			placeholder: "m1,m2 (supports thinking without selectable effort levels, optional)",
+		},
+		formField{
 			key: "model_default_reasoning", label: "default reasoning", kind: formText,
 			value:       formatModelDefaultReasoning(base.Models, base.ModelInfo),
 			placeholder: "m1=high or set-level high (required when efforts exist)",
@@ -1210,6 +1215,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if err != nil {
 		return reopen("model_reasoning", err)
 	}
+	modelReasoningSupport := parseModelList(values["model_reasoning_support"])
 	modelDefaultReasoning, collectionDefault, err := parseDefaultReasoningField(values["model_default_reasoning"])
 	if err != nil {
 		return reopen("model_default_reasoning", err)
@@ -1255,6 +1261,7 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			ModelContexts:         modelContexts,
 			ModelOutputs:          modelOutputs,
 			ModelReasoning:        modelReasoning,
+			ModelReasoningSupport: modelReasoningSupport,
 			ModelDefaultReasoning: modelDefaultReasoning,
 			DefaultReasoning:      collectionDefault,
 			ModelModalities:       modelModalities,
@@ -1301,10 +1308,11 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
 	outputsChanged := strings.TrimSpace(values["model_outputs"]) != strings.TrimSpace(formatModelOutputs(existing.Models, existing.ModelInfo))
 	reasoningChanged := strings.TrimSpace(values["model_reasoning"]) != strings.TrimSpace(formatModelReasoning(existing.Models, existing.ModelInfo))
+	reasoningSupportChanged := strings.TrimSpace(values["model_reasoning_support"]) != strings.TrimSpace(formatModelReasoningSupport(existing.Models, existing.ModelInfo))
 	defaultReasoningChanged := strings.TrimSpace(values["model_default_reasoning"]) != strings.TrimSpace(formatModelDefaultReasoning(existing.Models, existing.ModelInfo))
 	modalitiesChanged := strings.TrimSpace(values["model_modalities"]) != strings.TrimSpace(formatModelModalities(existing.Models, existing.ModelInfo))
 	if !equalStrings(models, existing.Models) || catalog != existing.CatalogProvider || contextsChanged ||
-		reasoningChanged || defaultReasoningChanged {
+		reasoningChanged || reasoningSupportChanged || defaultReasoningChanged {
 		opts.Models = models
 		opts.CatalogProvider = &catalog
 		opts.RequireModelMetadata = true
@@ -1320,6 +1328,9 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	}
 	if reasoningChanged {
 		opts.ModelReasoning = llm.ClearingMap(modelReasoning)
+	}
+	if reasoningSupportChanged {
+		opts.ModelReasoningSupport = llm.ClearingStrings(modelReasoningSupport)
 	}
 	if defaultReasoningChanged {
 		opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
@@ -1551,6 +1562,8 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 			}
 			if len(info.ReasoningEfforts) > 0 {
 				line += "  reasoning=" + strings.Join(info.ReasoningEfforts, ";")
+			} else if info.Reasoning {
+				line += "  reasoning=adaptive"
 			}
 			if info.DefaultReasoning != "" {
 				line += "  default_reasoning=" + info.DefaultReasoning
@@ -1728,6 +1741,18 @@ func formatModelReasoning(models []string, info map[string]storage.LLMModelInfo)
 	for _, model := range models {
 		if meta, ok := info[model]; ok && len(meta.ReasoningEfforts) > 0 {
 			parts = append(parts, model+"="+strings.Join(meta.ReasoningEfforts, ";"))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatModelReasoningSupport 渲染「有推理能力但没有可选 effort 档位」的
+// 模型列表；有档位的模型不在这里重复展示。
+func formatModelReasoningSupport(models []string, info map[string]storage.LLMModelInfo) string {
+	parts := make([]string, 0, len(models))
+	for _, model := range models {
+		if meta, ok := info[model]; ok && meta.Reasoning && len(meta.ReasoningEfforts) == 0 {
+			parts = append(parts, model)
 		}
 	}
 	return strings.Join(parts, ", ")

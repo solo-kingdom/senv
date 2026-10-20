@@ -307,8 +307,8 @@ func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	got := catalog.Models[0]
-	if got.DefaultReasoningLevel != "none" || len(got.SupportedReasoningLevels) != 1 || got.SupportedReasoningLevels[0].Effort != "none" {
-		t.Fatalf("catalog = %+v, want none template", got)
+	if got.DefaultReasoningLevel != "" || len(got.SupportedReasoningLevels) != 0 {
+		t.Fatalf("catalog = %+v, want reasoning metadata omitted", got)
 	}
 
 	reloaded, err := pm.GetProvider("main")
@@ -943,5 +943,69 @@ func TestLookupAgentAliasStaysOutOfListings(t *testing.T) {
 		if id == "oh-my-pi" {
 			t.Fatal("supportedAgentIDs must not contain alias oh-my-pi")
 		}
+	}
+}
+
+func TestCodexTopLevelEffortFollowsDefaultModel(t *testing.T) {
+	pm, _, _ := newTestProviderManager(t)
+	res, err := pm.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"adaptive"}, ModelContexts: map[string]int{"adaptive": 1_000_000},
+		ModelReasoningSupport: []string{"adaptive"}, DefaultModel: "adaptive",
+		RequireModelMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	entry := res.Entry
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// 模拟 09-28 留下的旧全局档：切换必须按本次默认模型把它清掉。
+	if err := os.WriteFile(configPath, []byte("model_reasoning_effort = 'none'\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", ""); err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(mustRead(t, configPath), &cfg); err != nil {
+		t.Fatalf("parse codex config: %v", err)
+	}
+	if _, exists := cfg["model_reasoning_effort"]; exists {
+		t.Fatalf("model_reasoning_effort = %v, want removed for adaptive model", cfg["model_reasoning_effort"])
+	}
+	var catalog struct {
+		Models []struct {
+			DefaultReasoningLevel    string `json:"default_reasoning_level"`
+			SupportedReasoningLevels []any  `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(mustRead(t, codexCatalogPath(home, "main")), &catalog); err != nil {
+		t.Fatalf("parse catalog: %v", err)
+	}
+	if got := catalog.Models[0]; got.DefaultReasoningLevel != "" || len(got.SupportedReasoningLevels) != 0 {
+		t.Fatalf("catalog = %+v, want no fabricated effort levels", got)
+	}
+
+	// 有默认档的模型则把顶层键写成该档，而不是继续沿用上一模型的 none。
+	info := entry.ModelInfo["adaptive"]
+	info.ReasoningEfforts = []string{"low", "medium", "high"}
+	info.DefaultReasoning = "high"
+	entry.ModelInfo["adaptive"] = info
+	if err := pm.storage.SaveLLMProvider("main", entry, "test-password"); err != nil {
+		t.Fatalf("update provider: %v", err)
+	}
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", ""); err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	cfg = nil
+	if err := toml.Unmarshal(mustRead(t, configPath), &cfg); err != nil {
+		t.Fatalf("parse codex config: %v", err)
+	}
+	if got := cfg["model_reasoning_effort"]; got != "high" {
+		t.Fatalf("model_reasoning_effort = %v, want high", got)
 	}
 }

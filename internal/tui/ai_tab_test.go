@@ -485,6 +485,7 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 		"model_contexts":          "s1=128000, s2=200000",
 		"model_outputs":           "s1=32000",
 		"model_reasoning":         "s1=low;high",
+		"model_reasoning_support": "s2",
 		"model_default_reasoning": "s1=high",
 		"model_modalities":        "s1=text,image",
 		"default_model":           "s2",
@@ -506,6 +507,9 @@ func TestAITabCreateProviderViaForm(t *testing.T) {
 	}
 	if got := p.ModelInfo["s1"]; got.DefaultReasoning != "high" || strings.Join(got.InputModalities, ",") != "text,image" {
 		t.Fatalf("s1 default/modalities = %+v", got)
+	}
+	if got, ok := p.ModelInfo["s2"]; !ok || !got.Reasoning || len(got.ReasoningEfforts) != 0 {
+		t.Fatalf("s2 model info = %+v (ok=%v), want adaptive reasoning without efforts", got, ok)
 	}
 	if p.BaseURL != "https://second.example.com/v1" {
 		t.Fatalf("BaseURL = %q", p.BaseURL)

@@ -46,7 +46,7 @@ func TestMCPLLMProviderListWhitelistedOnly(t *testing.T) {
 	allowed := map[string]bool{
 		"alias": true, "base_url": true, "credential_ref": true,
 		"catalog_provider": true, "default_model": true, "background_model": true,
-		"models": true,
+		"models":     true,
 		"model_info": true, "api_shape": true, "shape_urls": true,
 		"created_at": true, "updated_at": true,
 	}
@@ -107,9 +107,10 @@ func TestMCPLLMProviderModelInfoNewFields(t *testing.T) {
 	setProviderCredentialReader(t, "sk-secret-value")
 	setProviderAddFlags(t, func() {
 		providerAddBaseURL = "https://api.example.com"
-		providerAddModels = []string{"m1"}
-		providerAddModelCtx = []string{"m1=128000"}
+		providerAddModels = []string{"m1", "adaptive"}
+		providerAddModelCtx = []string{"m1=128000", "adaptive=1000000"}
 		providerAddModelReason = []string{"m1=low;high"}
+		providerAddModelReasonSupport = []string{"adaptive"}
 		providerAddModelDefaultReason = []string{"m1=high"}
 		providerAddModelModalities = []string{"m1=text,image"}
 	})
@@ -136,6 +137,9 @@ func TestMCPLLMProviderModelInfoNewFields(t *testing.T) {
 	m1 := info["m1"].(map[string]any)
 	if m1["default_reasoning"] != "high" {
 		t.Fatalf("default_reasoning = %v", m1["default_reasoning"])
+	}
+	if adaptive := info["adaptive"].(map[string]any); adaptive["reasoning"] != true {
+		t.Fatalf("adaptive reasoning = %v, want true", adaptive["reasoning"])
 	}
 	mods := m1["input_modalities"].([]any)
 	if len(mods) != 2 || mods[0] != "text" || mods[1] != "image" {

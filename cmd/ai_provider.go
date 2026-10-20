@@ -60,6 +60,7 @@ var (
 	providerAddModelCtx           []string
 	providerAddModelOut           []string
 	providerAddModelReason        []string
+	providerAddModelReasonSupport []string
 	providerAddModelDefaultReason []string
 	providerAddDefaultReasoning   string
 	providerAddModelModalities    []string
@@ -80,6 +81,7 @@ var (
 	providerEditModelCtx           []string
 	providerEditModelOut           []string
 	providerEditModelReason        []string
+	providerEditModelReasonSupport []string
 	providerEditModelDefaultReason []string
 	providerEditDefaultReasoning   string
 	providerEditModelModalities    []string
@@ -129,6 +131,7 @@ because claude-code appends /v1/messages to it.`,
 		if err != nil {
 			return err
 		}
+		modelReasoningSupport := llm.ClearingStrings(providerAddModelReasonSupport)
 		modelDefaultReasoning, err := llm.ParseModelDefaultReasoning(providerAddModelDefaultReason)
 		if err != nil {
 			return err
@@ -165,6 +168,7 @@ because claude-code appends /v1/messages to it.`,
 			ModelContexts:         modelContexts,
 			ModelOutputs:          modelOutputs,
 			ModelReasoning:        modelReasoning,
+			ModelReasoningSupport: modelReasoningSupport,
 			ModelDefaultReasoning: modelDefaultReasoning,
 			DefaultReasoning:      providerAddDefaultReasoning,
 			ModelModalities:       modelModalities,
@@ -245,6 +249,10 @@ Any failure leaves the profile, credential and references untouched.`,
 				return err
 			}
 		}
+		var modelReasoningSupport []string
+		if cmd.Flags().Changed("model-reasoning-support") {
+			modelReasoningSupport = llm.ClearingStrings(providerEditModelReasonSupport)
+		}
 		var modelDefaultReasoning map[string]string
 		if cmd.Flags().Changed("model-default-reasoning") {
 			var err error
@@ -302,6 +310,9 @@ Any failure leaves the profile, credential and references untouched.`,
 		if cmd.Flags().Changed("model-reasoning") {
 			opts.ModelReasoning = llm.ClearingMap(modelReasoning)
 		}
+		if cmd.Flags().Changed("model-reasoning-support") {
+			opts.ModelReasoningSupport = modelReasoningSupport
+		}
 		if cmd.Flags().Changed("model-default-reasoning") {
 			opts.ModelDefaultReasoning = llm.ClearingMap(modelDefaultReasoning)
 		}
@@ -329,7 +340,8 @@ Any failure leaves the profile, credential and references untouched.`,
 		}
 		opts.RequireModelMetadata = cmd.Flags().Changed("model") ||
 			cmd.Flags().Changed("catalog-provider") || cmd.Flags().Changed("model-context") ||
-			cmd.Flags().Changed("model-reasoning") || cmd.Flags().Changed("model-default-reasoning") ||
+			cmd.Flags().Changed("model-reasoning") || cmd.Flags().Changed("model-reasoning-support") ||
+			cmd.Flags().Changed("model-default-reasoning") ||
 			cmd.Flags().Changed("default-reasoning")
 		res, err := mgr.EditProvider(opts)
 		if err != nil {
@@ -500,6 +512,8 @@ func modelInfoDetails(info storage.LLMModelInfo) string {
 	}
 	if len(info.ReasoningEfforts) > 0 {
 		parts = append(parts, "reasoning="+strings.Join(info.ReasoningEfforts, ";"))
+	} else if info.Reasoning {
+		parts = append(parts, "reasoning=adaptive")
 	}
 	if info.DefaultReasoning != "" {
 		parts = append(parts, "default_reasoning="+info.DefaultReasoning)
@@ -587,6 +601,7 @@ func init() {
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelCtx, "model-context", nil, "model context window: <model>=<tokens> (repeatable; required when metadata is unavailable)")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelOut, "model-output", nil, "model output limit: <model>=<tokens> (repeatable)")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelReason, "model-reasoning", nil, "model reasoning efforts: <model>=<effort>[;<effort>...] (repeatable; marks the model as reasoning-capable)")
+	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelReasonSupport, "model-reasoning-support", nil, "models that support reasoning without selectable effort levels: <model> (repeatable; empty clears)")
 	aiProviderEditCmd.Flags().StringSliceVar(&providerEditModelDefaultReason, "model-default-reasoning", nil, "model default reasoning effort: <model>=<effort> (repeatable; required when changing reasoning efforts)")
 	aiProviderEditCmd.Flags().StringVar(&providerEditDefaultReasoning, "default-reasoning", "", "collection default reasoning effort; fills models that have efforts but no resolved default")
 	aiProviderEditCmd.Flags().StringArrayVar(&providerEditModelModalities, "model-modalities", nil, "model input modalities: <model>=<mod>[,<mod>...] (repeatable; text,image,audio,video,pdf)")

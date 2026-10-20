@@ -6,7 +6,7 @@
 ## Requirements
 
 ### Requirement: 添加 LLM Provider 档案
-`senv ai provider add` SHALL 以别名为唯一标识保存档案。凭据必须且只能通过交互式 TTY prompt 或 `--api-key-stdin` 提供；prompt 或 stdin 值 SHALL 只进入 vault 保留 text 组 `llm-keys/<alias>`，档案存引用 `text:llm-keys/<alias>`，且 MUST NOT 作为 CLI flag 值传入。也可用 `--key-ref` 指向既有 env/text entry（`env:<group>/<key>` 或 `text:<group>/<key>`）。base URL SHALL 默认仅接受 HTTPS；显式 `--allow-http` 后接受 HTTP；两种方案 MUST 拒绝 host 为空或包含 userinfo。base URL 落库前 SHALL 归一为 OpenAI 兼容形态：收敛路径尾斜杠，并在路径末段不为 `v1` 时追加 `/v1`；归一 MUST 保留 query 与 fragment，MUST NOT 改动中间路径段，且对已归一的输入保持原值。归一实际改动了输入时命令 SHALL 提示改写后的值。归一 MUST NOT 放宽既有校验：userinfo、空 host 与非允许的 HTTP 仍被拒绝。模型集为 `--catalog-provider` 指向的目录模型与 `--model` 自定义模型的并集且不得为空；每个模型 SHALL 解析 context window：显式 `--model-context <model>=<tokens>` 优先，其次档案既有元数据，最后 models.dev `limit.context`。add 时任一模型缺失 context window MUST 以非 0 退出且不写档案或凭据。模型元数据还 SHALL 支持显式设置输出上限、推理档位、默认推理档与输入模态：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位以分号分隔）、`--model-default-reasoning <model>=<effort>`、`--model-modalities <model>=<mod>[;<mod>...]`（模态以分号或逗号分隔），以及集合级 `--default-reasoning <effort>`。显式 per-model 值优先于档案既有元数据、集合级声明与目录；集合级 `--default-reasoning` 只填充「声明了推理档位且尚未解析出默认推理档」的模型，MUST NOT 盖到无档位模型上。senv MUST NOT 从档位列表形状或模型 id 推断默认推理档或输入模态。凡最终解析出非空推理档位的模型 MUST 再解析出默认推理档，且该值 MUST 属于其档位列表；目录当前无 default effort 字段时须由显式 per-model 或集合级声明提供。无档位的模型 MUST NOT 要求默认推理档。输入模态可选：目录 `modalities.input` 或显式值有则写入，缺席表示未知，MUST NOT 写成纯文本。不在最终模型集内的模型、非正整数输出上限、空档位、默认推理档不属于档位列表、非法模态名 MUST 以非 0 退出且不写档案或凭据。`--default-model` 必须属于模型集。`--force` 覆盖档案时：未提供新自有凭据 SHALL 保留既有凭据与引用；从自有凭据改为外部引用 SHALL 删除原自有凭据；提供新自有凭据 SHALL 覆盖旧自有凭据。
+`senv ai provider add` SHALL 以别名为唯一标识保存档案。凭据必须且只能通过交互式 TTY prompt 或 `--api-key-stdin` 提供；prompt 或 stdin 值 SHALL 只进入 vault 保留 text 组 `llm-keys/<alias>`，档案存引用 `text:llm-keys/<alias>`，且 MUST NOT 作为 CLI flag 值传入。也可用 `--key-ref` 指向既有 env/text entry（`env:<group>/<key>` 或 `text:<group>/<key>`）。base URL SHALL 默认仅接受 HTTPS；显式 `--allow-http` 后接受 HTTP；两种方案 MUST 拒绝 host 为空或包含 userinfo。base URL 落库前 SHALL 归一为 OpenAI 兼容形态：收敛路径尾斜杠，并在路径末段不为 `v1` 时追加 `/v1`；归一 MUST 保留 query 与 fragment，MUST NOT 改动中间路径段，且对已归一的输入保持原值。归一实际改动了输入时命令 SHALL 提示改写后的值。归一 MUST NOT 放宽既有校验：userinfo、空 host 与非允许的 HTTP 仍被拒绝。模型集为 `--catalog-provider` 指向的目录模型与 `--model` 自定义模型的并集且不得为空；每个模型 SHALL 解析 context window：显式 `--model-context <model>=<tokens>` 优先，其次档案既有元数据，最后 models.dev `limit.context`。add 时任一模型缺失 context window MUST 以非 0 退出且不写档案或凭据。模型元数据还 SHALL 支持显式设置输出上限、推理档位、无档位推理能力、默认推理档与输入模态：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位以分号分隔）、`--model-reasoning-support <model>`（支持推理但没有可选 effort 档位）、`--model-default-reasoning <model>=<effort>`、`--model-modalities <model>=<mod>[;<mod>...]`（模态以分号或逗号分隔），以及集合级 `--default-reasoning <effort>`。显式 per-model 值优先于档案既有元数据、集合级声明与目录；集合级 `--default-reasoning` 只填充「声明了推理档位且尚未解析出默认推理档」的模型，MUST NOT 盖到无档位模型上。senv MUST NOT 从档位列表形状或模型 id 推断默认推理档或输入模态。凡最终解析出非空推理档位的模型 MUST 再解析出默认推理档，且该值 MUST 属于其档位列表；目录当前无 default effort 字段时须由显式 per-model 或集合级声明提供。无档位的模型 MUST NOT 要求默认推理档。`--model-reasoning-support` 标记的模型 WITHOUT effort 档位时 MUST 持久化 `reasoning: true` 且不要求默认推理档；该字段与 `reasoning_efforts` 相互兼容，二者任一存在即视为推理模型。输入模态可选：目录 `modalities.input` 或显式值有则写入，缺席表示未知，MUST NOT 写成纯文本。不在最终模型集内的模型、非正整数输出上限、空档位、默认推理档不属于档位列表、非法模态名 MUST 以非 0 退出且不写档案或凭据。`--default-model` 必须属于模型集。`--force` 覆盖档案时：未提供新自有凭据 SHALL 保留既有凭据与引用；从自有凭据改为外部引用 SHALL 删除原自有凭据；提供新自有凭据 SHALL 覆盖旧自有凭据。
 
 #### Scenario: 交互凭据不进 argv
 - **WHEN** 用户在 TTY 执行 add 且按提示输入 API key
@@ -71,6 +71,10 @@
 #### Scenario: 显式输入模态
 - **WHEN** 用户执行 add 并提供 `--model-modalities m1=text,image`
 - **THEN** 档案保存 m1 的输入模态为 text 与 image，`show` 展示该项
+
+#### Scenario: 自适应推理模型不要求 effort 档位
+- **WHEN** add 的模型提供 `--model-reasoning-support m1`，未提供 `--model-reasoning` 与默认推理档
+- **THEN** 档案保存 `m1.reasoning=true`，无 `reasoning_efforts`，切换时各 agent 仍识别其为推理模型，codex 不伪造 none
 
 #### Scenario: 无档位不要求默认推理档
 - **WHEN** add 的自定义模型只有 `--model-context custom-1=1000000`，未提供推理档位

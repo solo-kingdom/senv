@@ -14,7 +14,8 @@ const metaCatalogPayload = `{
 			"limit":{"context":300000,"output":8192},
 			"modalities":{"input":["text","image"]},
 			"reasoning_options":[{"type":"effort","values":["low","high"],"default":"high"},{"type":"budget_tokens","values":["1"]}]},
-		"m2": {"id":"m2"}
+		"m2": {"id":"m2"},
+		"m3": {"id":"m3","reasoning_options":[{"type":"toggle"}]}
 	}}
 }`
 
@@ -43,7 +44,7 @@ func TestLoadModelMetadataReadsKnownFields(t *testing.T) {
 	path := filepath.Join(dir, "cache", "models-dev.json")
 	writeTestCatalog(t, path, metaCatalogPayload, time.Now())
 
-	got := LoadModelMetadata(path, "p1", []string{"m1", "m2", "m3"})
+	got := LoadModelMetadata(path, "p1", []string{"m1", "m2", "m3", "m4"})
 	m1, ok := got["m1"]
 	if !ok {
 		t.Fatalf("metadata = %v, want m1 present", got)
@@ -68,8 +69,11 @@ func TestLoadModelMetadataReadsKnownFields(t *testing.T) {
 		m2.DefaultReasoning != "" || len(m2.InputModalities) != 0 {
 		t.Fatalf("m2 = %+v (ok=%v), want zero-value entry", m2, ok)
 	}
-	if _, ok := got["m3"]; ok {
-		t.Fatalf("m3 should be absent from the catalog: %v", got)
+	if m3, ok := got["m3"]; !ok || !m3.Reasoning || len(m3.ReasoningEfforts) != 0 {
+		t.Fatalf("m3 = %+v (ok=%v), want toggle reasoning without efforts", m3, ok)
+	}
+	if _, ok := got["m4"]; ok {
+		t.Fatalf("m4 should be absent from the catalog: %v", got)
 	}
 }
 

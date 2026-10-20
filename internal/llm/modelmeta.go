@@ -21,7 +21,10 @@ type ModelMetadata struct {
 	OutputLimit      int
 	ReasoningEfforts []string
 	DefaultReasoning string
-	InputModalities  []string
+	// Reasoning 表示模型具备推理能力但可能没有可选 effort 档位（如自适应
+	// 思考模型）。空档位不能据此推断「不支持推理」，该字段是显式声明。
+	Reasoning       bool
+	InputModalities []string
 }
 
 // DefaultModelCatalogPath 返回与指针文件同级的目录缓存路径（senv 配置目录
@@ -86,6 +89,11 @@ func LoadModelMetadata(catalogPath, catalogProvider string, modelIDs []string) m
 			OutputLimit:     entry.Limit.Output,
 			InputModalities: append([]string(nil), entry.Modalities.Input...),
 		}
+		// 任何 reasoning_options 声明都表示模型具备推理能力；toggle /
+		// budget_tokens 这类没有 effort 档的形态也不能被当成非推理模型。
+		if len(entry.ReasoningOptions) > 0 {
+			meta.Reasoning = true
+		}
 		for _, option := range entry.ReasoningOptions {
 			if option.Type != "effort" || len(option.Values) == 0 {
 				continue
@@ -126,6 +134,7 @@ func modelMetadataFromStorage(info storage.LLMModelInfo) ModelMetadata {
 		OutputLimit:      info.OutputLimit,
 		ReasoningEfforts: append([]string(nil), info.ReasoningEfforts...),
 		DefaultReasoning: info.DefaultReasoning,
+		Reasoning:        info.Reasoning,
 		InputModalities:  append([]string(nil), info.InputModalities...),
 	}
 }
@@ -138,6 +147,7 @@ func storageModelInfo(meta ModelMetadata) storage.LLMModelInfo {
 		OutputLimit:      meta.OutputLimit,
 		ReasoningEfforts: append([]string(nil), meta.ReasoningEfforts...),
 		DefaultReasoning: meta.DefaultReasoning,
+		Reasoning:        meta.Reasoning,
 		InputModalities:  append([]string(nil), meta.InputModalities...),
 	}
 }
@@ -170,6 +180,9 @@ func mergeModelMetadata(base, override ModelMetadata) ModelMetadata {
 	if override.DefaultReasoning != "" {
 		base.DefaultReasoning = override.DefaultReasoning
 	}
+	if override.Reasoning {
+		base.Reasoning = true
+	}
 	if len(override.InputModalities) > 0 {
 		base.InputModalities = append([]string(nil), override.InputModalities...)
 	}
@@ -179,5 +192,5 @@ func mergeModelMetadata(base, override ModelMetadata) ModelMetadata {
 func modelMetadataEmpty(meta ModelMetadata) bool {
 	return meta.Name == "" && meta.Description == "" && meta.ContextLimit <= 0 &&
 		meta.OutputLimit <= 0 && len(meta.ReasoningEfforts) == 0 &&
-		meta.DefaultReasoning == "" && len(meta.InputModalities) == 0
+		meta.DefaultReasoning == "" && !meta.Reasoning && len(meta.InputModalities) == 0
 }

@@ -33,6 +33,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		modelCtx:           providerAddModelCtx,
 		modelOut:           providerAddModelOut,
 		modelReason:        providerAddModelReason,
+		modelReasonSupport: providerAddModelReasonSupport,
 		modelDefaultReason: providerAddModelDefaultReason,
 		defaultReasoning:   providerAddDefaultReasoning,
 		modelModalities:    providerAddModelModalities,
@@ -51,6 +52,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 		providerAddModelCtx = old.modelCtx
 		providerAddModelOut = old.modelOut
 		providerAddModelReason = old.modelReason
+		providerAddModelReasonSupport = old.modelReasonSupport
 		providerAddModelDefaultReason = old.modelDefaultReason
 		providerAddDefaultReasoning = old.defaultReasoning
 		providerAddModelModalities = old.modelModalities
@@ -67,7 +69,7 @@ func setProviderAddFlags(t *testing.T, set func()) {
 type providerAddFlags struct {
 	baseURL, keyRef, catalog, defaultModel, defaultReasoning string
 	models, modelCtx, modelOut, modelReason                  []string
-	modelDefaultReason, modelModalities                      []string
+	modelReasonSupport, modelDefaultReason, modelModalities  []string
 	apiShape                                                 string
 	shapeURLs                                                []string
 	background                                               string

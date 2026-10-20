@@ -653,3 +653,35 @@ func TestAssembleDefaultReasoningAndModalities(t *testing.T) {
 		}
 	})
 }
+
+func TestEditProviderDeclaresReasoningWithoutEffort(t *testing.T) {
+	mgr, _, _ := newTestProviderManager(t)
+	if _, err := mgr.AddProvider(AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com", APIKey: "sk-secret",
+		Models: []string{"adaptive"}, ModelContexts: map[string]int{"adaptive": 1_000_000},
+		RequireModelMetadata: true,
+	}); err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	res, err := mgr.EditProvider(EditProviderOptions{
+		Alias:                 "main",
+		ModelReasoningSupport: []string{"adaptive"},
+	})
+	if err != nil {
+		t.Fatalf("EditProvider() error = %v", err)
+	}
+	info := res.Entry.ModelInfo["adaptive"]
+	if !info.Reasoning || len(info.ReasoningEfforts) != 0 || info.DefaultReasoning != "" {
+		t.Fatalf("model info = %+v, want reasoning-only declaration", info)
+	}
+	res, err = mgr.EditProvider(EditProviderOptions{
+		Alias:                 "main",
+		ModelReasoningSupport: []string{},
+	})
+	if err != nil {
+		t.Fatalf("EditProvider(clear) error = %v", err)
+	}
+	if info := res.Entry.ModelInfo["adaptive"]; info.Reasoning {
+		t.Fatalf("model info = %+v, want reasoning cleared", info)
+	}
+}
