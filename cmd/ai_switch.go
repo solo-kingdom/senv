@@ -31,10 +31,12 @@ func agentHomeDir() (string, error) {
 const aiSwitchModelSetHint = 20
 
 var (
-	aiSwitchModels       []string
-	aiSwitchDefaultModel string
+	aiSwitchModels         []string
+	aiSwitchDefaultModel   string
 	// aiSwitchBackgroundModel 是单次切换的后台模型覆盖（ADR-0029）。
 	aiSwitchBackgroundModel string
+	// aiSwitchCredentialMode 是单次切换的凭据模式偏好（ADR-0031）。
+	aiSwitchCredentialMode string
 	// aiSwitchModel 只为让已移除的 --model 给出可读错误而注册，不参与写入。
 	aiSwitchModel string
 )
@@ -46,13 +48,30 @@ var aiSwitchCmd = &cobra.Command{
 native config files are merged in one transaction, rewritten with temporary
 backups, and backups are removed after the pointer is committed.
 
-Supported agents: claude-code, codex, kimi, pi, omp, opencode. Codex reads its
-credential from an environment variable whose name senv picks so that
-"senv env export" already provides it: an env:<group>/<key> credential reuses
-<key> unchanged; a text:<group>/<key> credential gets SENV_<ALIAS>_API_KEY
-plus a reference entry in the default env group. The key itself never touches
-the codex config, and the credential must still exist locally (switch fails
-closed otherwise).
+Supported agents: claude-code, codex, kimi, pi, omp, opencode.
+
+--credential-mode controls how the credential is written back (ADR-0031):
+  auto   (default) write an environment variable reference when the agent
+         supports it, plaintext otherwise. Supported syntaxes: codex env_key,
+         kimi api_key_env, pi "$NAME", omp bare name, opencode "{env:NAME}".
+         claude-code does not expand ${VAR} in settings.json, so auto falls
+         back to plaintext for it; use --credential-mode=env to force env
+         mode (settings omit ANTHROPIC_BASE_URL/AUTH_TOKEN and rely on the
+         process environment, which requires "senv env export" to be evaluated
+         before launching the agent).
+  env    force environment variable reference; fails if the agent cannot
+         resolve it. With an env:<group>/<key> credential the env name is the
+         referenced key; with text:<group>/<key> senv seeds
+         SENV_<ALIAS>_API_KEY in the default env group.
+  inline always write the decrypted key into the config file (0600), matching
+         the pre-ADR-0031 behavior.
+
+Codex reads its credential from an environment variable whose name senv picks
+so that "senv env export" already provides it: an env:<group>/<key> credential
+reuses <key> unchanged; a text:<group>/<key> credential gets
+SENV_<ALIAS>_API_KEY plus a reference entry in the default env group. The key
+itself never touches the agent config, and the credential must still exist
+locally (switch fails closed otherwise).
 
 --models picks the Agent model set (= the subset the agent's own model picker
 offers); it accepts a comma-separated list and may be repeated, and defaults to
@@ -78,8 +97,12 @@ expects: Claude Code without the /v1 suffix (its SDK appends /v1/messages),
 OpenAI-compatible agents with it.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 参数校验前置：--model 与非法 --models 不解锁、不写任何文件。
+		// 参数校验前置：--model 与非法 --models/--credential-mode 不解锁、不写任何文件。
 		models, defaultModel, err := parseAISwitchFlags(cmd)
+		if err != nil {
+			return err
+		}
+		credMode, err := parseCredentialModeFlag(aiSwitchCredentialMode)
 		if err != nil {
 			return err
 		}
@@ -92,7 +115,7 @@ OpenAI-compatible agents with it.`,
 			return err
 		}
 		sm := llm.NewSwitchManager(mgr, agentPointerPath(), home)
-		out, err := sm.Switch(args[0], args[1], models, defaultModel, strings.TrimSpace(aiSwitchBackgroundModel))
+		out, err := sm.Switch(args[0], args[1], models, defaultModel, strings.TrimSpace(aiSwitchBackgroundModel), credMode)
 		if err != nil {
 			auditOp(session.AuditOpLLMSwitch, "agent:"+args[0], false, "switch 失败")
 			return err
@@ -108,6 +131,10 @@ OpenAI-compatible agents with it.`,
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  凭据环境变量：%s（由 `senv env export` 提供，配置文件不含明文）\n", out.CredentialEnv)
 		}
+		if out.BaseURLEnv != "" {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"  接入地址环境变量：%s（由 `senv env export` 提供，settings.json 不写 ANTHROPIC_BASE_URL）\n", out.BaseURLEnv)
+		}
 		if out.BackgroundModel != "" {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  后台模型：%s（写入 ANTHROPIC_SMALL_FAST_MODEL 与 ANTHROPIC_DEFAULT_HAIKU_MODEL，由 senv 管理，覆盖手写值）\n", out.BackgroundModel)
@@ -121,6 +148,21 @@ OpenAI-compatible agents with it.`,
 		}
 		return nil
 	},
+}
+
+// parseCredentialModeFlag 把 --credential-mode 字符串解析为偏好枚举；
+// 空串（未传）按 auto 处理。
+func parseCredentialModeFlag(s string) (llm.CredentialModePreference, error) {
+	switch strings.TrimSpace(s) {
+	case "", "auto":
+		return llm.CredentialModeAuto, nil
+	case "env":
+		return llm.CredentialModeEnv, nil
+	case "inline":
+		return llm.CredentialModeInline, nil
+	default:
+		return llm.CredentialModeAuto, fmt.Errorf("--credential-mode 只接受 auto|env|inline，收到 %q", s)
+	}
 }
 
 // parseAISwitchFlags 解析并校验切换参数，任何非法输入都在解锁 vault 之前
@@ -206,6 +248,8 @@ func init() {
 		"starting model for the agent (default: the provider profile's default model)")
 	aiSwitchCmd.Flags().StringVar(&aiSwitchBackgroundModel, "background-model", "",
 		"background model for the agent's background tasks (claude-code only; default: the provider profile's background model, falling back to the default model)")
+	aiSwitchCmd.Flags().StringVar(&aiSwitchCredentialMode, "credential-mode", "auto",
+		"credential write-back mode: auto (env var reference when the agent supports it, plaintext otherwise), env (force env var reference; fails if the agent cannot resolve it), or inline (force plaintext key into the config file)")
 	// --model 的旧语义是「只写这一个模型」，与新语义（选定集 + 默认）不同，
 	// 静默兼容会让旧脚本在无提示下改变写入结果，因此直接拒绝（grill D8）。
 	aiSwitchCmd.Flags().StringVar(&aiSwitchModel, "model", "",

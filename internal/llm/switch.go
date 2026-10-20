@@ -22,7 +22,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CredentialMode 描述该 agent 凭据的归宿。
+// CredentialModePreference 是调用方对本次切换的凭据写回方式偏好（ADR-0031）。
+type CredentialModePreference int
+
+const (
+	// CredentialModeAuto：adapter 支持环境变量反解时走 CredentialEnvVar，
+	// 不支持时回落 CredentialInline。默认值。
+	CredentialModeAuto CredentialModePreference = iota
+	// CredentialModeEnv：强制 CredentialEnvVar；adapter 不支持时切换失败。
+	CredentialModeEnv
+	// CredentialModeInline：强制 CredentialInline，与 ADR-0002 的原始行为一致。
+	CredentialModeInline
+)
+
+// CredentialMode 描述一次切换实际采用的凭据归宿（由 preference + adapter
+// 能力决议得出）。
 type CredentialMode int
 
 const (
@@ -32,8 +46,11 @@ const (
 	CredentialEnvVar
 )
 
-// SwitchRequest 携带一次切换的全部落盘输入。Credential 字段按 adapter 的
-// CredentialMode 解释：InlineFile 时是解密明文，EnvVarName 时是变量名。
+// SwitchRequest 携带一次切换的全部落盘输入。Credential 字段按 CredentialMode
+// 解释：CredentialInline 时是解密明文，CredentialEnvVar 时是 adapter 特定语法
+// 的环境变量引用（credentialEnvPlanFor 决议的名字经 adapter.CredentialEnvRef
+// 包装）。CredentialModeEnvVar 时，BaseURLEnv 非空表示接入地址也需经该环境
+// 变量暴露（claude-code，配置不写 ANTHROPIC_BASE_URL）。
 type SwitchRequest struct {
 	AgentID       string
 	ProviderAlias string
@@ -43,6 +60,12 @@ type SwitchRequest struct {
 	// DefaultModel 是 agent 的起始模型，属于 Models。
 	DefaultModel string
 	Credential   string
+	// CredentialMode 是本次切换实际采用的凭据模式（auto 决议后的结果）。
+	CredentialMode CredentialMode
+	// BaseURLEnv 在 CredentialModeEnvVar 且非空时，是 claude-code 依赖的
+	// ANTHROPIC_BASE_URL 环境变量名；配置不写 ANTHROPIC_BASE_URL/AUTH_TOKEN，
+	// 由进程环境兜底。其他 adapter 忽略。
+	BaseURLEnv string
 	// ConfigPath 由 SwitchManager 按 adapter 与目标 home 预先解析，
 	// 适配器直接使用，不自行解析 home。
 	ConfigPath string
@@ -91,7 +114,16 @@ type AgentAdapter struct {
 	// agent 指针指向时删除。无派生文件的 agent 为 nil。
 	OwnedArtifacts func(home, alias string) []string
 	Apply          func(req SwitchRequest) error
-	Credential     CredentialMode
+	// CredentialEnvRef 非 nil 表示该 agent 支持环境变量反解（ADR-0031）：
+	// 给定 senv 决议的变量名，返回写进配置的引用串（codex/omp 返回名字本身，
+	// pi 返回 "$NAME"，opencode 返回 "{env:NAME}"）。nil 表示不支持，
+	// CredentialModeEnv 下切换报错、CredentialModeAuto 下回落 inline。
+	// kimi 特殊：返回名字本身，但 Apply 里用 api_key_env 字段替换 api_key。
+	CredentialEnvRef func(name string) string
+	// CredentialEnvBaseURL 为 true 时该 adapter 在 CredentialEnvVar 模式下
+	// 同时需要把接入地址经环境变量暴露（claude-code：不写 ANTHROPIC_BASE_URL，
+	// 由进程环境兜底）。SwitchManager 据此决议 BaseURLEnv 并提供对应 env 名。
+	CredentialEnvBaseURL bool
 	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
 	Protocol ProtocolFamily
 	// ProjectsBackgroundModel 为 true 时，SwitchManager 解析后台模型
@@ -142,32 +174,32 @@ func parseCredentialRef(ref string) (kind, group, key string, err error) {
 	return kind, group, key, nil
 }
 
-// codexEnvPlan 描述 codex 的 env_key 名决议结果（ADR-0024）。
-type codexEnvPlan struct {
-	// Name 是写进 env_key 的环境变量名。
+// credentialEnvPlan 描述环境变量名决议结果（ADR-0024 泛化，ADR-0031）。
+type credentialEnvPlan struct {
+	// Name 是写进配置引用的环境变量名。
 	Name string
 	// SeedRef 非空表示该名字默认不由 vault 提供，需要在默认 env 组补一条值为
 	// SeedRef 的引用条目，使 `senv env export` 能提供该名字。
 	SeedRef string
 }
 
-// codexEnvPlanFor 决定 codex 的 env_key 名：
+// credentialEnvPlanFor 决定 CredentialEnvVar 模式的环境变量名：
 //   - env:<g>/<k> → <k>：这正是 `senv env export` 已经提供给 shell 的名字，
 //     切换无需写任何 vault 条目；
 //   - text:<g>/<k>（含 alias 规范引用 text:llm-keys/<alias>）→ alias 派生名，
-//     由 ensureCodexEnvName 在默认组补一条指向该条目的引用条目。
-func codexEnvPlanFor(entry *storage.LLMProviderEntry, alias string) (codexEnvPlan, error) {
+//     由 ensureCredentialEnvName 在默认组补一条指向该条目的引用条目。
+func credentialEnvPlanFor(entry *storage.LLMProviderEntry, alias string) (credentialEnvPlan, error) {
 	kind, group, key, err := parseCredentialRef(entry.CredentialRef)
 	if err != nil {
-		return codexEnvPlan{}, err
+		return credentialEnvPlan{}, err
 	}
 	switch kind {
 	case "env":
-		return codexEnvPlan{Name: key}, nil
+		return credentialEnvPlan{Name: key}, nil
 	case "text":
-		return codexEnvPlan{Name: senvEnvKeyName(alias), SeedRef: "{{text:" + group + ":" + key + "}}"}, nil
+		return credentialEnvPlan{Name: senvEnvKeyName(alias), SeedRef: "{{text:" + group + ":" + key + "}}"}, nil
 	default:
-		return codexEnvPlan{}, fmt.Errorf("unsupported credential ref %q", entry.CredentialRef)
+		return credentialEnvPlan{}, fmt.Errorf("unsupported credential ref %q", entry.CredentialRef)
 	}
 }
 
@@ -422,19 +454,32 @@ func claudeCodeAdapter() AgentAdapter {
 		Name:                    "Claude Code",
 		Protocol:                ProtocolAnthropic,
 		ProjectsBackgroundModel: true,
+		// Claude Code 的 settings.json env 块不展开 ${VAR}（值是字面量），因此
+		// 不能写 "$VAR" 形式的引用；env 模式靠「配置缺键时继承进程环境」（实测
+		// settings 优先、缺键才继承，ADR-0031）。CredentialEnvRef 返回空串占位，
+		// 真正的差异在 Apply 里：env 模式不写 ANTHROPIC_BASE_URL/AUTH_TOKEN。
+		// CredentialEnvBaseURL 让 SwitchManager 同时提供接入地址环境变量。
+		CredentialEnvRef:     func(name string) string { return "" },
+		CredentialEnvBaseURL: true,
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".claude", "settings.json")
 		},
 		ConfigPaths: func(home string) []string {
 			return []string{filepath.Join(home, ".claude", "settings.json")}
 		},
-		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
 				root["model"] = claudeProjectedModel(req.DefaultModel, req.ModelMetadata[req.DefaultModel])
 				env := ensureSubMap(root, "env")
-				env["ANTHROPIC_BASE_URL"] = req.BaseURL
-				env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+				if req.CredentialMode == CredentialEnvVar {
+					// env 模式：配置不写 BASE_URL/AUTH_TOKEN，靠进程环境兜底
+					// （ADR-0031）。删掉上次 inline 切换可能遗留的明文/旧值。
+					delete(env, "ANTHROPIC_BASE_URL")
+					delete(env, "ANTHROPIC_AUTH_TOKEN")
+				} else {
+					env["ANTHROPIC_BASE_URL"] = req.BaseURL
+					env["ANTHROPIC_AUTH_TOKEN"] = req.Credential
+				}
 				// 后台模型写两个键（ADR-0029）：SMALL_FAST 管压缩等后台任务，
 				// DEFAULT_HAIKU 把 haiku 档位整体重映射——网关上没有 haiku 时，
 				// 标题生成等 haiku 档位调用也会静默失败。
@@ -520,7 +565,9 @@ func codexAdapter() AgentAdapter {
 		OwnedArtifacts: func(home, alias string) []string {
 			return []string{codexCatalogPath(home, alias)}
 		},
-		Credential: CredentialEnvVar,
+		// codex 原生支持 env_key 字段（ADR-0024）：配置只写变量名，agent 自己
+		// 读环境变量。CredentialEnvRef 返回名字本身。
+		CredentialEnvRef: func(name string) string { return name },
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
 			if strings.TrimSpace(req.Home) == "" {
@@ -575,17 +622,25 @@ func kimiAdapter() AgentAdapter {
 		ConfigPaths: func(home string) []string {
 			return []string{filepath.Join(home, ".kimi-code", "config.toml")}
 		},
-		Credential: CredentialInline,
+		// kimi-code 用专用字段 api_key_env 引用环境变量（与 api_key 互斥），
+		// 每次请求时重新读取（ADR-0031）。CredentialEnvRef 返回名字本身，
+		// Apply 里根据 CredentialMode 决定写 api_key 还是 api_key_env。
+		CredentialEnvRef: func(name string) string { return name },
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
 			modelAlias := id + "/" + req.DefaultModel
 			return applyTOMLMerge(req.ConfigPath, func(root map[string]any) error {
 				root["default_model"] = modelAlias
-				setTOMLPath(root, []string{"providers", id}, map[string]any{
+				providerEntry := map[string]any{
 					"type":     kimiProviderType(req.APIShape),
 					"base_url": req.BaseURL,
-					"api_key":  req.Credential,
-				})
+				}
+				if req.CredentialMode == CredentialEnvVar {
+					providerEntry["api_key_env"] = req.Credential
+				} else {
+					providerEntry["api_key"] = req.Credential
+				}
+				setTOMLPath(root, []string{"providers", id}, providerEntry)
 				models := ensureSubMap(root, "models")
 				// 差集清理：换 provider 时清掉旧命名空间，同 provider 缩集时
 				// 清掉本次未选中的条目；只匹配 senv-<alias>/ 前缀。
@@ -766,6 +821,8 @@ func piAdapter() AgentAdapter {
 		ID:       "pi",
 		Name:     "Pi",
 		Protocol: ProtocolOpenAICompatible,
+		// pi 的 apiKey 支持 "$NAME" / "${NAME}" 环境变量插值（官方 models.md）。
+		CredentialEnvRef: func(name string) string { return "$" + name },
 		ConfigPath: func(home string) string {
 			return filepath.Join(agentcfg.PiAgentDir(home), "models.json")
 		},
@@ -775,7 +832,6 @@ func piAdapter() AgentAdapter {
 				filepath.Join(agentcfg.PiAgentDir(home), "settings.json"),
 			}
 		},
-		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
 			if err := applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
@@ -820,6 +876,9 @@ func ompAdapter() AgentAdapter {
 		Name:     "Oh My Pi",
 		Aliases:  []string{"oh-my-pi"},
 		Protocol: ProtocolOpenAICompatible,
+		// omp 的 apiKey 先按环境变量名解析、未设置/为空时才当字面 token
+		// （官方 models.md），所以直接写变量名即可（ADR-0031）。
+		CredentialEnvRef: func(name string) string { return name },
 		ConfigPath: func(home string) string {
 			return filepath.Join(agentcfg.OmpAgentDir(home), "models.yml")
 		},
@@ -830,7 +889,6 @@ func ompAdapter() AgentAdapter {
 				filepath.Join(dir, "config.yml"),
 			}
 		},
-		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			id := senvProviderID(req.ProviderAlias)
 			if err := applyYAMLMerge(req.ConfigPath, func(root map[string]any) error {
@@ -907,13 +965,15 @@ func opencodeAdapter() AgentAdapter {
 		ID:       "opencode",
 		Name:     "OpenCode",
 		Protocol: ProtocolOpenAICompatible,
+		// opencode 官方文档确认支持 "{env:VAR_NAME}" 配置引用语法
+		// （ADR-0031）。
+		CredentialEnvRef: func(name string) string { return "{env:" + name + "}" },
 		ConfigPath: func(home string) string {
 			return filepath.Join(home, ".config", "opencode", "opencode.json")
 		},
 		ConfigPaths: func(home string) []string {
 			return []string{filepath.Join(home, ".config", "opencode", "opencode.json")}
 		},
-		Credential: CredentialInline,
 		Apply: func(req SwitchRequest) error {
 			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
 				id := senvProviderID(req.ProviderAlias)
@@ -1125,13 +1185,18 @@ type SwitchOutput struct {
 	BaseURLSource string
 	ConfigPath    string
 	CredentialEnv string // 非空表示凭据需经该环境变量暴露
-	Warnings      []string
+	// BaseURLEnv 非空表示接入地址也需经该环境变量暴露（claude-code 的 env
+	// 模式，ADR-0031）；配置不写 ANTHROPIC_BASE_URL，由进程环境兜底。
+	BaseURLEnv string
+	Warnings   []string
 }
 
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
 // backgroundModel 是单次切换的后台模型覆盖（ADR-0029），空值表示沿用档案
 // 声明或回退默认模型；只有 ProjectsBackgroundModel 的 agent 消费它。
-func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string, backgroundModel string) (*SwitchOutput, error) {
+// credentialMode 控制凭据写回方式（ADR-0031）：auto 按 adapter 能力决议，
+// env 强制环境变量引用（adapter 不支持则报错），inline 强制明文。
+func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string, backgroundModel string, credentialMode CredentialModePreference) (*SwitchOutput, error) {
 	home, pointerPath, err := sm.resolvePaths()
 	if err != nil {
 		return nil, err
@@ -1213,12 +1278,30 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		}
 	}
 
-	// 凭据决议先于任何写回：Inline 族取明文，EnvVar 族（codex）取 env_key 名并
-	// 保证该名字可由 `senv env export` 提供（ADR-0024）。两族都必须解密凭据以
-	// 校验条目在本机存在（ADR-0019 fail-closed），EnvVar 族不落任何明文。
+	// 凭据模式决议（ADR-0031）：auto 按 adapter 能力选 env/inline；env 强制
+	// env（adapter 不支持则报错）；inline 强制明文。决议先于任何写回。
+	resolvedMode := CredentialInline
+	switch credentialMode {
+	case CredentialModeEnv:
+		if adapter.CredentialEnvRef == nil {
+			return nil, fmt.Errorf("agent %s does not support credential env mode; use --credential-mode=inline", agentID)
+		}
+		resolvedMode = CredentialEnvVar
+	case CredentialModeAuto:
+		if adapter.CredentialEnvRef != nil {
+			resolvedMode = CredentialEnvVar
+		}
+	case CredentialModeInline:
+		resolvedMode = CredentialInline
+	}
+
+	// 凭据决议先于任何写回：Inline 取明文，EnvVar 取环境变量引用并保证该
+	// 名字可由 `senv env export` 提供（ADR-0024/0031）。两者都必须解密凭据
+	// 以校验条目在本机存在（ADR-0019 fail-closed），EnvVar 不落任何明文。
 	var credentialWarnings []string
 	credential := ""
-	if adapter.Credential == CredentialInline {
+	credentialEnvName := "" // 决议的环境变量名（原始名，非 adapter 引用串）
+	if resolvedMode == CredentialInline {
 		if credential, err = resolveCredential(entry, sm.providerManager); err != nil {
 			return nil, err
 		}
@@ -1227,14 +1310,15 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		if err != nil {
 			return nil, err
 		}
-		plan, err := codexEnvPlanFor(entry, providerAlias)
+		plan, err := credentialEnvPlanFor(entry, providerAlias)
 		if err != nil {
 			return nil, err
 		}
-		if credentialWarnings, err = sm.ensureCodexEnvName(plan, plain); err != nil {
+		if credentialWarnings, err = sm.ensureCredentialEnvName(agentID, plan, plain); err != nil {
 			return nil, err
 		}
-		credential = plan.Name
+		credentialEnvName = plan.Name
+		credential = adapter.CredentialEnvRef(plan.Name)
 	}
 
 	// 地址解析：目标族显式形态地址优先——anthropic_base_url 原样写回（不剥
@@ -1255,6 +1339,18 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		baseURL, baseURLSource = explicitURL, explicitField
 	} else {
 		baseURL, baseURLSource = baseURLForFamily(entry.BaseURL, adapter.Protocol), baseURLSourceInferred
+	}
+
+	// claude-code 的 env 模式同时需要把接入地址暴露给进程环境（不写
+	// ANTHROPIC_BASE_URL 到 settings，ADR-0031）：决议 env 名并保证可由
+	// `senv env export` 提供。凭据与地址共用一个种子机制。
+	baseURLEnv := ""
+	if resolvedMode == CredentialEnvVar && adapter.CredentialEnvBaseURL {
+		plan := credentialEnvPlan{Name: senvEnvKeyName(providerAlias) + "_BASE_URL", SeedRef: baseURL}
+		if credentialWarnings, err = sm.ensureCredentialEnvName(agentID, plan, baseURL); err != nil {
+			return nil, err
+		}
+		baseURLEnv = plan.Name
 	}
 
 	// 指针先读后写：既取上一次指向作为清理依据，也保证损坏的指针文件在写
@@ -1299,6 +1395,8 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		Models:                agentModels,
 		DefaultModel:          defaultModel,
 		Credential:            credential,
+		CredentialMode:        resolvedMode,
+		BaseURLEnv:            baseURLEnv,
 		ConfigPath:            configPath,
 		Home:                  home,
 		ModelMetadata:         modelMetadata,
@@ -1351,8 +1449,9 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		BaseURLSource:   baseURLSource,
 		ConfigPath:      configPath,
 	}
-	if adapter.Credential == CredentialEnvVar {
-		out.CredentialEnv = credential
+	if resolvedMode == CredentialEnvVar {
+		out.CredentialEnv = credentialEnvName
+		out.BaseURLEnv = baseURLEnv
 	}
 	out.Warnings = append(credentialWarnings, backgroundWarnings...)
 	out.Warnings = append(out.Warnings, adapterWarnings...)
@@ -1486,14 +1585,15 @@ func stalePointerAliases(pf *PointerFile, agentID, providerAlias string) []strin
 	return stale
 }
 
-// ensureCodexEnvName 保证 codex 的 env_key 名可由 `senv env export` 提供，并把
-// 需要用户动作的情形作为 warning 返回（ADR-0024）。名字无法落地时返回错误，
+// ensureCredentialEnvName 保证 CredentialEnvVar 模式的环境变量名可由
+// `senv env export` 提供，并把需要用户动作的情形作为 warning 返回
+// （ADR-0024 泛化，ADR-0031）。agent 参数用于文案；名字无法落地时返回错误，
 // 调用方据此保持「零配置写入」。
-func (sm *SwitchManager) ensureCodexEnvName(plan codexEnvPlan, credential string) ([]string, error) {
+func (sm *SwitchManager) ensureCredentialEnvName(agent string, plan credentialEnvPlan, credential string) ([]string, error) {
 	envMgr := sm.providerManager.envManager()
 	settings, err := sm.providerManager.storage.LoadSettings()
 	if err != nil {
-		return nil, fmt.Errorf("load env settings for codex credential %s: %w", plan.Name, err)
+		return nil, fmt.Errorf("load env settings for %s credential %s: %w", agent, plan.Name, err)
 	}
 	defaultGroup := settings.DefaultGroup
 	if defaultGroup == "" {
@@ -1503,7 +1603,7 @@ func (sm *SwitchManager) ensureCodexEnvName(plan codexEnvPlan, credential string
 	// `senv env export` 的导出集合（internal/env 的 Export 语义）。
 	vars, groups, err := envMgr.Snapshot()
 	if err != nil {
-		return nil, fmt.Errorf("read env groups for codex credential %s: %w", plan.Name, err)
+		return nil, fmt.Errorf("read env groups for %s credential %s: %w", agent, plan.Name, err)
 	}
 	var (
 		exportedValue string
@@ -1530,20 +1630,20 @@ func (sm *SwitchManager) ensureCodexEnvName(plan codexEnvPlan, credential string
 			return nil, nil
 		}
 		return []string{fmt.Sprintf(
-			"环境变量 %s 已存在且不指向本次凭据：codex 会取到该条目当前的值，认证可能失败；如需改用本次凭据请核对 `senv env set %s <value>`",
-			plan.Name, plan.Name)}, nil
+			"环境变量 %s 已存在且不指向本次凭据：%s 会取到该条目当前的值，认证可能失败；如需改用本次凭据请核对 `senv env set %s <value>`",
+			plan.Name, agent, plan.Name)}, nil
 	case len(inactive) > 0:
 		// 名字只存在于未激活组：导出不会包含它，补写默认组会与用户既有条目
 		// 重复，因此只提示激活。
 		return []string{fmt.Sprintf(
-			"环境变量 %s 所在组 %s 未激活：`senv env export` 不会提供该名字，codex 会报 Missing environment variable；请执行 `senv env group activate %s`",
-			plan.Name, strings.Join(inactive, "、"), inactive[0])}, nil
+			"环境变量 %s 所在组 %s 未激活：`senv env export` 不会提供该名字，%s 会报 Missing environment variable；请执行 `senv env group activate %s`",
+			plan.Name, strings.Join(inactive, "、"), agent, inactive[0])}, nil
 	case plan.SeedRef == "":
 		return nil, fmt.Errorf(
-			"codex credential env %s is not provided by any env group; set it with `senv env set %s <value>`", plan.Name, plan.Name)
+			"%s credential env %s is not provided by any env group; set it with `senv env set %s <value>`", agent, plan.Name, plan.Name)
 	default:
 		if err := envMgr.Set(defaultGroup, plan.Name, plan.SeedRef); err != nil {
-			return nil, fmt.Errorf("write codex credential env %s to group %s: %w", plan.Name, defaultGroup, err)
+			return nil, fmt.Errorf("write %s credential env %s to group %s: %w", agent, plan.Name, defaultGroup, err)
 		}
 		return []string{fmt.Sprintf(
 			"已在组 %s 写入环境变量 %s = %s：`senv env export` 会把它解析为本次凭据",

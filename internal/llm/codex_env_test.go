@@ -36,16 +36,16 @@ func codexEnvKeyIn(t *testing.T, configPath, alias string) string {
 // TestCodexEnvPlanFor 覆盖名字决议：env: 引用复用 key 名，text: 引用派生名 +
 // 默认组兜底引用，非法引用报错。
 func TestCodexEnvPlanFor(t *testing.T) {
-	plan, err := codexEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: "env:ai/K"}, "prov")
+	plan, err := credentialEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: "env:ai/K"}, "prov")
 	if err != nil || plan.Name != "K" || plan.SeedRef != "" {
 		t.Fatalf("env plan = %+v, err = %v", plan, err)
 	}
-	plan, err = codexEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: "text:llm-keys/prov"}, "my-prov")
+	plan, err = credentialEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: "text:llm-keys/prov"}, "my-prov")
 	if err != nil || plan.Name != "SENV_MY_PROV_API_KEY" || plan.SeedRef != "{{text:llm-keys:prov}}" {
 		t.Fatalf("text plan = %+v, err = %v", plan, err)
 	}
 	for _, bad := range []string{"bogus", "env:noKey", "vault:ai/K"} {
-		if _, err := codexEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: bad}, "prov"); err == nil {
+		if _, err := credentialEnvPlanFor(&storage.LLMProviderEntry{CredentialRef: bad}, "prov"); err == nil {
 			t.Fatalf("ref %q unexpectedly accepted", bad)
 		}
 	}
@@ -71,7 +71,7 @@ func TestCodexEnvKeyReusesReferencedEnvName(t *testing.T) {
 	})
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "deepseek", nil, "", "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "deepseek", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCodexTextRefSeedsDefaultGroupReference(t *testing.T) {
 	envMgr := env.NewManager(store, "test-password")
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -164,7 +164,7 @@ func TestCodexEnvSeedKeepsExistingEntry(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCodexEnvKeyFromInactiveGroupWarns(t *testing.T) {
 	})
 
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "stag", nil, "", "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "stag", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -238,7 +238,7 @@ func TestCodexMissingCredentialWritesNothing(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	_, err := NewSwitchManager(pm, "", home).Switch("codex", "ghost", nil, "", "")
+	_, err := NewSwitchManager(pm, "", home).Switch("codex", "ghost", nil, "", "", CredentialModeAuto)
 	if err == nil {
 		t.Fatal("Switch() unexpectedly succeeded without the credential")
 	}
@@ -292,7 +292,7 @@ func TestCodexEnvSeedFailureWritesNothing(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	_, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "")
+	_, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeAuto)
 	if err == nil {
 		t.Fatal("Switch() unexpectedly succeeded with an unwritable env group")
 	}
