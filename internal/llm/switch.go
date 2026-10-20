@@ -60,6 +60,11 @@ type SwitchRequest struct {
 	// ProjectsBackgroundModel 的适配器消费（claude-code 投影为
 	// ANTHROPIC_SMALL_FAST_MODEL）。
 	BackgroundModel string
+	// GlobalReasoningEffort 与 ClearGlobalReasoning 描述 codex config.toml 顶层
+	// model_reasoning_effort 的写回：codex 用它覆盖 catalog 的默认档，所以切换
+	// 时必须收敛到本次默认模型的默认档；Clear 为 true 时删除该键。
+	GlobalReasoningEffort string
+	ClearGlobalReasoning  bool
 	// PriorProvider/PriorModels 是上一次成功切换的本机记录，作为清理差集的
 	// 依据；首次切换时为零值。
 	PriorProvider string
@@ -491,6 +496,14 @@ func codexAdapter() AgentAdapter {
 				root["model"] = req.DefaultModel
 				root["model_provider"] = id
 				root["model_catalog_json"] = codexCatalogRelPath(req.ProviderAlias)
+				// 顶层 effort 优先于 catalog 默认档（codex 实测）；它属于 senv
+				// 切换上下文，必须随默认模型一起写，否则切换后仍沿用上一模型的
+				// 档位（典型是 none），上游会拒绝。
+				if req.ClearGlobalReasoning {
+					delete(root, "model_reasoning_effort")
+				} else {
+					root["model_reasoning_effort"] = req.GlobalReasoningEffort
+				}
 				setTOMLPath(root, []string{"model_providers", id}, map[string]any{
 					"name":                 "senv " + req.ProviderAlias,
 					"base_url":             req.BaseURL,
@@ -599,7 +612,7 @@ func opencodeProviderNPM(declaredShape string) string {
 
 // modelSupportsReasoning 报告目录/档案元数据是否标明该模型具备推理能力。
 func modelSupportsReasoning(meta ModelMetadata) bool {
-	return len(meta.ReasoningEfforts) > 0
+	return len(meta.ReasoningEfforts) > 0 || meta.Reasoning
 }
 
 // filterModalities 按目标 agent 支持的输入模态白名单收敛模态列表。models.dev
@@ -1146,6 +1159,18 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 			"provider %q declares api_shape openai-chat, which codex can no longer use (chat wire protocol removed upstream); add a responses_base_url via --shape-url openai-responses=<url>, change the provider api_shape, or switch to a different provider",
 			providerAlias)
 	}
+	// codex 顶层 model_reasoning_effort 优先级高于 catalog 默认档（09-28 实测），
+	// 因此它必须跟随本次切换的默认模型：有档位时写默认档，无档位/不支持推理
+	// 时删除该键。否则会沿用上一个模型的 none，使强制思考模型报 2013。
+	modelMetadata := ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels)
+	resolvedGlobalReasoning := ""
+	clearGlobalReasoning := adapter.ID == "codex"
+	if adapter.ID == "codex" {
+		if meta := modelMetadata[defaultModel]; len(meta.ReasoningEfforts) > 0 && meta.DefaultReasoning != "" {
+			resolvedGlobalReasoning = meta.DefaultReasoning
+			clearGlobalReasoning = false
+		}
+	}
 
 	// 凭据决议先于任何写回：Inline 族取明文，EnvVar 族（codex）取 env_key 名并
 	// 保证该名字可由 `senv env export` 提供（ADR-0024）。两族都必须解密凭据以
@@ -1227,20 +1252,22 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		}
 	}()
 	req := SwitchRequest{
-		AgentID:         agentID,
-		ProviderAlias:   providerAlias,
-		BaseURL:         baseURL,
-		Models:          agentModels,
-		DefaultModel:    defaultModel,
-		Credential:      credential,
-		ConfigPath:      configPath,
-		Home:            home,
-		ModelMetadata:   ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels),
-		APIShape:        string(shape),
-		BackgroundModel: resolvedBackground,
-		PriorProvider:   prior.Provider,
-		PriorModels:     prior.Models,
-		tx:              tx,
+		AgentID:               agentID,
+		ProviderAlias:         providerAlias,
+		BaseURL:               baseURL,
+		Models:                agentModels,
+		DefaultModel:          defaultModel,
+		Credential:            credential,
+		ConfigPath:            configPath,
+		Home:                  home,
+		ModelMetadata:         modelMetadata,
+		APIShape:              string(shape),
+		BackgroundModel:       resolvedBackground,
+		GlobalReasoningEffort: resolvedGlobalReasoning,
+		ClearGlobalReasoning:  clearGlobalReasoning,
+		PriorProvider:         prior.Provider,
+		PriorModels:           prior.Models,
+		tx:                    tx,
 	}
 	if err := adapter.Apply(req); err != nil {
 		return nil, fmt.Errorf("write %s config: %w", agentID, err)

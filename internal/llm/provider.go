@@ -130,6 +130,9 @@ type AddProviderOptions struct {
 	// ModelReasoning 是调用方显式提供的模型推理档位，覆盖目录值；非空即视为
 	// 该模型具备推理能力，切换投影按此写各 agent 的推理开关。
 	ModelReasoning map[string][]string
+	// ModelReasoningSupport 是调用方显式声明的「支持推理」集合，覆盖目录推断；
+	// 用于有推理能力但无 effort 档位（toggle / adaptive）的模型。
+	ModelReasoningSupport []string
 	// ModelDefaultReasoning 是调用方显式提供的 per-model 默认推理档，覆盖档案
 	// 已有值、集合级声明与目录。
 	ModelDefaultReasoning map[string]string
@@ -345,6 +348,7 @@ type EditProviderOptions struct {
 	// 默认推理档 / 输入模态；空非 nil map 清空该维度；nil 表示保留原值。
 	ModelOutputs          map[string]int
 	ModelReasoning        map[string][]string
+	ModelReasoningSupport []string
 	ModelDefaultReasoning map[string]string
 	// DefaultReasoning 非 nil 时应用集合级默认推理档（空字符串表示不填充）。
 	// 与 ModelDefaultReasoning 空非 nil 组合时，先清空档案既有默认档再按
@@ -436,7 +440,7 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 		entry.CatalogProvider = strings.TrimSpace(*opts.CatalogProvider)
 	}
 	if opts.Models != nil || opts.CatalogProvider != nil || opts.ModelContexts != nil ||
-		opts.ModelOutputs != nil || opts.ModelReasoning != nil ||
+		opts.ModelOutputs != nil || opts.ModelReasoning != nil || opts.ModelReasoningSupport != nil ||
 		opts.ModelDefaultReasoning != nil || opts.DefaultReasoning != nil ||
 		opts.ModelModalities != nil {
 		models := opts.Models
@@ -450,6 +454,7 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 			ModelContexts:         opts.ModelContexts,
 			ModelOutputs:          opts.ModelOutputs,
 			ModelReasoning:        opts.ModelReasoning,
+			ModelReasoningSupport: opts.ModelReasoningSupport,
 			ModelDefaultReasoning: opts.ModelDefaultReasoning,
 			ModelModalities:       opts.ModelModalities,
 			BaseMetadata:          existing.ModelInfo,
@@ -763,6 +768,9 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 	if len(opts.ModelReasoning) == 0 && opts.ModelReasoning != nil {
 		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.ReasoningEfforts = nil })
 	}
+	if len(opts.ModelReasoningSupport) == 0 && opts.ModelReasoningSupport != nil {
+		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.Reasoning = false })
+	}
 	if len(opts.ModelContexts) == 0 && opts.ModelContexts != nil {
 		clearMetadataDimension(metadata, func(meta *ModelMetadata) { meta.ContextLimit = 0 })
 	}
@@ -797,6 +805,16 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 			return nil, nil, nil, fmt.Errorf("--model-reasoning model %q is not in the final model set", model)
 		}
 		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{ReasoningEfforts: cleaned})
+	}
+	for _, model := range opts.ModelReasoningSupport {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return nil, nil, nil, fmt.Errorf("--model-reasoning-support model id must not be empty")
+		}
+		if _, ok := set[model]; !ok {
+			return nil, nil, nil, fmt.Errorf("model %q from --model-reasoning-support is not in the final model set", model)
+		}
+		metadata[model] = mergeModelMetadata(metadata[model], ModelMetadata{Reasoning: true})
 	}
 	for model, contextWindow := range opts.ModelContexts {
 		model = strings.TrimSpace(model)
@@ -900,6 +918,15 @@ func (m *ProviderManager) assembleModels(opts AddProviderOptions) ([]string, map
 		}
 	}
 	return ids, modelInfo, warnings, nil
+}
+
+// ClearingStrings 把 nil slice 转为空非 nil slice（清空哨兵）；只有调用方
+// 已确认 flag 显式出现时才使用。
+func ClearingStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // ClearingMap 把 nil map 转为空非 nil map（清空哨兵）。调用方 MUST 只在输入

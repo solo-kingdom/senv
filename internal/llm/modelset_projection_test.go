@@ -39,6 +39,13 @@ func applyProjection(t *testing.T, a AgentAdapter, home string, models []string,
 	if a.Credential == CredentialEnvVar {
 		req.Credential = senvEnvKeyName("main")
 	}
+	// 测试直接调适配器，显式给出与 SwitchManager 相同的顶层 effort 策略：
+	// 默认模型无默认档时删除 model_reasoning_effort。
+	req.ClearGlobalReasoning = true
+	if meta := req.ModelMetadata[defaultModel]; len(meta.ReasoningEfforts) > 0 {
+		req.ClearGlobalReasoning = false
+		req.GlobalReasoningEffort = meta.DefaultReasoning
+	}
 	if err := a.Apply(req); err != nil {
 		t.Fatalf("%s Apply() error = %v", a.ID, err)
 	}
@@ -162,8 +169,8 @@ func TestCodexProjectsModelCatalog(t *testing.T) {
 	if unknown.ContextWindow != 0 {
 		t.Fatalf("catalog[2] context_window = %d, want omitted/0", unknown.ContextWindow)
 	}
-	if unknown.DefaultReasoningLevel != "none" || len(unknown.SupportedReasoningLevels) != 1 || unknown.SupportedReasoningLevels[0].Effort != "none" {
-		t.Fatalf("catalog[2] should fall back to a single none reasoning level: %+v", unknown)
+	if unknown.DefaultReasoningLevel != "" || len(unknown.SupportedReasoningLevels) != 0 {
+		t.Fatalf("catalog[2] should omit reasoning metadata instead of forcing none: %+v", unknown)
 	}
 	if !slices.Equal(unknown.InputModalities, []string{"text"}) {
 		t.Fatalf("catalog[2] input_modalities = %v, want text template", unknown.InputModalities)
@@ -711,8 +718,8 @@ func TestCodexMissingDefaultUsesNoneTemplate(t *testing.T) {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	got := catalog.Models[0]
-	if got.DefaultReasoningLevel != "none" || len(got.SupportedReasoningLevels) != 1 || got.SupportedReasoningLevels[0].Effort != "none" {
-		t.Fatalf("missing default should use none template: %+v", got)
+	if got.DefaultReasoningLevel != "" || len(got.SupportedReasoningLevels) != 0 {
+		t.Fatalf("missing default should omit reasoning metadata: %+v", got)
 	}
 	if !slices.Equal(got.InputModalities, []string{"text"}) {
 		t.Fatalf("missing modalities = %v, want text template", got.InputModalities)

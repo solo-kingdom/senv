@@ -172,7 +172,10 @@ type LLMModelInfo struct {
 	OutputLimit      int      `json:"output_limit,omitempty"`
 	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 	DefaultReasoning string   `json:"default_reasoning,omitempty"`
-	InputModalities  []string `json:"input_modalities,omitempty"`
+	// Reasoning 是显式「支持推理」声明，覆盖「有推理但无可选 effort 档位」的
+	// 模型；必须 omitempty 让旧档案与旧版本读取保持原样。
+	Reasoning       bool     `json:"reasoning,omitempty"`
+	InputModalities []string `json:"input_modalities,omitempty"`
 }
 
 // MaxLLMProviderModels caps the model list so a hostile catalog cannot blow up
