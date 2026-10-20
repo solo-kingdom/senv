@@ -246,7 +246,7 @@ func TestSwitchUsesStoredModelMetadata(t *testing.T) {
 		t.Fatalf("AddProvider() error = %v", err)
 	}
 	sm := NewSwitchManager(pm, "", t.TempDir())
-	out, err := sm.Switch("claude-code", "main", nil, "", "")
+	out, err := sm.Switch("claude-code", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -287,7 +287,7 @@ func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
 
 	home := t.TempDir()
 	sm := NewSwitchManager(pm, "", home)
-	out, err := sm.Switch("codex", "main", nil, "", "")
+	out, err := sm.Switch("codex", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -490,7 +490,7 @@ func newTestSwitchManager(t *testing.T) (*SwitchManager, string) {
 
 func TestSwitchEndToEnd(t *testing.T) {
 	sm, home := newTestSwitchManager(t)
-	out, err := sm.Switch("claude-code", "main", nil, "", "")
+	out, err := sm.Switch("claude-code", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -524,13 +524,13 @@ func TestSwitchEndToEnd(t *testing.T) {
 
 func TestSwitchValidationFailures(t *testing.T) {
 	sm, _ := newTestSwitchManager(t)
-	if _, err := sm.Switch("cursor", "main", []string{"m1"}, "m1", ""); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if _, err := sm.Switch("cursor", "main", []string{"m1"}, "m1", "", CredentialModeInline); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("Switch(cursor) error = %v", err)
 	}
-	if _, err := sm.Switch("claude-code", "missing", []string{"m1"}, "m1", ""); err == nil {
+	if _, err := sm.Switch("claude-code", "missing", []string{"m1"}, "m1", "", CredentialModeInline); err == nil {
 		t.Fatal("Switch(missing provider) unexpectedly succeeded")
 	}
-	if _, err := sm.Switch("claude-code", "main", []string{"nope"}, "nope", ""); err == nil || !strings.Contains(err.Error(), "available") {
+	if _, err := sm.Switch("claude-code", "main", []string{"nope"}, "nope", "", CredentialModeInline); err == nil || !strings.Contains(err.Error(), "available") {
 		t.Fatalf("Switch(bad model) error = %v", err)
 	}
 }
@@ -542,7 +542,7 @@ func TestSwitchCodexGuidesEnvVar(t *testing.T) {
 		APIKey: "sk-secret", Models: []string{"m1", "m2"}, DefaultModel: "m1",
 	})
 	home := t.TempDir()
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", []string{"m2"}, "m2", "")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", []string{"m2"}, "m2", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -586,7 +586,7 @@ func TestSwitchRollsBackOnPointerFailure(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	sm := NewSwitchManager(pm, badPointer, home)
-	if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m1", ""); err == nil {
+	if _, err := sm.Switch("claude-code", "main", []string{"m1"}, "m1", "", CredentialModeInline); err == nil {
 		t.Fatal("Switch() unexpectedly succeeded with broken pointer path")
 	}
 	if got := mustRead(t, configPath); string(got) != string(original) {
@@ -599,7 +599,7 @@ func TestSwitchRollsBackOnPointerFailure(t *testing.T) {
 
 func TestStatusMixed(t *testing.T) {
 	sm, _ := newTestSwitchManager(t)
-	if _, err := sm.Switch("opencode", "main", []string{"m1"}, "m1", ""); err != nil {
+	if _, err := sm.Switch("opencode", "main", []string{"m1"}, "m1", "", CredentialModeInline); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	rows, warning, err := sm.Status()
@@ -671,7 +671,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 			home := t.TempDir()
 			sm := NewSwitchManager(pm, "", home)
 
-			out, err := sm.Switch("claude-code", "legacy", nil, "", "")
+			out, err := sm.Switch("claude-code", "legacy", nil, "", "", CredentialModeInline)
 			if err != nil {
 				t.Fatalf("Switch(claude-code) error = %v", err)
 			}
@@ -686,7 +686,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 				t.Fatalf("ANTHROPIC_BASE_URL = %v, want %q", got, tc.claudeCode)
 			}
 			// 重复切换幂等：同一档案再切一次，写入值不变。
-			again, err := sm.Switch("claude-code", "legacy", nil, "", "")
+			again, err := sm.Switch("claude-code", "legacy", nil, "", "", CredentialModeInline)
 			if err != nil {
 				t.Fatalf("second Switch(claude-code) error = %v", err)
 			}
@@ -694,7 +694,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 				t.Fatalf("repeated switch BaseURL = %q, want %q", again.BaseURL, out.BaseURL)
 			}
 
-			codexOut, err := sm.Switch("codex", "legacy", nil, "", "")
+			codexOut, err := sm.Switch("codex", "legacy", nil, "", "", CredentialModeInline)
 			if err != nil {
 				t.Fatalf("Switch(codex) error = %v", err)
 			}
@@ -915,7 +915,7 @@ func TestOmpAdapterWritesUnderActiveProfile(t *testing.T) {
 
 func TestSwitchAgentAliasEndToEnd(t *testing.T) {
 	sm, home := newTestSwitchManager(t)
-	out, err := sm.Switch("oh-my-pi", "main", nil, "", "")
+	out, err := sm.Switch("oh-my-pi", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch(oh-my-pi) error = %v", err)
 	}
@@ -967,7 +967,7 @@ func TestCodexTopLevelEffortFollowsDefaultModel(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("model_reasoning_effort = 'none'\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", ""); err != nil {
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeInline); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	var cfg map[string]any
@@ -998,7 +998,7 @@ func TestCodexTopLevelEffortFollowsDefaultModel(t *testing.T) {
 	if err := pm.storage.SaveLLMProvider("main", entry, "test-password"); err != nil {
 		t.Fatalf("update provider: %v", err)
 	}
-	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", ""); err != nil {
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeInline); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	cfg = nil

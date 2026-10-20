@@ -47,6 +47,14 @@ func setAISwitchBackgroundFlag(t *testing.T, value string) {
 	t.Cleanup(func() { aiSwitchBackgroundModel = old })
 }
 
+// setAISwitchCredentialModeFlag 预置 --credential-mode。
+func setAISwitchCredentialModeFlag(t *testing.T, value string) {
+	t.Helper()
+	old := aiSwitchCredentialMode
+	aiSwitchCredentialMode = value
+	t.Cleanup(func() { aiSwitchCredentialMode = old })
+}
+
 // runAISwitchCmd 分别捕获 stdout/stderr（codex 的凭据指引走 stderr）。
 func runAISwitchCmd(t *testing.T, cmd *cobra.Command, args []string) (string, string, error) {
 	t.Helper()
@@ -76,6 +84,7 @@ func TestAISwitchClaudeCodeEndToEnd(t *testing.T) {
 	addAIProviderForSwitchTest(t, "main")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	setAISwitchCredentialModeFlag(t, "inline")
 
 	out, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"claude-code", "main"})
 	if err != nil {
@@ -546,4 +555,61 @@ func TestAISwitchCodexWarnsOnInactiveCredentialGroup(t *testing.T) {
 	if got := codexEnvKeyOf(t, filepath.Join(home, ".codex", "config.toml"), "stag"); got != "APP_KEY" {
 		t.Fatalf("env_key = %q", got)
 	}
+}
+
+// TestAISwitchCredentialModeFlag 覆盖 --credential-mode 的解析与端到端行为：
+// env 强制引用、inline 强制明文、非法值报错。
+func TestAISwitchCredentialModeFlag(t *testing.T) {
+	t.Run("env forces reference", func(t *testing.T) {
+		if _, err := parseCredentialModeFlag("bogus"); err == nil {
+			t.Fatal("parseCredentialModeFlag(bogus) unexpectedly succeeded")
+		}
+		mode, err := parseCredentialModeFlag("env")
+		if err != nil || mode != llm.CredentialModeEnv {
+			t.Fatalf("mode = %v, err = %v", mode, err)
+		}
+	})
+
+	t.Run("inline forces plaintext", func(t *testing.T) {
+		newAuditTestProject(t)
+		addAIProviderForSwitchTest(t, "main")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		setAISwitchCredentialModeFlag(t, "inline")
+
+		if _, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"opencode", "main"}); err != nil {
+			t.Fatalf("switch: %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
+		if err != nil {
+			t.Fatalf("read opencode.json: %v", err)
+		}
+		if !strings.Contains(string(raw), "sk-secret-value") {
+			t.Fatalf("inline mode must write plaintext:\n%s", raw)
+		}
+	})
+
+	t.Run("auto writes env reference", func(t *testing.T) {
+		newAuditTestProject(t)
+		addAIProviderForSwitchTest(t, "main")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		// auto 是 flag 默认值；显式置空串等价于未传。
+		setAISwitchCredentialModeFlag(t, "")
+
+		stdout, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"opencode", "main"})
+		if err != nil {
+			t.Fatalf("switch: %v", err)
+		}
+		if !strings.Contains(stdout, "凭据环境变量：") {
+			t.Fatalf("stdout = %q, want the credential env line", stdout)
+		}
+		raw, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
+		if err != nil {
+			t.Fatalf("read opencode.json: %v", err)
+		}
+		if strings.Contains(string(raw), "sk-secret-value") {
+			t.Fatalf("auto mode must not write plaintext:\n%s", raw)
+		}
+	})
 }

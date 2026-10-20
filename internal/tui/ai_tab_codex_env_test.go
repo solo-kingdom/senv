@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/storage"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wii/senv/internal/text"
 )
 
@@ -129,7 +131,7 @@ func newAITestTabWithStore(t *testing.T) (*aiTab, string, *storage.Manager) {
 	return tab, home, store
 }
 
-func TestAITabSwitchPiHasNoCredentialHint(t *testing.T) {
+func TestAITabSwitchPiUsesCredentialEnv(t *testing.T) {
 	tab, _, _ := newAITestTab(t)
 	runAITabLoad(t, tab)
 
@@ -139,11 +141,98 @@ func TestAITabSwitchPiHasNoCredentialHint(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("switch msg = %#v", msg)
 	}
-	if result.out.CredentialEnv != "" {
-		t.Fatalf("CredentialEnv = %q, want none for an inline-credential agent", result.out.CredentialEnv)
+	// pi 支持 "$NAME" 环境变量插值（ADR-0031），auto 模式走 CredentialEnvVar，
+	// CredentialEnv 非空。
+	if result.out.CredentialEnv == "" {
+		t.Fatal("CredentialEnv = \"\", want an env var name for pi under auto mode")
 	}
 	notice := strings.Join(collectAIToasts(t, tab, batch), "; ")
-	if strings.Contains(notice, "reads credentials from env") {
-		t.Fatalf("notice = %q, must not mention env credentials", notice)
+	if !strings.Contains(notice, "reads credentials from env "+result.out.CredentialEnv) {
+		t.Fatalf("notice = %q, want the env credential hint", notice)
 	}
+}
+
+// TestAITabSwitchCredentialModeStep 覆盖 ADR-0031 的 TUI 凭据模式步骤：选中
+// inline 时配置写明文，选中 env 时配置只写引用。
+func TestAITabSwitchCredentialModeStep(t *testing.T) {
+	t.Run("inline writes plaintext", func(t *testing.T) {
+		tab, home, _ := newAITestTab(t)
+		runAITabLoad(t, tab)
+		tab.focusLeft = false
+		tab.agentIndex = rowIndexOf(t, tab, "pi")
+
+		tab.Update(runeKey("s"))
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 模型集 → 默认模型
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 凭据模式
+		if tab.flow != aiFlowSelectCredentialMode {
+			t.Fatalf("flow = %v, want selectCredentialMode", tab.flow)
+		}
+		// 游标移到 inline（下标 2）并确认。
+		tab.Update(runeKey("j"))
+		tab.Update(runeKey("j"))
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if tab.flow != aiFlowConfirm {
+			t.Fatalf("flow = %v, want confirm", tab.flow)
+		}
+		_, cmd := tab.Update(runeKey("y"))
+		if cmd == nil {
+			t.Fatal("confirm did not return a switch command")
+		}
+		batch := switchOutcome(t, cmd())
+		if batch.results[0].err != nil {
+			t.Fatalf("switch error: %v", batch.results[0].err)
+		}
+		if batch.results[0].out.CredentialEnv != "" {
+			t.Fatalf("CredentialEnv = %q, want empty under inline", batch.results[0].out.CredentialEnv)
+		}
+		raw, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "models.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "sk-tui-secret") {
+			t.Fatalf("inline mode must write plaintext:\n%s", raw)
+		}
+	})
+
+	t.Run("env writes reference", func(t *testing.T) {
+		tab, home, _ := newAITestTab(t)
+		runAITabLoad(t, tab)
+		tab.focusLeft = false
+		tab.agentIndex = rowIndexOf(t, tab, "pi")
+
+		tab.Update(runeKey("s"))
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 凭据模式
+		if tab.flow != aiFlowSelectCredentialMode {
+			t.Fatalf("flow = %v, want selectCredentialMode", tab.flow)
+		}
+		// 游标移到 env（下标 1）并确认。
+		tab.Update(runeKey("j"))
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if tab.flow != aiFlowConfirm {
+			t.Fatalf("flow = %v, want confirm", tab.flow)
+		}
+		_, cmd := tab.Update(runeKey("y"))
+		if cmd == nil {
+			t.Fatal("confirm did not return a switch command")
+		}
+		batch := switchOutcome(t, cmd())
+		if batch.results[0].err != nil {
+			t.Fatalf("switch error: %v", batch.results[0].err)
+		}
+		if batch.results[0].out.CredentialEnv == "" {
+			t.Fatal("CredentialEnv = \"\", want an env var name under env mode")
+		}
+		raw, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "models.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "sk-tui-secret") {
+			t.Fatalf("env mode must not write plaintext:\n%s", raw)
+		}
+		wantRef := "$" + batch.results[0].out.CredentialEnv
+		if !strings.Contains(string(raw), wantRef) {
+			t.Fatalf("pi config missing %q:\n%s", wantRef, raw)
+		}
+	})
 }

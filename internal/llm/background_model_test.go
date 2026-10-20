@@ -91,7 +91,7 @@ func TestSwitchBackgroundModelChain(t *testing.T) {
 
 	// 档案声明直达配置（SMALL_FAST 与 DEFAULT_HAIKU 同值）。
 	sm, home := newClaudeSwitch(t, "m2")
-	out, err := sm.Switch("claude-code", "main", nil, "", "")
+	out, err := sm.Switch("claude-code", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestSwitchBackgroundModelChain(t *testing.T) {
 
 	// 单次切换覆盖档案声明，不回写档案。
 	sm, home = newClaudeSwitch(t, "m2")
-	out, err = sm.Switch("claude-code", "main", nil, "", "m1")
+	out, err = sm.Switch("claude-code", "main", nil, "", "m1", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -119,7 +119,7 @@ func TestSwitchBackgroundModelChain(t *testing.T) {
 
 	// 未声明时回退默认模型并给 warning。
 	sm, home = newClaudeSwitch(t, "")
-	out, err = sm.Switch("claude-code", "main", nil, "", "")
+	out, err = sm.Switch("claude-code", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSwitchBackgroundModelChain(t *testing.T) {
 
 	// 显式值不在模型集：拒绝且零写入。
 	sm, home = newClaudeSwitch(t, "")
-	if _, err = sm.Switch("claude-code", "main", nil, "", "ghost"); err == nil ||
+	if _, err = sm.Switch("claude-code", "main", nil, "", "ghost", CredentialModeInline); err == nil ||
 		!strings.Contains(err.Error(), "not in provider") {
 		t.Fatalf("ghost override err = %v, want membership error", err)
 	}
@@ -156,7 +156,7 @@ func TestSwitchBackgroundModelIgnoredForNonConsumer(t *testing.T) {
 	home := t.TempDir()
 	// codex 不消费后台模型：显式值既不校验也不落盘（TUI 批量切换会把同一份
 	// 值传给所有选中 agent，非消费方必须静默忽略）。
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "ghost")
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "ghost", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}

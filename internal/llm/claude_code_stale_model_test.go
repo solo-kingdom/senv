@@ -164,7 +164,7 @@ func TestClaudeCodeStaleTierWarningThroughSwitch(t *testing.T) {
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "gone",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": "gone",
 	})
-	out, err := sm.Switch("claude-code", "main", nil, "", "")
+	out, err := sm.Switch("claude-code", "main", nil, "", "", CredentialModeInline)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}

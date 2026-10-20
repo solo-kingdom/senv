@@ -175,6 +175,10 @@ func driveAISwitch(t *testing.T, tab *aiTab, agentSteps, modelSteps int, trigger
 	if tab.flow == aiFlowSelectBackground {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	}
+	// 完整切换（非 M）多一步凭据模式（ADR-0031）：默认 auto 直接回车。
+	if !tab.flowOnlyModel && tab.flow == aiFlowSelectCredentialMode {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
 	if tab.flow != aiFlowConfirm {
 		t.Fatalf("flow = %v, want confirm", tab.flow)
 	}
@@ -248,8 +252,11 @@ func TestAITabLeftPaneSwitchPicksAgents(t *testing.T) {
 		t.Fatalf("flow = %v, want selectModel", tab.flow)
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
-	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 后台模型（含 claude-code）或确认
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 后台模型（含 claude-code）或凭据模式
 	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 凭据模式
+	}
+	if tab.flow == aiFlowSelectCredentialMode {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
 	}
 	if tab.flow != aiFlowConfirm {
@@ -335,9 +342,20 @@ func TestAITabSwitchSuccess(t *testing.T) {
 		t.Fatalf("pointer not refreshed:\n%s", tab.View())
 	}
 
+	// auto 模式下 claude-code 走 CredentialEnvVar（ADR-0031）：settings.json
+	// 不写明文凭据与接入地址，靠进程环境兜底；提示里给出环境变量名。
 	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
-	if err != nil || !strings.Contains(string(raw), "sk-tui-secret") {
-		t.Fatalf("settings.json = %s, %v", raw, err)
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if strings.Contains(string(raw), "sk-tui-secret") {
+		t.Fatalf("settings.json contains plaintext credential under auto mode: %s", raw)
+	}
+	if strings.Contains(string(raw), "ANTHROPIC_AUTH_TOKEN") {
+		t.Fatalf("settings.json still writes ANTHROPIC_AUTH_TOKEN under env mode: %s", raw)
+	}
+	if result.out.CredentialEnv == "" {
+		t.Fatal("CredentialEnv = \"\", want an env var name for claude-code env mode")
 	}
 }
 
@@ -918,6 +936,12 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 	if tab.flow == aiFlowSelectBackground {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 后台模型步骤（claude-code）
 	}
+	if tab.flow == aiFlowSelectCredentialMode {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 凭据模式步骤（ADR-0031）
+	}
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("flow = %v, want confirm", tab.flow)
+	}
 	_, cmd := tab.Update(runeKey("y"))
 	if cmd == nil {
 		t.Fatal("confirm did not return a switch command")
@@ -975,6 +999,10 @@ func TestAITabSwitchBackgroundModelStep(t *testing.T) {
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab.Update(runeKey("j")) // 选 m2 作为后台模型
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowSelectCredentialMode {
+		t.Fatalf("flow = %v, want selectCredentialMode", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
 	if tab.flow != aiFlowConfirm {
 		t.Fatalf("flow = %v, want confirm", tab.flow)
 	}
@@ -1009,9 +1037,13 @@ func TestAITabSwitchBackgroundStepSkippedForCodex(t *testing.T) {
 
 	tab.Update(runeKey("s"))
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
-	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 直接确认
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 凭据模式（codex 无后台模型步骤）
+	if tab.flow != aiFlowSelectCredentialMode {
+		t.Fatalf("codex must reach credential-mode step, flow = %v", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 确认
 	if tab.flow != aiFlowConfirm {
-		t.Fatalf("codex must skip the background step, flow = %v", tab.flow)
+		t.Fatalf("flow = %v, want confirm", tab.flow)
 	}
 }
 

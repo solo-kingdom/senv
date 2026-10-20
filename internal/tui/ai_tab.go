@@ -72,6 +72,10 @@ type aiTab struct {
 	// 游标，后台模型步骤不得覆盖它。
 	flowBackground       string
 	flowBackgroundCursor int
+	// flowCredentialMode 是凭据模式步骤选中的值（ADR-0031）：0=auto、1=env、
+	// 2=inline。flowCredentialModeCursor 同 flowBackgroundCursor 的独立性约定。
+	flowCredentialMode       int
+	flowCredentialModeCursor int
 
 	// catalogURL 覆盖联网刷新的源；空则用 llm.DefaultCatalogURL。测试用
 	// httptest.Server 注入，生产路径保持零值。
@@ -97,6 +101,9 @@ const (
 	// aiFlowSelectBackground 是后台模型步骤（ADR-0029）：只在含 claude-code
 	// 的完整切换里出现，候选为 Provider 模型集全集。
 	aiFlowSelectBackground
+	// aiFlowSelectCredentialMode 是凭据模式步骤（ADR-0031）：auto/env/inline
+	// 三选一，只在完整切换（非 onlyModel）里出现。
+	aiFlowSelectCredentialMode
 	aiFlowConfirm
 )
 
@@ -185,6 +192,12 @@ func (t *aiTab) Bindings() []KeyAction {
 			{[]string{"esc"}, "back", grpWizard, false},
 		}
 	case aiFlowSelectBackground:
+		return []KeyAction{
+			actUp, actDown,
+			{[]string{"enter"}, "next", grpWizard, false},
+			{[]string{"esc"}, "back", grpWizard, false},
+		}
+	case aiFlowSelectCredentialMode:
 		return []KeyAction{
 			actUp, actDown,
 			{[]string{"enter"}, "next", grpWizard, false},
@@ -645,11 +658,15 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			}
 		case "enter":
 			if len(models) > 0 {
-				if t.flowNeedsBackground() {
+				if t.flowOnlyModel {
+					// 仅换默认模型不动凭据模式：直接确认。
+					t.flow = aiFlowConfirm
+				} else if t.flowNeedsBackground() {
 					t.flowBackgroundCursor = t.backgroundModelCursor()
 					t.flow = aiFlowSelectBackground
 				} else {
-					t.flow = aiFlowConfirm
+					t.flowCredentialModeCursor = t.flowCredentialMode
+					t.flow = aiFlowSelectCredentialMode
 				}
 			}
 		case "esc":
@@ -675,11 +692,33 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		case "enter":
 			if len(candidates) > 0 {
 				t.flowBackground = candidates[clamp(t.flowBackgroundCursor, 0, len(candidates)-1)]
-				t.flow = aiFlowConfirm
+				t.flowCredentialModeCursor = t.flowCredentialMode
+				t.flow = aiFlowSelectCredentialMode
 			}
 		case "esc":
 			// 回到默认模型步骤；flowCursor 仍是默认模型游标，本步骤未触碰它。
 			t.flow = aiFlowSelectDefault
+		}
+	case aiFlowSelectCredentialMode:
+		switch msg.String() {
+		case "up", "k":
+			if t.flowCredentialModeCursor > 0 {
+				t.flowCredentialModeCursor--
+			}
+		case "down", "j":
+			if t.flowCredentialModeCursor < len(credentialModeLabels)-1 {
+				t.flowCredentialModeCursor++
+			}
+		case "enter":
+			t.flowCredentialMode = clamp(t.flowCredentialModeCursor, 0, len(credentialModeLabels)-1)
+			t.flow = aiFlowConfirm
+		case "esc":
+			// 回到后台模型步骤（若出现过）或默认模型步骤。
+			if t.flowNeedsBackground() {
+				t.flow = aiFlowSelectBackground
+			} else {
+				t.flow = aiFlowSelectDefault
+			}
 		}
 	case aiFlowConfirm:
 		switch msg.String() {
@@ -723,6 +762,8 @@ func (t *aiTab) cancelMode() {
 	t.flowCursor = 0
 	t.flowBackground = ""
 	t.flowBackgroundCursor = 0
+	t.flowCredentialMode = 0
+	t.flowCredentialModeCursor = 0
 }
 
 // startSwitch begins the switch (onlyModel=false) or default-model-change
@@ -942,6 +983,29 @@ func (t *aiTab) backgroundModelCursor() int {
 	return 0
 }
 
+// credentialModeLabels 是凭据模式步骤的三档标签（ADR-0031），下标即
+// aiTab.flowCredentialMode 的取值。
+var credentialModeLabels = []struct {
+	label  string
+	detail string
+}{
+	{"auto", "支持环境变量反解的 agent 只写引用，claude-code 回落明文"},
+	{"env", "强制环境变量引用（claude-code 靠进程环境兜底，需先 senv env export）"},
+	{"inline", "强制明文写入配置文件（0600，ADR-0002 原行为）"},
+}
+
+// flowCredentialModePref 把步骤选中值映射为 SwitchManager 的偏好枚举。
+func (t *aiTab) flowCredentialModePref() llm.CredentialModePreference {
+	switch clamp(t.flowCredentialMode, 0, len(credentialModeLabels)-1) {
+	case 1:
+		return llm.CredentialModeEnv
+	case 2:
+		return llm.CredentialModeInline
+	default:
+		return llm.CredentialModeAuto
+	}
+}
+
 func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	models := t.flowSelectedModels()
 	agents := t.flowAgents
@@ -956,11 +1020,16 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	provider := t.flowProvider
 	defaultModel := models[clamp(t.flowCursor, 0, len(models)-1)]
 	backgroundModel := t.flowBackground
+	credMode := t.flowCredentialModePref()
+	if onlyModel {
+		// 仅换默认模型不涉及凭据写回，显式 inline 避免 auto 触发 env 决议。
+		credMode = llm.CredentialModeInline
+	}
 	sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 	return func() tea.Msg {
 		out := aiSwitchBatchResultMsg{onlyModel: onlyModel}
 		for _, agentID := range agents {
-			res, err := sm.Switch(agentID, provider, models, defaultModel, backgroundModel)
+			res, err := sm.Switch(agentID, provider, models, defaultModel, backgroundModel, credMode)
 			out.results = append(out.results, aiSwitchOutcome{agentID: agentID, out: res, err: err})
 		}
 		return out
@@ -1961,8 +2030,23 @@ func (t *aiTab) renderFlow() string {
 		if t.flowBackground != "" {
 			body += fmt.Sprintf("\nbackground: %s", t.flowBackground)
 		}
+		if !t.flowOnlyModel {
+			body += fmt.Sprintf("\ncredential: %s", credentialModeLabels[clamp(t.flowCredentialMode, 0, len(credentialModeLabels)-1)].label)
+		}
 		return modalBox(t.width, t.height, "confirm"+action, body,
 			"enter/y confirm · esc/n cancel")
+	case aiFlowSelectCredentialMode:
+		lines := make([]string, 0, len(credentialModeLabels)+1)
+		lines = append(lines,
+			mutedStyle().Render(truncateWidth("凭据写回方式（ADR-0031）：auto 按 agent 能力选引用或明文；", maxInt(t.width-10, 12))),
+			mutedStyle().Render(truncateWidth("env 强制环境变量引用；inline 强制明文写入配置文件。", maxInt(t.width-10, 12))),
+		)
+		for i, m := range credentialModeLabels {
+			label := truncateWidth(m.label+" — "+m.detail, maxInt(t.width-10, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowCredentialModeCursor, 0, len(credentialModeLabels)-1)))
+		}
+		title := fmt.Sprintf("choose credential mode — %s → %s", agent, t.flowProvider)
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
 	case aiFlowSelectBackground:
 		candidates := t.flowBackgroundCandidates()
 		lines := make([]string, 0, len(candidates)+2)
