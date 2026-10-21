@@ -245,7 +245,7 @@ Env Tab 和 Text Tab SHALL 默认显示原始存储值（含 `{{env:...}}`/`{{te
 
 ### Requirement: 全局跨类型搜索
 
-TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/LLM/MCP/Backup 数据搜索。搜索 MUST 只匹配标识字段（key/name、host alias/hostname、provider alias、MCP 档案 alias/command、backup 的 group/key/description），绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/LLM/MCP/Backup 结果跳转到对应 Tab 并定位光标）。
+TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SSH/LLM/MCP/Backup 数据搜索。搜索 MUST 只匹配非秘密标识与说明字段，与 CLI/MCP `metadata-search` 对齐：env/text/backup 的 group/key/条目 description/组 description；config 的 group/name/description/target path；host alias/hostname/group/tags/description；provider alias/description；MCP 档案 alias/command/description；backup 的 group/key/description。绝不匹配值、私钥内容、凭据或 MCP env 值。搜索结果 MUST 标识条目类型，并支持跳转定位（SSH/LLM/MCP/Backup 结果跳转到对应 Tab 并定位光标）。空输入时 overlay 可展示全量 inventory（与 CLI 强制 query 不同，属人机浏览）；一旦有输入，匹配规则与 CLI/MCP 一致（大小写不敏感；多 token AND）。
 
 #### Scenario: 触发全局搜索
 - **WHEN** 用户按 `S` 键
@@ -254,6 +254,10 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SS
 #### Scenario: 搜索结果按类型展示
 - **WHEN** 用户输入 `database` 且数据中存在匹配的 env key、text key、config name
 - **THEN** 结果列表显示所有匹配项，每项标注类型（Env/Text/Cfg）、分组（若适用）、key/name，值部分遮蔽（env 显示 `***`，text 显示 size，config 显示 target）
+
+#### Scenario: description 可命中
+- **WHEN** 用户输入某串仅出现在某 env 条目 description 中
+- **THEN** 该 env 条目出现在结果中
 
 #### Scenario: SSH 与 LLM 结果
 - **WHEN** 用户输入某 host alias 或 provider alias 的前缀
@@ -264,7 +268,7 @@ TUI SHALL 提供全局搜索 overlay（触发键 `S`），跨 Env/Text/Config/SS
 - **THEN** 结果显示对应 MCP 条目，`enter` 后跳转到 MCP Tab 并选中该档案
 
 #### Scenario: 搜索不匹配值
-- **WHEN** 用户输入某个仅出现在值中而不在任何 key/name 中的字符串
+- **WHEN** 用户输入某个仅出现在值中而不在任何可匹配字段中的字符串
 - **THEN** 结果列表为空（显示"无匹配"），不返回任何值匹配
 
 #### Scenario: 搜索不返回秘密

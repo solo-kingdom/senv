@@ -94,6 +94,10 @@ func TestSearchGathersKeysAndNamesOnly(t *testing.T) {
 func TestSearchNeverMatchesValues(t *testing.T) {
 	mgrs := newTestManagers(t)
 	mgrs.Env.Set("default", "API_KEY", "topsecret-value")
+	note := "payment gateway note"
+	if err := mgrs.Env.SetWithDescription("default", "PAY", "topsecret-value", &note); err != nil {
+		t.Fatal(err)
+	}
 
 	s := newSearchTab(mgrs)
 	s.gathered = gatherAll(t, mgrs)
@@ -110,6 +114,13 @@ func TestSearchNeverMatchesValues(t *testing.T) {
 	s.refilter()
 	if len(s.results) != 1 || s.results[0].key != "API_KEY" {
 		t.Errorf("key search failed: %+v", s.results)
+	}
+
+	// Env description is matchable (aligned with CLI/MCP).
+	s.input = "payment"
+	s.refilter()
+	if len(s.results) != 1 || s.results[0].key != "PAY" {
+		t.Errorf("env description search failed: %+v", s.results)
 	}
 
 	if err := mgrs.Backup.SetWithDescription("default", "DUMP", "topsecret-backup-body", ptr("weekly dump")); err != nil {

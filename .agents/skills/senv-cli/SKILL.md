@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、备份块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.26"
+  version: "1.27"
 ---
 
 # senv：agent 使用指南
@@ -17,8 +17,8 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 25 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
-2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 26 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，以及元数据检索 `senv_search`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
+2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。查找条目优先 `senv search`（与 `senv_search` 同语义）。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi|omp>`（omp 别名 `oh-my-pi` 仅查找接受）。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
 
@@ -56,7 +56,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。TUI 界面语言为英文；底栏展开当前场景的操作快捷键（如 `e edit · n new · d delete · / filter · ?`），随焦点栏/表单/确认/向导/过滤切换；导航键与次要动词不进底栏，完整键位按分组列在 `?` 总览里。Search/`?` overlay 打开时底栏改用 overlay 自身键位。
 
-- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略；顺序 Env、Text、Config、SSH、KeyPair、LLM、MCP、History、Audit、Backup——Backup 恒在末位，全部注册时它是第 10 个、无数字键，用 `Tab` 到达）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（只匹配标识：key/name、host alias/hostname/group/tags、provider alias、MCP 档案 alias/command、backup 的 group/key/description，不匹配值/私钥/凭据/MCP env 值/backup 正文）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略；顺序 Env、Text、Config、SSH、KeyPair、LLM、MCP、History、Audit、Backup——Backup 恒在末位，全部注册时它是第 10 个、无数字键，用 `Tab` 到达）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（与 `senv search` 同字段表：key/name、description、host alias/hostname/group/tags、provider alias、MCP alias/command 等，不匹配值/私钥/凭据/MCP env 值/backup 正文；空输入可浏览全 inventory）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
 - Env/Text/Backup/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text/Backup 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text/backup，**必填说明**）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Backup 同 Text 但无 `D`；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。
 - 多选：条目栏 `space` 勾选/取消、`a` 全选当前过滤可见集（再按取消）；选择跨过滤持久，面板标题提示「已选 N（M 被过滤）」。批量安全动词（Env/Text/SSH `d`、Text/SSH `x`、Config `i`/`u`、MCP `x`/`u`/`X`/`U`）作用于多选集，走既有确认/计划流；选择集为空回落游标单条；`e`/`r`/`m`/详情需单选；提交后清空选择集。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；Env `n` 新建与 Config `n` 创建也走结构化表单（Config 收集名称/源路径/target/分组/描述；Env 的 value 为遮蔽输入，说明可选），创建失败可在表单内修正。重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。Host/KeyPair/AI Provider 表单同样有可选说明。
@@ -78,8 +78,9 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **text import/export**：`senv text import <key|group:key> --file <path>` 把文件内容加密入库（upsert：已存在 key 直接覆盖并刷新 `updated_at`，无确认提示；源文件保持不动；`--file` 必填，缺失即报错，不回落 stdin/编辑器）。`senv text export <key|group:key> --path <path>` 把明文值原子落盘，固定 0600（覆盖既有宽松文件会收紧；目标或父目录为符号链接时拒绝；内容逐字节原样导出、**不经引用解析**——要解码导出用 `text get -d -o`）；成功只打印路径、不回显明文；导出是读取面，不新增审计事件。export 写出明文文件，执行前先向用户确认。
 - **backup**：独立 kind（`backups/{group}/{key}.enc`），不与 text 混用。上限 `MaxBackupSize`（512KB，只计 value 明文，超限拒绝不截断）。`senv backup set/get/list/delete/import/export` 与 `backup group list/add/delete`；`backup get` **无** `-d/--decode/--loose`；`backup list` 只显示 key、大小、时间与说明，不含正文。set 输入优先级与 text 相同（`--file` > stdin > 参数 > 编辑器）；import/export 语义与 text 对齐（`--file`/`--path` 必填、upsert 无确认、0600、拒符号链接、成功只打印路径）。backup 无 activate/deactivate，也不参与引用。
-- **输出默认含明文值（最小暴露的前提）**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`；**没有只列键名的开关**。`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。取密钥三条硬规则：
-  1. **只要键名时不碰值**：列组用 `senv env group list`；列组内 key 用 `senv env list -g <g> | grep -oE '^[A-Z0-9_]+'`——只留行首键名，**永不把 `env list` / `senv_env_list` 的原始输出送进会话**；text/backup 的 `list` 本身不含值，可直接看。
+- **元数据搜索（优先于全量 list）**：`senv search <query>` / MCP `senv_search` 跨 env/text/backup/config/ssh/llm/mcp 做模糊检索（大小写不敏感 substring，多 token AND）。只匹配标识与 description 等非秘密字段，**结果永不含 value**；空 query 拒绝；默认 `--limit 20`，可 `--kind env,text`、`--json`。命中后再按需 `get` 单条取值。TUI `S` 与此字段表对齐（空输入仍可浏览 inventory）。
+- **输出默认含明文值（最小暴露的前提）**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`。定位条目优先用 `senv search` / `senv_search`，不要为找键去拉全量 `senv_env_list`。`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。取密钥三条硬规则：
+  1. **只要键名/元数据时不碰值**：用 `senv search <query>`（或 MCP `senv_search`）；列组用 `senv env group list`。**永不把 `env list` / `senv_env_list` 的原始输出送进会话**；text/backup 的 `list` 本身不含值，可直接看。
   2. **取值留在变量内、同一命令消费完，不回显**：`TOKEN="$(senv env get g:KEY)" && curl -H "Authorization: Bearer $TOKEN" …`。需要判断格式时只打印派生信息（`${#TOKEN}` 长度、字段名、掩码后前缀），且掩码必须同时覆盖两种值块形态——URI 内嵌凭据（`scheme://user:pass@host`）与多行块「一行一个字段」（`password: xxx`），两种形态都要在掩码命令里，例如：
      `sed -E -e 's#(://[^:/@]+:)[^@[:space:]]+@#\1***@#g' -e 's#^((user(name)?|pass(word)?|token|secret|api[_-]?key|secret[_-]?key|access[_-]?key|authorization|credential)s?[[:space:]]*[:=][[:space:]]*).*$#\1***#i'`。
      **掩码前先确认值块是哪种形态**；不确定就只打印长度/字段名，不打印值。

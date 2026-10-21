@@ -55,8 +55,11 @@ func TestSearchCoversSSHHostsAndProviders(t *testing.T) {
 			sawProvider = true
 		case r.resultType == typeMCP && r.key == "github":
 			sawMCP = true
-			if r.extra != "npx" || r.preview != "npx" {
+			if r.preview != "npx" {
 				t.Fatalf("unexpected MCP preview: %+v", r)
+			}
+			if !strings.Contains(r.extra, "npx") || !strings.Contains(r.extra, "github") {
+				t.Fatalf("MCP match haystack missing alias/command: %+v", r)
 			}
 		}
 	}

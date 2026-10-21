@@ -66,6 +66,7 @@ func TestAllMCPToolsGuarded(t *testing.T) {
 	assertMCPToolDenied(t, "ssh_host_list", (*managers).sshHostList, struct{}{})
 	assertMCPToolDenied(t, "ssh_host_get", (*managers).sshHostGet, configNameInput{Name: "web"})
 	assertMCPToolDenied(t, "mcp_server_list", (*managers).mcpServerList, struct{}{})
+	assertMCPToolDenied(t, "senv_search", (*managers).search, searchInput{Query: "x"})
 }
 
 func TestMCPRevocationNoSideEffects(t *testing.T) {

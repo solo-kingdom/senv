@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/wii/senv/internal/search"
 )
 
 // Search result types (kept here so styles.go and search.go share them).
@@ -46,12 +48,14 @@ type searchResult struct {
 	extra string
 }
 
-// matchable returns the identifier text this result may be matched against.
+// matchable returns the identifier/description haystack. When extra is set it
+// is the full match text from internal/search (already includes key); otherwise
+// only the key is matched.
 func (r searchResult) matchable() string {
-	if r.extra == "" {
-		return r.key
+	if r.extra != "" {
+		return r.extra
 	}
-	return r.key + " " + r.extra
+	return r.key
 }
 
 func newSearchTab(mgr Managers) *searchTab {
@@ -95,105 +99,33 @@ type searchCloseMsg struct{}
 
 // --- gathering ---
 
-// gather collects every key/name across all data types. Only keys/names are
-// read; values are intentionally never inspected or stored.
+// gather collects metadata across all data types via internal/search so CLI,
+// MCP and TUI share the same field table. Values are never stored on hits.
 func (s *searchTab) gather() tea.Cmd {
 	mgr := s.mgr
 	return func() tea.Msg {
-		var all []searchResult
-		// Env: iterate groups, collect keys.
-		if mgr.Env != nil {
-			if vars, _, err := envSnapshot(mgr); err == nil {
-				for g, keys := range vars {
-					for k := range keys {
-						all = append(all, searchResult{
-							resultType: typeEnv, group: g, key: k, preview: "***",
-						})
-					}
-				}
+		items := search.Gather(search.Sources{
+			Env:    mgr.Env,
+			Text:   mgr.Text,
+			Backup: mgr.Backup,
+			Config: mgr.Config,
+			SSH:    mgr.SSH,
+			LLM:    mgr.LLM,
+			MCP:    mgr.MCP,
+		})
+		all := make([]searchResult, 0, len(items))
+		for _, it := range items {
+			preview := it.Preview
+			if it.Kind == search.KindConfig {
+				preview = truncPath(it.Preview)
 			}
-		}
-		// Text: iterate groups, collect keys (preview = size, not content).
-		// 走单趟快照 memo：与 text tab 共享一次解密结果，避免逐组 List 的
-		// N 次排它锁；条目级失败的组天然跳过（与逐组 List 失败 continue 等价）。
-		if mgr.Text != nil {
-			if snap, err := textSnapshot(mgr); err == nil {
-				for _, g := range snap.Groups {
-					for _, ti := range snap.Items[g.Name] {
-						all = append(all, searchResult{
-							resultType: typeText, group: g.Name, key: ti.Key,
-							preview: fmt.Sprintf("%db", ti.Size),
-						})
-					}
-				}
-			}
-		}
-		if mgr.Backup != nil {
-			if snap, err := backupSnapshot(mgr); err == nil {
-				for _, g := range snap.Groups {
-					for _, bi := range snap.Items[g.Name] {
-						all = append(all, searchResult{
-							resultType: typeBackup, group: g.Name, key: bi.Key,
-							preview: fmt.Sprintf("%db", bi.Size),
-							extra:   strings.TrimSpace(g.Name + " " + bi.Description),
-						})
-					}
-				}
-			}
-		}
-		// Config: flat list of names (preview = target path, not content).
-		// Group is carried so the jump can select the sidebar group too.
-		if mgr.Config != nil {
-			if cfgs, err := mgr.Config.List(""); err == nil {
-				for _, c := range cfgs {
-					all = append(all, searchResult{
-						resultType: typeConfig, group: c.Group, key: c.Name, preview: truncPath(c.TargetPath),
-					})
-				}
-			}
-		}
-		// SSH: host aliases and hostnames are identifiers; group and tags are
-		// matched the same way (D5 四维匹配). Keypair material is never loaded
-		// by this path (ListHosts returns metadata only).
-		if mgr.SSH != nil {
-			if hosts, err := mgr.SSH.ListHosts(); err == nil {
-				for _, h := range hosts {
-					extra := h.Hostname
-					if h.Group != "" {
-						extra += " " + h.Group
-					}
-					if len(h.Tags) > 0 {
-						extra += " " + strings.Join(h.Tags, " ")
-					}
-					all = append(all, searchResult{
-						resultType: typeSSH, key: h.Alias, extra: extra,
-						preview: sshPreview(h.User, h.Hostname, h.Port),
-					})
-				}
-			}
-		}
-		// LLM: provider aliases only. Credentials live in the vault and are
-		// referenced by name, so they are structurally out of reach here.
-		if mgr.LLM != nil {
-			if providers, err := mgr.LLM.ListProviders(); err == nil {
-				for _, p := range providers {
-					all = append(all, searchResult{
-						resultType: typeLLM, key: p.Alias,
-						preview: fmt.Sprintf("%d models", len(p.Models)),
-					})
-				}
-			}
-		}
-		// MCP: 档案 alias 与 command 是标识；List 只带 env 键名，值不进库存。
-		if mgr.MCP != nil {
-			if servers, err := mgr.MCP.List(); err == nil {
-				for _, s := range servers {
-					all = append(all, searchResult{
-						resultType: typeMCP, key: s.Alias, extra: s.Command,
-						preview: s.Command,
-					})
-				}
-			}
+			all = append(all, searchResult{
+				resultType: kindToResultType(it.Kind),
+				group:      it.Group,
+				key:        it.Key,
+				preview:    preview,
+				extra:      it.MatchText(),
+			})
 		}
 		sort.Slice(all, func(i, j int) bool {
 			if all[i].resultType != all[j].resultType {
@@ -205,6 +137,27 @@ func (s *searchTab) gather() tea.Cmd {
 			return all[i].key < all[j].key
 		})
 		return searchGatheredMsg{all: all}
+	}
+}
+
+func kindToResultType(k search.Kind) string {
+	switch k {
+	case search.KindEnv:
+		return typeEnv
+	case search.KindText:
+		return typeText
+	case search.KindBackup:
+		return typeBackup
+	case search.KindConfig:
+		return typeConfig
+	case search.KindSSH:
+		return typeSSH
+	case search.KindLLM:
+		return typeLLM
+	case search.KindMCP:
+		return typeMCP
+	default:
+		return string(k)
 	}
 }
 
@@ -251,15 +204,16 @@ func (s *searchTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	return s, nil
 }
 
-// refilter recomputes results from the gathered inventory using matchKey, which
-// only matches against the key/name field — values are structurally excluded.
+// refilter recomputes results from the gathered inventory. Empty input shows
+// the full inventory (human browse); non-empty input uses shared Matches
+// (token AND, identifiers/descriptions only).
 func (s *searchTab) refilter() {
-	if s.input == "" {
+	if strings.TrimSpace(s.input) == "" {
 		s.results = s.gathered
 	} else {
 		out := make([]searchResult, 0, len(s.gathered))
 		for _, r := range s.gathered {
-			if matchKey(r.matchable(), s.input) {
+			if search.Matches(r.matchable(), s.input) {
 				out = append(out, r)
 			}
 		}
@@ -326,17 +280,6 @@ func emptyHint(input string) string {
 		return ""
 	}
 	return "(input only appears in values?)"
-}
-
-// sshPreview renders the non-sensitive connection summary shown for a host hit.
-func sshPreview(user, hostname string, port int) string {
-	if user != "" {
-		hostname = user + "@" + hostname
-	}
-	if port != 0 {
-		hostname += fmt.Sprintf(":%d", port)
-	}
-	return hostname
 }
 
 // typeBadge renders a colored type label.

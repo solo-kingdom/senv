@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	mcpserver "github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/search"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
@@ -284,6 +286,12 @@ type groupNameInput struct {
 
 type configNameInput struct {
 	Name string `json:"name" jsonschema_description:"config file name"`
+}
+
+type searchInput struct {
+	Query string `json:"query" jsonschema_description:"required search query (identifiers and descriptions only; never matches values)"`
+	Kind  string `json:"kind,omitempty" jsonschema_description:"optional comma-separated kinds: env,text,backup,config,ssh,llm,mcp"`
+	Limit int    `json:"limit,omitempty" jsonschema_description:"max hits (default 20)"`
 }
 
 // --- Handlers ---------------------------------------------------------------
@@ -715,6 +723,36 @@ func (m *managers) groupDeactivate(_ context.Context, _ *mcp.CallToolRequest, in
 	return textResult(map[string]string{"status": "deactivated", "name": in.Name})
 }
 
+func (m *managers) search(_ context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, emptyOut, error) {
+	m.pullBeforeRead()
+	limit := in.Limit
+	if limit == 0 {
+		limit = search.DefaultLimit
+	}
+	var kinds []search.Kind
+	if strings.TrimSpace(in.Kind) != "" {
+		parsed, err := search.ParseKinds([]string{in.Kind})
+		if err != nil {
+			return errResult(err)
+		}
+		kinds = parsed
+	}
+	src := search.Sources{
+		Env:    m.env,
+		Text:   m.text.Manager,
+		Backup: m.backup,
+		Config: m.config,
+		SSH:    m.ssh,
+		LLM:    m.llm,
+		MCP:    m.mcpServer,
+	}
+	res, err := search.Run(search.Gather(src), in.Query, kinds, limit)
+	if err != nil {
+		return errResult(err)
+	}
+	return textResult(res)
+}
+
 // --- Registration -----------------------------------------------------------
 
 // toolDef pairs an MCP Tool descriptor with enough info to also list it offline.
@@ -751,6 +789,7 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool("llm_provider_list", authorize, autoPull, (*managers).llmProviderList))
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool("llm_agent_status", authorize, autoPull, (*managers).llmAgentStatus))
 	mcp.AddTool(s, &mcp.Tool{Name: "mcp_server_list", Description: "List stored MCP server profiles (read-only; alias/transport/description only, no env values)."}, guardMCPTool("mcp_server_list", authorize, autoPull, (*managers).mcpServerList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_search", Description: "Fuzzy-search vault metadata across env/text/backup/config/ssh/llm/mcp. Returns identifiers and descriptions only — never values."}, guardMCPTool("senv_search", authorize, autoPull, (*managers).search))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -781,6 +820,7 @@ func toolCatalogue() []toolDef {
 		{"llm_provider_list", "List saved LLM provider profiles (read-only; credential references only)."},
 		{"llm_agent_status", "Show each coding agent's current provider/model pointer (read-only)."},
 		{"mcp_server_list", "List stored MCP server profiles (read-only; no env values)."},
+		{"senv_search", "Fuzzy-search vault metadata (identifiers/descriptions only; never values)."},
 	}
 }
 
