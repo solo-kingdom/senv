@@ -34,7 +34,7 @@ func TestAuditTabRendersDatesAndOutcomes(t *testing.T) {
 	tab.SetSize(80, 20)
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 	view := tab.View()
-	if !strings.Contains(view, "2026-09-06") || !strings.Contains(view, "op_env") || !strings.Contains(view, "✓") || !strings.Contains(view, "✗") {
+	if !strings.Contains(view, "2026-09-06") || !strings.Contains(view, "op_env") || !strings.Contains(view, "OK") || !strings.Contains(view, "ERR") {
 		t.Errorf("audit view should render dates/types/outcomes, got %q", view)
 	}
 }

@@ -169,7 +169,7 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		if msg.err != nil {
 			return t, func() tea.Msg { return errMsg{err: msg.err} }
 		}
-		t.flash = "✓ restored and pushed (new revision created)"
+		t.flash = "OK restored and pushed (new revision created)"
 		t.mode = historyModeEntry
 		t.loaded = true
 		return t, t.load(t.entryID)

@@ -246,9 +246,9 @@ func (t *auditTab) View() string {
 		filterLabel, len(rows)), innerW)
 	lines := make([]string, 0, len(rows))
 	for i, e := range rows {
-		outcome := "✓"
+		outcome := "OK"
 		if !e.Success {
-			outcome = "✗"
+			outcome = "ERR"
 		}
 		line := fmt.Sprintf("%s  %-18s %-8s %s",
 			e.Timestamp.Local().Format("2006-01-02 15:04:05"),
@@ -265,7 +265,7 @@ func (t *auditTab) View() string {
 	var extraRows []string
 	if t.skipped > 0 {
 		extraRows = append(extraRows, "", truncateWidth(
-			fmt.Sprintf("⚠ skipped %d unparseable records", t.skipped), innerW))
+			fmt.Sprintf("WARN skipped %d unparseable records", t.skipped), innerW))
 	}
 	if t.filterBox.Active() {
 		extraRows = append(extraRows, "", truncateWidth(

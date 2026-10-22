@@ -16,17 +16,17 @@ import (
 // (the pane slot's height, borders included) so a modal can never push the
 // frame off-screen.
 func modalBox(w, h int, title, body, hint string) string {
-	head := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Render("» " + title)
+	head := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render("» " + title)
 	parts := []string{head}
 	if body != "" {
 		parts = append(parts, body)
 	}
 	if hint != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(hint))
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorMuted).Render(hint))
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(colorAccent)).
+		BorderForeground(colorDim).
 		Padding(0, 1).
 		Width(maxInt(w-2, 8)).
 		Height(maxInt(h, 2)).

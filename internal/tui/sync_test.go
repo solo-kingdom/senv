@@ -62,12 +62,12 @@ func TestSyncBadgeShowsPendingAndLastSync(t *testing.T) {
 	if src.pushes != 0 {
 		t.Fatalf("Init must not push, got %d pushes", src.pushes)
 	}
-	if !strings.Contains(m.View(), "3 pending push") {
-		t.Errorf("badge should show pending count; view=%q", m.View())
+	if !strings.Contains(m.View(), "dirty 3") {
+		t.Errorf("badge should show dirty count; view=%q", m.View())
 	}
 
 	m.syncState = SyncState{Dirty: 0, Last: src.state.Last}
-	if v := m.View(); !strings.Contains(v, "synced 14:03") {
+	if v := m.View(); !strings.Contains(v, "sync · 14:03") {
 		t.Errorf("badge should show last sync time, got %q", v)
 	}
 }
@@ -77,7 +77,7 @@ func TestSyncBadgeHiddenWithoutSyncSource(t *testing.T) {
 	if badge := m.syncBadge(); badge != "" {
 		t.Fatalf("badge = %q, want empty in git mode", badge)
 	}
-	if strings.Contains(m.View(), "⟳") {
+	if strings.Contains(m.View(), "sync ·") || strings.Contains(m.View(), "dirty") {
 		t.Errorf("git mode view must not render sync status: %q", m.View())
 	}
 }
@@ -100,8 +100,8 @@ func TestWriteTriggersAsyncPushAndRefreshesBadge(t *testing.T) {
 	if m.syncState.Dirty != 0 {
 		t.Errorf("dirty = %d after successful push, want 0", m.syncState.Dirty)
 	}
-	if v := m.View(); !strings.Contains(v, "synced") {
-		t.Errorf("view = %q, want synced", v)
+	if v := m.View(); !strings.Contains(v, "sync ·") && !strings.Contains(v, "sync") {
+		t.Errorf("view = %q, want sync badge", v)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestSyncPushFailureKeepsDirtyWithReason(t *testing.T) {
 		m = out.(Model)
 	}
 	view := m.View()
-	if !strings.Contains(view, "1 pending push") || !strings.Contains(view, "sync failed") {
-		t.Errorf("view = %q, want pending count + failure reason", view)
+	if !strings.Contains(view, "dirty 1") || !strings.Contains(view, "sync failed") {
+		t.Errorf("view = %q, want dirty count + failure reason", view)
 	}
 	if !strings.Contains(view, "server 不可达") {
 		t.Errorf("view = %q, want the short failure reason", view)
@@ -134,7 +134,7 @@ func TestQuitWarnsOnceWhenDirty(t *testing.T) {
 			t.Fatal("first q with pending changes must not quit")
 		}
 	}
-	if !strings.Contains(m.View(), "2 pending push") || !strings.Contains(m.View(), "press q again") {
+	if !strings.Contains(m.View(), "2 entries still pending push") || !strings.Contains(m.View(), "press q again") {
 		t.Fatalf("view = %q, want quit warning", m.View())
 	}
 

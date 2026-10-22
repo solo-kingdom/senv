@@ -1241,7 +1241,7 @@ func (t *envTab) renderItems(width, height int) string {
 			keyLabel = "[x] " + keyLabel
 		}
 		if failed {
-			keyLabel = "⚠ " + keyLabel
+			keyLabel = "! " + keyLabel
 		}
 		// Leave 2 cols for the cursor marker so Width-wrap cannot inflate the
 		// pane. 预算按显示列（lipgloss.Width）算：CJK 键名/值 1 rune = 2 列，

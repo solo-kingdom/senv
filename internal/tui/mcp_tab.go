@@ -1491,7 +1491,7 @@ func mcpUnexportAuditTarget(plan *mcp.UnexportPlan, alias string) string {
 
 func (t *mcpTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("MCP") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
+		return paneTitleStyle.Render("MCP") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1584,7 +1584,7 @@ func (t *mcpTab) serverLines(width int) []string {
 func (t *mcpTab) agentLines(width int) []string {
 	lines := make([]string, 0, len(t.status)+1)
 	if t.warning != "" {
-		lines = append(lines, mutedStyle().Render(truncateWidth("⚠ "+t.warning, width)))
+		lines = append(lines, mutedStyle().Render(truncateWidth("WARN "+t.warning, width)))
 	}
 	for i, row := range t.status {
 		line := fmt.Sprintf("%s · %s", row.ID, row.State)

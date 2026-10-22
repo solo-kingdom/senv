@@ -1190,7 +1190,7 @@ func TestAITabAgentRowShowsModelCountAndDrift(t *testing.T) {
 		t.Fatalf("EditProvider: %v", err)
 	}
 	runAITabLoad(t, tab)
-	if view := tab.View(); !strings.Contains(view, "main / m1 (2 models) ⚠") {
+	if view := tab.View(); !strings.Contains(view, "main / m1 (2 models) !") {
 		t.Fatalf("drift marker missing:\n%s", view)
 	}
 }
