@@ -66,7 +66,7 @@ func TestSetDescriptionTooLong(t *testing.T) {
 	mgr, _ := setupTestTextManager(t)
 	tooLong := strings.Repeat("a", storage.MaxDescriptionBytes+1)
 	if err := mgr.SetWithDescription("default", "DUMP", "body", &tooLong); err == nil {
-		t.Fatal("description over 2048 bytes should fail")
+		t.Fatal("description over MaxDescriptionBytes should fail")
 	}
 	if _, err := mgr.Get("default", "DUMP"); err == nil {
 		t.Fatal("oversized description must not create the entry")

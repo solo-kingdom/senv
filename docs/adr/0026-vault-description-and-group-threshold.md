@@ -6,7 +6,7 @@ env 组同时承担「同名变量换哪一套值」和「侧栏分类」；用�
 
 ## 决策
 
-1. **说明**是人和 agent 读的同一段短纯文本（约 2KB、无 Markdown、不准写密钥），随 vault 同步。贴在全部配置源（env/text/config 条目、Host、KeyPair、LLM Provider 档案、MCP Server 档案）以及 env/text 分组上。config 与 MCP 档案已有该字段则对齐规则，不另开字段。LLM 说明只在 Provider 档案上，不复用模型目录文案。本机状态（当前指向、导出状态）不贴说明。存量不强制回填；list 必带说明。
+1. **说明**是人和 agent 读的同一段短纯文本（最多 8KB UTF-8、无 Markdown、不准写密钥），随 vault 同步。贴在全部配置源（env/text/config 条目、Host、KeyPair、LLM Provider 档案、MCP Server 档案）以及 env/text 分组上。config 与 MCP 档案已有该字段则对齐规则，不另开字段。LLM 说明只在 Provider 档案上，不复用模型目录文案。本机状态（当前指向、导出状态）不贴说明。存量不强制回填；list 必带说明。上限由最初的 2KB 提到 8KB（`MaxDescriptionBytes`），仍 fail-closed 拒绝超限写入。
 2. **env/text 写得贵**：`set` 不再在组不存在时自动建组；新建组（CLI/TUI/MCP）必填说明。MCP 仍可 `group add`。组名约定只写进 agent skill，软件不校验前缀。
 3. **两种用法，仍是一个 Group**：
    - **变体组**：装外部工具按名读的契约 key，同名不同值，靠 activate 切换；数量 = 场景数。
