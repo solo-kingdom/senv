@@ -27,6 +27,10 @@ const (
 	MaxMetadataBlobSize = 64 * 1024
 )
 
+// MaxSkillCiphertext 是 kind=skill 条目（加密 tar 的 base64 密文）的单条上限：
+// 明文 1MiB 经 AEAD + base64 后约 1.4MiB，留出余量取 1.5MiB。其它 kind 不变。
+const MaxSkillCiphertext = 1536 * 1024
+
 // 条目标识字段长度上限：server 侧独立防御，防止超长标识膨胀索引、日志与
 // 请求体。客户端的字符集校验（internal/storage/validate.go）与此互补。
 const (
@@ -419,6 +423,14 @@ func nextRevision(ctx context.Context, tx pgx.Tx, vaultID int64) (int64, error) 
 	return seq, err
 }
 
+// maxCiphertextFor 返回 kind 对应的单条密文上限；仅 skill 放宽，其余沿用默认。
+func maxCiphertextFor(kind string) int {
+	if kind == syncschema.KindSkill {
+		return MaxSkillCiphertext
+	}
+	return MaxEntryCiphertext
+}
+
 // validateEntry 校验单条推送条目的标识字段与大小，返回客户端可理解的错误
 func validateEntry(e Entry) *ValidationError {
 	if len(e.Kind) == 0 {
@@ -436,8 +448,8 @@ func validateEntry(e Entry) *ValidationError {
 	if err := syncschema.ValidateIdentity(e.Kind, e.Grp, e.Key); err != nil {
 		return validationErrorf("条目标识无效: %s", err)
 	}
-	if !e.Deleted && len(e.Ciphertext) > MaxEntryCiphertext {
-		return validationErrorf("条目 %s/%s/%s 密文超过大小上限 %d 字节", e.Kind, e.Grp, e.Key, MaxEntryCiphertext)
+	if limit := maxCiphertextFor(e.Kind); !e.Deleted && len(e.Ciphertext) > limit {
+		return validationErrorf("条目 %s/%s/%s 密文超过大小上限 %d 字节", e.Kind, e.Grp, e.Key, limit)
 	}
 	return nil
 }

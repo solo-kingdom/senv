@@ -1,0 +1,9 @@
+schema: spec-driven
+created: 2026-10-22
+skip_specs: true
+goal: >
+  senv 添加 skills 配置用于私有 skill 同步。完成判据：在独立临时 HOME_A 的数据目录登记一条合成样例私有 skill；经
+  senv sync（git 或本地/测试 server；不用共享线上 senv-server）到达独立临时 HOME_B 的数据目录；在移走或删除
+  HOME_A 数据目录与 A 侧 fixture 工作目录之后，仅用 B 侧数据目录完成本机应用，使 HOME_B 下同时存在
+  .agents/skills/<id>/SKILL.md 与 .claude/skills/<id>/SKILL.md，且 frontmatter name 与登记 id 一致；公开编目仍走
+  dotf agents -c，本任务不改其全量安装路径。方案：~/code/tasks/ongoing/senv-skills-config/design/skills-config.md；批准：~/code/tasks/ongoing/senv-skills-config/approve/APPROVED.md

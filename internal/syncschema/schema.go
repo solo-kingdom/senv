@@ -24,6 +24,8 @@ const (
 	KindSSHKeypair  = "ssh_keypair"
 	KindBackup      = "backup"
 	KindBackupMeta  = "backup_meta"
+	KindSkill       = "skill"
+	KindSkillIndex  = "skill_index"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -68,7 +70,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := ValidateEnvKey(key); err != nil {
 			return invalid("invalid env key")
 		}
-	case KindText, KindBackup:
+	case KindText, KindBackup, KindSkill:
 		if grp == "" || key == "" {
 			return invalid("kind requires grp and key")
 		}
@@ -95,6 +97,10 @@ func ValidateIdentity(kind, grp, key string) error {
 	case KindConfigIndex:
 		if grp != "" || key != "" {
 			return invalid("config_index requires empty grp and key")
+		}
+	case KindSkillIndex:
+		if grp != "" || key != "" {
+			return invalid("skill_index requires empty grp and key")
 		}
 	case KindLLMProvider, KindMCPServer, KindSSHHost, KindSSHKeypair:
 		if grp != "" || key == "" {

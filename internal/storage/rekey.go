@@ -21,6 +21,7 @@ type RekeyResult struct {
 	EnvFiles       int
 	TextFiles      int
 	BackupFiles    int
+	SkillFiles     int
 	ConfigFiles    int
 	HostFiles      int
 	KeyPairFiles   int
@@ -29,7 +30,7 @@ type RekeyResult struct {
 }
 
 func (r *RekeyResult) Total() int {
-	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles
+	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles
 }
 
 type rekeyEntryKind uint8
@@ -43,6 +44,7 @@ const (
 	rekeyEntryKeyPair
 	rekeyEntryProvider
 	rekeyEntryMCPServer
+	rekeyEntrySkill
 )
 
 type rekeyEntry struct {
@@ -386,6 +388,8 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 			result.TextFiles++
 		case rekeyEntryBackup:
 			result.BackupFiles++
+		case rekeyEntrySkill:
+			result.SkillFiles++
 		case rekeyEntryConfig:
 			result.ConfigFiles++
 		case rekeyEntryHost:
@@ -470,6 +474,15 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 			}
 		}
 		return rekeyEntryBackup, nil
+	case len(segments) == 3 && segments[0] == SkillDirName:
+		if err := securefs.ValidateSegment(segments[1]); err != nil {
+			return 0, fmt.Errorf("invalid skill group: %w", err)
+		}
+		id := strings.TrimSuffix(segments[2], SkillFileSuffix)
+		if id == segments[2] || securefs.ValidateSegment(id) != nil {
+			return 0, fmt.Errorf("invalid skill entry identity %q", strings.Join(segments, "/"))
+		}
+		return rekeyEntrySkill, nil
 	case len(segments) == 2 && segments[0] == HostDirName:
 		alias := strings.TrimSuffix(segments[1], ConfigFileSuffix)
 		if alias == segments[1] || securefs.ValidateSegment(alias) != nil {

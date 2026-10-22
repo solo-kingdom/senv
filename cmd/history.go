@@ -148,6 +148,9 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 			return entry.Value
 		}
 		return contentPreviewString(plaintext)
+	case "skill":
+		// skill 正文是 tar 归档，只显示大小，不展开内容。
+		return fmt.Sprintf("<skill 归档，%d 字节>", len(plaintext))
 	case "env_meta", "text_meta", "backup_meta":
 		var meta storage.EnvGroupMeta
 		if err := json.Unmarshal(plaintext, &meta); err == nil {
@@ -161,7 +164,7 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 
 // decryptHistoryValue 按条目类型解密：config_index 同步条目本身是明文 JSON
 func decryptHistoryValue(h provider.HistoryVersion, key []byte) ([]byte, error) {
-	if h.Kind == "config_index" {
+	if h.Kind == "config_index" || h.Kind == "skill_index" {
 		return h.Ciphertext, nil
 	}
 	return crypto.Decrypt(key, string(h.Ciphertext))

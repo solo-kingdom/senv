@@ -18,6 +18,7 @@
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
+- ✅ **私有 Agent Skill** - `senv skill add/list/show/remove/apply` 把 skill 目录加密入库，随 `senv sync` 跨机；`apply` 支持全局/`--scope project`、多选 id / `--all`、`--target agents|claude`（与 dotf 公开编目互不干涉）
 
 ## 安装
 
@@ -415,7 +416,35 @@ senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 
 > 安全提示：写入 agent 配置会把 senv 的读/写能力交给该 agent 上下文中的模型。按需使用；敏感写入建议结合审计日志（`~/.log/senv/audit.log`）核查。
 
-### 11. Agent Skill（让 coding agent 学会用 senv）
+### 11. 管理私有 Agent Skill（senv skill）
+
+把一个 skill 目录（根下直接是 `SKILL.md`）加密入库，经 `senv sync` 带到别的机器，再写进本机 agent 的 skills 目录。适合不想公开的私有 skill；公开/半公开编目仍用 `dotf agents -c`，`senv skill` 不调用也不修改 dotf。
+
+```bash
+senv skill add my-skill --source ./my-skill --description "说明"   # SKILL.md 的 frontmatter name 必须等于 id
+senv skill list                          # 列出（--group 过滤）
+senv skill show my-skill                 # 元数据与文件清单，不打印内容
+senv sync                                # 与其它数据一起同步到别的机器
+senv skill apply --all --dry-run         # 先看计划（全选 vault）
+senv skill apply --all --yes             # 写入 ~/.agents/skills/<id> 与 ~/.claude/skills/<id>
+senv skill apply a b --yes               # 多选若干 id
+senv skill apply --all --scope project --target agents --yes  # 当前项目，只写 ./.agents/skills
+senv skill remove my-skill               # 只删 vault 条目，已 apply 的目录保留
+```
+
+要点：
+
+- **id 在整个 vault 内唯一**（跨分组不可重名）；已存在需 `--force`。符号链接与特殊文件会被拒绝。
+- **apply 选择器**：多个 id（多选）、`--group`、或 `--all`（全选）三选一。`--scope global|project`（默认 global）；`--target agents|claude|all`（可重复/逗号，默认 all）。
+- **apply 的冲突策略**：目标是符号链接、或没有 `.senv-owned` 标记的已有目录时只警告并跳过；带标记且内容有变化时，旧目录移到 `~/.local/state/senv/skill-apply/backups/`（不在 skills 目录里）再换入新版本。全局家目录取自操作系统，项目根取自当前工作目录，均不受 `--path` 影响。
+- **存量软链不会自动迁移**：已有的手工软链 skill 不会被接管，要纳入请自行 `skill add` 并先处理原软链。
+- **体积上限**：目录打包后明文不超过 1 MiB；`skill` 类条目在 server 上的密文上限是 1.5 MiB（其它类型仍是 512 KiB）。
+- **用 server provider 时，先升级 senv-server，再 `skill add` / `senv sync`**：旧 server 不认识 `skill` / `skill_index`，会拒绝整批 push（git provider 无此限制，发布顺序见 [docs/senv-server.md](docs/senv-server.md)）。
+- **批量提示**：一次 `senv sync` push 是一个请求，server 请求体默认上限 64 MB；满额 skill 一次攒到约 40 条以上可能触达上限，请分几次入库、同步。
+- `description` 写在明文索引里，不要放密钥；skill 目录内容本身是加密的。
+- 暂不支持 kiro / Cursor skills 根、`skill unapply`、TUI/MCP。
+
+### 12. Agent Skill（让 coding agent 学会用 senv）
 
 仓库内 `.agents/skills/senv-cli/` 是一份 [Agent Skills](https://skills.sh) 标准的 skill：教 coding agent 非交互、安全地驱动 senv CLI/MCP（会话规则、`group:key` 寻址、引用解析、禁止隐式建组、不进 argv 的凭据处理等）。用 [skills CLI](https://github.com/vercel-labs/skills) 一条命令装进支持的 agent（Claude Code、Codex、Cursor 等）：
 
