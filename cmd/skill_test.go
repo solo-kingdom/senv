@@ -37,18 +37,15 @@ func resetSkillFlags(t *testing.T) {
 	})
 }
 
-func TestSkillCommandSurfaceHasNoApply(t *testing.T) {
+func TestSkillCommandSurface(t *testing.T) {
 	names := map[string]bool{}
 	for _, c := range skillCmd.Commands() {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"add", "list", "show", "remove"} {
+	for _, want := range []string{"add", "list", "show", "remove", "apply"} {
 		if !names[want] {
 			t.Errorf("skill %s is missing", want)
 		}
-	}
-	if names["apply"] {
-		t.Error("skill apply belongs to the next slice and must not exist yet")
 	}
 }
 
