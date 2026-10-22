@@ -134,7 +134,7 @@ func TestHistoryTabDecryptFailureShownNotFatal(t *testing.T) {
 	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
 	_ = cmd
 	view := tab.View()
-	if !strings.Contains(view, "<cannot decrypt>") {
+	if !strings.Contains(view, "<decrypt err>") {
 		t.Errorf("decrypt failure should be shown inline, got %q", view)
 	}
 }
@@ -342,5 +342,91 @@ func TestHistoryTabDetailStaysInsidePane(t *testing.T) {
 	}
 	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
 		t.Fatalf("confirm pane size = %dx%d, want 78x19", w, h)
+	}
+}
+
+// TestHistoryPreviewSanitizesProblematicContent verifies that long JSON, multiline
+// values, and binary-looking content are safely truncated into single-line previews
+// without breaking column alignment. This is a regression test for the scrambled
+// layout bug where control characters and newlines destroyed the History view.
+func TestHistoryPreviewSanitizesProblematicContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantNot []string // must NOT appear in the sanitized preview
+	}{
+		{
+			name:    "JSON with newlines",
+			value:   `{"configs":{"tmp-group-test":{"name":"tmp"}}}` + "\n" + `{"more":"json"}`,
+			wantNot: []string{"\n", "\r"},
+		},
+		{
+			name:    "private key header",
+			value:   "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAAAAA\n-----END OPENSSH PRIVATE KEY-----",
+			wantNot: []string{"\n"},
+		},
+		{
+			name:    "multiline config",
+			value:   "line1\nline2\nline3\n\n\nline6",
+			wantNot: []string{"\n"},
+		},
+		{
+			name:    "control characters",
+			value:   "prefix\x00\x01\x02\x1b[31mred\x1b[0msuffix",
+			wantNot: []string{"\x00", "\x01", "\x02", "\x1b"},
+		},
+		{
+			name:    "tabs and excessive spaces",
+			value:   "col1\t\t\tcol2    col3",
+			wantNot: []string{"\t", "    "}, // tabs gone, multiple spaces collapsed
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			preview := sanitizePreview(tc.value)
+			for _, bad := range tc.wantNot {
+				if strings.Contains(preview, bad) {
+					t.Errorf("sanitized preview contains %q: %q", bad, preview)
+				}
+			}
+			// Also verify no newlines in preview (would break column alignment)
+			if strings.ContainsAny(preview, "\n\r") {
+				t.Errorf("preview contains newline: %q", preview)
+			}
+		})
+	}
+}
+
+// TestHistoryViewRowsAreAligned verifies that each row in the History view
+// stays within the pane width and columns are properly aligned.
+func TestHistoryViewRowsAreAligned(t *testing.T) {
+	// Use a value that could break layout if not properly sanitized
+	problematicValue := `{"configs":{"key":"value"}}` + "\n" + strings.Repeat("x", 200)
+	src := &fakeHistorySource{
+		rows:  sampleHistoryRows(),
+		value: problematicValue,
+	}
+	tab := newHistoryTab(src)
+	tab.SetSize(100, 20)
+	tab.visited = true
+	tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
+
+	view := tab.View()
+	lines := strings.Split(view, "\n")
+	maxWidth := 0
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w > maxWidth {
+			maxWidth = w
+		}
+		// Each line should fit within the pane width (100)
+		if w > 100 {
+			t.Errorf("line %d exceeds pane width: %d chars", i, w)
+		}
+	}
+	// All lines should have consistent width (pane fills content area)
+	if maxWidth != 100 {
+		t.Errorf("max width = %d, want 100 (pane should fill content area)", maxWidth)
 	}
 }

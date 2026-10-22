@@ -35,8 +35,10 @@ var (
 
 	// paneTitleStyle is the small in-pane heading rendered inside a column
 	// (e.g. "Groups (n)" or a list header) — not the tab strip container.
+	// Bold for better visual hierarchy against list rows.
 	paneTitleStyle = lipgloss.NewStyle().
 			Foreground(colorMuted).
+			Bold(true).
 			Padding(0, 1)
 
 	// tabStyle is an inactive tab label: muted foreground, no background.
