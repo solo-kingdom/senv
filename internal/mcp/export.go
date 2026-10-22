@@ -274,6 +274,26 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 		return failItems(items, err.Error())
 	}
 
+	// Heal stale ledger fingerprints on Skip: the file already matches the
+	// vault (that's why Plan chose Skip), but an older senv may have recorded
+	// a fingerprint that included a transport key this target no longer
+	// stores (e.g. Codex TypeKey flipped false). Without a heal, the next
+	// real content change would mis-classify the entry as Drift.
+	for i := range items {
+		item := &items[i]
+		if item.Action != ActionSkip {
+			continue
+		}
+		current, present := file.entry(item.Alias)
+		if !present {
+			continue
+		}
+		fp := current.Fingerprint()
+		if record, recorded := e.ledger.Get(agentID, item.Alias); !recorded || record.Fingerprint != fp {
+			e.ledger.Set(agentID, item.Alias, fp)
+		}
+	}
+
 	for i := range items {
 		item := &items[i]
 		if !writable(*item) {

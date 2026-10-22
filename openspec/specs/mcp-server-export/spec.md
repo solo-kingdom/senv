@@ -74,12 +74,17 @@
 #### Scenario: remote 档案写入 TOML 族
 
 - **WHEN** 导出 `http` 档案到 codex
-- **THEN** `[mcp_servers.<alias>]` 表按 codex 的 remote 键名矩阵写入，既有表内容保留
+- **THEN** `[mcp_servers.<alias>]` 表写入 `url`（以及有 header 时的 `http_headers`），MUST NOT 写入 `transport` 键（codex 由 `url` 推断 streamable HTTP），既有表内容保留
 
 #### Scenario: codex remote 档案携带 header
 
 - **WHEN** 导出 `http` 档案到 codex 且档案含 `headers`
 - **THEN** 写入 `http_headers = { Name = "Value" }`（codex 的原生键名，不是 JSON 族的 `headers`），既有表内容保留
+
+#### Scenario: codex 拒绝 sse 档案
+
+- **WHEN** 导出 `sse` 档案到 codex
+- **THEN** 计划中该条目标注 `error` 并说明原因，codex 配置文件不被修改
 
 #### Scenario: 目标不支持该传输报错
 

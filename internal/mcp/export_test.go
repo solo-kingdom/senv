@@ -556,6 +556,11 @@ func TestExportRemoteCodexTOML(t *testing.T) {
 	if strings.Contains(webBlock, "command") || strings.Contains(webBlock, "headers") {
 		t.Fatalf("codex remote block must not carry command/headers:\n%s", webBlock)
 	}
+	// Codex infers streamable HTTP from `url`; a `transport` key is not in its
+	// schema and must not be written (verified codex-cli 0.163).
+	if strings.Contains(webBlock, "transport") {
+		t.Fatalf("codex remote block must not carry transport:\n%s", webBlock)
+	}
 	if !strings.Contains(text, "[mcp_servers.other]") {
 		t.Fatalf("existing table was dropped:\n%s", text)
 	}
@@ -618,6 +623,9 @@ func TestExportRemoteHeadersToCodex(t *testing.T) {
 	if strings.Contains(text, "\nheaders ") {
 		t.Fatalf("codex block carries the JSON-family headers key:\n%s", text)
 	}
+	if strings.Contains(text, "transport") {
+		t.Fatalf("codex block must not carry transport:\n%s", text)
+	}
 	if !strings.Contains(text, "[mcp_servers.other]") {
 		t.Fatalf("existing table was dropped:\n%s", text)
 	}
@@ -631,6 +639,104 @@ func TestExportRemoteHeadersToCodex(t *testing.T) {
 	}
 	if len(second.Items) != 1 || second.Items[0].Action != ActionSkip {
 		t.Fatalf("codex re-export is not stable: %+v", second.Items)
+	}
+}
+
+func TestExportSSERejectedByCodex(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportSSE, "https://api.example.com/sse", nil)
+	target := targetFor(t, "codex")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := "[mcp_servers.other]\ncommand = \"uvx\"\n"
+	if err := os.WriteFile(cfgPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(plan.Items) != 1 || plan.Items[0].Action != ActionError {
+		t.Fatalf("plan items = %+v", plan.Items)
+	}
+	if !strings.Contains(plan.Items[0].Reason, "sse") {
+		t.Fatalf("error reason = %q; want sse mention", plan.Items[0].Reason)
+	}
+	report, err := exporter.Execute(plan)
+	if err != nil || report.Failures == 0 {
+		t.Fatalf("Execute = %+v, %v; want failures", report, err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("codex config changed despite the error:\n%s", after)
+	}
+}
+
+// Old senv wrote Codex remotes with TypeKey=true (fingerprint included
+// transport=http). After TypeKey flipped false, a Skip export must heal the
+// ledger so a later content change is ActionUpdate, not false Drift.
+func TestExportCodexLedgerHealAfterTypeKeyDrop(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addRemoteProfile(t, mgr, "web", storage.MCPTransportHTTP, "https://api.example.com/mcp", nil)
+	target := targetFor(t, "codex")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := testExporter(t, mgr, dir, ExporterOptions{})
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Poison the ledger with a pre-TypeKey fingerprint that still carried transport.
+	legacy := agentcfg.Server{Transport: "http", URL: "https://api.example.com/mcp"}
+	exporter.Ledger().Set("codex", "web", legacy.Fingerprint())
+	if err := exporter.Ledger().Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	healed := testExporter(t, mgr, dir, ExporterOptions{})
+	skipPlan, err := healed.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("re-Plan: %v", err)
+	}
+	if len(skipPlan.Items) != 1 || skipPlan.Items[0].Action != ActionSkip {
+		t.Fatalf("re-plan = %+v; want Skip", skipPlan.Items)
+	}
+	if _, err := healed.Execute(skipPlan); err != nil {
+		t.Fatalf("heal Execute: %v", err)
+	}
+
+	// Change the vault URL; with a healed ledger this must be Update, not Drift.
+	if err := mgr.Update("web", func(entry *storage.MCPServerEntry) error {
+		entry.URL = "https://api.example.com/mcp-v2"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated := testExporter(t, mgr, dir, ExporterOptions{})
+	changePlan, err := updated.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("change Plan: %v", err)
+	}
+	if len(changePlan.Items) != 1 || changePlan.Items[0].Action != ActionUpdate {
+		t.Fatalf("change plan = %+v; want Update (ledger must have healed)", changePlan.Items)
 	}
 }
 

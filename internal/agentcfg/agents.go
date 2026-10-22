@@ -182,16 +182,19 @@ func Supported() []Target {
 			ConfigPath:    func(home, _ string) string { return filepath.Join(home, ".codex", "config.toml") },
 			TOMLTableName: "mcp_servers",
 			Note:          "Restart Codex for the server to load.",
-			// Codex stores remote-entry headers under "http_headers" (verified
-			// against codex-cli 0.153.4: `codex mcp get` reports the parsed
-			// entries). "bearer_token_env_var" is codex's dedicated shorthand for
-			// a single Authorization: Bearer credential, but it names an env var
-			// rather than carrying a value, so senv writes the literal header and
-			// leaves that key to whoever wants it.
+			// Codex remote transport is inferred from keys (command → stdio,
+			// url → streamable HTTP); there is no `transport` field in
+			// config.toml (verified codex-cli 0.163 / mcp_types.rs). SSE is
+			// unsupported — exporting an sse profile must plan-error, not
+			// silently rewrite it as streamable HTTP. Headers live under
+			// "http_headers". "bearer_token_env_var" is Codex's env-var
+			// shorthand for Authorization: Bearer; senv still writes literal
+			// http_headers (ADR-0008 plaintext-on-export) and leaves that
+			// key to whoever wants it.
 			Remote: RemoteRender{
-				HTTP: true, SSE: true, TypeKey: true,
+				HTTP: true, SSE: false, TypeKey: false,
 				Headers: true, HeaderKey: "http_headers",
-				Reason: "codex remote entries are written as streamable HTTP tables",
+				Reason: "codex supports stdio and streamable HTTP (url) only; no SSE and no transport key",
 			},
 		},
 		{
