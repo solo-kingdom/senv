@@ -18,6 +18,7 @@
 - ✅ **SSH asset management** - Manage existing host profiles and private keys encrypted, with OpenSSH config export, key materialization on disk, local default keypair, host/keypair CRUD and linking in the TUI (keypair rename cascades to hosts), plus read-only MCP queries
 - ✅ **LLM model catalog** - `senv ai refresh` fetches the models.dev provider/model catalog and caches it locally for offline lookup (`senv ai catalog status`)
 - ✅ **LLM provider management** - `senv ai provider add/edit/rename/list/show/remove` stores AI service profiles encrypted, supports `--api-shape` (openai-chat / openai-responses / anthropic) to declare the API shape, keeps credentials in the vault, assembles model sets automatically from the models.dev catalog, and validates context windows when adding or editing models
+- ✅ **Private Agent Skills** - `senv skill add/list/show/remove/apply` encrypts skill directories into the vault, syncs them with `senv sync`, and applies them to `~/.agents/skills` and `~/.claude/skills` (independent of the dotf public catalog)
 
 ## Installation
 
@@ -421,7 +422,32 @@ Exposed tools (25 total): `senv_env_get/set/delete/list/export`, `senv_text_get/
 
 > Security note: writing into an agent's config hands senv's read/write capabilities to the model in that agent's context. Use as needed; for sensitive writes, check the audit log (`~/.log/senv/audit.log`).
 
-### 11. Agent Skill (teach coding agents how to use senv)
+### 11. Manage private Agent Skills (senv skill)
+
+Encrypt a skill directory (with `SKILL.md` directly at its root) into the vault, carry it to other machines with `senv sync`, then write it into the local agent skills directories. Meant for private skills; the public/semi-public catalog still goes through `dotf agents -c`, and `senv skill` neither calls nor modifies dotf.
+
+```bash
+senv skill add my-skill --source ./my-skill --description "notes"   # SKILL.md frontmatter name must equal the id
+senv skill list                          # list (filter with --group)
+senv skill show my-skill                 # metadata and file list; contents are not printed
+senv sync                                # sync to other machines together with the rest of the vault
+senv skill apply --all --dry-run         # print the plan first
+senv skill apply --all --yes             # write ~/.agents/skills/<id> and ~/.claude/skills/<id>
+senv skill remove my-skill               # removes the vault entry only; applied directories are kept
+```
+
+Notes:
+
+- **Ids are unique across the whole vault** (not per group); replacing needs `--force`. Symbolic links and special files are rejected.
+- **apply conflict policy**: if the target is a symbolic link, or an existing directory without a `.senv-owned` marker, it is skipped with a warning. A marked directory whose content changed is moved to `~/.local/state/senv/skill-apply/backups/` (outside the skills directories) before the new version is swapped in. The home directory comes from the OS and is not affected by `--path`.
+- **Existing symlinked skills are not migrated automatically**: they are never taken over. To bring one in, run `skill add` yourself and deal with the old symlink first.
+- **Size limits**: the packed directory is at most 1 MiB of plaintext; a `skill` entry may be at most 1.5 MiB of ciphertext on the server (other kinds stay at 512 KiB).
+- **With the server provider, upgrade senv-server first, then `skill add` / `senv sync`**: an old server does not know `skill` / `skill_index` and rejects the whole push batch (the git provider has no such constraint; see [docs/senv-server.md](docs/senv-server.md) for the release order).
+- **Batching**: one `senv sync` push is a single request and the server body limit defaults to 64 MB; stacking roughly 40+ full-size skills in one push may hit it, so add and sync in several rounds.
+- `description` lives in the plaintext index — keep secrets out of it; the directory contents themselves are encrypted.
+- v1 does not cover kiro directories, `skill unapply`, or TUI/MCP.
+
+### 12. Agent Skill (teach coding agents how to use senv)
 
 The repo ships an [Agent Skills](https://skills.sh)-standard skill at `.agents/skills/senv-cli/`: it teaches coding agents to drive the senv CLI/MCP safely and non-interactively (session rules, `group:key` addressing, reference resolution, no implicit group creation, credentials never in argv, etc.). Install it into supported agents (Claude Code, Codex, Cursor, …) with the [skills CLI](https://github.com/vercel-labs/skills):
 

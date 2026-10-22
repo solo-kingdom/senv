@@ -2,12 +2,12 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、备份块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.28"
+  version: "1.29"
 ---
 
 # senv：agent 使用指南
 
-senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
+senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config）、私有 Agent Skill（skill），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
 
 ## 维护约定（给开发本仓库的 agent）
 
@@ -152,13 +152,28 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - `command` 原样写入，不做绝对路径归一（`npx`/`uvx` 依赖 agent 自身 PATH）；不透传 `disabled`/`autoApprove` 等 agent 特有键。
 - MCP 工具只提供 `mcp_server_list`（alias/传输类型/描述，不含值、env 键名、url 与 headers）；导出、导入与写入走 CLI 或 TUI MCP Tab，不能通过 MCP 工具做。
 
+## 私有 Agent Skill（`senv skill`）
+
+把一个 skill 目录（根下直接是 `SKILL.md`）打成 ustar tar、加密入库，经 `senv sync` 跨机，再 `apply` 到本机 agent 的 skills 目录。独立 kind `skill`（索引 `skill_index.json` 在数据目录，明文，**description 可见**）；密文在 `<数据目录>/skills/<group>/<id>.enc`。用法以 `senv skill --help` 与各子命令 help 为准。
+
+- `senv skill add <id> --source <dir> [--group g] [--description "..."] [--force]`：`--source` 目录内容即 skill 根，`SKILL.md` 必须直接在其下；frontmatter `name` 必须等于 `<id>`；**id 在整个 vault 内全局唯一**（跨 group 也不可重名）；已存在需 `--force`（保留原 group）。拒绝符号链接与特殊文件（tar 只接受普通文件/目录，保留可执行位）。不要把密钥写进 skill 目录或 `--description`（description 明文入索引）。
+- `senv skill list [--group g] [--refresh]`、`senv skill show <id>`（元数据 + 文件清单，不打印内容）、`senv skill remove <id>`（别名 `rm`；**只删 vault 条目，已 apply 到本机的目录保留**）。server provider 下 `--refresh` 强制先同步再读。
+- `senv skill apply [<id> | --group g | --all] [--dry-run] [--yes] [--refresh]`：恰好一种选择器。落到 `$HOME/.agents/skills/<id>/` 与 `$HOME/.claude/skills/<id>/` 两个根（家目录只用 `os.UserHomeDir()`，**不受 `--path` 影响**）；不做 kiro 根。每个根的动作：`create` / `skip`（内容等价，比较排除 `.senv-owned`）/ `skip-conflict`（目标是符号链接，或是没有 `.senv-owned` 标记的已有目录：只 warning，不改，退出码仍为 0）/ `backup+overwrite`（带 `.senv-owned` 且内容变了：旧树移到 `$HOME/.local/state/senv/skill-apply/backups/`，在 skills 根之外，再换入新树）。成功后写空的 `.senv-owned`。
+- **agent 的做法**：先 `senv session status`；`apply` 会写本机家目录，先 `--dry-run` 给用户看计划，用户明确同意后再加 `--yes`（无 `--yes` 且 stdin 非交互会直接拒绝）。不要替用户 `--force` 覆盖已有 skill。
+- **与 dotf 的边界**：senv skill 只管**私有** skill 的加密同步与落盘；公开/半公开编目的全量安装仍走 `dotf agents -c`。`skill apply` 不调用、不修改 dotf，也不卸载任何 skill。同名目录若已被 dotf 或手工软链占用，senv 视为冲突并跳过，不接管。
+- **存量软链不自动迁移**：agent-data、transit 等现有「仓内目录 + 手工软链」的私有 skill 不会自动入库；要纳入需用户明确决定后手工 `skill add`，并先自行处理原软链（否则 apply 会 `skip-conflict`）。
+- **体积上限**：目录打包后明文 ≤ **1 MiB**；`skill` kind 密文单条上限 **1.5 MiB**（server 按 kind 判断；其它 kind 仍是 512 KiB）。超限报错点名上限，不截断。
+- **server provider 发布顺序**：`skill`/`skill_index` 在同步白名单里，白名单编进 senv-server 二进制。**必须先升级 senv-server 镜像，再让任何 client `skill add` / `senv sync` push**，否则旧 server 拒绝未知 kind，整批 push 失败（对齐 backup 的发布顺序，见 `docs/senv-server.md`）。git provider 无此约束。
+- **批量与请求体**：一次 `senv sync` push 是一个请求，server 请求体上限默认 64 MB。满额 skill（约 1.5 MiB）一次攒到约 40 条以上可能触达上限（413）；大批量入库请分几次 `skill add` + `senv sync`，client 目前不自动分批。
+- 其它：`skill` 写操作进本机审计（`op_skill`，只记标识不记内容）；`senv passwd`（rekey）、`doctor` 与孤儿数据检测都覆盖 `skills/`。v1 不做 `skill unapply`（要删本机目录自己手动删托管目录）、不做 TUI/MCP 暴露。
+
 ## server 模式
 
 git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
 - token 存储：server token 存 `<configPath>/server-token.json`（0600，机器本地），**不在 settings.json**——settings.json 会被 git provider 同步，token 绝不能进 git 远端；`.gitignore`（覆盖 `server-token.json`、`mcp-exports.json`）自动生成，`git add` 亦有排除路径规格兜底。旧版 settings 内嵌 token 在下次读取时自动迁移。
-- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖 env/text/backup/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用，含 `senv backup get`；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）；backup 冲突对齐 text（可解密对比，合并上限 512KB）。**含 `backup`/`backup_meta` 的 client 必须等 senv-server 镜像先升级**（白名单在 server 二进制里；发布顺序见 `docs/senv-server.md`，优先 iship 构建），否则整批 push 会被旧 server 拒绝。
+- 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖 env/text/backup/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）、私有 skill（`skills/<group>/<id>.enc` + `skill_index.json`，见「私有 Agent Skill」）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用，含 `senv backup get`；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）；backup 冲突对齐 text（可解密对比，合并上限 512KB）。**含 `backup`/`backup_meta`/`skill`/`skill_index` 的 client 必须等 senv-server 镜像先升级**（白名单在 server 二进制里；发布顺序见 `docs/senv-server.md`，优先 iship 构建），否则整批 push 会被旧 server 拒绝。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
 - senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：
@@ -212,6 +227,9 @@ senv mcp list && senv mcp get github     # list 不含值；get 展示完整字�
 senv mcp export --all --dry-run          # 先看计划与明文落盘点（remote 不被支持的目标标 error）
 senv mcp export --agent codex,cursor     # 确认后写入 agent 全局配置
 senv mcp unexport --agent codex          # 撤回（被本地改过的需逐条确认）
+senv skill add my-skill --source ./my-skill --description "..."   # 私有 skill 加密入库（SKILL.md name == id）
+senv skill list && senv skill show my-skill   # 不含内容
+senv skill apply --all --dry-run         # 先看计划；用户同意后加 --yes 写 ~/.agents/skills 与 ~/.claude/skills
 ```
 
 完整清单以 `senv --help` 与 `senv mcp list-tools` 为准；本文档滞后时以命令输出为准并回写修正。
