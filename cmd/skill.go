@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/session"
@@ -24,10 +26,12 @@ var (
 	skillForce       bool
 	skillListGroup   string
 
-	skillApplyGroup  string
-	skillApplyAll    bool
-	skillApplyDryRun bool
-	skillApplyYes    bool
+	skillApplyGroup   string
+	skillApplyAll     bool
+	skillApplyDryRun  bool
+	skillApplyYes     bool
+	skillApplyScope   string
+	skillApplyTargets []string
 )
 
 func getSkillManager() (*skill.Manager, error) {
@@ -163,10 +167,25 @@ var skillRemoveCmd = &cobra.Command{
 }
 
 var skillApplyCmd = &cobra.Command{
-	Use:   "apply [id | --group <group> | --all]",
-	Short: "Write skills from the vault into the local agent skills directories",
-	Long: `Expand skills from the vault into $HOME/.agents/skills/<id> and
-$HOME/.claude/skills/<id> (the home directory comes from the OS, not from --path).
+	Use:   "apply [id ...] | --group <group> | --all",
+	Short: "Write skills from the vault into local agent skills directories",
+	Long: `Expand skills from the vault into agent skills directories.
+
+Skill selection (exactly one):
+  apply <id> [<id> ...]   one or more skill ids (multi-select)
+  --group <group>         every skill in that group
+  --all                   every skill in the vault (select-all)
+
+Install location:
+  --scope global (default)  $HOME/.agents/skills and $HOME/.claude/skills
+  --scope project           ./.agents/skills and ./.claude/skills under the
+                            current working directory
+
+Target roots (optional; default all for the scope):
+  --target agents|claude|all   repeatable or comma-separated
+                               agents → .agents/skills
+                               claude → .claude/skills
+                               all    → both (select-all targets)
 
 Per target directory the plan is one of:
   create           target does not exist
@@ -179,7 +198,7 @@ Per target directory the plan is one of:
 
 Use --dry-run to print the plan only. Without --yes a confirmation is required.
 Skills are never uninstalled by this command; dotf is not involved.`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	RunE: runSkillApply,
 }
 
@@ -189,6 +208,8 @@ func init() {
 
 	skillApplyCmd.Flags().StringVar(&skillApplyGroup, "group", "", "apply every skill in this group")
 	skillApplyCmd.Flags().BoolVar(&skillApplyAll, "all", false, "apply every skill in the vault")
+	skillApplyCmd.Flags().StringVar(&skillApplyScope, "scope", "global", "install location: global ($HOME) or project (current directory)")
+	skillApplyCmd.Flags().StringArrayVar(&skillApplyTargets, "target", nil, "skills root to write: agents, claude, or all (repeatable / comma-separated; default all)")
 	skillApplyCmd.Flags().BoolVar(&skillApplyDryRun, "dry-run", false, "print the plan without writing anything")
 	skillApplyCmd.Flags().BoolVarP(&skillApplyYes, "yes", "y", false, "do not ask for confirmation")
 	addRefreshFlag(skillApplyCmd)
@@ -206,7 +227,7 @@ func init() {
 
 func runSkillApply(cmd *cobra.Command, args []string) error {
 	selectors := 0
-	if len(args) == 1 {
+	if len(args) > 0 {
 		selectors++
 	}
 	if skillApplyGroup != "" {
@@ -216,11 +237,30 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		selectors++
 	}
 	if selectors != 1 {
-		return fmt.Errorf("specify exactly one of: a skill id, --group <group>, --all")
+		return fmt.Errorf("specify exactly one of: skill id(s), --group <group>, --all")
+	}
+	scope := strings.ToLower(strings.TrimSpace(skillApplyScope))
+	if scope == "" {
+		scope = "global"
+	}
+	if scope != "global" && scope != "project" {
+		return fmt.Errorf("--scope must be global or project (got %q)", skillApplyScope)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	base := home
+	if scope == "project" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve project directory: %w", err)
+		}
+		base = cwd
+	}
+	roots, err := skill.ResolveRoots(skillApplyTargets)
+	if err != nil {
+		return err
 	}
 
 	autoPull(cmd, refreshRequested(cmd))
@@ -229,13 +269,21 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var ids []string
-	if len(args) == 1 {
-		entry, err := mgr.Get(args[0])
-		if err != nil {
-			return err
+	switch {
+	case len(args) > 0:
+		seen := map[string]bool{}
+		for _, raw := range args {
+			entry, err := mgr.Get(raw)
+			if err != nil {
+				return err
+			}
+			if seen[entry.ID] {
+				continue
+			}
+			seen[entry.ID] = true
+			ids = append(ids, entry.ID)
 		}
-		ids = []string{entry.ID}
-	} else {
+	default:
 		entries, err := mgr.List(skillApplyGroup)
 		if err != nil {
 			return err
@@ -250,7 +298,12 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	applier := skill.NewApplier(home)
+	applier := skill.NewApplier(base)
+	applier.Roots = roots
+	if scope == "project" {
+		// Keep backups out of the project tree so agents do not load them as skills.
+		applier.StateDir = filepath.Join(home, ".local", "state", "senv", "skill-apply")
+	}
 	archives := map[string][]byte{}
 	failures := 0
 	changes := 0

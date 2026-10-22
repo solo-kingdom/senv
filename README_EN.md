@@ -431,21 +431,24 @@ senv skill add my-skill --source ./my-skill --description "notes"   # SKILL.md f
 senv skill list                          # list (filter with --group)
 senv skill show my-skill                 # metadata and file list; contents are not printed
 senv sync                                # sync to other machines together with the rest of the vault
-senv skill apply --all --dry-run         # print the plan first
+senv skill apply --all --dry-run         # print the plan first (select-all)
 senv skill apply --all --yes             # write ~/.agents/skills/<id> and ~/.claude/skills/<id>
+senv skill apply a b --yes               # multi-select ids
+senv skill apply --all --scope project --target agents --yes  # current project, ./.agents/skills only
 senv skill remove my-skill               # removes the vault entry only; applied directories are kept
 ```
 
 Notes:
 
 - **Ids are unique across the whole vault** (not per group); replacing needs `--force`. Symbolic links and special files are rejected.
-- **apply conflict policy**: if the target is a symbolic link, or an existing directory without a `.senv-owned` marker, it is skipped with a warning. A marked directory whose content changed is moved to `~/.local/state/senv/skill-apply/backups/` (outside the skills directories) before the new version is swapped in. The home directory comes from the OS and is not affected by `--path`.
+- **apply selectors**: one or more ids (multi-select), `--group`, or `--all` (select-all). `--scope global|project` (default global); `--target agents|claude|all` (repeatable/comma-separated, default all).
+- **apply conflict policy**: if the target is a symbolic link, or an existing directory without a `.senv-owned` marker, it is skipped with a warning. A marked directory whose content changed is moved to `~/.local/state/senv/skill-apply/backups/` (outside the skills directories) before the new version is swapped in. Global home comes from the OS; project root is the current working directory; neither is affected by `--path`.
 - **Existing symlinked skills are not migrated automatically**: they are never taken over. To bring one in, run `skill add` yourself and deal with the old symlink first.
 - **Size limits**: the packed directory is at most 1 MiB of plaintext; a `skill` entry may be at most 1.5 MiB of ciphertext on the server (other kinds stay at 512 KiB).
 - **With the server provider, upgrade senv-server first, then `skill add` / `senv sync`**: an old server does not know `skill` / `skill_index` and rejects the whole push batch (the git provider has no such constraint; see [docs/senv-server.md](docs/senv-server.md) for the release order).
 - **Batching**: one `senv sync` push is a single request and the server body limit defaults to 64 MB; stacking roughly 40+ full-size skills in one push may hit it, so add and sync in several rounds.
 - `description` lives in the plaintext index — keep secrets out of it; the directory contents themselves are encrypted.
-- v1 does not cover kiro directories, `skill unapply`, or TUI/MCP.
+- kiro / Cursor skills roots, `skill unapply`, and TUI/MCP are not covered yet.
 
 ### 12. Agent Skill (teach coding agents how to use senv)
 

@@ -18,8 +18,60 @@ import (
 // 带它的目录才允许被 senv 备份并覆盖；没有它的同名目录一律视为用户或其他工具所有。
 const OwnedMarker = ".senv-owned"
 
-// DefaultRoots 是 apply 的目标根（相对家目录）。v1 不含 kiro。
+// DefaultRoots 是 apply 的目标根（相对 Base：家目录或项目根）。不含 kiro。
 var DefaultRoots = []string{".agents/skills", ".claude/skills"}
+
+// 目标简称（CLI --target）。
+const (
+	TargetAgents = "agents"
+	TargetClaude = "claude"
+	TargetAll    = "all"
+)
+
+// RootForTarget 把 agents / claude 映射成相对根路径。
+func RootForTarget(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case TargetAgents, "agent":
+		return ".agents/skills", nil
+	case TargetClaude, "claude-code":
+		return ".claude/skills", nil
+	default:
+		return "", fmt.Errorf("unknown skill apply target %q (want agents, claude, or all)", name)
+	}
+}
+
+// ResolveRoots 解析 --target 列表：空或含 all → DefaultRoots；否则按简称展开并去重保序。
+func ResolveRoots(targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return append([]string(nil), DefaultRoots...), nil
+	}
+	seen := map[string]bool{}
+	var roots []string
+	for _, raw := range targets {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if strings.EqualFold(part, TargetAll) {
+				return append([]string(nil), DefaultRoots...), nil
+			}
+			root, err := RootForTarget(part)
+			if err != nil {
+				return nil, err
+			}
+			if seen[root] {
+				continue
+			}
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	if len(roots) == 0 {
+		return nil, fmt.Errorf("no skill apply targets resolved")
+	}
+	return roots, nil
+}
 
 // Action 是单个目标根上的计划动作。
 type Action string
@@ -37,8 +89,8 @@ func (a Action) Changes() bool { return a == ActionCreate || a == ActionBackupOv
 // PlanItem 是一个 skill 在一个目标根上的计划。
 type PlanItem struct {
 	ID     string
-	Root   string // 相对家目录的根，如 ".agents/skills"
-	Target string // 绝对路径 <home>/<root>/<id>
+	Root   string // 相对 Base 的根，如 ".agents/skills"
+	Target string // 绝对路径 <base>/<root>/<id>
 	Action Action
 	Reason string
 	// Backup 仅在 ActionBackupOverwrite 且执行后填充：旧树被移到的位置。
@@ -51,24 +103,24 @@ type Result struct {
 	Err error
 }
 
-// Applier 把 skill 归档展开到家目录下的 skills 根。
+// Applier 把 skill 归档展开到 Base 下的 skills 根。
 //
-// 备份与崩溃遗留的临时目录都放在 StateDir（默认 <home>/.local/state/senv/skill-apply），
-// 在任何 skills 根之外，避免 agent 把它们当成 skill 加载。StateDir 必须与各 skills 根
-// 在同一文件系统上（展开靠 rename 原子换入）。
+// Base 是家目录（全局）或项目根（当前目录）。备份与崩溃遗留的临时目录放在
+// StateDir（默认 <Base>/.local/state/senv/skill-apply；项目 scope 时应改成用户家目录下同路径），
+// 须在任何 skills 根之外。StateDir 必须与各 skills 根在同一文件系统上（展开靠 rename）。
 type Applier struct {
-	Home     string
+	Base     string
 	Roots    []string
 	StateDir string
 	Now      func() time.Time
 }
 
-// NewApplier 以 home 为基准创建 Applier。home 应来自 os.UserHomeDir()。
-func NewApplier(home string) *Applier {
+// NewApplier 以 base 为 skills 根基准创建 Applier。全局安装传 UserHomeDir；项目安装传 Getwd。
+func NewApplier(base string) *Applier {
 	return &Applier{
-		Home:     home,
-		Roots:    DefaultRoots,
-		StateDir: filepath.Join(home, ".local", "state", "senv", "skill-apply"),
+		Base:     base,
+		Roots:    append([]string(nil), DefaultRoots...),
+		StateDir: filepath.Join(base, ".local", "state", "senv", "skill-apply"),
 		Now:      time.Now,
 	}
 }
@@ -142,7 +194,7 @@ func (a *Applier) Plan(id string, archive []byte) ([]PlanItem, error) {
 }
 
 func (a *Applier) rootDir(root string) string {
-	return filepath.Join(a.Home, filepath.FromSlash(root))
+	return filepath.Join(a.Base, filepath.FromSlash(root))
 }
 
 func (a *Applier) planRoot(ex *expanded, root string) PlanItem {

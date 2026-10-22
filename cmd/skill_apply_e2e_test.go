@@ -126,6 +126,8 @@ func resetSkillApplyFlags(t *testing.T) {
 	t.Helper()
 	reset := func() {
 		skillApplyGroup, skillApplyAll, skillApplyDryRun, skillApplyYes = "", false, false, false
+		skillApplyScope = "global"
+		skillApplyTargets = nil
 	}
 	reset()
 	t.Cleanup(reset)

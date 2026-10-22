@@ -58,6 +58,45 @@ func TestSkillApplyRequiresExactlyOneSelector(t *testing.T) {
 	}
 }
 
+func TestSkillApplyMultiSelectAndProjectScope(t *testing.T) {
+	newAuditTestProject(t)
+	resetSkillFlags(t)
+	resetSkillApplyFlags(t)
+	addTestSkill(t, "alpha")
+	addTestSkill(t, "beta")
+	skillApplyYes = true
+	skillApplyTargets = []string{"agents"}
+
+	proj := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(proj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	skillApplyScope = "project"
+	c, out, _ := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"alpha", "beta", "alpha"}); err != nil {
+		t.Fatalf("multi project apply: %v\nout=%s", err, out.String())
+	}
+	agentsAlpha := filepath.Join(proj, ".agents", "skills", "alpha")
+	agentsBeta := filepath.Join(proj, ".agents", "skills", "beta")
+	claudeAlpha := filepath.Join(proj, ".claude", "skills", "alpha")
+	if !pathExists(filepath.Join(agentsAlpha, "SKILL.md")) || !pathExists(filepath.Join(agentsBeta, "SKILL.md")) {
+		t.Fatalf("project agents roots missing: %v %v", agentsAlpha, agentsBeta)
+	}
+	if pathExists(claudeAlpha) {
+		t.Fatal("--target agents must not write .claude")
+	}
+	home, _ := os.UserHomeDir()
+	if pathExists(filepath.Join(home, ".agents", "skills", "alpha")) {
+		t.Fatal("project scope must not write global home skills")
+	}
+}
+
 func TestSkillApplyDryRunWritesNothing(t *testing.T) {
 	newAuditTestProject(t)
 	resetSkillFlags(t)

@@ -158,8 +158,8 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 
 - `senv skill add <id> --source <dir> [--group g] [--description "..."] [--force]`：`--source` 目录内容即 skill 根，`SKILL.md` 必须直接在其下；frontmatter `name` 必须等于 `<id>`；**id 在整个 vault 内全局唯一**（跨 group 也不可重名）；已存在需 `--force`（保留原 group）。拒绝符号链接与特殊文件（tar 只接受普通文件/目录，保留可执行位）。不要把密钥写进 skill 目录或 `--description`（description 明文入索引）。
 - `senv skill list [--group g] [--refresh]`、`senv skill show <id>`（元数据 + 文件清单，不打印内容）、`senv skill remove <id>`（别名 `rm`；**只删 vault 条目，已 apply 到本机的目录保留**）。server provider 下 `--refresh` 强制先同步再读。
-- `senv skill apply [<id> | --group g | --all] [--dry-run] [--yes] [--refresh]`：恰好一种选择器。落到 `$HOME/.agents/skills/<id>/` 与 `$HOME/.claude/skills/<id>/` 两个根（家目录只用 `os.UserHomeDir()`，**不受 `--path` 影响**）；不做 kiro 根。每个根的动作：`create` / `skip`（内容等价，比较排除 `.senv-owned`）/ `skip-conflict`（目标是符号链接，或是没有 `.senv-owned` 标记的已有目录：只 warning，不改，退出码仍为 0）/ `backup+overwrite`（带 `.senv-owned` 且内容变了：旧树移到 `$HOME/.local/state/senv/skill-apply/backups/`，在 skills 根之外，再换入新树）。成功后写空的 `.senv-owned`。
-- **agent 的做法**：先 `senv session status`；`apply` 会写本机家目录，先 `--dry-run` 给用户看计划，用户明确同意后再加 `--yes`（无 `--yes` 且 stdin 非交互会直接拒绝）。不要替用户 `--force` 覆盖已有 skill。
+- `senv skill apply [<id>...] | --group g | --all`：恰好一种 skill 选择器——多个 id（多选）、整组、或 `--all`（全选 vault）。`--scope global`（默认）写 `$HOME/.agents|/.claude/skills`；`--scope project` 写当前工作目录下 `./.agents|/.claude/skills`。`--target agents|claude|all`（可重复或逗号分隔，默认 all）再筛根。家目录用 `os.UserHomeDir()`，项目根用 `Getwd()`，**都不受 `--path` 影响**；不做 kiro。每个根动作：`create` / `skip` / `skip-conflict` / `backup+overwrite`（旧树在 `$HOME/.local/state/senv/skill-apply/backups/`）。成功后写 `.senv-owned`。
+- **agent 的做法**：先 `senv session status`；`apply` 会写本机（全局家目录或项目 CWD），先 `--dry-run` 给用户看计划，用户明确同意后再加 `--yes`（无 `--yes` 且 stdin 非交互会直接拒绝）。不要替用户 `--force` 覆盖已有 skill。
 - **与 dotf 的边界**：senv skill 只管**私有** skill 的加密同步与落盘；公开/半公开编目的全量安装仍走 `dotf agents -c`。`skill apply` 不调用、不修改 dotf，也不卸载任何 skill。同名目录若已被 dotf 或手工软链占用，senv 视为冲突并跳过，不接管。
 - **存量软链不自动迁移**：agent-data、transit 等现有「仓内目录 + 手工软链」的私有 skill 不会自动入库；要纳入需用户明确决定后手工 `skill add`，并先自行处理原软链（否则 apply 会 `skip-conflict`）。
 - **体积上限**：目录打包后明文 ≤ **1 MiB**；`skill` kind 密文单条上限 **1.5 MiB**（server 按 kind 判断；其它 kind 仍是 512 KiB）。超限报错点名上限，不截断。
@@ -229,7 +229,8 @@ senv mcp export --agent codex,cursor     # 确认后写入 agent 全局配置
 senv mcp unexport --agent codex          # 撤回（被本地改过的需逐条确认）
 senv skill add my-skill --source ./my-skill --description "..."   # 私有 skill 加密入库（SKILL.md name == id）
 senv skill list && senv skill show my-skill   # 不含内容
-senv skill apply --all --dry-run         # 先看计划；用户同意后加 --yes 写 ~/.agents/skills 与 ~/.claude/skills
+senv skill apply --all --dry-run                    # 先看计划；同意后加 --yes 写全局双根
+senv skill apply a b --scope project --target agents --yes  # 多选 + 当前项目 + 只写 .agents
 ```
 
 完整清单以 `senv --help` 与 `senv mcp list-tools` 为准；本文档滞后时以命令输出为准并回写修正。

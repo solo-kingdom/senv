@@ -40,6 +40,28 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
+func TestResolveRoots(t *testing.T) {
+	roots, err := ResolveRoots(nil)
+	if err != nil || len(roots) != 2 || roots[0] != ".agents/skills" {
+		t.Fatalf("default: %v %v", roots, err)
+	}
+	roots, err = ResolveRoots([]string{"all"})
+	if err != nil || len(roots) != 2 {
+		t.Fatalf("all: %v %v", roots, err)
+	}
+	roots, err = ResolveRoots([]string{"claude", "agents", "claude"})
+	if err != nil || len(roots) != 2 || roots[0] != ".claude/skills" || roots[1] != ".agents/skills" {
+		t.Fatalf("order+dedupe: %v %v", roots, err)
+	}
+	roots, err = ResolveRoots([]string{"agents,claude"})
+	if err != nil || len(roots) != 2 {
+		t.Fatalf("comma: %v %v", roots, err)
+	}
+	if _, err := ResolveRoots([]string{"cursor"}); err == nil {
+		t.Fatal("unknown target must fail")
+	}
+}
+
 func TestApplyCreatesBothRootsWithOwnerMarker(t *testing.T) {
 	a := newTestApplier(t)
 	src := t.TempDir()
@@ -245,7 +267,7 @@ func TestApplyRevalidatesArchiveAndTouchesNothing(t *testing.T) {
 			t.Fatalf("rejected archive touched %s: %v", root, err)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(filepath.Dir(a.Home), "escape")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(a.Base), "escape")); !os.IsNotExist(err) {
 		t.Fatalf("path traversal escaped: %v", err)
 	}
 }
