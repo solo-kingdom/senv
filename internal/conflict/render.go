@@ -55,6 +55,14 @@ func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSid
 		// SSH 档案含私钥本体：冲突对比不解密、不产出明文，只保留元数据（ADR-0020）。
 		return decodedSide{Size: side.Size}, nil
 	}
+	if kind == provider.KindSkill {
+		// skill 正文是加密 tar 归档：冲突对比不解密、不产出明文，只保留元数据。
+		return decodedSide{Size: side.Size}, nil
+	}
+	if kind == provider.KindSkillIndex {
+		// skill 索引与 config_index 一样是明文 JSON。
+		return decodedSide{Plaintext: side.Ciphertext, Size: len(side.Ciphertext)}, nil
+	}
 	if kind == provider.KindConfigIndex {
 		var index storage.ConfigIndex
 		if err := storage.FromJSON(side.Ciphertext, &index); err != nil {
@@ -119,7 +127,7 @@ func sideKey(kind string, side provider.ConflictSide, auth Auth, remote bool) []
 	if remote && !auth.RemoteKeyCompatible {
 		return nil
 	}
-	if kind == provider.KindConfigIndex {
+	if kind == provider.KindConfigIndex || kind == provider.KindSkillIndex {
 		return nil
 	}
 	return auth.Key
@@ -148,6 +156,8 @@ func renderSide(label, kind string, side provider.ConflictSide, decoded decodedS
 	case kind == provider.KindSSHHost || kind == provider.KindSSHKeypair:
 		// SSH 档案含私钥本体：无论是否 reveal 都只渲染元数据（ADR-0005/0020）。
 		b.WriteString("    content=<metadata only> plaintext not decoded\n")
+	case kind == provider.KindSkill:
+		b.WriteString("    content=<metadata only> skill archive not decoded\n")
 	case kind == provider.KindConfigIndex:
 		b.WriteString("    semantic differences are listed below\n")
 	default:

@@ -321,7 +321,7 @@ func diagnoseStaleSession(sm *session.Manager, store *storage.Manager) error {
 	if rerr != nil {
 		return nil
 	}
-	dataOK := report.EnvFiles.OK + report.TextFiles.OK + report.ConfigFiles.OK
+	dataOK := report.EnvFiles.OK + report.TextFiles.OK + report.SkillFiles.OK + report.ConfigFiles.OK
 	if dataOK > 0 && !report.MetadataKeyOK {
 		// Real desync: preserve the cache as recovery key; do not prompt.
 		return fmt.Errorf("%w: cached key still decrypts %d data file(s) but not metadata. "+

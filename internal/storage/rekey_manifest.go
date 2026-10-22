@@ -32,6 +32,7 @@ const (
 	rekeyManifestEntryKeyPair   rekeyManifestEntryKind = "keypair"
 	rekeyManifestEntryProvider  rekeyManifestEntryKind = "provider"
 	rekeyManifestEntryMCPServer rekeyManifestEntryKind = "mcp_server"
+	rekeyManifestEntrySkill     rekeyManifestEntryKind = "skill"
 )
 
 type rekeyStage string
@@ -166,6 +167,8 @@ func rekeyManifestKind(kind rekeyEntryKind) rekeyManifestEntryKind {
 		return rekeyManifestEntryProvider
 	case rekeyEntryMCPServer:
 		return rekeyManifestEntryMCPServer
+	case rekeyEntrySkill:
+		return rekeyManifestEntrySkill
 	default:
 		panic("unknown rekey entry kind")
 	}
@@ -205,7 +208,7 @@ func (m *Manager) validateManifest(manifest *rekeyManifest) error {
 		switch entry.Kind {
 		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryBackup, rekeyManifestEntryConfig,
 			rekeyManifestEntryHost, rekeyManifestEntryKeyPair, rekeyManifestEntryProvider,
-			rekeyManifestEntryMCPServer:
+			rekeyManifestEntryMCPServer, rekeyManifestEntrySkill:
 		default:
 			return fmt.Errorf("invalid rekey entry kind %q", entry.Kind)
 		}

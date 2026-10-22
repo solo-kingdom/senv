@@ -111,6 +111,7 @@ func printDoctorReport(out io.Writer, r *storage.ConsistencyReport) {
 	fmt.Fprintf(out, "metadata <-> key:     %s\n", status(r.MetadataKeyOK))
 	printFileProbes(out, "env files", r.EnvFiles)
 	printFileProbes(out, "text files", r.TextFiles)
+	printFileProbes(out, "skills", r.SkillFiles)
 	printFileProbes(out, "config files", r.ConfigFiles)
 	printFileProbes(out, "hosts", r.HostFiles)
 	printFileProbes(out, "keypairs", r.KeyPairFiles)

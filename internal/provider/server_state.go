@@ -33,6 +33,8 @@ const (
 	KindSSHKeypair  = syncschema.KindSSHKeypair
 	KindBackup      = syncschema.KindBackup
 	KindBackupMeta  = syncschema.KindBackupMeta
+	KindSkill       = syncschema.KindSkill
+	KindSkillIndex  = syncschema.KindSkillIndex
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -155,6 +157,10 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.BackupDirName, grp, storage.EnvMetaFileName}}, nil
 	case KindBackup:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.BackupDirName, grp, key + storage.BackupFileSuffix}}, nil
+	case KindSkill:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.SkillDirName, grp, key + storage.SkillFileSuffix}}, nil
+	case KindSkillIndex:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.SkillIndexFile}}, nil
 	case KindConfig:
 		return cacheLocation{root: cacheDataRoot, segments: []string{key + storage.ConfigFileSuffix}}, nil
 	case KindConfigIndex:
@@ -362,6 +368,33 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 		return nil, nil, reads, err
 	}
 
+	if groups, err := dataRoot.ReadDir(storage.SkillDirName); err == nil {
+		for _, group := range groups {
+			if !group.IsDir {
+				return nil, nil, reads, fmt.Errorf("invalid skill cache entry type")
+			}
+			files, err := dataRoot.ReadDir(storage.SkillDirName, group.Name)
+			if err != nil {
+				return nil, nil, reads, err
+			}
+			for _, file := range files {
+				if file.IsDir {
+					return nil, nil, reads, fmt.Errorf("invalid skill cache entry type")
+				}
+				if !strings.HasSuffix(file.Name, storage.SkillFileSuffix) {
+					continue
+				}
+				key := strings.TrimSuffix(file.Name, storage.SkillFileSuffix)
+				ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+				if err := add(KindSkill, group.Name, key, ident, dataRoot, storage.SkillDirName, group.Name, file.Name); err != nil {
+					return nil, nil, reads, err
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, reads, err
+	}
+
 	files, err := dataRoot.ReadDir()
 	if err != nil {
 		return nil, nil, reads, err
@@ -372,6 +405,14 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 		name := file.Name
 		if file.IsDir || storage.IsMachineLocalDataArtifact(name) ||
 			(strings.HasSuffix(name, storage.EnvFileSuffix) && strings.HasPrefix(name, storage.EnvFilePrefix)) {
+			continue
+		}
+		if name == storage.SkillIndexFile {
+			// skill 索引是明文 JSON，放在数据目录顶层；不是 config 密文。
+			ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+			if err := add(KindSkillIndex, "", "", ident, dataRoot, name); err != nil {
+				return nil, nil, reads, err
+			}
 			continue
 		}
 		if strings.HasSuffix(name, storage.ConfigFileSuffix) {

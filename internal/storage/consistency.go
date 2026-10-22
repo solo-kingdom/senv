@@ -26,6 +26,7 @@ type ConsistencyReport struct {
 	EnvFiles       FileProbes
 	TextFiles      FileProbes
 	BackupFiles    FileProbes
+	SkillFiles     FileProbes
 	ConfigFiles    FileProbes
 	HostFiles      FileProbes
 	KeyPairFiles   FileProbes
@@ -43,6 +44,7 @@ func (r *ConsistencyReport) AllOK() bool {
 		r.EnvFiles.OK == r.EnvFiles.Total &&
 		r.TextFiles.OK == r.TextFiles.Total &&
 		r.BackupFiles.OK == r.BackupFiles.Total &&
+		r.SkillFiles.OK == r.SkillFiles.Total &&
 		r.ConfigFiles.OK == r.ConfigFiles.Total &&
 		r.HostFiles.OK == r.HostFiles.Total &&
 		r.KeyPairFiles.OK == r.KeyPairFiles.Total &&
@@ -163,6 +165,24 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			} else {
 				report.BackupFiles.Failed = append(report.BackupFiles.Failed, rel)
 			}
+		}
+	}
+
+	skillRefs, err := listSkillFilesFromRoot(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range skillRefs {
+		rel := filepath.Join(SkillDirName, ref.Group, ref.ID+SkillFileSuffix)
+		ciphertext, err := dataRoot.Read(SkillDirName, ref.Group, ref.ID+SkillFileSuffix)
+		if err != nil {
+			return nil, err
+		}
+		report.SkillFiles.Total++
+		if canDecrypt(key, string(ciphertext)) {
+			report.SkillFiles.OK++
+		} else {
+			report.SkillFiles.Failed = append(report.SkillFiles.Failed, rel)
 		}
 	}
 
@@ -318,6 +338,9 @@ func (m *Manager) HasOrphanedData() bool {
 				return true
 			}
 			if name == MCPServerDirName && hasManagedEncFiles(m.dataPath, MCPServerDirName) {
+				return true
+			}
+			if name == SkillDirName && hasSkillFiles(m.dataPath) {
 				return true
 			}
 			continue
