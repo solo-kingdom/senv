@@ -317,22 +317,31 @@ func (t *historyTab) View() string {
 	if t.entryID != "" {
 		title = fmt.Sprintf("version timeline for %s", t.entryID)
 	}
-	// 列宽按面板实际宽度分配：固定列（游标 2 + 时间 + 两处分隔 + rev 列 7 +
-	// 末尾分隔）之外的余量按约 1:2 分给条目名与预览。早期实现把两列钉死在
-	// 18/30 rune，宽终端下整行只用到约一半宽度就截断。
-	tsW := lipgloss.Width(historyTimeOf(t.rows[0]))
-	flex := maxInt(innerW-(2+tsW+1+7+1+1), 12)
-	entryW := clamp(flex/3, 8, 36)
-	previewW := maxInt(flex-entryW, 4)
+	// Column layout: cursor(2) | time(19) | rev(6) | entry | preview
+	// Fixed columns use strict widths; entry and preview share remaining space.
+	const (
+		cursorW = 2  // "> " or "  "
+		timeW   = 19 // "2006-01-02 15:04:05"
+		revW    = 6  // "rev NN"
+		sepW    = 3  // " | " separators (3 of them = 9, but we use single space)
+	)
+	fixedW := cursorW + timeW + 1 + revW + 1 // spaces between columns
+	flexW := maxInt(innerW-fixedW-1, 16)     // remaining for entry + preview
+	entryW := clamp(flexW*2/5, 8, 28)        // ~40% to entry ID
+	previewW := maxInt(flexW-entryW-1, 4)    // rest to preview
+
 	lines := make([]string, 0, len(t.rows))
 	for i, row := range t.rows {
-		body := padRight(historyTimeOf(row), tsW) + " " +
-			padRight(truncateWidth(fmt.Sprintf("rev %d", row.Revision), 6), 7) + " " +
-			padRight(truncateWidth(entryIDOf(row), entryW), entryW) + " " +
-			truncateWidth(t.previewOf(row), previewW)
-		// 先按面板宽度截断未着色文本再上色：着色后的字符串含 ANSI 序列，
-		// 截断会切坏转义（其他 Tab 的列表行同一约定）。
-		body = truncateWidth(body, maxInt(innerW-2, 1))
+		timePart := padRight(historyTimeOf(row), timeW)
+		revPart := padRight(fmt.Sprintf("r%d", row.Revision), revW)
+		entryPart := padRight(truncateWidth(entryIDOf(row), entryW), entryW)
+		previewPart := truncateWidth(t.previewOf(row), previewW)
+
+		// Build the row with single-space separators
+		body := timePart + " " + revPart + " " + entryPart + " " + previewPart
+		// Final truncation as safety net
+		body = truncateWidth(body, maxInt(innerW-cursorW, 1))
+
 		if i == t.list.Cursor() {
 			body = selectedLineStyle.Render("> " + body)
 		} else {
@@ -381,16 +390,56 @@ func (t *historyTab) plainPane(text string) string {
 
 func (t *historyTab) previewOf(row provider.HistoryVersion) string {
 	if row.Deleted {
-		return "(deleted record)"
+		return "(deleted)"
 	}
 	text, err := t.source.DecryptHistory(row)
 	if err != nil {
-		return "<cannot decrypt>"
+		return "<decrypt err>"
 	}
-	one := strings.ReplaceAll(strings.TrimSpace(text), "\n", "⏎")
-	// 上限只用于兜住超大值（backup 可达 512KB）的逐帧渲染成本，远大于任何
-	// 终端的预览列宽；真正的列宽截断由行渲染按面板宽度做。
-	return truncateWidth(one, 512)
+	// Sanitize: collapse whitespace, strip control chars, replace newlines.
+	// This prevents JSON/binary/multiline values from destroying the layout.
+	return sanitizePreview(text)
+}
+
+// sanitizePreview collapses a potentially multi-line value into a single-line
+// preview safe for column-aligned rendering. Control characters, excessive
+// whitespace, and newlines are stripped or replaced.
+func sanitizePreview(s string) string {
+	var b strings.Builder
+	b.Grow(128)
+	prevSpace := false
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r':
+			if !prevSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case r == '\t':
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case r < 32 || r == 127:
+			// Skip control characters entirely
+		case r == ' ':
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
+		if b.Len() >= 256 {
+			break
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "(empty)"
+	}
+	return out
 }
 
 // openDetail 打开滚动详情弹层，渲染选中版本的解密全文（不截断，超长可滚动）。
@@ -418,5 +467,5 @@ func (t *historyTab) detailLines(row provider.HistoryVersion) []string {
 	return strings.Split(strings.TrimRight(text, "\n"), "\n")
 }
 
-// historyFlashStyle 渲染恢复成功提示（复用 tab 内局部样式）
-var historyFlashStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("35"))
+// historyFlashStyle 渲染恢复成功提示（使用 adaptive success 色）
+var historyFlashStyle = lipgloss.NewStyle().Foreground(colorOk)
