@@ -18,7 +18,7 @@
 - ✅ **SSH asset management** - Manage existing host profiles and private keys encrypted, with OpenSSH config export, key materialization on disk, local default keypair, host/keypair CRUD and linking in the TUI (keypair rename cascades to hosts), plus read-only MCP queries
 - ✅ **LLM model catalog** - `senv ai refresh` fetches the models.dev provider/model catalog and caches it locally for offline lookup (`senv ai catalog status`)
 - ✅ **LLM provider management** - `senv ai provider add/edit/rename/list/show/remove` stores AI service profiles encrypted, supports `--api-shape` (openai-chat / openai-responses / anthropic) to declare the API shape, keeps credentials in the vault, assembles model sets automatically from the models.dev catalog, and validates context windows when adding or editing models
-- ✅ **Private Agent Skills** - `senv skill add/list/show/remove/apply` encrypts skill directories into the vault, syncs them with `senv sync`, and applies them to `~/.agents/skills` and `~/.claude/skills` (independent of the dotf public catalog)
+- ✅ **Private Agent Skills** - `senv skill add/list/show/remove/apply` encrypts skill directories into the vault and syncs them; `apply` supports global/`--scope project`, multi-id / `--all`, and `--target agents|claude` (independent of the dotf public catalog)
 
 ## Installation
 
