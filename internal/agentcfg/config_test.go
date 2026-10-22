@@ -204,7 +204,7 @@ func TestRemoteErrorMatrix(t *testing.T) {
 		{"cursor", httpHeaders, false},
 		{"cursor", sse, false},
 		{"codex", httpPlain, false},
-		{"codex", sse, false},
+		{"codex", sse, true},
 		{"codex", httpHeaders, false},
 		{"zcode", httpHeaders, false},
 		{"zcode", sse, true},
@@ -279,6 +279,14 @@ func TestNormalizeDropsUnstorableTransport(t *testing.T) {
 	}
 	if got := typeless.Normalize(stdio); got.Transport != "" || got.Command != "npx" {
 		t.Fatalf("stdio normalization must be a no-op: %+v", got)
+	}
+
+	codex, ok := Find("codex")
+	if !ok || codex.Remote.TypeKey || codex.Remote.SSE {
+		t.Fatal("codex must be typeless (no transport key) and reject SSE")
+	}
+	if got := codex.Normalize(http); got.Transport != "" {
+		t.Fatalf("codex Normalize must drop transport: %+v", got)
 	}
 }
 
