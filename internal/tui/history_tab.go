@@ -345,11 +345,11 @@ func (t *historyTab) View() string {
 		}
 		// Truncate AFTER the cursor prefix so selected rows cannot wrap inside
 		// the pane (wrap → View taller than terminal → ghost double header).
-		row := truncateWidth(prefix+body, innerW)
+		line := truncateWidth(prefix+body, innerW)
 		if i == t.list.Cursor() {
-			row = selectedLineStyle.Render(row)
+			line = selectedLineStyle.Render(line)
 		}
-		lines = append(lines, row)
+		lines = append(lines, line)
 	}
 
 	// 附加行渲染在面板内部（确认/flash），空行分隔计入高度预算。
