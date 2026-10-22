@@ -2,33 +2,35 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Adaptive color palette for light/dark terminals (Tokyo Night-ish blue accent).
+// Adaptive color palette for light/dark terminals (Tokyo Night).
 // Using AdaptiveColor: first value is dark terminal, second is light terminal.
 var (
 	// Core palette roles
-	colorFg     = lipgloss.AdaptiveColor{Dark: "#c0caf5", Light: "#343b58"}
-	colorMuted  = lipgloss.AdaptiveColor{Dark: "#565f89", Light: "#9699a3"}
-	colorDim    = lipgloss.AdaptiveColor{Dark: "#414868", Light: "#b4b5b9"}
-	colorAccent = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#3d6fcc"}
-	colorDanger = lipgloss.AdaptiveColor{Dark: "#f7768e", Light: "#c24242"}
-	colorOk     = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#4e8a3a"}
-	colorWarn   = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#b36d00"}
+	colorFg      = lipgloss.AdaptiveColor{Dark: "#c0caf5", Light: "#343b58"}
+	colorMuted   = lipgloss.AdaptiveColor{Dark: "#565f89", Light: "#9699a3"}
+	colorDim     = lipgloss.AdaptiveColor{Dark: "#414868", Light: "#b4b5b9"}
+	colorAccent  = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#3d6fcc"}
+	colorCyan    = lipgloss.AdaptiveColor{Dark: "#7dcfff", Light: "#0f7a9d"}
+	colorMagenta = lipgloss.AdaptiveColor{Dark: "#bb9af7", Light: "#7a4db8"}
+	colorDanger  = lipgloss.AdaptiveColor{Dark: "#f7768e", Light: "#c24242"}
+	colorOk      = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#4e8a3a"}
+	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#b36d00"}
+
+	// Surfaces (subtle depth without loud fills)
+	colorSurface     = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#e8eaf0"}
+	colorSurfaceHi   = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#d8dce8"}
+	colorOnAccent    = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
 )
 
 // Styles holds all lipgloss styles used by the TUI.
 var (
-	// frameStyle is the outer rounded border that wraps the whole TUI,
-	// forming a single application window. Width/Height are set at render
-	// time in View() so the frame always fills the terminal exactly.
 	frameStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorDim).
 			Padding(0, 0)
 
-	// tabStripStyle is the container for the top tab strip row. It carries
-	// a muted bottom border that visually separates the tab strip from the
-	// content area. Width is set at render time to the inner content width.
 	tabStripStyle = lipgloss.NewStyle().
+			Background(colorSurface).
 			Border(lipgloss.NormalBorder(), false, false, true, false).
 			BorderForeground(colorDim).
 			Padding(0, 1)
@@ -41,113 +43,96 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	// tabStyle is an inactive tab label: muted foreground, no background.
 	tabStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(colorMuted)
 
-	// activeTabStyle is the currently selected tab label: accent text with
-	// bold weight and an underline. No background fill (restrained look).
 	activeTabStyle = lipgloss.NewStyle().
 			Padding(0, 1).
-			Foreground(colorAccent).
-			Bold(true).
-			Underline(true)
+			Foreground(colorOnAccent).
+			Background(colorAccent).
+			Bold(true)
 
-	// tabSeparatorStyle renders the space separator between tab labels.
-	// Using space instead of │ for a calmer look.
 	tabSeparatorStyle = lipgloss.NewStyle().
 				Foreground(colorDim)
 
-	// statusBarStyle is the bottom help/status bar.
 	statusBarStyle = lipgloss.NewStyle().
 			Padding(0, 1).
-			Foreground(colorMuted)
+			Foreground(colorMuted).
+			Background(colorSurface)
 
-	// syncBadgeStyle renders the persistent sync status on the right of the
-	// bottom bar (待推送条数 / 最近同步时间).
 	syncBadgeStyle = lipgloss.NewStyle().
-			Foreground(colorAccent)
+			Foreground(colorAccent).
+			Background(colorSurface)
 
-	// errorBarStyle renders error messages at the bottom.
 	errorBarStyle = lipgloss.NewStyle().
 			Padding(0, 1).
-			Foreground(colorDanger)
+			Foreground(colorDanger).
+			Background(colorSurface)
 
-	// warnBarStyle renders non-fatal warnings (e.g. skipped legacy configs)
-	// at the bottom, visually distinct from errors.
 	warnBarStyle = lipgloss.NewStyle().
 			Padding(0, 1).
-			Foreground(colorWarn)
+			Foreground(colorWarn).
+			Background(colorSurface)
 
-	// contentStyle wraps the main content area.
 	contentStyle = lipgloss.NewStyle().Padding(0, 1)
 
-	// paneStyle is a generic pane (left/right column) style.
-	// Unfocused panes use minimal border (single line, dim color).
 	paneStyle = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(colorDim).
 			Padding(0, 1)
 
-	// activePaneStyle highlights the currently focused pane.
-	// Focused pane uses accent-colored border.
 	activePaneStyle = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(colorAccent).
 			Padding(0, 1)
 
-	// selectedLineStyle highlights the cursor line in a list.
 	selectedLineStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(colorAccent)
+				Foreground(colorAccent).
+				Background(colorSurfaceHi)
 
-	// maskedValueStyle renders masked secrets: dim bullets, not warning color.
 	maskedValueStyle = lipgloss.NewStyle().
 				Foreground(colorDim)
 
-	// searchOverlayStyle wraps the global search overlay.
-	// Single calm border, no loud colors.
 	searchOverlayStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorDim).
 				Padding(1, 2)
 
-	// typeBadgeStyles map a result type to a styled badge.
-	// All badges use the same muted/accent family for consistency.
 	typeBadgeStyles = map[string]lipgloss.Style{
 		typeEnv:    lipgloss.NewStyle().Foreground(colorAccent),
-		typeText:   lipgloss.NewStyle().Foreground(colorMuted),
+		typeText:   lipgloss.NewStyle().Foreground(colorCyan),
 		typeBackup: lipgloss.NewStyle().Foreground(colorMuted),
-		typeConfig: lipgloss.NewStyle().Foreground(colorMuted),
-		typeSSH:    lipgloss.NewStyle().Foreground(colorMuted),
-		typeLLM:    lipgloss.NewStyle().Foreground(colorMuted),
-		typeMCP:    lipgloss.NewStyle().Foreground(colorMuted),
+		typeConfig: lipgloss.NewStyle().Foreground(colorDim),
+		typeSSH:    lipgloss.NewStyle().Foreground(colorMagenta),
+		typeLLM:    lipgloss.NewStyle().Foreground(colorOk),
+		typeMCP:    lipgloss.NewStyle().Foreground(colorWarn),
 	}
 
-	// emptyStateStyle renders empty-state hints.
 	emptyStateStyle = lipgloss.NewStyle().
 			Italic(true).
 			Foreground(colorMuted).
 			Padding(1, 2)
 
-	// faintTextStyle 灰显弱化信息（如零引用 KeyPair 的「未被引用」），
-	// 与 emptyStateStyle/tabStyle 同一 muted 色系。
 	faintTextStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
-	// successStyle renders success indicators (OK, checkmark replacements).
 	successStyle = lipgloss.NewStyle().
 			Foreground(colorOk)
 
-	// accentStyle renders accent-colored text (for key hints in status bar).
 	accentStyle = lipgloss.NewStyle().
 			Foreground(colorAccent).
 			Bold(true)
+
+	timestampStyle = lipgloss.NewStyle().
+			Foreground(colorCyan)
+
+	dangerStyle = lipgloss.NewStyle().
+			Foreground(colorDanger).
+			Bold(true)
 )
 
-// mutedStyle returns a style with muted foreground color.
-// Defined here so form.go and other files can use it.
 func mutedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(colorMuted)
 }

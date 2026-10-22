@@ -48,83 +48,43 @@ func TestOuterFramePresent(t *testing.T) {
 	}
 }
 
-// TestActiveTabHasUnderline verifies the active tab label is rendered
-// with an underline (activeTabStyle) while inactive tabs lack one.
-func TestActiveTabHasUnderline(t *testing.T) {
-	// Force a colour profile so lipgloss emits ANSI escape sequences
-	// (without a TTY lipgloss strips all colour).
+// TestActiveTabHasAccentPill verifies the active tab uses the accent pill
+// (bold + background) and that switching tabs moves the pill.
+func TestActiveTabHasAccentPill(t *testing.T) {
 	prev := lipgloss.DefaultRenderer().ColorProfile()
 	lipgloss.DefaultRenderer().SetColorProfile(termenv.ANSI256)
 	defer lipgloss.DefaultRenderer().SetColorProfile(prev)
 
-	// Active = 0 (Env): "Env" should carry an underline escape, others not.
+	active := activeTabStyle.Render("Env")
+	inactive := tabStyle.Render("Env")
+	if !strings.Contains(active, "48;") && !strings.Contains(active, "[48;") {
+		t.Fatalf("activeTabStyle missing background SGR: %q", active)
+	}
+	if strings.Contains(inactive, "48;") || strings.Contains(inactive, "[48;") {
+		t.Fatalf("tabStyle should not set background: %q", inactive)
+	}
+	if strings.Contains(active, ";4;") || strings.Contains(active, "[4m") || strings.Contains(active, "[4;") {
+		t.Fatalf("activeTabStyle must not underline: %q", active)
+	}
+
 	m := sizedModel(80, 24)
 	out := m.View()
 	if out == "" || out == "starting…" {
 		t.Skip("View() not ready (needs window size)")
 	}
-	assertHasUnderlineAround(t, out, "Env", true)
-	assertHasUnderlineAround(t, out, "Text", false)
-	assertHasUnderlineAround(t, out, "Config", false)
-
-	// Switch to tab 1 (Text) and verify the underline moves.
+	if !strings.Contains(out, activeTabStyle.Render("Env")) {
+		t.Fatalf("View missing active Env pill")
+	}
 	m.active = 1
 	out = m.View()
-	assertHasUnderlineAround(t, out, "Env", false)
-	assertHasUnderlineAround(t, out, "Text", true)
-}
-
-
-// assertHasUnderlineAround checks whether the given label is rendered with
-// an underline. With adaptive colors, the text may have ANSI codes between
-// characters, so we find the label's position in the stripped output and then
-// check the original output for underline sequences.
-func assertHasUnderlineAround(t *testing.T, out, label string, want bool) {
-	t.Helper()
-	stripped := stripANSI(out)
-	idx := strings.Index(stripped, label)
-	if idx < 0 {
-		t.Fatalf("label %q not found in View() output", label)
+	if !strings.Contains(out, activeTabStyle.Render("Text")) {
+		t.Fatalf("View missing active Text pill after switch")
 	}
-	// Find the approximate position in the original output by counting
-	// visible characters and finding where the label starts.
-	// Then check the surrounding ANSI codes for underline.
-	visibleCount := 0
-	origIdx := 0
-	for origIdx < len(out) {
-		if out[origIdx] == '\x1b' {
-			// Skip ANSI sequence
-			end := strings.Index(out[origIdx:], "m")
-			if end >= 0 {
-				origIdx += end + 1
-				continue
-			}
-		}
-		if visibleCount == idx {
-			break
-		}
-		visibleCount++
-		origIdx++
-	}
-	// Look back from origIdx to find the styling segment.
-	beforeLabel := out[:origIdx]
-	lastReset := strings.LastIndex(beforeLabel, "\x1b[0m")
-	segment := beforeLabel
-	if lastReset >= 0 {
-		segment = beforeLabel[lastReset:]
-	}
-	// lipgloss v1.x uses \x1b[4m for underline. It may be combined in a
-	// sequence like \x1b[1;4;38;5;...m. Look for ";4;" or "[4;" or "[4m".
-	hasUnderline := strings.Contains(segment, ";4;") ||
-		strings.Contains(segment, "[4;") ||
-		strings.Contains(segment, "[4m")
-	if hasUnderline != want {
-		t.Errorf("label %q: hasUnderline=%v, want %v (segment=%q)", label, hasUnderline, want, segment)
+	if strings.Contains(out, activeTabStyle.Render("Env")) {
+		t.Fatalf("View still has Env pill after switching to Text")
 	}
 }
 
-// TestTabStripContainsAllLabels verifies all tab labels appear in the tab strip row.
-// The visual redesign uses space separators instead of │, so we just check labels are present.
 func TestTabStripContainsAllLabels(t *testing.T) {
 	m := sizedModel(80, 24)
 	out := m.View()

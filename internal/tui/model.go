@@ -285,7 +285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Inner content area. lipgloss v1.x draws borders OUTSIDE Width/Height,
 		// so each pane renders (Width+2)x(Height+2). The height budget covers:
 		//   frame top+bottom border : 2 rows
-		//   tab strip (labels+underline): 2 rows
+		//   tab strip (labels+border): 2 rows
 		//   status/error bar        : 1 row
 		//   tab's own pane borders  : 2 rows  (panes render Height+2)
 		// Total chrome = 7 rows, so contentH = height - 7.
@@ -653,8 +653,9 @@ func (m Model) View() string {
 	inner := lipgloss.JoinVertical(lipgloss.Left, tabStrip, content, bottom)
 	framed := frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
 	// 最后一道防线：frame 的 Height 只补齐不裁剪，任何漏网超高内容都会让
-	// bubbletea 全量打印视图、把顶部 tab 栏顶出屏幕；这里按终端行数硬裁。
-	return clipLines(framed, m.height)
+	// bubbletea 全量打印视图、把上一帧 tab 栏顶出屏幕叠成「双 header」。
+	// 硬裁到 m.height，再补空白行钉死高度，避免切 tab 时终端滚出叠影。
+	return fitExactHeight(framed, m.height)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
@@ -699,6 +700,24 @@ func overlayBox(base, box string, w, h int) string {
 		out[r] = strings.Repeat(" ", left) + padRight(bl, bw) + strings.Repeat(" ", w-left-bw)
 	}
 	return strings.Join(out, "\n")
+}
+
+// fitExactHeight clips s to at most n lines, then pads with blank lines so the
+// returned view is exactly n rows. A stable height stops the terminal from
+// scrolling when switching tabs (which otherwise leaves a ghost tab strip).
+func fitExactHeight(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	s = clipLines(s, n)
+	lines := strings.Split(s, "\n")
+	if s == "" {
+		lines = nil
+	}
+	for len(lines) < n {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部

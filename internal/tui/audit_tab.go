@@ -246,19 +246,22 @@ func (t *auditTab) View() string {
 		filterLabel, len(rows)), innerW)
 	lines := make([]string, 0, len(rows))
 	for i, e := range rows {
-		outcome := "OK"
+		ts := timestampStyle.Render(e.Timestamp.Local().Format("2006-01-02 15:04:05"))
+		outcome := successStyle.Render(fmt.Sprintf("%-8s", "OK"))
 		if !e.Success {
-			outcome = "ERR"
+			outcome = dangerStyle.Render(fmt.Sprintf("%-8s", "ERR"))
 		}
-		line := fmt.Sprintf("%s  %-18s %-8s %s",
-			e.Timestamp.Local().Format("2006-01-02 15:04:05"),
-			string(e.EventType), outcome, e.Target)
+		ev := fmt.Sprintf("%-18s", string(e.EventType))
+		body := ts + "  " + ev + " " + outcome + " " + e.Target
+		prefix := "  "
 		if i == t.list.Cursor() {
-			line = selectedLineStyle.Render("> " + line)
-		} else {
-			line = "  " + line
+			prefix = "> "
 		}
-		lines = append(lines, truncateWidth(line, innerW))
+		row := truncateWidth(prefix+body, innerW)
+		if i == t.list.Cursor() {
+			row = selectedLineStyle.Render(row)
+		}
+		lines = append(lines, row)
 	}
 
 	// 附加行渲染在面板内部（skipped/过滤输入），空行分隔计入高度预算。

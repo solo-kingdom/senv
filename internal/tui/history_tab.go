@@ -332,22 +332,24 @@ func (t *historyTab) View() string {
 
 	lines := make([]string, 0, len(t.rows))
 	for i, row := range t.rows {
-		timePart := padRight(historyTimeOf(row), timeW)
+		timePart := timestampStyle.Render(padRight(historyTimeOf(row), timeW))
 		revPart := padRight(fmt.Sprintf("r%d", row.Revision), revW)
 		entryPart := padRight(truncateWidth(entryIDOf(row), entryW), entryW)
 		previewPart := truncateWidth(t.previewOf(row), previewW)
 
 		// Build the row with single-space separators
 		body := timePart + " " + revPart + " " + entryPart + " " + previewPart
-		// Final truncation as safety net
-		body = truncateWidth(body, maxInt(innerW-cursorW, 1))
-
+		prefix := "  "
 		if i == t.list.Cursor() {
-			body = selectedLineStyle.Render("> " + body)
-		} else {
-			body = "  " + body
+			prefix = "> "
 		}
-		lines = append(lines, body)
+		// Truncate AFTER the cursor prefix so selected rows cannot wrap inside
+		// the pane (wrap → View taller than terminal → ghost double header).
+		line := truncateWidth(prefix+body, innerW)
+		if i == t.list.Cursor() {
+			line = selectedLineStyle.Render(line)
+		}
+		lines = append(lines, line)
 	}
 
 	// 附加行渲染在面板内部（确认/flash），空行分隔计入高度预算。
