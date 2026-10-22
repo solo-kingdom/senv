@@ -2,7 +2,7 @@
 name: senv-cli
 description: 使用 senv client 的 CLI/MCP 安全读写环境变量、文本块、备份块、配置文件，管理分组、SSH 资产与 LLM Provider，并为 agent 配置 senv 接入。当任务涉及本机 senv 数据、senv CLI/MCP 工具或 senv 命令开发时使用。
 metadata:
-  version: "1.29"
+  version: "1.30"
 ---
 
 # senv：agent 使用指南
@@ -85,7 +85,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
      `sed -E -e 's#(://[^:/@]+:)[^@[:space:]]+@#\1***@#g' -e 's#^((user(name)?|pass(word)?|token|secret|api[_-]?key|secret[_-]?key|access[_-]?key|authorization|credential)s?[[:space:]]*[:=][[:space:]]*).*$#\1***#i'`。
      **掩码前先确认值块是哪种形态**；不确定就只打印长度/字段名，不打印值。
   3. **输出里出现疑似凭据（24+ 字符高熵长串、token/secret/key 形态）时，本轮结束前必须向用户报告并建议轮换**，不得静默继续。list/get 的原始输出与密钥值一律不得复述进日志、回复或提交。
-- **说明（vault note）**：env/text/backup 条目、env/text/backup 分组、config、Host、KeyPair、LLM Provider 档案、MCP Server 档案都可以带一段短说明（trim 后最多 2048 字节 UTF-8，不准当密钥用）。条目/档案的 `--description` 可省略（空说明合法）；**更新时未传 flag 则保留原说明**。MCP `senv_env_set` / `senv_text_set` / `senv_backup_set` 的 `description` 同理（省略 = 保留）。
+- **说明（vault note）**：env/text/backup 条目、env/text/backup 分组、config、Host、KeyPair、LLM Provider 档案、MCP Server 档案都可以带一段短说明（trim 后最多 8192 字节 UTF-8，不准当密钥用）。条目/档案的 `--description` 可省略（空说明合法）；**更新时未传 flag 则保留原说明**。MCP `senv_env_set` / `senv_text_set` / `senv_backup_set` 的 `description` 同理（省略 = 保留）。
 - **默认分组**：未指定时用 `default`；`env export` 只导出已 activate 的 env 分组（`senv env group activate <name>`）。init 会建 env `default`、text `default`/`llm-keys`，以及 backup `default`（存量 vault 打开 backup Manager 时幂等补建）。
 - **禁止隐式建组**：`env set` / `text set` / `text import` / `backup set` / `backup import` 在组不存在时失败，不再自动建组。新建 env/text/backup 组必须显式：`senv env group add <name> --description "..."`、`senv text group add <name> --description "..."`、`senv backup group add <name> --description "..."`、MCP `senv_group_add`（`kind` 为 env/text/backup，`description` 必填非空）。Host/KeyPair 组仍是档案上的自由文本，不走这套登记。
 - **同名覆盖 warning**：多个已激活 env 组出现同名 key 时，`senv env export` 与 `senv env group activate` 在 stderr 打 warning（列出组名与 export 采用哪一组），命令仍 exit 0。MCP `senv_env_export` / `senv_group_activate` 成功时带 `warnings`。`default` 被后激活组覆盖是合法用法。

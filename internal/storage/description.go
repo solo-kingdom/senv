@@ -7,7 +7,7 @@ import (
 )
 
 // MaxDescriptionBytes is the UTF-8 byte cap for vault descriptions.
-const MaxDescriptionBytes = 2048
+const MaxDescriptionBytes = 8192
 
 // ValidateDescription trims space and enforces the byte cap.
 // emptyOK true allows the empty string (entries and grandfathered groups);
