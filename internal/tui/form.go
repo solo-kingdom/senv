@@ -9,7 +9,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -351,7 +350,7 @@ func (f *form) View() string {
 		}
 		lines = append(lines, cursor+label+": "+f.renderValue(i))
 		if f.errs[i] != "" {
-			lines = append(lines, "    "+warnBarStyle.Render("⚠ "+f.errs[i]))
+			lines = append(lines, "    "+warnBarStyle.Render("! "+f.errs[i]))
 		}
 		// A focused enum/ref shows a short window of its candidates so the
 		// user can see what arrow keys cycle through instead of discovering
@@ -448,10 +447,6 @@ func editorSummary(lines int) string {
 		return "(empty, press e to edit in $EDITOR)"
 	}
 	return "(" + strconv.Itoa(lines) + " lines, press e to edit in $EDITOR)"
-}
-
-func mutedStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
 }
 
 // help returns the footer hint, including the editor key when relevant.

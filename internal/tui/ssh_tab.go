@@ -1425,7 +1425,7 @@ func (t *sshTab) hostDetailLines(h storage.HostEntry) []string {
 			}
 		}
 		if summary == "" {
-			lines = append(lines, "  keypair:   ⚠ reference missing")
+			lines = append(lines, "  keypair:   ! reference missing")
 		} else {
 			lines = append(lines, "  keypair:   "+h.IdentityKey+"  "+summary)
 		}
@@ -1490,7 +1490,7 @@ func (t *sshTab) clamp() {
 
 func (t *sshTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("SSH") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
+		return paneTitleStyle.Render("SSH") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1616,7 +1616,7 @@ func hostListLabel(host storage.HostEntry, keys map[string]ssh.KeyPairSummary) s
 	if host.IdentityKey != "" {
 		summary, ok := keys[host.IdentityKey]
 		if !ok {
-			line += "  key:" + host.IdentityKey + " ⚠missing"
+			line += "  key:" + host.IdentityKey + " !missing"
 		} else if fp := shortFingerprint(summary.Fingerprint); fp != "" {
 			line += "  key:" + host.IdentityKey + "(" + fp + ")"
 		} else {

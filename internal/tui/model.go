@@ -585,10 +585,9 @@ func (m Model) View() string {
 	// in Update()). The tab strip and bottom bar share contentW.
 	contentW := m.width - 2
 
-	// Tab strip: active tab gets the accent background block, inactive tabs
-	// get muted text, and a `│` separator is rendered between adjacent tabs.
-	// Two separators for three tabs.
-	separator := tabSeparatorStyle.Render("│")
+	// Tab strip: active tab gets accent text with underline, inactive tabs
+	// get muted text, and space separators are rendered between adjacent tabs.
+	separator := tabSeparatorStyle.Render(" ")
 	tabParts := make([]string, 0, len(m.tabs)*2-1)
 	for i, t := range m.tabs {
 		if i > 0 {
@@ -624,15 +623,15 @@ func (m Model) View() string {
 	var bottom string
 	switch {
 	case m.err != "":
-		bottom = m.bottomBar("⚠ "+m.err, errorBarStyle)
+		bottom = m.bottomBar("ERR "+m.err, errorBarStyle)
 	case m.warn != "":
-		bottom = m.bottomBar("⚠ "+m.warn, warnBarStyle)
+		bottom = m.bottomBar("WARN "+m.warn, warnBarStyle)
 	case m.toast != "":
-		style := statusBarStyle.Foreground(lipgloss.Color(colorSuccess))
-		prefix := "✓ "
+		style := successStyle
+		prefix := "OK "
 		if m.level == toastWarn {
 			style = warnBarStyle
-			prefix = "⚠ "
+			prefix = "WARN "
 		}
 		bottom = m.bottomBar(prefix+m.toast, style)
 	default:

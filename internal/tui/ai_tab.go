@@ -1655,7 +1655,7 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		lines = append(lines, "  -")
 	}
 	if t.warning != "" {
-		lines = append(lines, "", "⚠ "+t.warning)
+		lines = append(lines, "", "WARN "+t.warning)
 	}
 	return lines
 }
@@ -1864,7 +1864,7 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("LLM") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
+		return paneTitleStyle.Render("LLM") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1965,7 +1965,7 @@ func (t *aiTab) providerLines(width int) []string {
 func (t *aiTab) agentLines(width int) []string {
 	lines := make([]string, 0, len(t.rows)+1)
 	if t.warning != "" {
-		lines = append(lines, mutedStyle().Render(truncateWidth("⚠ "+t.warning, width)))
+		lines = append(lines, mutedStyle().Render(truncateWidth("WARN "+t.warning, width)))
 	}
 	for i, r := range t.rows {
 		state := "not switched"
@@ -1973,7 +1973,7 @@ func (t *aiTab) agentLines(width int) []string {
 			state = fmt.Sprintf("%s / %s (%d models)",
 				r.Pointer.Provider, r.Pointer.DefaultModel, len(r.Pointer.Models))
 			if r.Drift != "" {
-				state += " ⚠"
+				state += " !"
 			}
 		}
 		line := fmt.Sprintf("%s · %s", r.AgentID, state)

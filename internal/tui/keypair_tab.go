@@ -992,7 +992,7 @@ func (t *keyPairTab) clamp() {
 
 func (t *keyPairTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("KeyPair") + "\n" + truncateWidth("⚠ "+t.loadErr, maxInt(t.width-2, 8))
+		return paneTitleStyle.Render("KeyPair") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()
@@ -1128,7 +1128,7 @@ func (t *keyPairTab) renderModal() string {
 			body += "\nand the public key to:\n" + t.materializePath + ".pub (0644)."
 		}
 		if t.pendingForce {
-			body += "\n⚠ target file exists and will be overwritten."
+			body += "\n! target file exists and will be overwritten."
 		}
 		return modalBox(t.width, t.height, "export keypair "+t.pendingKey, body, "enter/y confirm · esc/n cancel")
 	case kpModePrune:

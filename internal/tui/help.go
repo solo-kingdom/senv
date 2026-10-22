@@ -177,7 +177,7 @@ func (h *helpTab) layout() (rows []string, footer string) {
 // gridRows 按词折行，续行缩进对齐到描述列）。分类标题（Global、Tab 名、
 // 分组名）用 accent 色加粗，与键位行区分。
 func (h *helpTab) items() []helpCell {
-	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	heading := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	kw := h.keyWidth()
 	blank := helpCell{"", lipgloss.NewStyle(), 0}
 	items := []helpCell{{"Global", heading, 0}}

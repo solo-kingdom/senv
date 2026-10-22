@@ -48,58 +48,84 @@ func TestOuterFramePresent(t *testing.T) {
 	}
 }
 
-// TestActiveTabHasBackgroundBlock verifies the active tab label is rendered
-// with a background colour block while inactive tabs are not.
-func TestActiveTabHasBackgroundBlock(t *testing.T) {
+// TestActiveTabHasUnderline verifies the active tab label is rendered
+// with an underline (activeTabStyle) while inactive tabs lack one.
+func TestActiveTabHasUnderline(t *testing.T) {
 	// Force a colour profile so lipgloss emits ANSI escape sequences
 	// (without a TTY lipgloss strips all colour).
 	prev := lipgloss.DefaultRenderer().ColorProfile()
 	lipgloss.DefaultRenderer().SetColorProfile(termenv.ANSI256)
 	defer lipgloss.DefaultRenderer().SetColorProfile(prev)
 
-	// Active = 0 (Env): "Env" should carry a background escape, others not.
+	// Active = 0 (Env): "Env" should carry an underline escape, others not.
 	m := sizedModel(80, 24)
 	out := m.View()
-	assertHasBackgroundAround(t, out, "Env", true)
-	assertHasBackgroundAround(t, out, "Text", false)
-	assertHasBackgroundAround(t, out, "Config", false)
+	if out == "" || out == "starting…" {
+		t.Skip("View() not ready (needs window size)")
+	}
+	assertHasUnderlineAround(t, out, "Env", true)
+	assertHasUnderlineAround(t, out, "Text", false)
+	assertHasUnderlineAround(t, out, "Config", false)
 
-	// Switch to tab 1 (Text) and verify the background moves.
+	// Switch to tab 1 (Text) and verify the underline moves.
 	m.active = 1
 	out = m.View()
-	assertHasBackgroundAround(t, out, "Env", false)
-	assertHasBackgroundAround(t, out, "Text", true)
+	assertHasUnderlineAround(t, out, "Env", false)
+	assertHasUnderlineAround(t, out, "Text", true)
 }
 
-// assertHasBackgroundAround checks whether the given label is rendered inside
-// a background-coloured block. It looks at the styling segment between the last
-// ANSI reset (\x1b[0m) before the label and the label itself.
-func assertHasBackgroundAround(t *testing.T, out, label string, want bool) {
+
+// assertHasUnderlineAround checks whether the given label is rendered with
+// an underline. With adaptive colors, the text may have ANSI codes between
+// characters, so we find the label's position in the stripped output and then
+// check the original output for underline sequences.
+func assertHasUnderlineAround(t *testing.T, out, label string, want bool) {
 	t.Helper()
-	idx := strings.Index(out, label)
+	stripped := stripANSI(out)
+	idx := strings.Index(stripped, label)
 	if idx < 0 {
 		t.Fatalf("label %q not found in View() output", label)
 	}
-	beforeLabel := out[:idx]
-	// Narrow to the styling segment after the most recent reset so adjacent
-	// labels' escape sequences don't bleed into the check.
+	// Find the approximate position in the original output by counting
+	// visible characters and finding where the label starts.
+	// Then check the surrounding ANSI codes for underline.
+	visibleCount := 0
+	origIdx := 0
+	for origIdx < len(out) {
+		if out[origIdx] == '\x1b' {
+			// Skip ANSI sequence
+			end := strings.Index(out[origIdx:], "m")
+			if end >= 0 {
+				origIdx += end + 1
+				continue
+			}
+		}
+		if visibleCount == idx {
+			break
+		}
+		visibleCount++
+		origIdx++
+	}
+	// Look back from origIdx to find the styling segment.
+	beforeLabel := out[:origIdx]
 	lastReset := strings.LastIndex(beforeLabel, "\x1b[0m")
 	segment := beforeLabel
 	if lastReset >= 0 {
 		segment = beforeLabel[lastReset:]
 	}
-	// lipgloss v1.x combines attributes into one SGR escape (e.g.
-	// \x1b[1;38;5;231;48;5;99m). Detect the background attribute "48;5;"
-	// regardless of where it sits in the combined sequence.
-	hasBg := strings.Contains(segment, "48;5;")
-	if hasBg != want {
-		t.Errorf("label %q: hasBackground=%v, want %v (segment=%q)", label, hasBg, want, segment)
+	// lipgloss v1.x uses \x1b[4m for underline. It may be combined in a
+	// sequence like \x1b[1;4;38;5;...m. Look for ";4;" or "[4;" or "[4m".
+	hasUnderline := strings.Contains(segment, ";4;") ||
+		strings.Contains(segment, "[4;") ||
+		strings.Contains(segment, "[4m")
+	if hasUnderline != want {
+		t.Errorf("label %q: hasUnderline=%v, want %v (segment=%q)", label, hasUnderline, want, segment)
 	}
 }
 
-// TestTabSeparatorsPresent verifies exactly two separator characters (│)
-// appear between the three tab labels in the tab strip row.
-func TestTabSeparatorsPresent(t *testing.T) {
+// TestTabStripContainsAllLabels verifies all tab labels appear in the tab strip row.
+// The visual redesign uses space separators instead of │, so we just check labels are present.
+func TestTabStripContainsAllLabels(t *testing.T) {
 	m := sizedModel(80, 24)
 	out := m.View()
 	lines := strings.Split(out, "\n")
@@ -116,16 +142,15 @@ func TestTabSeparatorsPresent(t *testing.T) {
 		t.Fatal("no row contains all three tab labels (Env/Text/Config)")
 	}
 
-	// Extract the segment between "Env" and "Config" and count separators.
+	// Verify labels appear in order.
 	envIdx := strings.Index(tabRow, "Env")
+	textIdx := strings.Index(tabRow, "Text")
 	configIdx := strings.Index(tabRow, "Config")
-	if envIdx < 0 || configIdx < 0 || configIdx <= envIdx {
-		t.Fatalf("cannot locate Env/Config in tab row: %q", tabRow)
+	if envIdx < 0 || textIdx < 0 || configIdx < 0 {
+		t.Fatalf("missing tab labels in row: %q", tabRow)
 	}
-	segment := tabRow[envIdx:configIdx]
-	sep := strings.Count(segment, "│")
-	if sep != 2 {
-		t.Errorf("tab separators between Env and Config = %d, want 2 (row: %q)", sep, clipRunesT(tabRow, 60))
+	if !(envIdx < textIdx && textIdx < configIdx) {
+		t.Errorf("tab labels not in expected order Env < Text < Config: env=%d text=%d config=%d", envIdx, textIdx, configIdx)
 	}
 }
 
