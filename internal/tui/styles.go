@@ -2,23 +2,29 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Adaptive color palette for light/dark terminals (Tokyo Night).
-// Using AdaptiveColor: first value is dark terminal, second is light terminal.
+// Adaptive color palette for light/dark terminals (Tokyo Night based).
+// lipgloss picks Dark or Light from the detected terminal background.
+//
+// Contrast floor (enforced by TestPaletteContrast against common dark and
+// light terminal backgrounds and our own surface fills): every text role is
+// >= 4.5:1 (WCAG AA), muted/secondary text stays clearly legible but
+// visibly quieter than primary text, and colorDim — reserved for borders and
+// separators, never for text you need to read — is >= 3:1.
 var (
 	// Core palette roles
 	colorFg      = lipgloss.AdaptiveColor{Dark: "#c0caf5", Light: "#343b58"}
-	colorMuted   = lipgloss.AdaptiveColor{Dark: "#565f89", Light: "#9699a3"}
-	colorDim     = lipgloss.AdaptiveColor{Dark: "#414868", Light: "#b4b5b9"}
-	colorAccent  = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#3d6fcc"}
-	colorCyan    = lipgloss.AdaptiveColor{Dark: "#7dcfff", Light: "#0f7a9d"}
+	colorMuted   = lipgloss.AdaptiveColor{Dark: "#9aa5ce", Light: "#565a6e"}
+	colorDim     = lipgloss.AdaptiveColor{Dark: "#7f88b0", Light: "#7d8296"}
+	colorAccent  = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#2f5fbf"}
+	colorCyan    = lipgloss.AdaptiveColor{Dark: "#7dcfff", Light: "#0b6a8a"}
 	colorMagenta = lipgloss.AdaptiveColor{Dark: "#bb9af7", Light: "#7a4db8"}
-	colorDanger  = lipgloss.AdaptiveColor{Dark: "#f7768e", Light: "#c24242"}
-	colorOk      = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#4e8a3a"}
-	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#b36d00"}
+	colorDanger  = lipgloss.AdaptiveColor{Dark: "#f7768e", Light: "#a83232"}
+	colorOk      = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#356a26"}
+	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#925800"}
 
 	// Surfaces (subtle depth without loud fills)
-	colorSurface   = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#e8eaf0"}
-	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#d8dce8"}
+	colorSurface   = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#eceef3"}
+	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#e1e5ef"}
 	colorOnAccent  = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
 )
 
@@ -34,7 +40,7 @@ var (
 	// (e.g. "Groups (n)" or a list header) — not the tab strip container.
 	// Bold for better visual hierarchy against list rows.
 	paneTitleStyle = lipgloss.NewStyle().
-			Foreground(colorMuted).
+			Foreground(colorFg).
 			Bold(true).
 			Padding(0, 1)
 
@@ -88,7 +94,7 @@ var (
 				Background(colorSurfaceHi)
 
 	maskedValueStyle = lipgloss.NewStyle().
-				Foreground(colorDim)
+				Foreground(colorMuted)
 
 	searchOverlayStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
@@ -99,7 +105,7 @@ var (
 		typeEnv:    lipgloss.NewStyle().Foreground(colorAccent),
 		typeText:   lipgloss.NewStyle().Foreground(colorCyan),
 		typeBackup: lipgloss.NewStyle().Foreground(colorMuted),
-		typeConfig: lipgloss.NewStyle().Foreground(colorDim),
+		typeConfig: lipgloss.NewStyle().Foreground(colorMuted),
 		typeSSH:    lipgloss.NewStyle().Foreground(colorMagenta),
 		typeLLM:    lipgloss.NewStyle().Foreground(colorOk),
 		typeMCP:    lipgloss.NewStyle().Foreground(colorWarn),
