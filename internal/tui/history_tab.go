@@ -145,6 +145,10 @@ func entryIDOf(h provider.HistoryVersion) string {
 	return h.Kind + ":" + h.Grp + ":" + h.Key
 }
 
+// entryLabelOf 是 entryIDOf 的展示版：组名/键名来自 server 数据，可能含
+// 控制字符或换行，拼进列表行/标题前先收敛为终端安全的单行文本。
+func entryLabelOf(h provider.HistoryVersion) string { return plainText(entryIDOf(h)) }
+
 func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	switch msg := msg.(type) {
 	case historyLoadedMsg:
@@ -304,7 +308,7 @@ func (t *historyTab) View() string {
 	if len(t.rows) == 0 {
 		title := "vault recent history"
 		if t.entryID != "" {
-			title = "entry " + t.entryID
+			title = "entry " + plainText(t.entryID)
 		}
 		return t.plainPane(title + "\n\n(no history versions: the entry was never modified, or the server has history retention disabled)")
 	}
@@ -315,7 +319,7 @@ func (t *historyTab) View() string {
 	innerW := maxInt(paneW-2, 8)
 	title := "vault recent history (enter to view one entry)"
 	if t.entryID != "" {
-		title = fmt.Sprintf("version timeline for %s", t.entryID)
+		title = fmt.Sprintf("version timeline for %s", plainText(t.entryID))
 	}
 	// Column layout: cursor(2) | time(19) | rev(6) | entry | preview
 	// Fixed columns use strict widths; entry and preview share remaining space.
@@ -334,7 +338,7 @@ func (t *historyTab) View() string {
 	for i, row := range t.rows {
 		timePart := timestampStyle.Render(padRight(historyTimeOf(row), timeW))
 		revPart := padRight(fmt.Sprintf("r%d", row.Revision), revW)
-		entryPart := padRight(truncateWidth(entryIDOf(row), entryW), entryW)
+		entryPart := padRight(truncateWidth(entryLabelOf(row), entryW), entryW)
 		previewPart := truncateWidth(t.previewOf(row), previewW)
 
 		// Build the row with single-space separators
@@ -437,7 +441,9 @@ func sanitizePreview(s string) string {
 			break
 		}
 	}
-	out := strings.TrimSpace(b.String())
+	// 最后过一遍终端安全化：C1 控制字符、零宽/双模型宽度不一致的字素等
+	// （上面只处理了 C0）。
+	out := strings.TrimSpace(sanitizeLine(b.String()))
 	if out == "" {
 		return "(empty)"
 	}
@@ -451,7 +457,7 @@ func (t *historyTab) openDetail() {
 		return
 	}
 	title := fmt.Sprintf("%s · revision %d · %s",
-		entryIDOf(*row), row.Revision, historyTimeOf(*row))
+		entryLabelOf(*row), row.Revision, historyTimeOf(*row))
 	t.detail = newDetailOverlay(title, t.detailLines(*row))
 	t.detail.SetSize(t.width, t.height)
 }

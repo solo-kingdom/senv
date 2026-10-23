@@ -17,18 +17,13 @@ var (
 	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#b36d00"}
 
 	// Surfaces (subtle depth without loud fills)
-	colorSurface     = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#e8eaf0"}
-	colorSurfaceHi   = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#d8dce8"}
-	colorOnAccent    = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
+	colorSurface   = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#e8eaf0"}
+	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#d8dce8"}
+	colorOnAccent  = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
 )
 
 // Styles holds all lipgloss styles used by the TUI.
 var (
-	frameStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorDim).
-			Padding(0, 0)
-
 	tabStripStyle = lipgloss.NewStyle().
 			Background(colorSurface).
 			Border(lipgloss.NormalBorder(), false, false, true, false).
@@ -135,4 +130,9 @@ var (
 
 func mutedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(colorMuted)
+}
+
+// frameBorderStyle colors the outer frame drawn by frameLayout.renderFrame.
+func frameBorderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(colorDim)
 }

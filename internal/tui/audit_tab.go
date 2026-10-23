@@ -218,7 +218,7 @@ func (t *auditTab) View() string {
 	}
 	// 加载/错误/空态与列表同用固定面板几何（撑满内容区），切换无布局跳动。
 	if t.loadErr != "" {
-		return t.plainPane("failed to load audit log: " + t.loadErr)
+		return t.plainPane("failed to load audit log: " + plainText(t.loadErr))
 	}
 	if !t.loaded {
 		return t.plainPane("loading audit log…")
@@ -251,8 +251,8 @@ func (t *auditTab) View() string {
 		if !e.Success {
 			outcome = dangerStyle.Render(fmt.Sprintf("%-8s", "ERR"))
 		}
-		ev := fmt.Sprintf("%-18s", string(e.EventType))
-		body := ts + "  " + ev + " " + outcome + " " + e.Target
+		ev := fmt.Sprintf("%-18s", plainText(string(e.EventType)))
+		body := ts + "  " + ev + " " + outcome + " " + plainText(e.Target)
 		prefix := "  "
 		if i == t.list.Cursor() {
 			prefix = "> "
