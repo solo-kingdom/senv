@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // paneBudget is the rendered height of a two-pane tab: inner height plus the
@@ -98,23 +99,20 @@ func clipLines(s string, n int) string {
 }
 
 // truncateWidth truncates s to at most maxCols display columns, appending "…".
-// Unlike truncateRunes it accounts for double-width (CJK) runes, so a line can
-// never be wider on screen than the pane it is rendered into.
+// It is ANSI-aware (SGR styling survives, never cut mid-sequence) and
+// grapheme-aware (CJK/emoji count as their real cell width), and it first
+// runs sanitizeLine: the result is always ONE terminal-safe line — embedded
+// newlines/tabs become spaces and control/escape sequences are dropped — so a
+// row built from record data can never wrap inside its pane or move the cursor.
 func truncateWidth(s string, maxCols int) string {
-	if maxCols <= 0 || lipgloss.Width(s) <= maxCols {
+	s = sanitizeLine(s)
+	if maxCols <= 0 || ansi.StringWidth(s) <= maxCols {
 		return s
 	}
-	var b strings.Builder
-	used := 0
-	for _, r := range s {
-		w := lipgloss.Width(string(r))
-		if used+w > maxCols-1 {
-			break
-		}
-		b.WriteRune(r)
-		used += w
+	if maxCols == 1 {
+		return "…"
 	}
-	return b.String() + "…"
+	return ansi.Truncate(s, maxCols, "…")
 }
 
 // windowedPane renders a titled list that stays within height rows, scrolling

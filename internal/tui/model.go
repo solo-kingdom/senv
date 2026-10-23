@@ -282,24 +282,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// Inner content area. lipgloss v1.x draws borders OUTSIDE Width/Height,
-		// so each pane renders (Width+2)x(Height+2). The height budget covers:
-		//   frame top+bottom border : 2 rows
-		//   tab strip (labels+border): 2 rows
-		//   status/error bar        : 1 row
-		//   tab's own pane borders  : 2 rows  (panes render Height+2)
-		// Total chrome = 7 rows, so contentH = height - 7.
-		// Width: the frame border consumes 2 cols, so contentW = width - 2.
-		contentW := m.width - 2
-		contentH := m.height - 7
-		if contentH < 0 {
-			contentH = 0
-		}
-		if contentW < 1 {
-			contentW = 1
-		}
+		// 区域尺寸只在 frameLayout 一处计算（见 layout.go）；Tab 拿到的是
+		// 内容区格子，View 再把 Tab 输出硬装箱进同一个格子。
+		w, h := computeLayout(m.width, m.height).tabSize()
 		for _, t := range m.tabs {
-			t.SetSize(contentW, contentH)
+			t.SetSize(w, h)
 		}
 		return m, nil
 
@@ -405,6 +392,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
+		case "ctrl+l":
+			// 强制整屏重画：渲染器只重画变化的行，万一终端与我们对字符宽度
+			// 的判断仍有分歧（极少见的字体/终端组合），这是用户侧的兜底。
+			return m, tea.ClearScreen
 		case "ctrl+r":
 			// 刷新当前 Tab（grill D7：refresh 统一 Ctrl+R，腾出 r=rename）。
 			// 先作废进程内快照 memo：用户显式刷新须重新读 vault，而不是
@@ -554,39 +545,22 @@ func tabTitleForResult(resultType string) string {
 }
 
 // View renders the tab strip + active tab content + status/error bar.
+//
+// 渲染不变量（由 frameLayout.renderFrame 保证，与各 Tab 实现无关）：输出
+// 恰好 m.height 行，每行在 grapheme 与 wcwidth 两种宽度模型下都恰好
+// m.width 列，且除 SGR 样式外不含任何转义/控制字符。bubbletea 的行差分
+// 渲染器依赖「一逻辑行 = 一物理行」，破坏它会让终端滚屏、旧帧残留。
 func (m Model) View() string {
 	if m.height == 0 {
 		return "starting…"
 	}
-
-	// Minimum size guard: the outer frame (2 rows) + tab strip with its
-	// underline (2 rows) + status bar (1 row) + tab pane borders (2 rows)
-	// need height >= 7, and the shortest tab strip needs width >= 30. Below
-	// this the layout collapses, so show a plain centered hint with no chrome.
-	if m.height < 7 || m.width < 30 {
-		hint := "terminal too small (need ≥30×7 chars)"
-		// Center the hint within the available area without any box drawing.
-		padLines := (m.height - 1) / 2
-		if padLines < 0 {
-			padLines = 0
-		}
-		top := ""
-		for i := 0; i < padLines; i++ {
-			top += "\n"
-		}
-		pad := (m.width - len([]rune(hint))) / 2
-		if pad < 0 {
-			pad = 0
-		}
-		return top + strings.Repeat(" ", pad) + hint
+	l := computeLayout(m.width, m.height)
+	if l.tooSmall() {
+		return l.renderTooSmall()
 	}
 
-	// Inner content dimensions (frame border + chrome rows already reserved
-	// in Update()). The tab strip and bottom bar share contentW.
-	contentW := m.width - 2
-
-	// Tab strip: active tab gets accent text with underline, inactive tabs
-	// get muted text, and space separators are rendered between adjacent tabs.
+	// Tab strip: active tab gets the accent pill, inactive tabs get muted
+	// text, and space separators are rendered between adjacent tabs.
 	separator := tabSeparatorStyle.Render(" ")
 	tabParts := make([]string, 0, len(m.tabs)*2-1)
 	for i, t := range m.tabs {
@@ -602,8 +576,8 @@ func (m Model) View() string {
 	}
 	// tabStripStyle 的 Padding(0,1) 占 2 列：预算内放不下的尾部 tab 以 "…"
 	// 收尾，否则宽标签会在 strip 内折行、把整个布局撑高。
-	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, contentW-2)
-	tabStrip := tabStripStyle.Width(contentW).Render(strip)
+	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, l.innerW-2)
+	tabStrip := tabStripStyle.Width(l.innerW).Render(strip)
 
 	// Active tab content. The search overlay takes over the content area
 	// while open; the help overlay floats on top of the tab content instead.
@@ -612,20 +586,18 @@ func (m Model) View() string {
 	case m.search != nil:
 		content = m.search.View()
 	case m.help != nil:
-		content = overlayBox(m.tabs[m.active].View(), m.help.View(), contentW, m.height-frameRows)
+		content = overlayBox(m.tabs[m.active].View(), m.help.View(), l.innerW, l.bodyH)
 	default:
 		content = m.tabs[m.active].View()
 	}
 
-	// Bottom bar: error takes precedence over warning, then status hint. The
-	// text is hard-truncated (not Width-wrapped, which would add a line) to
-	// fit inside contentW minus the bar's Padding(0,1).
+	// Bottom bar: error takes precedence over warning, then status hint.
 	var bottom string
 	switch {
 	case m.err != "":
-		bottom = m.bottomBar("ERR "+m.err, errorBarStyle)
+		bottom = m.bottomBar("ERR "+plainText(m.err), errorBarStyle)
 	case m.warn != "":
-		bottom = m.bottomBar("WARN "+m.warn, warnBarStyle)
+		bottom = m.bottomBar("WARN "+plainText(m.warn), warnBarStyle)
 	case m.toast != "":
 		style := successStyle
 		prefix := "OK "
@@ -633,7 +605,7 @@ func (m Model) View() string {
 			style = warnBarStyle
 			prefix = "WARN "
 		}
-		bottom = m.bottomBar(prefix+m.toast, style)
+		bottom = m.bottomBar(prefix+plainText(m.toast), style)
 	default:
 		var bs []KeyAction
 		switch {
@@ -647,15 +619,7 @@ func (m Model) View() string {
 		bottom = m.bottomBar(groupBar(bs), statusBarStyle)
 	}
 
-	// Stack the chrome inside the frame. lipgloss v1.x draws borders
-	// outside Width/Height, so Width(m.width-2).Height(m.height-2) makes
-	// the frame's total rendered size exactly m.width x m.height.
-	inner := lipgloss.JoinVertical(lipgloss.Left, tabStrip, content, bottom)
-	framed := frameStyle.Width(m.width - 2).Height(m.height - 2).Render(inner)
-	// 最后一道防线：frame 的 Height 只补齐不裁剪，任何漏网超高内容都会让
-	// bubbletea 全量打印视图、把上一帧 tab 栏顶出屏幕叠成「双 header」。
-	// 硬裁到 m.height，再补空白行钉死高度，避免切 tab 时终端滚出叠影。
-	return fitExactHeight(framed, m.height)
+	return l.renderFrame(tabStrip, content, bottom)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
@@ -700,24 +664,6 @@ func overlayBox(base, box string, w, h int) string {
 		out[r] = strings.Repeat(" ", left) + padRight(bl, bw) + strings.Repeat(" ", w-left-bw)
 	}
 	return strings.Join(out, "\n")
-}
-
-// fitExactHeight clips s to at most n lines, then pads with blank lines so the
-// returned view is exactly n rows. A stable height stops the terminal from
-// scrolling when switching tabs (which otherwise leaves a ghost tab strip).
-func fitExactHeight(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	s = clipLines(s, n)
-	lines := strings.Split(s, "\n")
-	if s == "" {
-		lines = nil
-	}
-	for len(lines) < n {
-		lines = append(lines, "")
-	}
-	return strings.Join(lines, "\n")
 }
 
 // fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部

@@ -15,6 +15,7 @@ var globalKeys = []KeyAction{
 	{Keys: []string{"Tab / Shift+Tab"}, Desc: "cycle tabs"},
 	{Keys: []string{"S"}, Desc: "global search"},
 	{Keys: []string{"ctrl+r"}, Desc: "refresh current tab"},
+	{Keys: []string{"ctrl+l"}, Desc: "redraw screen"},
 	{Keys: []string{"?"}, Desc: "keybinding overview"},
 	{Keys: []string{"esc"}, Desc: "back: clear filter / close overlay / wizard back"},
 	{Keys: []string{"q / ctrl+c"}, Desc: "quit (q warns once with pending pushes)"},
@@ -48,17 +49,17 @@ func newHelpTab(title string, tab Tab) *helpTab {
 	return &helpTab{title: title, bindings: tab.Bindings()}
 }
 
-func (h *helpTab) Title() string         { return "Help" }
+func (h *helpTab) Title() string { return "Help" }
 func (h *helpTab) Bindings() []KeyAction {
 	return []KeyAction{
 		{[]string{"?/esc"}, "close", grpSearch, false},
 		actUp, actDown, actPageUp, actPageDn, actTop, actBottom,
 	}
 }
-func (h *helpTab) InputMode() bool       { return true }
-func (h *helpTab) Init() tea.Cmd         { return nil }
-func (h *helpTab) Reload() tea.Cmd       { return nil }
-func (h *helpTab) SetSize(w, hh int)     { h.width, h.height = w, hh }
+func (h *helpTab) InputMode() bool   { return true }
+func (h *helpTab) Init() tea.Cmd     { return nil }
+func (h *helpTab) Reload() tea.Cmd   { return nil }
+func (h *helpTab) SetSize(w, hh int) { h.width, h.height = w, hh }
 
 func (h *helpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
