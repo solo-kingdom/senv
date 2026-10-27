@@ -990,7 +990,7 @@ var credentialModeLabels = []struct {
 	detail string
 }{
 	{"auto", "支持环境变量反解的 agent 只写引用，claude-code 回落明文"},
-	{"env", "强制环境变量引用（claude-code 靠进程环境兜底，需先 senv env export）"},
+	{"env", "强制环境变量引用（claude-code 写 ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL，需先 senv env export）"},
 	{"inline", "强制明文写入配置文件（0600，ADR-0002 原行为）"},
 }
 
@@ -1053,6 +1053,9 @@ func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 		}
 		if out.CredentialEnv != "" {
 			notice += fmt.Sprintf("; %s reads credentials from env %s", out.AgentName, out.CredentialEnv)
+			if out.BaseURLEnv != "" {
+				notice += fmt.Sprintf(" and base URL from env %s", out.BaseURLEnv)
+			}
 		}
 		// 全部 warning 都要可见：凭据组未激活、名字被占用、模型元数据缺失等提示
 		// 被截断等于静默坏状态。
