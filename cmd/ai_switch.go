@@ -31,8 +31,8 @@ func agentHomeDir() (string, error) {
 const aiSwitchModelSetHint = 20
 
 var (
-	aiSwitchModels         []string
-	aiSwitchDefaultModel   string
+	aiSwitchModels       []string
+	aiSwitchDefaultModel string
 	// aiSwitchBackgroundModel 是单次切换的后台模型覆盖（ADR-0029）。
 	aiSwitchBackgroundModel string
 	// aiSwitchCredentialMode 是单次切换的凭据模式偏好（ADR-0031）。
@@ -56,13 +56,19 @@ Supported agents: claude-code, codex, kimi, pi, omp, opencode.
          kimi api_key_env, pi "$NAME", omp bare name, opencode "{env:NAME}".
          claude-code does not expand ${VAR} in settings.json, so auto falls
          back to plaintext for it; use --credential-mode=env to force env
-         mode (settings omit ANTHROPIC_BASE_URL/AUTH_TOKEN and rely on the
-         process environment, which requires "senv env export" to be evaluated
-         before launching the agent).
+         mode (see below).
   env    force environment variable reference; fails if the agent cannot
          resolve it. With an env:<group>/<key> credential the env name is the
          referenced key; with text:<group>/<key> senv seeds
-         SENV_<ALIAS>_API_KEY in the default env group.
+         SENV_<ALIAS>_API_KEY in the default env group. claude-code ignores
+         those names and uses its contract names instead: senv writes
+         ANTHROPIC_AUTH_TOKEN (value = the credential reference) and
+         ANTHROPIC_BASE_URL (value = the resolved base URL) into the default
+         env group, omits both keys from settings.json, and expects
+         "senv env export" to be evaluated before launching the agent.
+         senv-managed entries carry a "senv-managed:" description and are
+         removed when claude-code switches back to inline; a user entry with
+         the same name but a different value makes the switch fail closed.
   inline always write the decrypted key into the config file (0600), matching
          the pre-ADR-0031 behavior.
 
@@ -125,8 +131,9 @@ OpenAI-compatible agents with it.`,
 		fmt.Fprintf(cmd.OutOrStdout(), "✓ %s → %s（默认模型 %s，共 %d 个模型）\n  接入地址：%s（%s）\n  配置：%s\n",
 			out.AgentName, out.Provider, out.DefaultModel, len(out.Models), out.BaseURL, out.BaseURLSource, out.ConfigPath)
 		// 凭据环境变量名是切换结果的确定性事实（env: 引用复用被引用 key 名，
-		// text: 引用由默认组引用条目兜底），因此走 stdout 的普通信息行；需要用户
-		// 动作的情形（组未激活、名字被占用）在下方 warnings 里逐条提示。
+		// text: 引用由默认组引用条目兜底，claude-code 用契约名 ANTHROPIC_*），
+		// 因此走 stdout 的普通信息行；需要用户动作的情形（组未激活、名字被占用）
+		// 在下方 warnings 里逐条提示。
 		if out.CredentialEnv != "" {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  凭据环境变量：%s（由 `senv env export` 提供，配置文件不含明文）\n", out.CredentialEnv)
@@ -249,7 +256,7 @@ func init() {
 	aiSwitchCmd.Flags().StringVar(&aiSwitchBackgroundModel, "background-model", "",
 		"background model for the agent's background tasks (claude-code only; default: the provider profile's background model, falling back to the default model)")
 	aiSwitchCmd.Flags().StringVar(&aiSwitchCredentialMode, "credential-mode", "auto",
-		"credential write-back mode: auto (env var reference when the agent supports it, plaintext otherwise), env (force env var reference; fails if the agent cannot resolve it), or inline (force plaintext key into the config file)")
+		"credential write-back mode: auto (env var reference when the agent can resolve one, plaintext otherwise; claude-code falls back to plaintext), env (force env var reference; fails if the agent cannot resolve it — claude-code uses the fixed ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL contract entries), or inline (force plaintext key into the config file)")
 	// --model 的旧语义是「只写这一个模型」，与新语义（选定集 + 默认）不同，
 	// 静默兼容会让旧脚本在无提示下改变写入结果，因此直接拒绝（grill D8）。
 	aiSwitchCmd.Flags().StringVar(&aiSwitchModel, "model", "",

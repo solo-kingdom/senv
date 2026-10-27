@@ -342,20 +342,20 @@ func TestAITabSwitchSuccess(t *testing.T) {
 		t.Fatalf("pointer not refreshed:\n%s", tab.View())
 	}
 
-	// auto 模式下 claude-code 走 CredentialEnvVar（ADR-0031）：settings.json
-	// 不写明文凭据与接入地址，靠进程环境兜底；提示里给出环境变量名。
+	// auto 模式下 claude-code 回落 inline（CredentialEnvRef 返回空串，ADR-0031
+	// 修订）：settings.json 写明文凭据与接入地址，无 senv session 也能起。
 	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
 		t.Fatalf("read settings.json: %v", err)
 	}
-	if strings.Contains(string(raw), "sk-tui-secret") {
-		t.Fatalf("settings.json contains plaintext credential under auto mode: %s", raw)
+	if !strings.Contains(string(raw), "sk-tui-secret") {
+		t.Fatalf("settings.json missing plaintext credential under auto mode: %s", raw)
 	}
-	if strings.Contains(string(raw), "ANTHROPIC_AUTH_TOKEN") {
-		t.Fatalf("settings.json still writes ANTHROPIC_AUTH_TOKEN under env mode: %s", raw)
+	if !strings.Contains(string(raw), "ANTHROPIC_AUTH_TOKEN") {
+		t.Fatalf("settings.json missing ANTHROPIC_AUTH_TOKEN under auto mode: %s", raw)
 	}
-	if result.out.CredentialEnv == "" {
-		t.Fatal("CredentialEnv = \"\", want an env var name for claude-code env mode")
+	if result.out.CredentialEnv != "" {
+		t.Fatalf("CredentialEnv = %q, want empty (inline) under auto mode", result.out.CredentialEnv)
 	}
 }
 

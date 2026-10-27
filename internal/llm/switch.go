@@ -119,10 +119,15 @@ type AgentAdapter struct {
 	// pi 返回 "$NAME"，opencode 返回 "{env:NAME}"）。nil 表示不支持，
 	// CredentialModeEnv 下切换报错、CredentialModeAuto 下回落 inline。
 	// kimi 特殊：返回名字本身，但 Apply 里用 api_key_env 字段替换 api_key。
+	// 注意：非 nil 只表示「支持显式 env 模式」；auto 是否可用还要看返回值——
+	// 返回空串（claude-code：settings.json 不展开 ${VAR}，只能靠进程环境兜底）
+	// 表示 auto 不可用（auto 回落 inline），仅显式 CredentialModeEnv 生效。
 	CredentialEnvRef func(name string) string
 	// CredentialEnvBaseURL 为 true 时该 adapter 在 CredentialEnvVar 模式下
-	// 同时需要把接入地址经环境变量暴露（claude-code：不写 ANTHROPIC_BASE_URL，
-	// 由进程环境兜底）。SwitchManager 据此决议 BaseURLEnv 并提供对应 env 名。
+	// 同时需要把接入地址经环境变量暴露，且凭据/地址都用 agent 的契约变量名
+	// 落进默认 env 组由 senv 归属管理（claude-code：ANTHROPIC_AUTH_TOKEN /
+	// ANTHROPIC_BASE_URL，不写进 settings.json，由进程环境兜底）。
+	// SwitchManager 据此改用 claude-code 契约名并管理条目归属与清理。
 	CredentialEnvBaseURL bool
 	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
 	Protocol ProtocolFamily
@@ -436,6 +441,16 @@ const (
 	// 把后缀剥掉。写在 behavesAs 上无效——behavesAs 不参与窗口判定。
 	claude1MSuffix  = "[1m]"
 	claudeContext1M = 1_000_000
+
+	// claudeCredentialEnvName / claudeBaseURLEnvName 是 claude-code 只认的契约
+	// 变量名（ADR-0031 修订）：env 模式下 settings.json 不写这两个键，凭据与
+	// 接入地址由默认 env 组里的同名条目经 `senv env export` 提供。
+	claudeCredentialEnvName = "ANTHROPIC_AUTH_TOKEN"
+	claudeBaseURLEnvName    = "ANTHROPIC_BASE_URL"
+	// 归属标记：senv 只覆盖/清理带这两个 description 的条目，用户自建同名条目
+	// 一律不动（冲突时 fail closed）。
+	claudeCredentialEnvDesc = "senv-managed: claude-code env-mode credential"
+	claudeBaseURLEnvDesc    = "senv-managed: claude-code env-mode base URL"
 )
 
 // claudeProjectedModel 返回写入 modelPicker 行与顶层 model 的「发送名」：声明
@@ -456,8 +471,12 @@ func claudeCodeAdapter() AgentAdapter {
 		ProjectsBackgroundModel: true,
 		// Claude Code 的 settings.json env 块不展开 ${VAR}（值是字面量），因此
 		// 不能写 "$VAR" 形式的引用；env 模式靠「配置缺键时继承进程环境」（实测
-		// settings 优先、缺键才继承，ADR-0031）。CredentialEnvRef 返回空串占位，
-		// 真正的差异在 Apply 里：env 模式不写 ANTHROPIC_BASE_URL/AUTH_TOKEN。
+		// settings 优先、缺键才继承，ADR-0031）。CredentialEnvRef 返回空串：非
+		// nil 只为放行显式 --credential-mode=env，空串让 auto 判定落到 inline
+		// （auto 只认「能提供非空引用串」的 adapter）。显式 env 模式下真正的
+		// 契约变量名是 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL，由 senv 在
+		// 默认 env 组归属管理（见 ensureClaudeCodeEnvEntries）；Apply 只负责从
+		// settings.json 删掉这两个键，让进程环境生效。
 		// CredentialEnvBaseURL 让 SwitchManager 同时提供接入地址环境变量。
 		CredentialEnvRef:     func(name string) string { return "" },
 		CredentialEnvBaseURL: true,
@@ -1288,7 +1307,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		}
 		resolvedMode = CredentialEnvVar
 	case CredentialModeAuto:
-		if adapter.CredentialEnvRef != nil {
+		if autoCredentialEnvAvailable(adapter) {
 			resolvedMode = CredentialEnvVar
 		}
 	case CredentialModeInline:
@@ -1301,24 +1320,13 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	var credentialWarnings []string
 	credential := ""
 	credentialEnvName := "" // 决议的环境变量名（原始名，非 adapter 引用串）
+	plain := ""             // env 模式下的凭据明文，仅供归属条目比对，不落盘
 	if resolvedMode == CredentialInline {
 		if credential, err = resolveCredential(entry, sm.providerManager); err != nil {
 			return nil, err
 		}
-	} else {
-		plain, err := resolveCredential(entry, sm.providerManager)
-		if err != nil {
-			return nil, err
-		}
-		plan, err := credentialEnvPlanFor(entry, providerAlias)
-		if err != nil {
-			return nil, err
-		}
-		if credentialWarnings, err = sm.ensureCredentialEnvName(agentID, plan, plain); err != nil {
-			return nil, err
-		}
-		credentialEnvName = plan.Name
-		credential = adapter.CredentialEnvRef(plan.Name)
+	} else if plain, err = resolveCredential(entry, sm.providerManager); err != nil {
+		return nil, err
 	}
 
 	// 地址解析：目标族显式形态地址优先——anthropic_base_url 原样写回（不剥
@@ -1341,16 +1349,32 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		baseURL, baseURLSource = baseURLForFamily(entry.BaseURL, adapter.Protocol), baseURLSourceInferred
 	}
 
-	// claude-code 的 env 模式同时需要把接入地址暴露给进程环境（不写
-	// ANTHROPIC_BASE_URL 到 settings，ADR-0031）：决议 env 名并保证可由
-	// `senv env export` 提供。凭据与地址共用一个种子机制。
+	// env 模式的环境变量名落地（ADR-0024/0031）。地址解析先行，claude-code
+	// 的接入地址条目要写解析后的字面量。
 	baseURLEnv := ""
-	if resolvedMode == CredentialEnvVar && adapter.CredentialEnvBaseURL {
-		plan := credentialEnvPlan{Name: senvEnvKeyName(providerAlias) + "_BASE_URL", SeedRef: baseURL}
-		if credentialWarnings, err = sm.ensureCredentialEnvName(agentID, plan, baseURL); err != nil {
-			return nil, err
+	if resolvedMode == CredentialEnvVar {
+		if adapter.CredentialEnvBaseURL {
+			// claude-code 只认契约名 ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL：
+			// 两者都由 senv 在默认 env 组归属管理，settings.json 不写这两个键。
+			warns, err := sm.ensureClaudeCodeEnvEntries(entry, baseURL, plain)
+			if err != nil {
+				return nil, err
+			}
+			credentialWarnings = append(credentialWarnings, warns...)
+			credentialEnvName = claudeCredentialEnvName
+			baseURLEnv = claudeBaseURLEnvName
+			credential = adapter.CredentialEnvRef(credentialEnvName)
+		} else {
+			plan, err := credentialEnvPlanFor(entry, providerAlias)
+			if err != nil {
+				return nil, err
+			}
+			if credentialWarnings, err = sm.ensureCredentialEnvName(agentID, plan, plain); err != nil {
+				return nil, err
+			}
+			credentialEnvName = plan.Name
+			credential = adapter.CredentialEnvRef(plan.Name)
 		}
-		baseURLEnv = plan.Name
 	}
 
 	// 指针先读后写：既取上一次指向作为清理依据，也保证损坏的指针文件在写
@@ -1438,6 +1462,14 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		return nil, err
 	}
 
+	// claude-code 切到非 env 模式（inline/auto）后清理 senv 归属的契约名条目：
+	// 只删带我们标记的条目，无标记的用户条目一律不动（ADR-0031 修订）。放在
+	// 事务提交之后 best-effort 执行——切换已成功，清理失败只追加 warning。
+	var cleanupWarnings []string
+	if adapter.CredentialEnvBaseURL && resolvedMode != CredentialEnvVar {
+		cleanupWarnings = sm.cleanupClaudeCodeEnvEntries()
+	}
+
 	out := &SwitchOutput{
 		AgentID:         agentID,
 		AgentName:       adapter.Name,
@@ -1455,6 +1487,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	}
 	out.Warnings = append(credentialWarnings, backgroundWarnings...)
 	out.Warnings = append(out.Warnings, adapterWarnings...)
+	out.Warnings = append(out.Warnings, cleanupWarnings...)
 	out.Warnings = append(out.Warnings, metadataDeclarationWarnings(agentModels, req.ModelMetadata)...)
 	return out, nil
 }
@@ -1649,6 +1682,192 @@ func (sm *SwitchManager) ensureCredentialEnvName(agent string, plan credentialEn
 			"已在组 %s 写入环境变量 %s = %s：`senv env export` 会把它解析为本次凭据",
 			defaultGroup, plan.Name, plan.SeedRef)}, nil
 	}
+}
+
+// autoCredentialEnvAvailable 判定 auto 模式能否走 CredentialEnvVar：adapter
+// 既要声明反解能力（CredentialEnvRef 非 nil），也要能为探针名给出非空引用串。
+// 非 nil 只表示支持显式 env 模式——claude-code 的桩返回空串（settings.json
+// 不展开 ${VAR}），auto 下没有可写进配置的引用，必须回落 inline。
+func autoCredentialEnvAvailable(adapter AgentAdapter) bool {
+	if adapter.CredentialEnvRef == nil {
+		return false
+	}
+	return adapter.CredentialEnvRef("SENV_AUTO_PROBE") != ""
+}
+
+// claudeCodeCredentialEnvRef 把档案凭据引用映射成 claude-code 契约条目
+// ANTHROPIC_AUTH_TOKEN 的值（ADR-0031 修订）：env:/text: 引用都保留成 senv
+// 引用串，由 `senv env export` 解析；env: 引用不能复用被引用的 key 名当变量
+// 名——claude-code 只认 ANTHROPIC_AUTH_TOKEN。
+func claudeCodeCredentialEnvRef(credentialRef string) (string, error) {
+	kind, group, key, err := parseCredentialRef(credentialRef)
+	if err != nil {
+		return "", err
+	}
+	switch kind {
+	case "env", "text":
+		return "{{" + kind + ":" + group + ":" + key + "}}", nil
+	default:
+		return "", fmt.Errorf("unsupported credential ref %q", credentialRef)
+	}
+}
+
+// claudeEnvWrite 是一个待落地的 claude-code 契约条目写入（Group 为空表示
+// 本次无需写：已由等价条目或 senv 归属条目提供）。
+type claudeEnvWrite struct {
+	Group  string
+	Name   string
+	Value  string
+	Marker string
+}
+
+// ensureClaudeCodeEnvEntries 保证 claude-code env 模式的契约变量名可由
+// `senv env export` 提供（ADR-0031 修订）：凭据写 ANTHROPIC_AUTH_TOKEN（值 =
+// 档案凭据引用），接入地址写 ANTHROPIC_BASE_URL（值 = 解析后的地址字面量），
+// 都落在默认 env 组并带归属标记，由 senv 之后覆盖/清理。任何无法落地的情形
+// 直接报错（fail closed，零配置写入），而不是留下「切换成功但 agent 起不来」。
+// 两个条目先全部校验、再统一落盘，避免只写进去一半。
+func (sm *SwitchManager) ensureClaudeCodeEnvEntries(entry *storage.LLMProviderEntry, baseURL, credential string) ([]string, error) {
+	seedRef, err := claudeCodeCredentialEnvRef(entry.CredentialRef)
+	if err != nil {
+		return nil, err
+	}
+	envMgr := sm.providerManager.envManager()
+	settings, err := sm.providerManager.storage.LoadSettings()
+	if err != nil {
+		return nil, fmt.Errorf("load env settings for claude-code credential %s: %w", claudeCredentialEnvName, err)
+	}
+	defaultGroup := settings.DefaultGroup
+	if defaultGroup == "" {
+		defaultGroup = storage.ConfigDefaultGroup
+	}
+	// Snapshot 一次取全部分组与变量：IsActive 等价于 `senv env export` 的
+	// 导出集合（internal/env 的 Export 语义）。
+	vars, groups, err := envMgr.Snapshot()
+	if err != nil {
+		return nil, fmt.Errorf("read env groups for claude-code env mode: %w", err)
+	}
+	// 覆盖顺序与 `senv env export` 保持一致（ExportVariables：默认组在前，
+	// 再按 settings.ActiveGroups 的顺序），否则多个激活组含同名变量时会判定
+	// 错生效条目。Snapshot 的组序是字母序，不能直接复用。
+	activeOrder := make([]string, 0, len(settings.ActiveGroups)+1)
+	activeOrder = append(activeOrder, defaultGroup)
+	for _, g := range settings.ActiveGroups {
+		if g != defaultGroup {
+			activeOrder = append(activeOrder, g)
+		}
+	}
+	credWrite, credWarns, err := planClaudeContractEnvEntry(envMgr, sm.providerManager, vars, groups, activeOrder, defaultGroup,
+		claudeCredentialEnvName, seedRef, claudeCredentialEnvDesc, "本次凭据", credential)
+	if err != nil {
+		return nil, err
+	}
+	urlWrite, urlWarns, err := planClaudeContractEnvEntry(envMgr, sm.providerManager, vars, groups, activeOrder, defaultGroup,
+		claudeBaseURLEnvName, baseURL, claudeBaseURLEnvDesc, "本次接入地址", baseURL)
+	if err != nil {
+		return nil, err
+	}
+	warnings := append(credWarns, urlWarns...)
+	for _, w := range []claudeEnvWrite{credWrite, urlWrite} {
+		if w.Group == "" {
+			continue
+		}
+		marker := w.Marker
+		if err := envMgr.SetWithDescription(w.Group, w.Name, w.Value, &marker); err != nil {
+			return nil, fmt.Errorf("write claude-code env %s to group %s: %w", w.Name, w.Group, err)
+		}
+	}
+	return warnings, nil
+}
+
+// planClaudeContractEnvEntry 决定一个 claude-code 契约变量该怎么落地
+// （ADR-0031 修订）。同一变量名按 `senv env export` 的覆盖顺序（默认组在前、
+// 其余激活组随后，后者生效）找到生效条目，再按归属标记决定动作：
+//   - 带我们的标记 → 覆盖值并保持标记（反复切 provider 幂等）；
+//   - 无标记但解析结果等于本次值 → 视为可用，保持不动（用户自建等价条目）；
+//   - 无标记且值不匹配 → fail closed，报可行动错误、零写盘；
+//   - 只存在于未激活组 → fail closed，提示激活或删除（导出不会包含它）；
+//   - 不存在 → 在默认组创建带标记条目。
+func planClaudeContractEnvEntry(envMgr *env.Manager, pm *ProviderManager, vars map[string]map[string]string, groups []env.GroupInfo, activeOrder []string, defaultGroup, name, value, marker, what, credential string) (claudeEnvWrite, []string, error) {
+	effective := ""
+	for _, group := range activeOrder {
+		if _, ok := vars[group][name]; ok {
+			effective = group
+		}
+	}
+	if effective != "" {
+		stored, desc, err := envMgr.GetWithMeta(effective, name)
+		if err != nil {
+			return claudeEnvWrite{}, nil, fmt.Errorf("read env %s in group %s: %w", name, effective, err)
+		}
+		switch {
+		case desc == marker:
+			if stored == value {
+				return claudeEnvWrite{}, nil, nil
+			}
+			return claudeEnvWrite{Group: effective, Name: name, Value: value, Marker: marker}, nil, nil
+		case envValueMatchesCredential(stored, credential, pm):
+			return claudeEnvWrite{}, nil, nil
+		default:
+			return claudeEnvWrite{}, nil, fmt.Errorf(
+				"环境变量 %s 已被组 %s 的用户条目占用（值不匹配%s）：请执行 `senv env delete %s:%s` 或给它改名后再切换，或改用 --credential-mode=inline；本次切换未写入任何文件",
+				name, effective, what, effective, name)
+		}
+	}
+	var inactive []string
+	for _, g := range groups {
+		if g.IsActive {
+			continue
+		}
+		if _, ok := vars[g.Name][name]; ok {
+			inactive = append(inactive, g.Name)
+		}
+	}
+	if len(inactive) > 0 {
+		return claudeEnvWrite{}, nil, fmt.Errorf(
+			"环境变量 %s 只存在于未激活组 %s：`senv env export` 不会提供该名字，claude-code env 模式不可用；请执行 `senv env group activate %s`（或 `senv env delete %s:%s`）后重试；本次切换未写入任何文件",
+			name, strings.Join(inactive, "、"), inactive[0], inactive[0], name)
+	}
+	warns := []string{fmt.Sprintf(
+		"已在组 %s 写入环境变量 %s = %s（senv 管理，`senv env export` 会把它解析为%s）",
+		defaultGroup, name, value, what)}
+	return claudeEnvWrite{Group: defaultGroup, Name: name, Value: value, Marker: marker}, warns, nil
+}
+
+// cleanupClaudeCodeEnvEntries 删除 senv 归属（带标记）的 claude-code 契约名
+// 条目（ADR-0031 修订）：切到 inline/auto 后不再需要它们。只删带标记的条目，
+// 无标记的用户条目一律不动；best-effort，失败返回 warning 不影响已提交的
+// 切换结果。
+func (sm *SwitchManager) cleanupClaudeCodeEnvEntries() []string {
+	envMgr := sm.providerManager.envManager()
+	all, err := envMgr.ListVarInfo("")
+	if err != nil {
+		return []string{fmt.Sprintf("清理 claude-code env 模式条目失败（读取 env 分组）：%v", err)}
+	}
+	targets := []struct{ name, marker string }{
+		{claudeCredentialEnvName, claudeCredentialEnvDesc},
+		{claudeBaseURLEnvName, claudeBaseURLEnvDesc},
+	}
+	names := make([]string, 0, len(all))
+	for group := range all {
+		names = append(names, group)
+	}
+	sort.Strings(names)
+	var warnings []string
+	for _, group := range names {
+		for _, target := range targets {
+			info, ok := all[group][target.name]
+			if !ok || info.Description != target.marker {
+				continue
+			}
+			if err := envMgr.Delete(group, target.name); err != nil {
+				warnings = append(warnings, fmt.Sprintf(
+					"删除组 %s 的 %s 失败：%v；可手动 `senv env delete %s:%s`",
+					group, target.name, err, group, target.name))
+			}
+		}
+	}
+	return warnings
 }
 
 // envValueMatchesCredential 用既有引用解析器判断既有 env 条目是否解析为本次
