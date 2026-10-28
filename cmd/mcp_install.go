@@ -39,7 +39,9 @@ Examples:
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mcpInstallAll {
-			return installAll(mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
+			err := installAll(mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
+			codexDaemonRestartPrompt(!mcpInstallPrint, false)
+			return err
 		}
 		if len(args) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), formatAgentList())
@@ -49,7 +51,11 @@ Examples:
 		if !ok {
 			return fmt.Errorf("unknown agent %q; supported: %s", args[0], strings.Join(supportedAgentIDs(), ", "))
 		}
-		return installInto(target, mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
+		err := installInto(target, mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
+		if err == nil {
+			codexDaemonRestartPrompt(target.ID == "codex" && !mcpInstallPrint, false)
+		}
+		return err
 	},
 }
 

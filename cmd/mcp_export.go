@@ -151,8 +151,19 @@ Examples:
 		if report.Failures > 0 {
 			return fmt.Errorf("%d 项导出失败", report.Failures)
 		}
+		codexDaemonRestartPrompt(writesCodex(report.Items), mcpExportYes)
 		return nil
 	},
+}
+
+// writesCodex reports whether any successfully written item targets codex.
+func writesCodex(items []mcp.ExportItem) bool {
+	for _, item := range items {
+		if item.Agent == "codex" && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -210,8 +221,19 @@ profiles are never touched.`,
 		if report.Failures > 0 {
 			return fmt.Errorf("%d 项撤回失败", report.Failures)
 		}
+		codexDaemonRestartPrompt(removesCodex(report.Items), mcpUnexportYes)
 		return nil
 	},
+}
+
+// removesCodex reports whether any successfully removed item targets codex.
+func removesCodex(items []mcp.ExportItem) bool {
+	for _, item := range items {
+		if item.Agent == "codex" && item.Action == mcp.UnexportRemove {
+			return true
+		}
+	}
+	return false
 }
 
 func mcpExportTargetName(targets []agentcfg.Target, aliases []string) string {

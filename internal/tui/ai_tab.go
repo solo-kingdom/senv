@@ -1040,10 +1040,14 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 // 失败汇总成错误栏——单个 agent 的失败保持原始错误文本，不被包装。
 func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 	var notices, failures []string
+	switchedCodex := false
 	for _, r := range msg.results {
 		if r.err != nil {
 			failures = append(failures, r.agentID+": "+r.err.Error())
 			continue
+		}
+		if r.agentID == "codex" {
+			switchedCodex = true
 		}
 		out := r.out
 		notice := fmt.Sprintf("%s → %s (default %s, %d models)",
@@ -1077,6 +1081,9 @@ func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 				len(failures), len(msg.results), strings.Join(failures, "; "))
 		}
 		cmds = append(cmds, func() tea.Msg { return errMsg{err: err} })
+	}
+	if switchedCodex {
+		cmds = append(cmds, func() tea.Msg { return codexDaemonCheckMsg{source: "senv ai switch codex"} })
 	}
 	return tea.Batch(cmds...)
 }

@@ -153,6 +153,7 @@ OpenAI-compatible agents with it.`,
 		for _, w := range out.Warnings {
 			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ %s\n", w)
 		}
+		codexDaemonRestartPrompt(out.AgentID == "codex", false)
 		return nil
 	},
 }
