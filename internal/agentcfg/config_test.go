@@ -213,6 +213,10 @@ func TestRemoteErrorMatrix(t *testing.T) {
 		{"pi", httpPlain, false},
 		{"pi", httpHeaders, false},
 		{"pi", sse, false},
+		{"omo", httpPlain, false},
+		{"omo", httpHeaders, false},
+		{"omo", sse, true},
+		{"omp", sse, false},
 	}
 	for _, tc := range cases {
 		target, ok := Find(tc.agent)
@@ -455,17 +459,114 @@ func TestOmpAgentDirResolution(t *testing.T) {
 }
 
 func TestFindAcceptsAliasButIDsStayCanonical(t *testing.T) {
-	target, ok := Find("oh-my-pi")
-	if !ok || target.ID != "omp" {
-		t.Fatalf("Find(oh-my-pi) = %+v, %v; want omp", target, ok)
-	}
-	target, ok = Find("OH-MY-PI")
-	if !ok || target.ID != "omp" {
-		t.Fatalf("Find(OH-MY-PI) = %+v, %v; want omp", target, ok)
+	for alias, want := range map[string]string{
+		"oh-my-pi":        "omp",
+		"OH-MY-PI":        "omp",
+		"oh-my-openagent": "omo",
+		"Oh-My-OpenAgent": "omo",
+	} {
+		target, ok := Find(alias)
+		if !ok || target.ID != want {
+			t.Fatalf("Find(%s) = %+v, %v; want %s", alias, target, ok, want)
+		}
 	}
 	for _, id := range IDs() {
-		if id == "oh-my-pi" {
-			t.Fatal("IDs() must not contain alias oh-my-pi")
+		if id == "oh-my-pi" || id == "oh-my-openagent" {
+			t.Fatalf("IDs() must not contain alias %q", id)
 		}
+	}
+}
+
+func TestOmoTargetPaths(t *testing.T) {
+	for _, key := range []string{"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(key, "")
+	}
+	target, ok := Find("omo")
+	if !ok {
+		t.Fatal("omo target missing")
+	}
+	if target.JSONServersKey != "mcpServers" {
+		t.Fatalf("JSONServersKey = %q, want mcpServers", target.JSONServersKey)
+	}
+	// OmO ships a built-in MCP client: no extension prerequisite, unlike pi.
+	if target.Prerequisite != nil {
+		t.Fatalf("omo must not declare a Prerequisite: %+v", target.Prerequisite)
+	}
+	if !target.Remote.TypeKey || !target.Remote.HTTP || !target.Remote.Headers {
+		t.Fatalf("omo remote capability = %+v, want http+headers+typekey", target.Remote)
+	}
+	// OmO's ServerSchema has no sse type; exporting one must plan-error.
+	if target.Remote.SSE {
+		t.Fatal("omo must not accept sse entries: mcp.json schema types only stdio and http")
+	}
+	if path := target.ResolveConfigPath("/home/u", "user"); path != "/home/u/.omo/agent/mcp.json" {
+		t.Fatalf("user config path = %q", path)
+	}
+	if path := target.ResolveConfigPath("/home/u", "project"); path != ".omo/mcp.json" {
+		t.Fatalf("project config path = %q", path)
+	}
+}
+
+func TestOmoAgentDirResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"default", nil, "/home/u/.omo/agent"},
+		{"omo wins", map[string]string{"OMO_CODING_AGENT_DIR": "/a", "SENPI_CODING_AGENT_DIR": "/b", "PI_CODING_AGENT_DIR": "/c"}, "/a"},
+		{"senpi wins over pi", map[string]string{"SENPI_CODING_AGENT_DIR": "/b", "PI_CODING_AGENT_DIR": "/c"}, "/b"},
+		{"pi fallback", map[string]string{"PI_CODING_AGENT_DIR": "/c"}, "/c"},
+		{"blank values are skipped", map[string]string{"OMO_CODING_AGENT_DIR": "  ", "SENPI_CODING_AGENT_DIR": "/b"}, "/b"},
+		{"value used literally", map[string]string{"OMO_CODING_AGENT_DIR": "~/x"}, "~/x"},
+	}
+	unsetenv := func(t *testing.T, key string) {
+		t.Helper()
+		old, had := os.LookupEnv(key)
+		os.Unsetenv(key)
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv(key, old)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range []string{"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+				unsetenv(t, key)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := OmoAgentDir("/home/u"); got != filepath.FromSlash(tc.want) {
+				t.Fatalf("OmoAgentDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOmoAgentDirIgnoresProjectRedirect pins the ADR-0032 decision: a
+// project-level .omo/agent above the cwd must not change the resolved path,
+// so one command writes the same file in every working directory.
+func TestOmoAgentDirIgnoresProjectRedirect(t *testing.T) {
+	for _, key := range []string{"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(key, "")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "project", ".omo", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(filepath.Join(root, "project")); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if got := OmoAgentDir("/home/u"); got != filepath.Join("/home/u", ".omo", "agent") {
+		t.Fatalf("OmoAgentDir = %q, want the user-level dir even inside a project redirect", got)
 	}
 }

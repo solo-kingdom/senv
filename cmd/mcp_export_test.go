@@ -337,3 +337,90 @@ func TestMCPExportWritesOmpWithTransportTypeKey(t *testing.T) {
 		t.Fatalf("http entry = %v, want type+url", remote)
 	}
 }
+
+func TestMCPExportWritesOmoAndRejectsSSE(t *testing.T) {
+	newAuditTestProject(t)
+	resetMCPAddFlags(t)
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("PATH", t.TempDir())
+
+	// stdio 档案 + http 档案各一条。
+	mcpAddCommand = "npx"
+	mcpAddArgs = []string{"-y", "@modelcontextprotocol/server-github"}
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"github"}))
+	mcpAddTransport = "http"
+	mcpAddCommand, mcpAddArgs = "", nil
+	mcpAddURL = "https://api.example.com/mcp"
+	mcpAddHeaders = []string{"Authorization: Bearer tok"}
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"web"}))
+
+	mcpExportAgents, mcpExportAll = "omo", false
+	mcpExportDryRun, mcpExportYes, mcpExportPrint, mcpExportForce = false, true, false, false
+	mcpExportScope = "user"
+	t.Cleanup(func() {
+		mcpExportAgents, mcpExportAll = "", false
+		mcpExportDryRun, mcpExportYes, mcpExportPrint, mcpExportForce = false, false, false, false
+		mcpExportScope = "user"
+	})
+	captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+
+	omoPath := filepath.Join(dir, ".omo", "agent", "mcp.json")
+	data, err := os.ReadFile(omoPath)
+	if err != nil {
+		t.Fatalf("omo config was not written: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("omo config not valid JSON: %v\n%s", err, data)
+	}
+	servers := root["mcpServers"].(map[string]any)
+	stdio, ok := servers["github"].(map[string]any)
+	if !ok {
+		t.Fatalf("stdio entry missing: %v", servers)
+	}
+	if _, ok := stdio["type"]; ok {
+		t.Fatalf("stdio entry gained a type key: %v", stdio)
+	}
+	remote, ok := servers["web"].(map[string]any)
+	if !ok {
+		t.Fatalf("http entry missing: %v", servers)
+	}
+	if remote["type"] != "http" || remote["url"] != "https://api.example.com/mcp" {
+		t.Fatalf("http entry = %v, want type+url", remote)
+	}
+
+	// omo 的 mcp.json schema 没有 sse 类型：sse 档案必须 plan-error，
+	// 且不得把已写好的配置改写成 http。
+	mcpAddTransport = "sse"
+	mcpAddURL = "https://api.example.com/sse"
+	runSSHCommand(t, mcpAddCmd.RunE(&cobra.Command{}, []string{"legacy"}))
+	before, err := os.ReadFile(omoPath)
+	if err != nil {
+		t.Fatalf("read omo config: %v", err)
+	}
+	out := captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+	after, err := os.ReadFile(omoPath)
+	if err != nil {
+		t.Fatalf("read omo config after sse export: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("sse export must not touch omo's config:\nbefore=%s\nafter=%s", before, after)
+	}
+	if !strings.Contains(out, "sse") {
+		t.Fatalf("plan must explain the sse rejection:\n%s", out)
+	}
+
+	// 别名与规范 id 等价。
+	alias, ok := findAgent("oh-my-openagent")
+	if !ok || alias.ID != "omo" {
+		t.Fatalf("findAgent(oh-my-openagent) = %+v, %v; want omo", alias, ok)
+	}
+	if path := alias.ResolveConfigPath("/home/u", "project"); path != ".omo/mcp.json" {
+		t.Fatalf("omo project path = %q", path)
+	}
+}

@@ -29,7 +29,7 @@ var mcpInstallCmd = &cobra.Command{
 configuration file. Existing config and other MCP servers are preserved; a
 .bak backup is created before the file is modified.
 
-Supported agents: claude-code, claude-desktop, cursor, codex, zcode, kimi, pi, omp.
+Supported agents: claude-code, claude-desktop, cursor, codex, zcode, kimi, pi, omo, omp.
 
 Examples:
   senv mcp install cursor
