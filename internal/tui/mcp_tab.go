@@ -96,6 +96,8 @@ type mcpReloadMsg struct {
 	// warn renders the toast as a warning (e.g. a prerequisite install failed);
 	// the touch/reload itself still succeeded.
 	warn bool
+	// touchedCodex asks the top level to offer a codex daemon restart.
+	touchedCodex bool
 }
 
 type mcpImportItem struct {
@@ -400,6 +402,11 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			t.pendingJump = msg.alias
 		}
 		cmd := t.load()
+		if msg.touchedCodex {
+			cmd = tea.Batch(cmd, func() tea.Msg {
+				return codexDaemonCheckMsg{source: "senv mcp export"}
+			})
+		}
 		if msg.toast != "" {
 			if msg.warn {
 				return t, tea.Batch(warnToast(msg.toast), cmd)
@@ -1358,7 +1365,7 @@ func (t *mcpTab) executeExport(plan *mcp.ExportPlan, force bool, alias string) t
 		if notice != "" {
 			toast = toast + "; " + notice
 		}
-		return mcpReloadMsg{toast: toast, alias: alias, warn: noticeWarn}
+		return mcpReloadMsg{toast: toast, alias: alias, warn: noticeWarn, touchedCodex: wroteCodex(report.Items)}
 	}
 }
 
@@ -1420,8 +1427,28 @@ func (t *mcpTab) executeUnexport(plan *mcp.UnexportPlan, force bool, alias strin
 		if report.Failures > 0 {
 			toast = fmt.Sprintf("unexport finished, %d failed", report.Failures)
 		}
-		return mcpReloadMsg{toast: toast, alias: alias}
+		return mcpReloadMsg{toast: toast, alias: alias, touchedCodex: removedCodex(report.Items)}
 	}
+}
+
+// wroteCodex / removedCodex report whether the run changed codex's config, which
+// is what a daemon restart would pick up.
+func wroteCodex(items []mcp.ExportItem) bool {
+	for _, item := range items {
+		if item.Agent == "codex" && (item.Action == mcp.ActionCreate || item.Action == mcp.ActionUpdate) {
+			return true
+		}
+	}
+	return false
+}
+
+func removedCodex(items []mcp.ExportItem) bool {
+	for _, item := range items {
+		if item.Agent == "codex" && item.Action == mcp.UnexportRemove {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *mcpTab) currentAlias(plan *mcp.ExportPlan) string {

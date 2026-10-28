@@ -355,7 +355,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `x` | 导出 text 到文件 |
 | `/` | 当前 Tab 内过滤（匹配 key/name，忽略大小写；Audit Tab 匹配事件类型/目标/详情） |
 | `f` | Audit Tab：循环预设过滤（全部 / 操作 / 会话） |
-| `s` | LLM Tab：以左栏选中的 provider 执行切换——焦点在左栏时先弹 agent 多选（`space` 勾选、`a` 全选，进入时勾选已指向该 provider 的 agent；空集不可提交），焦点在右栏时直接作用于右栏光标 agent；随后多选 Agent 模型集（进入时默认全选）→ 选定默认模型 → 确认；选中多个 agent 时逐个写回（单个失败不中止其余）；codex 凭据走环境变量，不写入配置 |
+| `s` | LLM Tab：以左栏选中的 provider 执行切换——焦点在左栏时先弹 agent 多选（`space` 勾选、`a` 全选，进入时勾选已指向该 provider 的 agent；空集不可提交），焦点在右栏时直接作用于右栏光标 agent；随后多选 Agent 模型集（进入时默认全选）→ 选定默认模型 → 确认；选中多个 agent 时逐个写回（单个失败不中止其余）；codex 凭据走环境变量，不写入配置。写回命中 codex 且本机 `codex app-server` daemon 在跑时，完成后弹确认框询问是否重启它（`y`/`enter` 重启、`esc`/`n` 跳过），探测不到 daemon 则不打扰 |
 | `M` | LLM Tab：对右栏已指向某 provider 的 agent 仅更换默认模型（不弹 agent 多选），候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
 | `ctrl+r` | 刷新当前 Tab（条目栏 `r` = 重命名） |
 | `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/LLM/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
@@ -369,7 +369,7 @@ KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keyp
 
 LLM Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
-MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
+MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。写回命中 codex 且本机 daemon 在跑时，完成导出/撤回后同样弹重启确认框。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
 重命名与分组管理走存储层的原子重命名（一次 `renameat`，不是「新建 + 删除」）：值/内容、权限与时间戳原样保留，重命名冲突在表单内联报错且不写入。多字段编辑（重命名、元信息、分组名）统一走可复用表单：`tab`/`↑↓` 切换字段、`enter` 提交、`esc` 取消（无副作用），校验失败保持表单打开且不丢已填内容；`$EDITOR` 闭环仍用于多行/自由属性字段。
 
@@ -678,6 +678,8 @@ senv ai switch codex acme --models m1,m2 --default-model m2
 # 查看各 agent 当前指向（provider / 默认模型（N 个模型）；vault 已解锁时附漂移提示）
 senv ai status
 ```
+
+> 写回命中 codex 时，senv 会探测本机 `codex app-server` daemon：在跑就提示并询问是否重启（配置与环境都在 daemon 启动时拷贝一次，不重启读不到新值；检测不到则完全静默）。重启由 senv 发起，并把 `senv env export` 解析出的变量注入新 daemon，因此不必先 `eval "$(senv env export)"`。非交互调用（`--yes`、管道）只打印一行提示，不代为重启。
 
 > 切换把 **Agent 模型集**按各 agent 原生机制写入，之后可在 agent 自己的模型选择器里换模型：claude-code 写 `modelPicker`（替换内置 lineup，并用 `behavesAs` 映射自定义模型）、codex 生成 `~/.codex/model-catalogs/senv-<alias>.json` 并让 `model_catalog_json` 指向它、kimi 每个模型一条 `[models.*]`、pi 写 `models.json` 的 provider 模型表、omo 写 `models.json` 的 provider 模型表并在 `settings.json` 设 `defaultProvider`/`defaultModel`、omp 写 `models.yml` 的 provider 模型表并在 `config.yml` 设 `modelRoles.default`、opencode 写 `provider.<id>.models{}`；pi / omo 的既有 `enabledModels` 非空时还会把本次默认模型置顶，避免启动时选中 scope 首项。`--default-model` 只覆盖本次写入的起始模型，不改档案。切换会清理上一次 senv 写入、本次不再需要的条目与失效 catalog，用户自有条目与文件保持原样。`--model` 已移除：模型集用 `--models`，起始模型用 `--default-model`。
 

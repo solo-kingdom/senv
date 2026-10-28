@@ -82,6 +82,11 @@ type Model struct {
 	level     toastLevel
 	search    *searchTab // non-nil while the global search overlay is open
 	help      *helpTab   // non-nil while the keybinding overview overlay is open
+	// codexPrompt 非 nil 时是「是否重启 codex app-server daemon」的覆盖层；
+	// codexPromptStage 区分探测中与确认态。写入类 Capability 由任一 Tab
+	// 触发，但确认与重启统一由顶层持有，避免每个 Tab 各复制一套状态。
+	codexPrompt      *codexDaemonPrompt
+	codexPromptStage codexPromptStage
 	// sync 是自动同步数据源（可为 nil）；syncState 是该源的最近一次快照。
 	sync      SyncSource
 	syncState SyncState
@@ -263,6 +268,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case helpCloseMsg:
 		m.help = nil
+		return m, nil
+	}
+
+	// The codex daemon confirmation owns every key while it is open, and its
+	// probe result must land even if the user switched tabs meanwhile.
+	switch msg := msg.(type) {
+	case codexDaemonCheckMsg:
+		return m, m.checkCodexDaemon(msg.source)
+	case codexDaemonStateMsg:
+		return m.finishCodexProbe(msg)
+	case codexDaemonRestartMsg:
+		if msg.err != nil {
+			return m, func() tea.Msg { return errMsg{err: msg.err} }
+		}
+		return m, okToast("restarted codex app-server daemon")
+	}
+	if m.codexPrompt != nil {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return m.updateCodexPrompt(key)
+		}
 		return m, nil
 	}
 
@@ -587,6 +612,8 @@ func (m Model) View() string {
 		content = m.search.View()
 	case m.help != nil:
 		content = overlayBox(m.tabs[m.active].View(), m.help.View(), l.innerW, l.bodyH)
+	case m.codexPrompt != nil:
+		content = overlayBox(m.tabs[m.active].View(), m.renderCodexPrompt(), l.innerW, l.bodyH)
 	default:
 		content = m.tabs[m.active].View()
 	}
@@ -613,6 +640,8 @@ func (m Model) View() string {
 			bs = m.search.Bindings()
 		case m.help != nil:
 			bs = m.help.Bindings()
+		case m.codexPrompt != nil:
+			bs = codexPromptBindings()
 		default:
 			bs = m.tabs[m.active].Bindings()
 		}
