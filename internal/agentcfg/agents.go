@@ -268,7 +268,58 @@ func Supported() []Target {
 				Reason: "sse entries still load in omp but are deprecated upstream; prefer http",
 			},
 		},
+		{
+			// OmO (oh-my-openagent, github.com/code-yeongyu/oh-my-openagent)
+			// is a rebranded senpi/pi fork with a built-in MCP client: user
+			// mcp.json in its agent dir and project .omo/mcp.json. Verified
+			// against the bundled docs/mcp.md and the ServerSchema symbol
+			// (v5.1.47). No extension adapter needed.
+			//
+			// ServerSchema types `type` as Literal("stdio") | Literal("http")
+			// with additionalProperties:false, so there is no writable sse
+			// type — SSE is a fallback inside an http connection ("Streamable
+			// HTTP with SSE fallback"). An sse profile must plan-error rather
+			// than be silently rewritten as http.
+			ID:      "omo",
+			Name:    "OmO",
+			Aliases: []string{"oh-my-openagent"},
+			Format:  FormatJSON,
+			ConfigPath: func(home, scope string) string {
+				if scope == "project" {
+					return ".omo/mcp.json"
+				}
+				return filepath.Join(OmoAgentDir(home), "mcp.json")
+			},
+			JSONServersKey: "mcpServers",
+			Note:           "Run /mcp reload in OmO (or restart) to load the server.",
+			Remote: RemoteRender{
+				HTTP: true, SSE: false, Headers: true, TypeKey: true,
+				Reason: "omo's mcp.json schema accepts only stdio and http; sse is http's internal fallback, not a writable type",
+			},
+		},
 	}
+}
+
+// OmoAgentDir resolves OmO's agent directory. OmO is a rebranded senpi/pi
+// fork: it reads OMO_CODING_AGENT_DIR, then the legacy SENPI_CODING_AGENT_DIR
+// and PI_CODING_AGENT_DIR, and falls back to ~/.omo/agent (AGENT_DIR_ENV_NAMES
+// in the bundled runtime, v5.1.47). Values are used literally — OmO resolves
+// them with Node's path.resolve, so "~/x" is a literal relative segment, just
+// as senv treats PI_CODING_AGENT_DIR.
+//
+// senv deliberately does NOT mirror OmO's parent-directory search
+// (findNearestParentConfigDir): OmO will use a project-level .omo/agent when
+// one exists above the cwd. ai switch and mcp export's user scope are global
+// by definition, so following the cwd would make one command write different
+// files in different directories. A project-level .omo/agent therefore shadows
+// senv's user-scope writes; use --scope project for project-level MCP config.
+func OmoAgentDir(home string) string {
+	for _, name := range []string{"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		if dir := strings.TrimSpace(os.Getenv(name)); dir != "" {
+			return filepath.Clean(dir)
+		}
+	}
+	return filepath.Join(home, ".omo", "agent")
 }
 
 // PiAgentDir resolves PI's config directory. PI and pi-mcp-adapter both honor

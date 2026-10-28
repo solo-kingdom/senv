@@ -48,12 +48,12 @@ var aiSwitchCmd = &cobra.Command{
 native config files are merged in one transaction, rewritten with temporary
 backups, and backups are removed after the pointer is committed.
 
-Supported agents: claude-code, codex, kimi, pi, omp, opencode.
+Supported agents: claude-code, codex, kimi, pi, omo, omp, opencode.
 
 --credential-mode controls how the credential is written back (ADR-0031):
   auto   (default) write an environment variable reference when the agent
          supports it, plaintext otherwise. Supported syntaxes: codex env_key,
-         kimi api_key_env, pi "$NAME", omp bare name, opencode "{env:NAME}".
+         kimi api_key_env, pi/omo "$NAME", omp bare name, opencode "{env:NAME}".
          claude-code does not expand ${VAR} in settings.json, so auto falls
          back to plaintext for it; use --credential-mode=env to force env
          mode (see below).

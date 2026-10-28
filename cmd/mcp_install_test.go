@@ -326,3 +326,49 @@ func TestInstallOmpAliasAndProjectScope(t *testing.T) {
 		t.Fatalf("omp project path = %q", path)
 	}
 }
+
+func TestInstallOmOBuiltInMCPNoPrerequisite(t *testing.T) {
+	for _, key := range []string{"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(key, "")
+	}
+	target, ok := findAgent("omo")
+	if !ok {
+		t.Fatal("omo not found")
+	}
+	cfgPath, out, _ := installWithHome(t, target, "user", false)
+	if !strings.HasSuffix(cfgPath, filepath.Join(".omo", "agent", "mcp.json")) {
+		t.Fatalf("omo config path = %q", cfgPath)
+	}
+	// OmO ships a built-in MCP client: no prerequisite, unlike pi.
+	if strings.Contains(out.String(), "Requires:") {
+		t.Fatalf("omo output must not list a prerequisite:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "/mcp reload") {
+		t.Fatalf("omo output missing the reload hint:\n%s", out.String())
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		t.Fatalf("config not valid JSON: %v\n%s", err, data)
+	}
+	senvEntry, ok := root["mcpServers"].(map[string]any)["senv"].(map[string]any)
+	if !ok {
+		t.Fatalf("senv server missing: %v", root)
+	}
+	if _, ok := senvEntry["type"]; ok {
+		t.Fatalf("stdio entry gained a type key: %v", senvEntry)
+	}
+}
+
+func TestInstallOmOAliasAndProjectScope(t *testing.T) {
+	alias, ok := findAgent("oh-my-openagent")
+	if !ok || alias.ID != "omo" {
+		t.Fatalf("findAgent(oh-my-openagent) = %+v, %v; want omo", alias, ok)
+	}
+	if path := alias.ResolveConfigPath("/home/u", "project"); path != ".omo/mcp.json" {
+		t.Fatalf("omo project path = %q", path)
+	}
+}

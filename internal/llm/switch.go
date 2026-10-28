@@ -215,6 +215,7 @@ func SupportedAgents() []AgentAdapter {
 		codexAdapter(),
 		kimiAdapter(),
 		piAdapter(),
+		omoAdapter(),
 		ompAdapter(),
 		opencodeAdapter(),
 	}
@@ -835,6 +836,36 @@ func piStyleProviderEntry(req SwitchRequest) map[string]any {
 	}
 }
 
+// applyPiFamily 是 pi 与 omo 共用的写回体：两者 provider 条目、settings 键名
+// 与 enabledModels 重排规则逐字相同，只差配置目录（ADR-0032）。调用方负责
+// 按各自路径解析出 ConfigPath / settings 路径。
+func applyPiFamily(req SwitchRequest, settingsPath string) error {
+	id := senvProviderID(req.ProviderAlias)
+	if err := applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
+		providers := ensureSubMap(root, "providers")
+		if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+			delete(providers, senvProviderID(prior))
+		}
+		providers[id] = piStyleProviderEntry(req)
+		return nil
+	}, req.tx); err != nil {
+		return err
+	}
+	return applyJSONMerge(settingsPath, func(root map[string]any) error {
+		root["defaultProvider"] = id
+		root["defaultModel"] = req.DefaultModel
+		// 非空 enabledModels 会先生成 scoped model 列表并优先选第一个 scope；
+		// 把本次默认模型放在首位，才能压过用户原有 allowlist 的顺序，同时
+		// 保留其余用户 scope。
+		priorID := ""
+		if req.PriorProvider != "" {
+			priorID = senvProviderID(req.PriorProvider)
+		}
+		updatePiEnabledModels(root, id, req.DefaultModel, priorID)
+		return nil
+	}, req.tx)
+}
+
 func piAdapter() AgentAdapter {
 	return AgentAdapter{
 		ID:       "pi",
@@ -852,31 +883,37 @@ func piAdapter() AgentAdapter {
 			}
 		},
 		Apply: func(req SwitchRequest) error {
-			id := senvProviderID(req.ProviderAlias)
-			if err := applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
-				providers := ensureSubMap(root, "providers")
-				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
-					delete(providers, senvProviderID(prior))
-				}
-				providers[id] = piStyleProviderEntry(req)
-				return nil
-			}, req.tx); err != nil {
-				return err
+			return applyPiFamily(req, filepath.Join(filepath.Dir(req.ConfigPath), "settings.json"))
+		},
+	}
+}
+
+// omoAdapter：OmO（code-yeongyu/oh-my-openagent）是 senpi/pi 的改名 fork，
+// 配置形状与 pi 相同、只有品牌目录不同：provider 条目写 ~/.omo/agent/models.json
+// 的 providers.<senv id>，默认模型写同一目录 settings.json 的
+// defaultProvider/defaultModel。因此复用 applyPiFamily；enabledModels 置顶同样
+// 必需（OmO 启动时非续接会话会先取 enabledModels 解析出的首个 scope，压过
+// defaultProvider/defaultModel）。路径解析见 agentcfg.OmoAgentDir。
+func omoAdapter() AgentAdapter {
+	return AgentAdapter{
+		ID:       "omo",
+		Name:     "OmO",
+		Aliases:  []string{"oh-my-openagent"},
+		Protocol: ProtocolOpenAICompatible,
+		// OmO 的 apiKey 支持 "$NAME" / "${NAME}" 插值（内置 docs/models.md），
+		// 与 pi 同规则，因此默认只写引用（ADR-0031）。
+		CredentialEnvRef: func(name string) string { return "$" + name },
+		ConfigPath: func(home string) string {
+			return filepath.Join(agentcfg.OmoAgentDir(home), "models.json")
+		},
+		ConfigPaths: func(home string) []string {
+			return []string{
+				filepath.Join(agentcfg.OmoAgentDir(home), "models.json"),
+				filepath.Join(agentcfg.OmoAgentDir(home), "settings.json"),
 			}
-			settings := filepath.Join(filepath.Dir(req.ConfigPath), "settings.json")
-			return applyJSONMerge(settings, func(root map[string]any) error {
-				root["defaultProvider"] = id
-				root["defaultModel"] = req.DefaultModel
-				// Pi 启动时，非空 enabledModels 会先生成 scoped model 列表，并优先
-				// 选第一个 scoped model；把本次默认模型放在首位，才能压过用户
-				// 原有 allowlist 的顺序，同时保留其余用户 scope。
-				priorID := ""
-				if req.PriorProvider != "" {
-					priorID = senvProviderID(req.PriorProvider)
-				}
-				updatePiEnabledModels(root, id, req.DefaultModel, priorID)
-				return nil
-			}, req.tx)
+		},
+		Apply: func(req SwitchRequest) error {
+			return applyPiFamily(req, filepath.Join(filepath.Dir(req.ConfigPath), "settings.json"))
 		},
 	}
 }
