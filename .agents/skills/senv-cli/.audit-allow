@@ -1,0 +1,10 @@
+# senv-cli 自扫描豁免。SKILL.md 是 SSH 密钥管理工具的说明书，
+# 必然逐字写出自己维护的 `~/.ssh/senv/` 落盘路径（keys/groups/config 片段）。
+# 这些句子描述的是 senv 自己的目录布局与「拒绝外来路径写入」的边界，
+# 不是读取/外传凭据。逐行锚点豁免：同文件新增的同类文本照常上报。
+# 格式：规则|相对路径|snippet 的 ERE（snippet 取行首 120 字符）。
+credential_paths|SKILL.md|选中组决定 host 栏集合
+credential_paths|SKILL.md|把 private key 明文写到
+credential_paths|SKILL.md|把该钥设为本机 OpenSSH
+credential_paths|SKILL.md|按分组整树维护
+credential_paths|SKILL.md|乐观锁 push
