@@ -307,8 +307,16 @@ func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	got := catalog.Models[0]
-	if got.DefaultReasoningLevel != "" || len(got.SupportedReasoningLevels) != 0 {
-		t.Fatalf("catalog = %+v, want reasoning metadata omitted", got)
+	if got.DefaultReasoningLevel != "low" || len(got.SupportedReasoningLevels) != 2 ||
+		got.SupportedReasoningLevels[0].Effort != "low" || got.SupportedReasoningLevels[1].Effort != "high" {
+		t.Fatalf("catalog = %+v, want efforts low,high and second-highest default low", got)
+	}
+	var cfg map[string]any
+	if err := toml.Unmarshal(mustRead(t, filepath.Join(home, ".codex", "config.toml")), &cfg); err != nil {
+		t.Fatalf("parse codex config: %v", err)
+	}
+	if cfg["model_reasoning_effort"] != "low" {
+		t.Fatalf("model_reasoning_effort = %v, want second-highest low", cfg["model_reasoning_effort"])
 	}
 
 	reloaded, err := pm.GetProvider("main")

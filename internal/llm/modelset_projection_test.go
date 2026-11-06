@@ -41,11 +41,11 @@ func applyProjection(t *testing.T, a AgentAdapter, home string, models []string,
 		req.Credential = a.CredentialEnvRef(senvEnvKeyName("main"))
 	}
 	// 测试直接调适配器，显式给出与 SwitchManager 相同的顶层 effort 策略：
-	// 默认模型无默认档时删除 model_reasoning_effort。
+	// 显式默认档优先，否则取次高；解析不出时删除 model_reasoning_effort。
 	req.ClearGlobalReasoning = true
-	if meta := req.ModelMetadata[defaultModel]; len(meta.ReasoningEfforts) > 0 {
+	if effort := resolvedDefaultReasoning(req.ModelMetadata[defaultModel]); effort != "" {
 		req.ClearGlobalReasoning = false
-		req.GlobalReasoningEffort = meta.DefaultReasoning
+		req.GlobalReasoningEffort = effort
 	}
 	if err := a.Apply(req); err != nil {
 		t.Fatalf("%s Apply() error = %v", a.ID, err)
@@ -236,6 +236,10 @@ func TestPiAndOpencodeProjectModelSets(t *testing.T) {
 	if m1["reasoning"] != true {
 		t.Fatalf("pi m1 reasoning = %v, want true with efforts", m1["reasoning"])
 	}
+	levelMap, ok := m1["thinkingLevelMap"].(map[string]any)
+	if !ok || levelMap["low"] != "low" || levelMap["high"] != "high" || levelMap["max"] != nil || levelMap["off"] != nil {
+		t.Fatalf("pi m1 thinkingLevelMap = %v", m1["thinkingLevelMap"])
+	}
 	// provider 级 compat 与模型级 reasoning 投影并存：compat 是兼容声明而非
 	// 模型元数据，既不参与「缺失即省略」，也不下放到模型条目。
 	compat, ok := prov["compat"].(map[string]any)
@@ -261,6 +265,13 @@ func TestPiAndOpencodeProjectModelSets(t *testing.T) {
 	}
 	if _, ok := settings["compat"]; ok {
 		t.Fatalf("compat must not leak into settings.json: %v", settings)
+	}
+	levels, ok := settings["modelThinkingLevels"].(map[string]any)
+	if !ok || levels["senv-main/m1"] != "high" || levels["senv-main/m2"] != nil {
+		t.Fatalf("modelThinkingLevels = %v, want only m1=high", settings["modelThinkingLevels"])
+	}
+	if _, ok := settings["defaultThinkingLevel"]; ok {
+		t.Fatalf("defaultThinkingLevel must stay unset: %v", settings["defaultThinkingLevel"])
 	}
 
 	opencode := opencodeAdapter()
@@ -697,13 +708,15 @@ func TestCodexUsesDeclaredDefaultNotFirstEffort(t *testing.T) {
 	}
 }
 
-func TestCodexMissingDefaultUsesNoneTemplate(t *testing.T) {
+func TestCodexMissingDefaultUsesSecondHighest(t *testing.T) {
 	home := t.TempDir()
 	a := codexAdapter()
 	req := projectionRequest(t, a, home, []string{"m1"}, "m1")
 	req.ModelMetadata = map[string]ModelMetadata{
-		"m1": {ReasoningEfforts: []string{"low", "high"}},
+		"m1": {ReasoningEfforts: []string{"low", "high", "max"}},
 	}
+	req.GlobalReasoningEffort = resolvedDefaultReasoning(req.ModelMetadata["m1"])
+	req.ClearGlobalReasoning = req.GlobalReasoningEffort == ""
 	if err := a.Apply(req); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -720,11 +733,80 @@ func TestCodexMissingDefaultUsesNoneTemplate(t *testing.T) {
 		t.Fatalf("parse catalog: %v", err)
 	}
 	got := catalog.Models[0]
-	if got.DefaultReasoningLevel != "" || len(got.SupportedReasoningLevels) != 0 {
-		t.Fatalf("missing default should omit reasoning metadata: %+v", got)
+	if got.DefaultReasoningLevel != "high" {
+		t.Fatalf("default = %q, want second-highest high", got.DefaultReasoningLevel)
+	}
+	if len(got.SupportedReasoningLevels) != 3 || got.SupportedReasoningLevels[0].Effort != "low" || got.SupportedReasoningLevels[2].Effort != "max" {
+		t.Fatalf("levels = %+v, want original order", got.SupportedReasoningLevels)
 	}
 	if !slices.Equal(got.InputModalities, []string{"text"}) {
 		t.Fatalf("missing modalities = %v, want text template", got.InputModalities)
+	}
+	cfg := readTOMLFile(t, a.ConfigPath(home))
+	if cfg["model_reasoning_effort"] != "high" {
+		t.Fatalf("model_reasoning_effort = %v, want high", cfg["model_reasoning_effort"])
+	}
+}
+
+func TestPiThinkingLevelsArePerModel(t *testing.T) {
+	home := t.TempDir()
+	a := piAdapter()
+	settingsPath := filepath.Join(filepath.Dir(a.ConfigPath(home)), "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	seed := []byte(`{"defaultThinkingLevel":"medium","modelThinkingLevels":{"other/m":"low","senv-old/m":"max"}}`)
+	if err := os.WriteFile(settingsPath, seed, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	req := projectionRequest(t, a, home, []string{"m1", "plain"}, "m1")
+	req.PriorProvider = "old"
+	req.ModelMetadata = map[string]ModelMetadata{
+		"m1":    {ReasoningEfforts: []string{"none", "low", "high", "max"}},
+		"plain": {Reasoning: true},
+	}
+	if err := a.Apply(req); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	models := readJSONFile(t, a.ConfigPath(home))
+	list := models["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)
+	m1 := list[0].(map[string]any)
+	levelMap := m1["thinkingLevelMap"].(map[string]any)
+	if levelMap["off"] != "none" || levelMap["low"] != "low" || levelMap["high"] != "high" || levelMap["max"] != "max" || levelMap["medium"] != nil {
+		t.Fatalf("thinkingLevelMap = %v", levelMap)
+	}
+	if _, ok := list[1].(map[string]any)["thinkingLevelMap"]; ok {
+		t.Fatalf("adaptive model must omit thinkingLevelMap: %v", list[1])
+	}
+	settings := readJSONFile(t, settingsPath)
+	if settings["defaultThinkingLevel"] != "medium" {
+		t.Fatalf("defaultThinkingLevel = %v, want the user's medium left alone", settings["defaultThinkingLevel"])
+	}
+	levels := settings["modelThinkingLevels"].(map[string]any)
+	if levels["senv-main/m1"] != "high" || levels["other/m"] != "low" {
+		t.Fatalf("modelThinkingLevels = %v", levels)
+	}
+	if _, ok := levels["senv-old/m"]; ok {
+		t.Fatalf("prior provider key must be removed: %v", levels)
+	}
+	if _, ok := levels["senv-main/plain"]; ok {
+		t.Fatalf("adaptive model must not get a startup level: %v", levels)
+	}
+
+	omp := ompAdapter()
+	ompReq := projectionRequest(t, omp, home, []string{"m1"}, "m1")
+	ompReq.ModelMetadata = req.ModelMetadata
+	if err := omp.Apply(ompReq); err != nil {
+		t.Fatalf("omp Apply() error = %v", err)
+	}
+	ompModels := readYAML(t, omp.ConfigPath(home))
+	ompM1 := ompModels["providers"].(map[string]any)["senv-main"].(map[string]any)["models"].([]any)[0].(map[string]any)
+	if ompM1["thinkingLevelMap"] == nil {
+		t.Fatalf("omp model = %v, want thinkingLevelMap", ompM1)
+	}
+	ompConfig := readYAML(t, filepath.Join(filepath.Dir(omp.ConfigPath(home)), "config.yml"))
+	if _, ok := ompConfig["modelThinkingLevels"]; ok {
+		t.Fatalf("omp config.yml must not gain modelThinkingLevels: %v", ompConfig)
 	}
 }
 

@@ -787,8 +787,8 @@ func kimiCapabilities(meta ModelMetadata) []string {
 // SwitchManager 统一回滚。agent dir 与 agentcfg 的 MCP 目标共用一处解析。
 // piStyleModelEntry 构造 pi/omp 共用的模型条目：id/name 必填；
 // contextWindow/maxTokens 只在已知正数时写入（写 0 会被 agent 拒绝）；
-// 推理档位非空写 reasoning: true；输入模态收敛到 text/image，全被过滤时
-// 省略 input（缺省即 text+image）。
+// 推理档位非空写 reasoning: true，并能映到 pi 档位时再写 thinkingLevelMap；
+// 输入模态收敛到 text/image，全被过滤时省略 input（缺省即 text+image）。
 func piStyleModelEntry(model string, meta ModelMetadata) map[string]any {
 	entry := map[string]any{
 		"id":   model,
@@ -802,6 +802,9 @@ func piStyleModelEntry(model string, meta ModelMetadata) map[string]any {
 	}
 	if modelSupportsReasoning(meta) {
 		entry["reasoning"] = true
+	}
+	if levelMap := piThinkingLevelMap(meta); levelMap != nil {
+		entry["thinkingLevelMap"] = levelMap
 	}
 	if input := piInputModalities(meta.InputModalities); len(input) > 0 {
 		entry["input"] = input
@@ -862,6 +865,7 @@ func applyPiFamily(req SwitchRequest, settingsPath string) error {
 			priorID = senvProviderID(req.PriorProvider)
 		}
 		updatePiEnabledModels(root, id, req.DefaultModel, priorID)
+		updatePiModelThinkingLevels(root, id, priorID, req.Models, req.ModelMetadata)
 		return nil
 	}, req.tx)
 }
@@ -992,6 +996,34 @@ func updatePiEnabledModels(root map[string]any, providerID, defaultModel, priorP
 		providerID + "/" + defaultModel,
 		providerID + "/*",
 	}, kept...)
+}
+
+// updatePiModelThinkingLevels 按模型写入启动思考档。只替换本 provider 和上一次
+// senv provider 的键，其它 provider 的键保留。不写全局 defaultThinkingLevel。
+// 解析不出 pi 档（没有档位、自适应、或档名不在 pi 七档里）的模型不写键。
+func updatePiModelThinkingLevels(root map[string]any, providerID, priorProviderID string, models []string, meta map[string]ModelMetadata) {
+	next := map[string]any{}
+	if existing, ok := root["modelThinkingLevels"].(map[string]any); ok {
+		for key, value := range existing {
+			provider, _, found := strings.Cut(key, "/")
+			if found && (provider == providerID || (priorProviderID != "" && provider == priorProviderID)) {
+				continue
+			}
+			next[key] = value
+		}
+	}
+	for _, model := range models {
+		level, ok := piThinkingLevel(resolvedDefaultReasoning(meta[model]))
+		if !ok {
+			continue
+		}
+		next[providerID+"/"+model] = level
+	}
+	if len(next) == 0 {
+		delete(root, "modelThinkingLevels")
+		return
+	}
+	root["modelThinkingLevels"] = next
 }
 
 func stringValues(value any) ([]string, bool) {
@@ -1322,14 +1354,14 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 			providerAlias)
 	}
 	// codex 顶层 model_reasoning_effort 优先级高于 catalog 默认档（09-28 实测），
-	// 因此它必须跟随本次切换的默认模型：有档位时写默认档，无档位/不支持推理
-	// 时删除该键。否则会沿用上一个模型的 none，使强制思考模型报 2013。
+	// 因此它必须跟随本次默认模型解析出的档：显式默认档优先，否则取次高。
+	// 解析不出时删除该键，避免沿用上一个模型的 none，使强制思考模型报 2013。
 	modelMetadata := ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels)
 	resolvedGlobalReasoning := ""
 	clearGlobalReasoning := adapter.ID == "codex"
 	if adapter.ID == "codex" {
-		if meta := modelMetadata[defaultModel]; len(meta.ReasoningEfforts) > 0 && meta.DefaultReasoning != "" {
-			resolvedGlobalReasoning = meta.DefaultReasoning
+		if effort := resolvedDefaultReasoning(modelMetadata[defaultModel]); effort != "" {
+			resolvedGlobalReasoning = effort
 			clearGlobalReasoning = false
 		}
 	}
@@ -1530,19 +1562,24 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 }
 
 func metadataDeclarationWarnings(models []string, meta map[string]ModelMetadata) []string {
-	var missingDefault []string
+	var inferred []string
 	for _, id := range models {
 		m := meta[id]
-		if len(m.ReasoningEfforts) > 0 && strings.TrimSpace(m.DefaultReasoning) == "" {
-			missingDefault = append(missingDefault, id)
+		if strings.TrimSpace(m.DefaultReasoning) != "" || len(m.ReasoningEfforts) == 0 {
+			continue
 		}
+		effort := resolvedDefaultReasoning(m)
+		if effort == "" {
+			continue
+		}
+		inferred = append(inferred, id+"="+effort)
 	}
-	if len(missingDefault) == 0 {
+	if len(inferred) == 0 {
 		return nil
 	}
 	return []string{fmt.Sprintf(
-		"模型 %s 未声明默认推理档，切换已使用 agent 模板；可用 senv ai provider edit 补全",
-		strings.Join(missingDefault, ", "))}
+		"模型 %s 未声明默认推理档，切换已按次高档投影、未回写档案；可用 senv ai provider edit 改为显式默认档",
+		strings.Join(inferred, ", "))}
 }
 
 // StatusRow 是 status 输出的一行。

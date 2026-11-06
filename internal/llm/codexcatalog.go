@@ -120,9 +120,11 @@ func buildCodexCatalog(req SwitchRequest) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// codexReasoningLevels 把档案声明的推理档位投影成 catalog 条目。无档位或旧
-// 档案缺默认档时返回空档位且不设默认档，让 codex 不发 effort；绝不从列表
-// 首项推断默认档，也绝不把「未知」投影成 none。
+// codexReasoningLevels 把档案声明的推理档位投影成 catalog 条目。无档位时
+// 返回空档位且不设默认档。有档位时默认档取 resolvedDefaultReasoning：显式
+// 声明优先，否则取次高，绝不取列表首项，也绝不把「未知」投影成 none。
+// catalog 在有档位时要求默认档；解析不出默认档（全是认不出的名字）时整段
+// 省略，避免写出 codex 拒收的文件。
 func codexReasoningLevels(meta ModelMetadata) ([]codexReasoningLevel, string) {
 	levels := make([]codexReasoningLevel, 0, len(meta.ReasoningEfforts))
 	for _, effort := range meta.ReasoningEfforts {
@@ -131,10 +133,14 @@ func codexReasoningLevels(meta ModelMetadata) ([]codexReasoningLevel, string) {
 		}
 		levels = append(levels, codexReasoningLevel{Effort: effort, Description: codexReasoningLevelDesc})
 	}
-	if len(levels) == 0 || strings.TrimSpace(meta.DefaultReasoning) == "" {
+	if len(levels) == 0 {
 		return nil, ""
 	}
-	return levels, meta.DefaultReasoning
+	def := resolvedDefaultReasoning(meta)
+	if def == "" {
+		return nil, ""
+	}
+	return levels, def
 }
 
 // codexInputModalities 收敛到 codex catalog 枚举允许的 text/image/audio

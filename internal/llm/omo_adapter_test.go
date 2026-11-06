@@ -83,6 +83,10 @@ func TestOmOAdapterWritesProviderAndDefaults(t *testing.T) {
 	if settings["defaultProvider"] != "senv-main" || settings["defaultModel"] != "m2" {
 		t.Fatalf("settings = %v, want defaultProvider/defaultModel", settings)
 	}
+	levels, ok := settings["modelThinkingLevels"].(map[string]any)
+	if !ok || levels["senv-main/m1"] != "high" {
+		t.Fatalf("modelThinkingLevels = %v, want m1=high", settings["modelThinkingLevels"])
+	}
 	// No enabledModels existed, so none may be invented.
 	if _, has := settings["enabledModels"]; has {
 		t.Fatalf("settings must not create enabledModels when absent: %v", settings)
