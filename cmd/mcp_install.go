@@ -29,7 +29,7 @@ var mcpInstallCmd = &cobra.Command{
 configuration file. Existing config and other MCP servers are preserved; a
 .bak backup is created before the file is modified.
 
-Supported agents: claude-code, claude-desktop, cursor, codex, zcode, kimi, pi, omo, omp.
+Supported agents: claude-code, claude-desktop, cursor, codex, zcode, kimi, pi, omo, omp, dsh.
 
 Examples:
   senv mcp install cursor
@@ -86,6 +86,8 @@ func installInto(t agentTarget, scope string, printOnly bool, out interface{ Wri
 		return installJSON(t, cfgPath, spec, printOnly, out)
 	case formatTOML:
 		return installTOML(t, cfgPath, spec, printOnly, out)
+	case formatCordisPatch:
+		return installCordisPatch(t, cfgPath, spec, printOnly, out)
 	default:
 		return fmt.Errorf("unsupported format for agent %q", t.ID)
 	}
@@ -164,6 +166,39 @@ func installTOML(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly 
 		return err
 	}
 	if err := agentcfg.WriteWithBackup(cfgPath, []byte(merged)); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.Name, cfgPath)
+	if t.Note != "" {
+		fmt.Fprintf(out, "  %s\n", t.Note)
+	}
+	printRequirement(out, t)
+	return nil
+}
+
+// installCordisPatch handles the DSH style: one marked block of `insert` rows
+// in the cordis home patch, with every byte outside the block left untouched.
+func installCordisPatch(t agentTarget, cfgPath string, spec agentcfg.Server, printOnly bool, out interface{ Write([]byte) (int, error) }) error {
+	if printOnly {
+		row, err := agentcfg.RenderCordisPatchRow("senv", spec)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "# %s — add to %s\n%s", t.Name, cfgPath, row)
+		printRequirement(out, t)
+		return nil
+	}
+
+	patch, err := agentcfg.ReadCordisPatch(cfgPath)
+	if err != nil {
+		return err
+	}
+	patch.Set("senv", spec)
+	data, err := patch.Encode()
+	if err != nil {
+		return err
+	}
+	if err := agentcfg.WriteCordisPatch(cfgPath, data); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "✓ Installed senv MCP server into %s\n  %s\n", t.Name, cfgPath)

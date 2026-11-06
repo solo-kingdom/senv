@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wii/senv/internal/agentcfg"
 )
 
 // installWithHome runs installInto with HOME redirected to a temp dir, so we
@@ -15,6 +17,7 @@ func installWithHome(t *testing.T, target agentTarget, scope string, printOnly b
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("DSH_HOME", filepath.Join(home, ".dsh"))
 	var buf bytes.Buffer
 	if err := installInto(target, scope, printOnly, &buf); err != nil {
 		t.Fatalf("installInto(%s): %v", target.ID, err)
@@ -256,6 +259,7 @@ func TestInstallAll(t *testing.T) {
 	noPiOnPath(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("DSH_HOME", filepath.Join(home, ".dsh"))
 	var buf bytes.Buffer
 	if err := installAll("user", false, &buf); err != nil {
 		t.Fatalf("installAll: %v", err)
@@ -370,5 +374,92 @@ func TestInstallOmOAliasAndProjectScope(t *testing.T) {
 	}
 	if path := alias.ResolveConfigPath("/home/u", "project"); path != ".omo/mcp.json" {
 		t.Fatalf("omo project path = %q", path)
+	}
+}
+
+func TestInstallCordisPatchCreatesManagedBlock(t *testing.T) {
+	target, ok := findAgent("dsh")
+	if !ok {
+		t.Fatal("dsh not found")
+	}
+	cfgPath, out, _ := installWithHome(t, target, "user", false)
+
+	// DSH creates ~/.dsh as a private directory; a Harness home senv creates
+	// ahead of DSH must not be world-traversable.
+	if info, err := os.Stat(filepath.Dir(cfgPath)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("DSH home mode = %v (err %v), want 0700", info.Mode().Perm(), err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read dsh patch: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"senv-managed MCP servers",
+		"- insert:",
+		"@deepseek-ai/dsh-mcp-client",
+		"serverName: senv",
+		"transport: stdio",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dsh patch missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\n- id:") {
+		t.Fatalf("dsh install wrote a bare id row, which DSH silently drops:\n%s", text)
+	}
+	if !strings.Contains(out.String(), "Installed senv MCP server into DeepSeek Harness") {
+		t.Fatalf("install output missing the dsh confirmation:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Requires:") {
+		t.Fatalf("dsh has built-in MCP support and must not print a prerequisite:\n%s", out.String())
+	}
+	patch, err := agentcfg.ReadCordisPatch(cfgPath)
+	if err != nil {
+		t.Fatalf("installed dsh patch is not loadable: %v", err)
+	}
+	if srv, ok := patch.Server("senv"); !ok || srv.Command == "" {
+		t.Fatalf("senv entry = %+v/%v", srv, ok)
+	}
+}
+
+func TestInstallCordisPatchPreservesExistingLayer(t *testing.T) {
+	target, _ := findAgent("dsh")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("DSH_HOME", filepath.Join(home, ".dsh"))
+	cfgPath := target.ResolveConfigPath(home, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	user := "# my layer\n[]\n"
+	if err := os.WriteFile(cfgPath, []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := installInto(target, "user", false, &buf); err != nil {
+		t.Fatalf("installInto(dsh): %v", err)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.HasPrefix(text, "# my layer\n") {
+		t.Fatalf("comment header lost:\n%s", text)
+	}
+	if strings.Contains(text, "[]") {
+		t.Fatalf("empty flow list survived next to the managed block:\n%s", text)
+	}
+}
+
+func TestInstallCordisPatchPrintWritesNothing(t *testing.T) {
+	target, _ := findAgent("dsh")
+	cfgPath, out, _ := installWithHome(t, target, "user", true)
+	if !strings.Contains(out.String(), "DeepSeek Harness") || !strings.Contains(out.String(), "@deepseek-ai/dsh-mcp-client") {
+		t.Fatalf("print output missing the dsh snippet:\n%s", out.String())
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Fatalf("--print wrote the dsh patch: %v", err)
 	}
 }
