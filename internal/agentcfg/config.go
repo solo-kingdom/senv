@@ -462,9 +462,20 @@ func WriteWithBackup(path string, data []byte) error {
 		if err := os.WriteFile(path+BackupSuffix, existing, 0o600); err != nil {
 			return fmt.Errorf("write backup: %w", err)
 		}
+		// A pre-existing world-readable backup keeps its mode through
+		// os.WriteFile; tighten it for the same reason as the main file.
+		if err := os.Chmod(path+BackupSuffix, 0o600); err != nil {
+			return fmt.Errorf("tighten backup permissions: %w", err)
+		}
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+	// os.WriteFile's perm only applies to a newly created file; an existing
+	// world-readable config must be tightened too or the plaintext-on-export
+	// contract (0600) would silently not hold.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("tighten config permissions: %w", err)
 	}
 	return nil
 }

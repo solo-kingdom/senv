@@ -1062,3 +1062,231 @@ func TestExportLooseFullyResolvedNoWarnings(t *testing.T) {
 		t.Fatalf("resolved write missing: %v\n%s", err, data)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DSH (cordis patch) target
+// ---------------------------------------------------------------------------
+
+// dshTestExporter pins $DSH_HOME inside the test home so a developer shell's
+// DSH_HOME can never point a test run at the real ~/.dsh.
+func dshTestExporter(t *testing.T, mgr *Manager, dir string, opts ExporterOptions) *Exporter {
+	t.Helper()
+	t.Setenv("DSH_HOME", filepath.Join(dir, ".dsh"))
+	return testExporter(t, mgr, dir, opts)
+}
+
+func TestExportDSHCreatesBlockAndIsIdempotent(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", map[string]string{"GITHUB_TOKEN": "secret"})
+	exporter := dshTestExporter(t, mgr, dir, ExporterOptions{})
+	target := targetFor(t, "dsh")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if want := filepath.Join(dir, ".dsh", "cordis.patch.yml"); cfgPath != want {
+		t.Fatalf("config path = %q, want %q", cfgPath, want)
+	}
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Items[0].Action != ActionCreate {
+		t.Fatalf("plan = %+v, want create", plan.Items)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	first, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("dsh patch was not written: %v", err)
+	}
+	text := string(first)
+	for _, want := range []string{
+		"@deepseek-ai/dsh-mcp-client",
+		"- insert:",
+		"serverName: github",
+		"transport: stdio",
+		"GITHUB_TOKEN: secret",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("dsh patch missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "\n- id:") {
+		t.Fatalf("dsh export wrote a bare id row, which DSH silently drops:\n%s", text)
+	}
+	if info, err := os.Stat(cfgPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("dsh patch mode = %v (err %v), want 0600", info.Mode().Perm(), err)
+	}
+
+	plan, err = exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan (second): %v", err)
+	}
+	if plan.Items[0].Action != ActionSkip {
+		t.Fatalf("second plan = %+v, want skip", plan.Items)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute (second): %v", err)
+	}
+	second, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != text {
+		t.Fatalf("idempotent export rewrote the dsh patch:\nfirst:\n%s\nsecond:\n%s", text, second)
+	}
+}
+
+func TestExportDSHPreservesUserRowsAndDetectsDrift(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", nil)
+	exporter := dshTestExporter(t, mgr, dir, ExporterOptions{})
+	target := targetFor(t, "dsh")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	user := `# machine-local overrides
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      nativex:
+        apiKeyEnv: !!js process.env.NATIVEX_API_KEY
+`
+	if err := os.WriteFile(cfgPath, []byte(user), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Items[0].Action != ActionCreate {
+		t.Fatalf("plan = %+v, want create", plan.Items)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	exported, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(exported), user) {
+		t.Fatalf("user bytes changed:\n%s", exported)
+	}
+
+	// A local edit inside the senv-managed block is drift, not a silent
+	// overwrite.
+	edited := strings.Replace(string(exported), "command: npx", "command: local-edit", 1)
+	if err := os.WriteFile(cfgPath, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan (drift): %v", err)
+	}
+	if plan.Items[0].Action != ActionDrift {
+		t.Fatalf("drift plan = %+v", plan.Items)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute (drift): %v", err)
+	}
+	stillDrifted, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stillDrifted), "command: local-edit") {
+		t.Fatalf("drifted entry was overwritten without --force:\n%s", stillDrifted)
+	}
+
+	forced := dshTestExporter(t, mgr, dir, ExporterOptions{Force: true})
+	plan, err = forced.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan (force): %v", err)
+	}
+	if plan.Items[0].Action != ActionUpdate {
+		t.Fatalf("forced plan = %+v", plan.Items)
+	}
+	if _, err := forced.Execute(plan); err != nil {
+		t.Fatalf("Execute (force): %v", err)
+	}
+	restored, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(restored), "command: npx") || strings.Contains(string(restored), "local-edit") {
+		t.Fatalf("--force did not restore the managed entry:\n%s", restored)
+	}
+	if !strings.HasPrefix(string(restored), user) {
+		t.Fatalf("--force changed user bytes:\n%s", restored)
+	}
+}
+
+func TestExportDSHRejectsSSE(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	if err := mgr.Add(&storage.MCPServerEntry{
+		Alias:     "legacy",
+		Transport: storage.MCPTransportSSE,
+		URL:       "https://api.example.com/sse",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exporter := dshTestExporter(t, mgr, dir, ExporterOptions{})
+	target := targetFor(t, "dsh")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan.Items[0].Action != ActionError || !strings.Contains(plan.Items[0].Reason, "sse") {
+		t.Fatalf("sse plan = %+v, want error mentioning sse", plan.Items)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Fatalf("sse plan-error wrote the dsh patch: %v", err)
+	}
+}
+
+func TestUnexportDSHRemovesBlockAndKeepsLayerValid(t *testing.T) {
+	mgr, dir := newTestManager(t)
+	addProfile(t, mgr, "github", "npx", nil)
+	exporter := dshTestExporter(t, mgr, dir, ExporterOptions{})
+	target := targetFor(t, "dsh")
+	cfgPath := target.ResolveConfigPath(dir, "user")
+	plan, err := exporter.Plan([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if _, err := exporter.Execute(plan); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	unexportPlan, err := exporter.PlanUnexport([]agentcfg.Target{target}, nil)
+	if err != nil {
+		t.Fatalf("PlanUnexport: %v", err)
+	}
+	if len(unexportPlan.Items) != 1 || unexportPlan.Items[0].Action != UnexportRemove {
+		t.Fatalf("unexport plan = %+v", unexportPlan.Items)
+	}
+	report, err := exporter.ExecuteUnexport(unexportPlan, nil)
+	if err != nil {
+		t.Fatalf("ExecuteUnexport: %v", err)
+	}
+	if report.Failures != 0 {
+		t.Fatalf("unexport failures = %d", report.Failures)
+	}
+	left, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read after unexport: %v", err)
+	}
+	if strings.Contains(string(left), "- insert:") || strings.Contains(string(left), "@deepseek-ai/dsh-mcp-client") {
+		t.Fatalf("unexport left the managed block behind:\n%s", left)
+	}
+	// DSH fails boot on an empty/comments-only patch file.
+	if !strings.Contains(string(left), "[]") {
+		t.Fatalf("unexport left an invalid empty patch layer:\n%s", left)
+	}
+}

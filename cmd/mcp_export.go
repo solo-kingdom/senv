@@ -352,6 +352,13 @@ func printExportSnippets(plan *mcp.ExportPlan) {
 			fmt.Printf("%s\n", entry)
 		case agentcfg.FormatTOML:
 			fmt.Print(agentcfg.RenderTOMLServerBlock(target.TOMLTableName, item.Alias, server, target.Remote.TypeKey, target.HeadersKey()))
+		case agentcfg.FormatCordisPatch:
+			row, err := agentcfg.RenderCordisPatchRow(item.Alias, server)
+			if err != nil {
+				fmt.Printf("# render failed: %v\n", err)
+				continue
+			}
+			fmt.Print(row)
 		}
 	}
 }

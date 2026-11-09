@@ -347,7 +347,7 @@ func (e *Exporter) executeTarget(agentID string, items []ExportItem) []ExportIte
 	if err != nil {
 		return failItems(items, err.Error())
 	}
-	if err := agentcfg.WriteWithBackup(items[0].Path, data); err != nil {
+	if err := writeAgentFile(items[0].target, items[0].Path, data); err != nil {
 		return failItems(items, err.Error())
 	}
 	// Entries that were already up to date are still senv's: record them so a
@@ -430,31 +430,51 @@ func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server,
 
 // agentFile is one agent config file held in memory: JSON roots stay generic
 // maps (unknown keys preserved), TOML stays as text (comments and formatting
-// preserved).
+// preserved), and the DSH cordis patch keeps the whole file as text with only
+// the senv-managed block parsed out of it.
 type agentFile struct {
 	target   agentcfg.Target
 	path     string
 	jsonRoot map[string]any
 	tomlSrc  string
-	isJSON   bool
+	cordis   *agentcfg.CordisPatchFile
 }
 
 func loadAgentFile(target agentcfg.Target, path string) (*agentFile, error) {
-	file := &agentFile{target: target, path: path, isJSON: target.Format == agentcfg.FormatJSON}
-	if file.isJSON {
+	file := &agentFile{target: target, path: path}
+	switch target.Format {
+	case agentcfg.FormatJSON:
 		root, err := agentcfg.ReadJSONRoot(path)
 		if err != nil {
 			return nil, err
 		}
 		file.jsonRoot = root
 		return file, nil
+	case agentcfg.FormatCordisPatch:
+		cordis, err := agentcfg.ReadCordisPatch(path)
+		if err != nil {
+			return nil, err
+		}
+		file.cordis = cordis
+		return file, nil
+	default:
+		data, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		file.tomlSrc = string(data)
+		return file, nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+}
+
+// writeAgentFile persists one composed config. The DSH target creates its home
+// directory 0700 first (DSH's own convention); every other target keeps the
+// historical 0755.
+func writeAgentFile(target agentcfg.Target, path string, data []byte) error {
+	if target.Format == agentcfg.FormatCordisPatch {
+		return agentcfg.WriteCordisPatch(path, data)
 	}
-	file.tomlSrc = string(data)
-	return file, nil
+	return agentcfg.WriteWithBackup(path, data)
 }
 
 // entry reads a server back in this target's comparable form: the file's
@@ -465,9 +485,12 @@ func (f *agentFile) entry(name string) (agentcfg.Server, bool) {
 		srv agentcfg.Server
 		ok  bool
 	)
-	if f.isJSON {
+	switch f.target.Format {
+	case agentcfg.FormatJSON:
 		srv, ok = agentcfg.JSONServerFor(f.jsonRoot, f.target.JSONServersKey, name, f.target.HeadersKey())
-	} else {
+	case agentcfg.FormatCordisPatch:
+		srv, ok = f.cordis.Server(name)
+	default:
 		srv, ok = agentcfg.TOMLServerFor(f.tomlSrc, f.target.TOMLTableName, name, f.target.HeadersKey())
 	}
 	if !ok {
@@ -477,36 +500,47 @@ func (f *agentFile) entry(name string) (agentcfg.Server, bool) {
 }
 
 func (f *agentFile) set(name string, server agentcfg.Server) {
-	if f.isJSON {
+	switch f.target.Format {
+	case agentcfg.FormatJSON:
 		agentcfg.SetJSONServer(f.jsonRoot, f.target.JSONServersKey, name, server, f.target.Remote.TypeKey)
-		return
+	case agentcfg.FormatCordisPatch:
+		f.cordis.Set(name, server)
+	default:
+		block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server, f.target.Remote.TypeKey, f.target.HeadersKey())
+		updated, err := agentcfg.UpsertTOMLServer(f.tomlSrc, f.target.TOMLTableName, name, block)
+		if err != nil {
+			// Upsert only fails on impossible inputs; keep the previous text so
+			// the caller's write cannot emit a half-built file.
+			return
+		}
+		f.tomlSrc = updated
 	}
-	block := agentcfg.RenderTOMLServerBlock(f.target.TOMLTableName, name, server, f.target.Remote.TypeKey, f.target.HeadersKey())
-	updated, err := agentcfg.UpsertTOMLServer(f.tomlSrc, f.target.TOMLTableName, name, block)
-	if err != nil {
-		// Upsert only fails on impossible inputs; keep the previous text so the
-		// caller's write cannot emit a half-built file.
-		return
-	}
-	f.tomlSrc = updated
 }
 
 func (f *agentFile) remove(name string) bool {
-	if f.isJSON {
+	switch f.target.Format {
+	case agentcfg.FormatJSON:
 		return agentcfg.DeleteJSONServer(f.jsonRoot, f.target.JSONServersKey, name)
+	case agentcfg.FormatCordisPatch:
+		return f.cordis.Delete(name)
+	default:
+		updated, removed := agentcfg.RemoveTOMLServer(f.tomlSrc, f.target.TOMLTableName, name)
+		if removed {
+			f.tomlSrc = updated
+		}
+		return removed
 	}
-	updated, removed := agentcfg.RemoveTOMLServer(f.tomlSrc, f.target.TOMLTableName, name)
-	if removed {
-		f.tomlSrc = updated
-	}
-	return removed
 }
 
 func (f *agentFile) encode() ([]byte, error) {
-	if f.isJSON {
+	switch f.target.Format {
+	case agentcfg.FormatJSON:
 		return agentcfg.EncodeJSON(f.jsonRoot)
+	case agentcfg.FormatCordisPatch:
+		return f.cordis.Encode()
+	default:
+		return []byte(f.tomlSrc), nil
 	}
-	return []byte(f.tomlSrc), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -681,7 +715,7 @@ func (e *Exporter) executeUnexportTarget(agentID string, items []UnexportItem, c
 	if err != nil {
 		return failUnexportItems(items, err.Error())
 	}
-	if err := agentcfg.WriteWithBackup(items[0].Path, data); err != nil {
+	if err := writeAgentFile(items[0].target, items[0].Path, data); err != nil {
 		return failUnexportItems(items, err.Error())
 	}
 	return items

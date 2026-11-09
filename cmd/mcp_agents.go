@@ -19,8 +19,9 @@ type (
 )
 
 const (
-	formatJSON = agentcfg.FormatJSON
-	formatTOML = agentcfg.FormatTOML
+	formatJSON        = agentcfg.FormatJSON
+	formatTOML        = agentcfg.FormatTOML
+	formatCordisPatch = agentcfg.FormatCordisPatch
 )
 
 // mcpServerSpec is the canonical description of the senv MCP server that gets

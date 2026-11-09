@@ -22,6 +22,11 @@ const (
 	FormatJSON Format = iota
 	// FormatTOML is the Codex style: [mcp_servers.<name>] in TOML.
 	FormatTOML
+	// FormatCordisPatch is the DeepSeek Harness style: a YAML list of cordis
+	// loader patch rows (cordis.patch.yml). Each MCP server is one `insert`
+	// row carrying an @deepseek-ai/dsh-mcp-client entry; an id-targeted row
+	// without `insert` can only override an existing entry, never add one.
+	FormatCordisPatch
 )
 
 // Target describes one supported agent and how to write into it.
@@ -295,6 +300,35 @@ func Supported() []Target {
 			Remote: RemoteRender{
 				HTTP: true, SSE: false, Headers: true, TypeKey: true,
 				Reason: "omo's mcp.json schema accepts only stdio and http; sse is http's internal fallback, not a writable type",
+			},
+		},
+		{
+			// DSH (DeepSeek Harness) reads MCP servers as cordis loader patch
+			// rows. senv writes the machine-local home patch
+			// ($DSH_HOME/cordis.patch.yml), the layer DSH composes after every
+			// profile's bundle layers (verified against DSH Desktop
+			// 0.2.2-rc.1: app-boot readProfilePatches). That makes one
+			// user-scope export visible to the Desktop, web, headless and ACP
+			// surfaces, and dsh-hmr watches the home patch (even before it
+			// exists) so writes hot-reload. Remote entries must be
+			// streamable-http: the mcp-client schema types transport as
+			// stdio | streamable-http and has no sse value, so an sse profile
+			// must plan-error instead of being rewritten.
+			ID:      "dsh",
+			Name:    "DeepSeek Harness",
+			Aliases: []string{"deepseek-harness"},
+			Format:  FormatCordisPatch,
+			// Both scopes resolve to the same file: DSH has no project-level
+			// patch layer. The profile layer is deliberately NOT used — it is
+			// per-surface, rewritten by profile recovery, and requires
+			// guessing a profile name that DSH itself never exposes (the
+			// desktop host hardcodes "desktop"; DSH_PROFILE is not read by
+			// DSH at all).
+			ConfigPath: func(home, _ string) string { return cordisPatchPath(home) },
+			Note:       "DSH hot-reloads the home patch via dsh-hmr; restart DSH only if HMR is disabled.",
+			Remote: RemoteRender{
+				HTTP: true, SSE: false, Headers: true, TypeKey: true,
+				Reason: "dsh mcp-client transports are stdio and streamable-http only; there is no sse value",
 			},
 		},
 	}

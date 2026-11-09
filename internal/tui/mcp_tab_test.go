@@ -27,6 +27,9 @@ func newMCPTestTab(t *testing.T) (*mcpTab, *fakeAuditWriter, string) {
 		t.Fatalf("initialize: %v", err)
 	}
 	home := t.TempDir()
+	// Pin the DSH home inside the test home: the MCP tab exports to every
+	// supported agent, and a developer shell's $DSH_HOME must not be touched.
+	t.Setenv("DSH_HOME", filepath.Join(home, ".dsh"))
 	w := &fakeAuditWriter{}
 	tab := newMCPTab(Managers{
 		Env:         env.NewManager(sm, "pw"),
@@ -841,4 +844,19 @@ func TestMCPTabLoadingStateBeforeLoad(t *testing.T) {
 	if !strings.Contains(out, "no MCP server profiles yet") {
 		t.Fatalf("empty state missing after empty load: %q", clipRunesT(out, 120))
 	}
+}
+
+// The MCP tab's agent column is registry driven; dsh must show up with no UI
+// code change (ADR-0034).
+func TestTUIMCPTabIncludesDSH(t *testing.T) {
+	tab := newMCPTab(Managers{})
+	for _, target := range tab.agents {
+		if target.ID == "dsh" {
+			return
+		}
+		if target.ID == "deepseek-harness" {
+			t.Fatalf("MCP tab must show canonical ids only, got alias %q", target.ID)
+		}
+	}
+	t.Fatal("MCP tab agent list is missing dsh")
 }

@@ -217,6 +217,9 @@ func TestRemoteErrorMatrix(t *testing.T) {
 		{"omo", httpHeaders, false},
 		{"omo", sse, true},
 		{"omp", sse, false},
+		{"dsh", httpPlain, false},
+		{"dsh", httpHeaders, false},
+		{"dsh", sse, true},
 	}
 	for _, tc := range cases {
 		target, ok := Find(tc.agent)

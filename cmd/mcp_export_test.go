@@ -24,6 +24,9 @@ func newMCPExportProject(t *testing.T) string {
 	// the export home must be set afterwards.
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	// Pin the DSH home inside the test home so a developer shell's $DSH_HOME
+	// can never redirect an export at the real ~/.dsh.
+	t.Setenv("DSH_HOME", filepath.Join(dir, ".dsh"))
 	// Export writes to pi as well; keep the pi extension install out of the test
 	// (agentext reports "unavailable" and no subprocess or network is touched).
 	t.Setenv("PATH", t.TempDir())
@@ -422,5 +425,73 @@ func TestMCPExportWritesOmoAndRejectsSSE(t *testing.T) {
 	}
 	if path := alias.ResolveConfigPath("/home/u", "project"); path != ".omo/mcp.json" {
 		t.Fatalf("omo project path = %q", path)
+	}
+}
+
+func TestMCPExportDSHPrintWritesNothing(t *testing.T) {
+	dir := newMCPExportProject(t)
+	mcpExportAll, mcpExportAgents, mcpExportPrint = false, "dsh", true
+	out := captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+	for _, want := range []string{"DeepSeek Harness", "senv-managed MCP servers", "@deepseek-ai/dsh-mcp-client", "serverName: github"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("--print output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".dsh", "cordis.patch.yml")); !os.IsNotExist(err) {
+		t.Fatalf("--print wrote the dsh patch: %v", err)
+	}
+}
+
+func TestMCPExportDSHDryRunPlans(t *testing.T) {
+	dir := newMCPExportProject(t)
+	mcpExportAll, mcpExportAgents, mcpExportDryRun = false, "dsh", true
+	out := captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+	if !strings.Contains(out, "dsh") || !strings.Contains(out, "create") || !strings.Contains(out, "cordis.patch.yml") {
+		t.Fatalf("dry-run plan missing the dsh target:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".dsh", "cordis.patch.yml")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run wrote the dsh patch: %v", err)
+	}
+}
+
+func TestMCPExportAndUnexportDSH(t *testing.T) {
+	dir := newMCPExportProject(t)
+	mcpExportAll, mcpExportAgents = false, "dsh"
+	captureStdout(t, func() {
+		runSSHCommand(t, mcpExportCmd.RunE(&cobra.Command{}, nil))
+	})
+	cfgPath := filepath.Join(dir, ".dsh", "cordis.patch.yml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("dsh patch was not written: %v", err)
+	}
+	if !strings.Contains(string(data), "serverName: github") {
+		t.Fatalf("dsh patch missing the exported profile:\n%s", data)
+	}
+	patch, err := agentcfg.ReadCordisPatch(cfgPath)
+	if err != nil {
+		t.Fatalf("exported dsh patch is not loadable: %v", err)
+	}
+	if _, ok := patch.Server("github"); !ok {
+		t.Fatal("github row missing from the exported dsh patch")
+	}
+
+	mcpUnexportAll, mcpUnexportAgents = false, "dsh"
+	captureStdout(t, func() {
+		runSSHCommand(t, mcpUnexportCmd.RunE(&cobra.Command{}, nil))
+	})
+	left, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read after unexport: %v", err)
+	}
+	if strings.Contains(string(left), "- insert:") || strings.Contains(string(left), "@deepseek-ai/dsh-mcp-client") {
+		t.Fatalf("unexport left the managed block behind:\n%s", left)
+	}
+	if !strings.Contains(string(left), "[]") {
+		t.Fatalf("unexport left an invalid empty patch layer:\n%s", left)
 	}
 }
