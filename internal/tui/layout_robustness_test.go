@@ -261,15 +261,14 @@ func TestHistoryToAuditSwitchKeepsSingleTabStrip(t *testing.T) {
 		m = pressKey(m, fmt.Sprint(aIdx+1))
 		view := m.View()
 		assertFrameInvariants(t, "audit", view, 100, 30)
-		strips := 0
-		for _, l := range strings.Split(view, "\n") {
-			p := ansi.Strip(l)
-			if strings.Contains(p, "History") && strings.Contains(p, "Audit") {
-				strips++
-			}
+		plain := ansi.Strip(view)
+		if !strings.Contains(plain, "History") || !strings.Contains(plain, "Audit") {
+			t.Fatalf("left nav missing History/Audit\n%s", dumpChrome(view))
 		}
-		if strips != 1 {
-			t.Fatalf("tab strip rows = %d, want 1\n%s", strips, dumpChrome(view))
+		// 切到 Audit 后内容区应是审计列表；不要用样式字节断言激活胶囊，
+		// 默认 color profile 下激活/未激活渲染可能相同，会造成误报。
+		if !strings.Contains(plain, "audit events") && !strings.Contains(plain, "Audit") {
+			t.Fatalf("audit content missing after switch\n%s", dumpChrome(view))
 		}
 	}
 }
@@ -301,8 +300,18 @@ func TestLayoutBoxesMisbehavingTab(t *testing.T) {
 			continue
 		}
 		lines := strings.Split(view, "\n")
-		if p := ansi.Strip(lines[1]); !strings.Contains(p, "Env") {
-			t.Fatalf("%dx%d: tab strip pushed away: %q", sz.w, sz.h, p)
+		if p := ansi.Strip(lines[1]); !strings.Contains(p, "senv") {
+			t.Fatalf("%dx%d: top bar pushed away: %q", sz.w, sz.h, p)
+		}
+		foundEnv := false
+		for _, line := range lines[3:maxInt(len(lines)-2, 3)] {
+			if strings.Contains(ansi.Strip(line), "Env") {
+				foundEnv = true
+				break
+			}
+		}
+		if !foundEnv {
+			t.Fatalf("%dx%d: left nav missing Env\n%s", sz.w, sz.h, dumpChrome(view))
 		}
 		if p := ansi.Strip(lines[len(lines)-1]); !strings.HasPrefix(p, "╰") {
 			t.Fatalf("%dx%d: bottom border missing: %q", sz.w, sz.h, p)

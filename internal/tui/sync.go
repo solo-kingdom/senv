@@ -141,23 +141,11 @@ func writeDoneMsg(msg tea.Msg) bool {
 	return false
 }
 
-// bottomBar composes the bottom line: transient status text on the left, the
-// persistent sync badge right-aligned when automatic sync is available.
+// bottomBar 渲染底栏单行：状态 / 错误 / NAV+ACT 提示。同步徽标已移到顶栏右侧。
 func (m Model) bottomBar(left string, style lipgloss.Style) string {
-	badge := m.syncBadge()
 	available := m.width - 2 - 2 // frame border + statusBarStyle padding
 	if available < 1 {
 		return style.Render(truncateWidth(left, 1))
 	}
-	if badge == "" {
-		return style.Render(truncateWidth(left, available))
-	}
-	badgeText := truncateWidth(badge, available/2)
-	badgeW := lipgloss.Width(badgeText)
-	text := truncateWidth(left, available-badgeW-1)
-	gap := available - lipgloss.Width(text) - badgeW
-	if gap < 1 {
-		gap = 1
-	}
-	return style.Render(text + strings.Repeat(" ", gap) + syncBadgeStyle.Render(badgeText))
+	return style.Render(truncateWidth(left, available))
 }

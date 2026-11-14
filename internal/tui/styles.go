@@ -36,6 +36,45 @@ var (
 			BorderForeground(colorDim).
 			Padding(0, 1)
 
+	// topBarStyle 与历史 tabStripStyle 同形：一行内容 + 底边下划线，高度 2。
+	// 保留 tabStripStyle 别名以免既有测试与引用一起改名。
+	topBarStyle = tabStripStyle
+
+	brandStyle = lipgloss.NewStyle().
+			Foreground(colorAccent).
+			Background(colorSurface).
+			Bold(true)
+
+	agentPillStyle = lipgloss.NewStyle().
+			Padding(0, 1).
+			Foreground(colorMuted).
+			Background(colorSurface)
+
+	agentPillOnStyle = lipgloss.NewStyle().
+				Padding(0, 1).
+				Foreground(colorOnAccent).
+				Background(colorCyan).
+				Bold(true)
+
+	providerBadgeStyle = lipgloss.NewStyle().
+				Padding(0, 1).
+				Foreground(colorOnAccent).
+				Background(colorAccent).
+				Bold(true)
+
+	chipKeyStyle = lipgloss.NewStyle().
+			Foreground(colorOnAccent).
+			Background(colorAccent).
+			Bold(true).
+			Padding(0, 1)
+
+	chipDescStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
+
+	hintGroupStyle = lipgloss.NewStyle().
+			Foreground(colorAccent).
+			Bold(true)
+
 	// paneTitleStyle is the small in-pane heading rendered inside a column
 	// (e.g. "Groups (n)" or a list header) — not the tab strip container.
 	// Bold for better visual hierarchy against list rows.
@@ -90,15 +129,15 @@ var (
 
 	selectedLineStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(colorAccent).
-				Background(colorSurfaceHi)
+				Foreground(colorOnAccent).
+				Background(colorCyan)
 
 	maskedValueStyle = lipgloss.NewStyle().
 				Foreground(colorMuted)
 
 	searchOverlayStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorDim).
+				BorderForeground(colorAccent).
 				Padding(1, 2)
 
 	typeBadgeStyles = map[string]lipgloss.Style{

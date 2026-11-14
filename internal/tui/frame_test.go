@@ -72,45 +72,54 @@ func TestActiveTabHasAccentPill(t *testing.T) {
 	if out == "" || out == "starting…" {
 		t.Skip("View() not ready (needs window size)")
 	}
-	if !strings.Contains(out, activeTabStyle.Render("Env")) {
+	navW := computeLayout(80, 24).navW
+	if !strings.Contains(out, activeNavPill("Env", navW)) {
 		t.Fatalf("View missing active Env pill")
 	}
 	m.active = 1
 	out = m.View()
-	if !strings.Contains(out, activeTabStyle.Render("Text")) {
+	if !strings.Contains(out, activeNavPill("Text", navW)) {
 		t.Fatalf("View missing active Text pill after switch")
 	}
-	if strings.Contains(out, activeTabStyle.Render("Env")) {
+	if strings.Contains(out, activeNavPill("Env", navW)) {
 		t.Fatalf("View still has Env pill after switching to Text")
 	}
 }
 
-func TestTabStripContainsAllLabels(t *testing.T) {
+func TestLeftNavContainsAllLabels(t *testing.T) {
 	m := sizedModel(80, 24)
 	out := m.View()
 	lines := strings.Split(out, "\n")
+	l := computeLayout(80, 24)
 
-	// The tab strip row is the one containing all three tab titles.
-	var tabRow string
-	for _, ln := range lines {
-		if strings.Contains(ln, "Env") && strings.Contains(ln, "Text") && strings.Contains(ln, "Config") {
-			tabRow = ln
-			break
+	// 左侧导航把标签垂直排列在内容区左侧，品牌在顶栏。
+	if !strings.Contains(lines[1], "senv") {
+		t.Fatalf("top bar missing brand: %q", clipRunesT(lines[1], 40))
+	}
+
+	var envRow, textRow, configRow int
+	for i, ln := range lines {
+		plain := ln
+		// 只看导航列（左边框 + navW），避免内容区干扰。
+		runes := []rune(plain)
+		if len(runes) > l.navW+2 {
+			plain = string(runes[1 : 1+l.navW])
+		}
+		if strings.Contains(plain, "Env") && envRow == 0 {
+			envRow = i
+		}
+		if strings.Contains(plain, "Text") && textRow == 0 {
+			textRow = i
+		}
+		if strings.Contains(plain, "Config") && configRow == 0 {
+			configRow = i
 		}
 	}
-	if tabRow == "" {
-		t.Fatal("no row contains all three tab labels (Env/Text/Config)")
+	if envRow == 0 || textRow == 0 || configRow == 0 {
+		t.Fatalf("left nav missing labels Env=%d Text=%d Config=%d\n%s", envRow, textRow, configRow, out)
 	}
-
-	// Verify labels appear in order.
-	envIdx := strings.Index(tabRow, "Env")
-	textIdx := strings.Index(tabRow, "Text")
-	configIdx := strings.Index(tabRow, "Config")
-	if envIdx < 0 || textIdx < 0 || configIdx < 0 {
-		t.Fatalf("missing tab labels in row: %q", tabRow)
-	}
-	if !(envIdx < textIdx && textIdx < configIdx) {
-		t.Errorf("tab labels not in expected order Env < Text < Config: env=%d text=%d config=%d", envIdx, textIdx, configIdx)
+	if !(envRow < textRow && textRow < configRow) {
+		t.Errorf("nav labels not in expected order Env < Text < Config: env=%d text=%d config=%d", envRow, textRow, configRow)
 	}
 }
 

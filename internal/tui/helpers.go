@@ -26,7 +26,7 @@ func modalBox(w, h int, title, body, hint string) string {
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorDim).
+		BorderForeground(colorAccent).
 		Padding(0, 1).
 		Width(maxInt(w-2, 8)).
 		Height(maxInt(h, 2)).
@@ -86,8 +86,22 @@ func sortedKeys(m map[string]string) []string {
 
 // cursorLine 渲染可选中的列表行：统一选中前缀与高亮。
 func cursorLine(line string, selected bool) string {
-	if selected {
-		return selectedLineStyle.Render(cursorPrefix(true) + line)
+	return cursorLineW(line, selected, 0)
+}
+
+// cursorLineW 在 width>0 时把选中行铺满整行（背景填充到列宽）。
+func cursorLineW(line string, selected bool, width int) string {
+	line = cursorPrefix(selected) + line
+	if !selected {
+		return line
 	}
-	return cursorPrefix(false) + line
+	return selectedRow(line, width)
+}
+
+// selectedRow 用选中样式渲染一行；width>0 时先截断再右补齐，形成整行色条。
+func selectedRow(line string, width int) string {
+	if width > 0 {
+		line = padRight(truncateWidth(line, width), width)
+	}
+	return selectedLineStyle.Render(line)
 }

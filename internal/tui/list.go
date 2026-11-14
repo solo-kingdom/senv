@@ -320,11 +320,7 @@ func renderSidebar(rows []SidebarRow, cursor, height, width int) string {
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
 		line := truncateWidth(fmt.Sprintf("%s %s  [%d]", r.Marker, r.Name, r.Count), inner-2)
-		if r.Selected {
-			line = selectedLineStyle.Render(cursorPrefix(true) + line)
-		} else {
-			line = cursorPrefix(false) + line
-		}
+		line = cursorLineW(line, r.Selected, maxInt(inner, 0))
 		lines = append(lines, line)
 	}
 	return windowedPane(fmt.Sprintf("Groups (%d)", len(rows)), lines, cursor, height, width)

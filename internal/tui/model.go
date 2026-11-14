@@ -60,8 +60,9 @@ type Managers struct {
 	SnapshotCache *SnapshotCache
 }
 
-// Model is the top-level bubbletea model. It owns the tab strip, the currently
-// active tab, the content area size, and the transient error banner state.
+// Model is the top-level bubbletea model. It owns the chrome (top bar, left
+// nav, footer), the currently active tab, the content area size, and the
+// transient error banner state.
 //
 // Each tab is held by pointer, so its navigation state (selected group, item
 // cursor, filter, ...) is preserved across tab switches — switching away and
@@ -98,6 +99,8 @@ type Model struct {
 	// cacheSeeded 报告启动时快照缓存是否命中并预热了 snap：命中则 Init
 	// 追加后台校验命令（真实解密完成后逐域比对，不一致即替换展示）。
 	cacheSeeded bool
+	// llmChrome 是顶栏 agent 胶囊 / provider 徽标的只读快照；LLM 未配置时为空。
+	llmChrome []llm.StatusRow
 }
 
 // toastLevel distinguishes a transient success hint from a transient warning.
@@ -309,10 +312,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		// 区域尺寸只在 frameLayout 一处计算（见 layout.go）；Tab 拿到的是
 		// 内容区格子，View 再把 Tab 输出硬装箱进同一个格子。
-		w, h := computeLayout(m.width, m.height).tabSize()
+		l := computeLayout(m.width, m.height)
+		w, h := l.tabSize()
 		for _, t := range m.tabs {
 			t.SetSize(w, h)
 		}
+		if m.search != nil {
+			m.search.SetSize(m.width, m.height)
+		}
+		if m.help != nil {
+			m.help.SetSize(m.width, m.height)
+		}
+		m.refreshLLMChrome()
 		return m, nil
 
 	case errMsg:
@@ -484,6 +495,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
 	if writeDoneMsg(msg) {
 		m.mgr.snap.Invalidate()
+		m.refreshLLMChrome()
 		if c := m.refreshSync(); c != nil {
 			cmd = tea.Batch(cmd, c)
 		}
@@ -569,7 +581,7 @@ func tabTitleForResult(resultType string) string {
 	return resultType
 }
 
-// View renders the tab strip + active tab content + status/error bar.
+// View renders the top bar + left nav + active tab content + status/error bar.
 //
 // 渲染不变量（由 frameLayout.renderFrame 保证，与各 Tab 实现无关）：输出
 // 恰好 m.height 行，每行在 grapheme 与 wcwidth 两种宽度模型下都恰好
@@ -584,27 +596,10 @@ func (m Model) View() string {
 		return l.renderTooSmall()
 	}
 
-	// Tab strip: active tab gets the accent pill, inactive tabs get muted
-	// text, and space separators are rendered between adjacent tabs.
-	separator := tabSeparatorStyle.Render(" ")
-	tabParts := make([]string, 0, len(m.tabs)*2-1)
-	for i, t := range m.tabs {
-		if i > 0 {
-			tabParts = append(tabParts, separator)
-		}
-		label := t.Title()
-		if i == m.active {
-			tabParts = append(tabParts, activeTabStyle.Render(label))
-		} else {
-			tabParts = append(tabParts, tabStyle.Render(label))
-		}
-	}
-	// tabStripStyle 的 Padding(0,1) 占 2 列：预算内放不下的尾部 tab 以 "…"
-	// 收尾，否则宽标签会在 strip 内折行、把整个布局撑高。
-	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, l.innerW-2)
-	tabStrip := tabStripStyle.Width(l.innerW).Render(strip)
+	top := m.renderTopBar(l.innerW)
+	nav := renderNav(m.tabs, m.active, l.navW, l.bodyH)
 
-	// Active tab content. The search overlay takes over the content area
+	// Active tab content. The search overlay takes over the content pane
 	// while open; the help overlay floats on top of the tab content instead.
 	var content string
 	switch {
@@ -619,6 +614,7 @@ func (m Model) View() string {
 	}
 
 	// Bottom bar: error takes precedence over warning, then status hint.
+	// 同步徽标已移到顶栏右侧，底栏只承载状态或 NAV/ACT 芯片。
 	var bottom string
 	switch {
 	case m.err != "":
@@ -645,10 +641,14 @@ func (m Model) View() string {
 		default:
 			bs = m.tabs[m.active].Bindings()
 		}
-		bottom = m.bottomBar(groupBar(bs), statusBarStyle)
+		bottom = m.bottomBar(hintBar(bs), statusBarStyle)
 	}
 
-	return l.renderFrame(tabStrip, content, bottom)
+	if m.search != nil || m.help != nil || m.codexPrompt != nil {
+		// 浮层占满内容区整宽，键位总览与搜索保持原来的排版空间。
+		return l.renderFrameWide(top, content, bottom)
+	}
+	return l.renderFrame(top, nav, content, bottom)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
@@ -693,38 +693,6 @@ func overlayBox(base, box string, w, h int) string {
 		out[r] = strings.Repeat(" ", left) + padRight(bl, bw) + strings.Repeat(" ", w-left-bw)
 	}
 	return strings.Join(out, "\n")
-}
-
-// fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部
-// 以 muted "…" 示意（数字键/Tab 仍可到达被收起的 tab）。若连激活 tab 都放
-// 不下（接近最小宽度），退化为只渲染激活 tab（标签截断到预算内）。
-func fitTabStrip(parts []string, activeTitle string, active, budget int) string {
-	if budget < 4 {
-		budget = 4
-	}
-	var out []string
-	used := 0
-	cut := -1
-	for i, p := range parts {
-		w := lipgloss.Width(p)
-		if used+w > budget {
-			cut = i
-			break
-		}
-		out = append(out, p)
-		used += w
-	}
-	if cut < 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, out...)
-	}
-	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
-	if 2*active >= cut {
-		return activeTabStyle.Render(truncateWidth(activeTitle, maxInt(budget-2, 1)))
-	}
-	if used+1 <= budget {
-		out = append(out, mutedStyle().Render("…"))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 // truncateRunes truncates s to at most max runes, appending "…" if shortened.
