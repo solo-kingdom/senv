@@ -16,6 +16,7 @@ import (
 	"github.com/wii/senv/internal/perflog"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 	"github.com/wii/senv/internal/tui"
 )
@@ -97,6 +98,12 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	syncSource := newTUISyncSource()
 	sourcesSt.End(true)
 
+	theme := tui.ThemeTokyoNight
+	store := getStorage()
+	if settings, err := store.LoadSettings(); err == nil && settings.TUI.Theme != "" {
+		theme = settings.TUI.Theme
+	}
+
 	return tui.Managers{
 		Env:           envMgr,
 		Text:          textMgr,
@@ -116,6 +123,16 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 		Refresh:       refresh,
 		Sync:          syncSource,
 		SnapshotCache: tuiSnapshotCache(),
+		Theme:         theme,
+		SaveTheme: func(name string) error {
+			st, err := store.LoadSettings()
+			if err != nil {
+				st = storage.NewSettings()
+			}
+			st.TUI.Theme = name
+			st.UpdatedAt = time.Now().Format(time.RFC3339)
+			return store.SaveSettings(st)
+		},
 	}, auditMgr, nil
 }
 

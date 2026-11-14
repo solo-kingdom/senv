@@ -43,7 +43,7 @@ func TestModelViewExactHeight(t *testing.T) {
 		&chromeDummyTab{title: "Config"},
 		&chromeDummyTab{title: "SSH"},
 		&chromeDummyTab{title: "KeyPair"},
-		&chromeDummyTab{title: "LLM"},
+		&chromeDummyTab{title: "Providers"},
 		&chromeDummyTab{title: "MCP"},
 		&chromeDummyTab{title: "History", longSelected: true},
 		&chromeDummyTab{title: "Audit", longSelected: true},
@@ -65,11 +65,9 @@ func TestModelViewExactHeight(t *testing.T) {
 			t.Fatalf("top bar missing brand (height %d)\n%s", height, dumpChrome(view))
 		}
 		if !strings.Contains(plain, "Env") || !strings.Contains(plain, "Audit") {
-			t.Fatalf("left nav missing Env/Audit (height %d)\n%s", height, dumpChrome(view))
+			t.Fatalf("tab strip missing Env/Audit (height %d)\n%s", height, dumpChrome(view))
 		}
-		// 激活项是 Audit：胶囊应出现一次；不得再画出第二条顶栏式 tab 条。
-		navW := computeLayout(m.width, height).navW
-		if !strings.Contains(view, activeNavPill("Audit", navW)) {
+		if !strings.Contains(view, activeTabStyle.Render(tabLabel("Audit"))) {
 			t.Fatalf("missing active Audit pill (height %d)\n%s", height, dumpChrome(view))
 		}
 	}

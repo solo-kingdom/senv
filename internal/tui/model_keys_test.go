@@ -17,7 +17,7 @@ import (
 )
 
 // newFullManagers registers every optional tab (SSH / AI / MCP / History /
-// Audit) so number-key and overlay tests exercise the 8-tab layout.
+// Audit) so number-key and overlay tests exercise the full tab layout.
 func newFullManagers(t *testing.T) Managers {
 	t.Helper()
 	dir := t.TempDir()
@@ -43,8 +43,8 @@ func newFullManagers(t *testing.T) Managers {
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 10 {
-		t.Fatalf("tabs = %d, want 10", len(m.tabs))
+	if len(m.tabs) != 11 {
+		t.Fatalf("tabs = %d, want 11", len(m.tabs))
 	}
 	for i := 1; i <= 9; i++ {
 		key := string(rune('0' + i))
@@ -57,13 +57,13 @@ func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 }
 
 func TestNumberKeyOutOfRangeIgnored(t *testing.T) {
-	m := New(Managers{}) // four tabs (Env/Text/Backup/Config)
-	if len(m.tabs) != 4 {
-		t.Fatalf("tabs = %d, want 4", len(m.tabs))
+	m := New(Managers{}) // five tabs (Env/Text/Config/Backup/Settings)
+	if len(m.tabs) != 5 {
+		t.Fatalf("tabs = %d, want 5", len(m.tabs))
 	}
 	out, _ := m.Update(runeKey("2"))
 	m = out.(Model)
-	for _, key := range []string{"5", "6", "9"} {
+	for _, key := range []string{"6", "7", "9"} {
 		out, _ = m.Update(runeKey(key))
 		m = out.(Model)
 		if m.active != 1 {

@@ -55,8 +55,8 @@ func TestActiveTabHasAccentPill(t *testing.T) {
 	lipgloss.DefaultRenderer().SetColorProfile(termenv.ANSI256)
 	defer lipgloss.DefaultRenderer().SetColorProfile(prev)
 
-	active := activeTabStyle.Render("Env")
-	inactive := tabStyle.Render("Env")
+	active := activeTabStyle.Render(tabLabel("Env"))
+	inactive := tabStyle.Render(tabLabel("Env"))
 	if !strings.Contains(active, "48;") && !strings.Contains(active, "[48;") {
 		t.Fatalf("activeTabStyle missing background SGR: %q", active)
 	}
@@ -72,59 +72,39 @@ func TestActiveTabHasAccentPill(t *testing.T) {
 	if out == "" || out == "starting…" {
 		t.Skip("View() not ready (needs window size)")
 	}
-	navW := computeLayout(80, 24).navW
-	if !strings.Contains(out, activeNavPill("Env", navW)) {
+	if !strings.Contains(out, activeTabStyle.Render(tabLabel("Env"))) {
 		t.Fatalf("View missing active Env pill")
 	}
 	m.active = 1
 	out = m.View()
-	if !strings.Contains(out, activeNavPill("Text", navW)) {
+	if !strings.Contains(out, activeTabStyle.Render(tabLabel("Text"))) {
 		t.Fatalf("View missing active Text pill after switch")
 	}
-	if strings.Contains(out, activeNavPill("Env", navW)) {
+	if strings.Contains(out, activeTabStyle.Render(tabLabel("Env"))) {
 		t.Fatalf("View still has Env pill after switching to Text")
 	}
 }
 
-func TestLeftNavContainsAllLabels(t *testing.T) {
+func TestTabStripContainsAllLabels(t *testing.T) {
 	m := sizedModel(80, 24)
 	out := m.View()
 	lines := strings.Split(out, "\n")
-	l := computeLayout(80, 24)
 
-	// 左侧导航把标签垂直排列在内容区左侧，品牌在顶栏。
+	// 功能菜单在顶栏：brand 与 Env / Text / Config / Settings 同一行。
 	if !strings.Contains(lines[1], "senv") {
 		t.Fatalf("top bar missing brand: %q", clipRunesT(lines[1], 40))
 	}
-
-	var envRow, textRow, configRow int
-	for i, ln := range lines {
-		plain := ln
-		// 只看导航列（左边框 + navW），避免内容区干扰。
-		runes := []rune(plain)
-		if len(runes) > l.navW+2 {
-			plain = string(runes[1 : 1+l.navW])
+	strip := lines[1]
+	for _, title := range []string{"Env", "Text", "Config", "Settings"} {
+		if !strings.Contains(strip, title) {
+			t.Fatalf("tab strip missing %s: %q", title, clipRunesT(strip, 80))
 		}
-		if strings.Contains(plain, "Env") && envRow == 0 {
-			envRow = i
+		if !strings.Contains(strip, tabIcon(title)) {
+			t.Fatalf("tab strip missing icon for %s: %q", title, clipRunesT(strip, 80))
 		}
-		if strings.Contains(plain, "Text") && textRow == 0 {
-			textRow = i
-		}
-		if strings.Contains(plain, "Config") && configRow == 0 {
-			configRow = i
-		}
-	}
-	if envRow == 0 || textRow == 0 || configRow == 0 {
-		t.Fatalf("left nav missing labels Env=%d Text=%d Config=%d\n%s", envRow, textRow, configRow, out)
-	}
-	if !(envRow < textRow && textRow < configRow) {
-		t.Errorf("nav labels not in expected order Env < Text < Config: env=%d text=%d config=%d", envRow, textRow, configRow)
 	}
 }
 
-// TestMinSizeGuard verifies that when the terminal is too small, View()
-// returns a plain hint with no box-drawing characters.
 func TestMinSizeGuard(t *testing.T) {
 	cases := []struct{ w, h int }{
 		{20, 10}, // width too small

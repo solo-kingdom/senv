@@ -25,7 +25,15 @@ type Settings struct {
 	DefaultGroup string         `json:"default_group"`      // Default group name (usually "default")
 	Session      SessionConfig  `json:"session"`            // Session cache configuration
 	Provider     ProviderConfig `json:"provider,omitempty"` // Remote sync provider configuration (empty = git)
+	TUI          TUISettings    `json:"tui,omitempty"`      // TUI chrome preferences (theme, …)
 	UpdatedAt    string         `json:"updated_at"`
+}
+
+// TUISettings holds TUI-only preferences persisted in settings.json.
+type TUISettings struct {
+	// Theme is a TUI theme id such as "tokyo-night", "gruvbox-dark",
+	// or "gruvbox-light". Empty means the TUI default (tokyo-night).
+	Theme string `json:"theme,omitempty"`
 }
 
 // ProviderConfig represents the remote sync provider configuration.

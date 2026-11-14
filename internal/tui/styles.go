@@ -2,8 +2,10 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Adaptive color palette for light/dark terminals (Tokyo Night based).
-// lipgloss picks Dark or Light from the detected terminal background.
+// Adaptive color palette for light/dark terminals (Tokyo Night based by
+// default). applyTheme can swap the whole set for a named theme; lipgloss
+// still picks Dark or Light from the detected terminal background when the
+// theme keeps distinct AdaptiveColor values.
 //
 // Contrast floor (enforced by TestPaletteContrast against common dark and
 // light terminal backgrounds and our own surface fills): every text role is
@@ -11,138 +13,164 @@ import "github.com/charmbracelet/lipgloss"
 // visibly quieter than primary text, and colorDim — reserved for borders and
 // separators, never for text you need to read — is >= 3:1.
 var (
-	// Core palette roles
-	colorFg      = lipgloss.AdaptiveColor{Dark: "#c0caf5", Light: "#343b58"}
-	colorMuted   = lipgloss.AdaptiveColor{Dark: "#9aa5ce", Light: "#565a6e"}
-	colorDim     = lipgloss.AdaptiveColor{Dark: "#8b93b8", Light: "#7d8296"}
-	colorAccent  = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#2f5fbf"}
-	colorCyan    = lipgloss.AdaptiveColor{Dark: "#7dcfff", Light: "#0b6a8a"}
-	colorMagenta = lipgloss.AdaptiveColor{Dark: "#bb9af7", Light: "#7a4db8"}
-	colorDanger  = lipgloss.AdaptiveColor{Dark: "#f7768e", Light: "#a83232"}
-	colorOk      = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#356a26"}
-	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#925800"}
-
-	// Surfaces follow Tokyo Night Storm: lifted off the near-black Night
-	// background so chrome (top bar, nav rail, footer) does not feel cave-like.
-	colorSurface   = lipgloss.AdaptiveColor{Dark: "#24283b", Light: "#eceef3"}
-	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#292e42", Light: "#e1e5ef"}
-	colorOnAccent  = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
+	colorFg        lipgloss.AdaptiveColor
+	colorMuted     lipgloss.AdaptiveColor
+	colorDim       lipgloss.AdaptiveColor
+	colorAccent    lipgloss.AdaptiveColor
+	colorCyan      lipgloss.AdaptiveColor
+	colorMagenta   lipgloss.AdaptiveColor
+	colorDanger    lipgloss.AdaptiveColor
+	colorOk        lipgloss.AdaptiveColor
+	colorWarn      lipgloss.AdaptiveColor
+	colorSurface   lipgloss.AdaptiveColor
+	colorSurfaceHi lipgloss.AdaptiveColor
+	colorOnAccent  lipgloss.AdaptiveColor
 )
 
-// Styles holds all lipgloss styles used by the TUI.
+// Styles holds all lipgloss styles used by the TUI. They are rebuilt by
+// applyTheme so a runtime theme switch takes effect on the next View.
 var (
-	tabStripStyle = lipgloss.NewStyle().
-			Background(colorSurface).
-			Border(lipgloss.NormalBorder(), false, false, true, false).
-			BorderForeground(colorDim).
-			Padding(0, 1)
+	tabStripStyle      lipgloss.Style
+	topBarStyle        lipgloss.Style
+	brandStyle         lipgloss.Style
+	agentPillStyle     lipgloss.Style
+	agentPillOnStyle   lipgloss.Style
+	providerBadgeStyle lipgloss.Style
+	chipKeyStyle       lipgloss.Style
+	chipDescStyle      lipgloss.Style
+	hintGroupStyle     lipgloss.Style
+	paneTitleStyle     lipgloss.Style
+	tabStyle           lipgloss.Style
+	activeTabStyle     lipgloss.Style
+	tabSeparatorStyle  lipgloss.Style
+	statusBarStyle     lipgloss.Style
+	syncBadgeStyle     lipgloss.Style
+	errorBarStyle      lipgloss.Style
+	warnBarStyle       lipgloss.Style
+	contentStyle       lipgloss.Style
+	paneStyle          lipgloss.Style
+	activePaneStyle    lipgloss.Style
+	selectedLineStyle  lipgloss.Style
+	maskedValueStyle   lipgloss.Style
+	searchOverlayStyle lipgloss.Style
+	typeBadgeStyles    map[string]lipgloss.Style
+	emptyStateStyle    lipgloss.Style
+	faintTextStyle     lipgloss.Style
+	successStyle       lipgloss.Style
+	accentStyle        lipgloss.Style
+	timestampStyle     lipgloss.Style
+	dangerStyle        lipgloss.Style
+)
 
-	// topBarStyle 与历史 tabStripStyle 同形：一行内容 + 底边下划线，高度 2。
-	// 保留 tabStripStyle 别名以免既有测试与引用一起改名。
+func rebuildStyles() {
+	tabStripStyle = lipgloss.NewStyle().
+		Background(colorSurface).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(colorDim).
+		Padding(0, 1)
+
+	// topBarStyle 与 tabStripStyle 同形：一行内容 + 底边下划线，高度 2。
 	topBarStyle = tabStripStyle
 
-	navPaneStyle = lipgloss.NewStyle().
-			Background(colorSurface)
-
 	brandStyle = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Background(colorSurface).
-			Bold(true)
+		Foreground(colorAccent).
+		Background(colorSurface).
+		Bold(true)
 
 	agentPillStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorMuted).
-			Background(colorSurface)
+		Padding(0, 1).
+		Foreground(colorMuted).
+		Background(colorSurface)
 
 	agentPillOnStyle = lipgloss.NewStyle().
-				Padding(0, 1).
-				Foreground(colorOnAccent).
-				Background(colorCyan).
-				Bold(true)
+		Padding(0, 1).
+		Foreground(colorOnAccent).
+		Background(colorCyan).
+		Bold(true)
 
 	providerBadgeStyle = lipgloss.NewStyle().
-				Padding(0, 1).
-				Foreground(colorOnAccent).
-				Background(colorAccent).
-				Bold(true)
+		Padding(0, 1).
+		Foreground(colorOnAccent).
+		Background(colorAccent).
+		Bold(true)
 
 	chipKeyStyle = lipgloss.NewStyle().
-			Foreground(colorOnAccent).
-			Background(colorAccent).
-			Bold(true).
-			Padding(0, 1)
+		Foreground(colorOnAccent).
+		Background(colorAccent).
+		Bold(true).
+		Padding(0, 1)
 
 	chipDescStyle = lipgloss.NewStyle().
-			Foreground(colorMuted)
+		Foreground(colorMuted)
 
 	hintGroupStyle = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Bold(true)
+		Foreground(colorAccent).
+		Bold(true)
 
 	// paneTitleStyle is the small in-pane heading rendered inside a column
 	// (e.g. "Groups (n)" or a list header) — not the tab strip container.
-	// Bold for better visual hierarchy against list rows.
 	paneTitleStyle = lipgloss.NewStyle().
-			Foreground(colorFg).
-			Bold(true).
-			Padding(0, 1)
+		Foreground(colorFg).
+		Bold(true).
+		Padding(0, 1)
 
 	tabStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorMuted)
+		Padding(0, 1).
+		Foreground(colorMuted)
 
 	activeTabStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorOnAccent).
-			Background(colorAccent).
-			Bold(true)
+		Padding(0, 1).
+		Foreground(colorOnAccent).
+		Background(colorAccent).
+		Bold(true)
 
 	tabSeparatorStyle = lipgloss.NewStyle().
-				Foreground(colorDim)
+		Foreground(colorDim).
+		Background(colorSurface)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorMuted).
-			Background(colorSurface)
+		Padding(0, 1).
+		Foreground(colorMuted).
+		Background(colorSurface)
 
 	syncBadgeStyle = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Background(colorSurface)
+		Foreground(colorAccent).
+		Background(colorSurface)
 
 	errorBarStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorDanger).
-			Background(colorSurface)
+		Padding(0, 1).
+		Foreground(colorDanger).
+		Background(colorSurface)
 
 	warnBarStyle = lipgloss.NewStyle().
-			Padding(0, 1).
-			Foreground(colorWarn).
-			Background(colorSurface)
+		Padding(0, 1).
+		Foreground(colorWarn).
+		Background(colorSurface)
 
 	contentStyle = lipgloss.NewStyle().Padding(0, 1)
 
 	paneStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(colorDim).
-			Padding(0, 1)
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorDim).
+		Padding(0, 1)
 
 	activePaneStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(colorAccent).
-			Padding(0, 1)
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(colorAccent).
+		Padding(0, 1)
 
 	selectedLineStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(colorOnAccent).
-				Background(colorCyan)
+		Bold(true).
+		Foreground(colorOnAccent).
+		Background(colorCyan)
 
 	maskedValueStyle = lipgloss.NewStyle().
-				Foreground(colorMuted)
+		Foreground(colorMuted)
 
 	searchOverlayStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorAccent).
-				Padding(1, 2)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorAccent).
+		Padding(1, 2)
 
 	typeBadgeStyles = map[string]lipgloss.Style{
 		typeEnv:    lipgloss.NewStyle().Foreground(colorAccent),
@@ -155,27 +183,27 @@ var (
 	}
 
 	emptyStateStyle = lipgloss.NewStyle().
-			Italic(true).
-			Foreground(colorMuted).
-			Padding(1, 2)
+		Italic(true).
+		Foreground(colorMuted).
+		Padding(1, 2)
 
 	faintTextStyle = lipgloss.NewStyle().
-			Foreground(colorMuted)
+		Foreground(colorMuted)
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(colorOk)
+		Foreground(colorOk)
 
 	accentStyle = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Bold(true)
+		Foreground(colorAccent).
+		Bold(true)
 
 	timestampStyle = lipgloss.NewStyle().
-			Foreground(colorCyan)
+		Foreground(colorCyan)
 
 	dangerStyle = lipgloss.NewStyle().
-			Foreground(colorDanger).
-			Bold(true)
-)
+		Foreground(colorDanger).
+		Bold(true)
+}
 
 func mutedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(colorMuted)

@@ -8,70 +8,66 @@ import (
 	"github.com/wii/senv/internal/llm"
 )
 
-// renderNav 把现有 Tab 画成左侧垂直菜单：激活项用 accent 胶囊铺满整行，
-// 其余为 muted 文本。条目多于高度时以激活项为中心做窗口，Tab/数字键
-// 仍可切到被收起的项。不引入独立的导航焦点，以免抢走分组侧栏的 h/l。
-func renderNav(tabs []Tab, active, width, height int) string {
-	if width < 1 || height < 1 || len(tabs) == 0 {
-		return ""
+// tabIcon 返回功能菜单项的宽度稳定符号（两种宽度模型一致、且不是
+// Nerd Font 私用区，避免被 sanitizeLine 折成 "?"）。
+func tabIcon(title string) string {
+	switch title {
+	case "Env":
+		return "◆"
+	case "Text":
+		return "¶"
+	case "Providers":
+		return "◈"
+	case "Config":
+		return "✎"
+	case "SSH":
+		return "⌘"
+	case "KeyPair":
+		return "⋆"
+	case "MCP":
+		return "⬡"
+	case "History":
+		return "↺"
+	case "Audit":
+		return "⚑"
+	case "Backup":
+		return "▣"
+	case "Settings":
+		return "⚙"
+	default:
+		return "•"
 	}
-	if active < 0 {
-		active = 0
-	}
-	if active >= len(tabs) {
-		active = len(tabs) - 1
-	}
-	start, end := visibleRange(len(tabs), active, height)
-	lines := make([]string, 0, end-start)
-	inner := maxInt(width, 1)
-	for i := start; i < end; i++ {
-		label := truncateWidth(tabs[i].Title(), inner)
-		if i == active {
-			lines = append(lines, activeNavPill(label, inner))
-		} else {
-			lines = append(lines, tabStyle.Width(inner).MaxHeight(1).Background(colorSurface).Render(label))
-		}
-	}
-	block := strings.Join(lines, "\n")
-	return navPaneStyle.Width(width).Height(height).MaxHeight(height).Render(block)
 }
 
-// activeNavPill 渲染左侧导航的激活胶囊，铺满 nav 列宽。测试用同一函数断言，
-// 避免 Width/MaxHeight 与 View 输出对不上。
-func activeNavPill(label string, width int) string {
-	if width < 1 {
-		width = 1
+// tabLabel 是顶栏菜单里显示的「icon + 空格 + 标题」。
+func tabLabel(title string) string {
+	if icon := tabIcon(title); icon != "" {
+		return icon + " " + title
 	}
-	return activeTabStyle.Width(width).MaxHeight(1).Render(label)
+	return title
 }
 
-// refreshLLMChrome 读取 agent 指针快照，供顶栏胶囊与 provider 徽标使用。
-// 只读本地文件，不访问网络；LLM 未配置或读取失败时清空缓存。
-func (m *Model) refreshLLMChrome() {
-	m.llmChrome = nil
-	if m.mgr.LLM == nil {
-		return
-	}
-	sm := llm.NewSwitchManager(m.mgr.LLM, m.mgr.LLMPointer, m.mgr.LLMHome)
-	rows, _, err := sm.Status()
-	if err != nil {
-		return
-	}
-	m.llmChrome = rows
-}
-
-// renderTopBar 画顶栏：左侧 brand `senv` 与 agent 胶囊，右侧当前 provider
-// 与同步徽标。预算不够时从右侧截断胶囊，保留 brand 与右侧徽标。
-func (m Model) renderTopBar(width int) string {
+// renderTabStrip 画顶栏：左侧 brand `senv`，中间带 icon 的功能菜单，
+// 右侧当前 provider 与同步徽标。预算不够时从右侧截断菜单，保留 brand
+// 与右侧徽标，并保证激活项仍可见。
+func (m Model) renderTabStrip(width int) string {
 	if width < 1 {
 		return ""
 	}
 	brand := brandStyle.Render("senv")
-	leftParts := []string{brand}
-	if pills := m.renderAgentPills(); pills != "" {
-		leftParts = append(leftParts, mutedStyle().Render("│"), pills)
+	separator := tabSeparatorStyle.Render(" ")
+	tabParts := make([]string, 0, len(m.tabs)*2-1)
+	for i, t := range m.tabs {
+		if i > 0 {
+			tabParts = append(tabParts, separator)
+		}
+		label := tabLabel(t.Title())
+		if i == m.active {
+			tabParts = append(tabParts, activeTabStyle.Render(label))
+		} else {
+			tabParts = append(tabParts, tabStyle.Render(label))
+		}
 	}
-	left := lipgloss.JoinHorizontal(lipgloss.Top, leftParts...)
 
 	var rightParts []string
 	if badge := m.providerBadge(); badge != "" {
@@ -85,28 +81,64 @@ func (m Model) renderTopBar(width int) string {
 		right = lipgloss.JoinHorizontal(lipgloss.Top, joinSpaced(rightParts)...)
 	}
 
-	// topBarStyle 的 Padding(0,1) 占 2 列，内容预算为 width-2。
+	// tabStripStyle 的 Padding(0,1) 占 2 列，内容预算为 width-2。
 	budget := maxInt(width-2, 1)
-	leftW, rightW := lipgloss.Width(left), lipgloss.Width(right)
-	if leftW+rightW+1 > budget {
-		// 优先保住 brand 与右侧徽标，再尽量保留胶囊。
-		keepRight := minInt(rightW, maxInt(budget-lipgloss.Width(brand)-1, 0))
+	leftW, rightW := lipgloss.Width(brand), lipgloss.Width(right)
+	// brand 与右侧徽标之间至少留 1 列空隙；菜单预算是两者中间。
+	gapKeep := 1
+	if rightW == 0 {
+		gapKeep = 0
+	}
+	midBudget := budget - leftW - 1 - rightW - gapKeep
+	if midBudget < 4 {
+		// 优先保住 brand 与激活项，徽标再让路。
+		keepRight := minInt(rightW, maxInt(budget-leftW-6, 0))
 		if rightW > keepRight {
 			right = truncateWidth(right, keepRight)
 			rightW = lipgloss.Width(right)
 		}
-		keepLeft := maxInt(budget-rightW-1, 1)
-		if leftW > keepLeft {
-			left = truncateWidth(left, keepLeft)
-			leftW = lipgloss.Width(left)
-		}
+		midBudget = maxInt(budget-leftW-1-rightW-gapKeep, 4)
 	}
+	active := tabLabel(m.tabs[m.active].Title())
+	mid := fitTabStrip(tabParts, active, m.active, midBudget)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, tabSeparatorStyle.Render(" "), mid)
 	gap := budget - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
 	}
 	row := left + strings.Repeat(" ", gap) + right
-	return topBarStyle.Width(width).Render(row)
+	return tabStripStyle.Width(width).Render(row)
+}
+
+// fitTabStrip 把已经渲染好的 tab 片段装进 budget 列。放不下的尾部以 "…"
+// 收尾；若激活 tab 会被截掉，则退化为只渲染激活 tab。
+func fitTabStrip(parts []string, activeTitle string, active, budget int) string {
+	if budget < 4 {
+		budget = 4
+	}
+	var out []string
+	used := 0
+	cut := -1
+	for i, p := range parts {
+		w := lipgloss.Width(p)
+		if used+w > budget {
+			cut = i
+			break
+		}
+		out = append(out, p)
+		used += w
+	}
+	if cut < 0 {
+		return lipgloss.JoinHorizontal(lipgloss.Top, out...)
+	}
+	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
+	if 2*active >= cut {
+		return activeTabStyle.Render(truncateWidth(activeTitle, maxInt(budget-2, 1)))
+	}
+	if used+1 <= budget {
+		out = append(out, mutedStyle().Background(colorSurface).Render("…"))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 func joinSpaced(parts []string) []string {
@@ -123,26 +155,19 @@ func joinSpaced(parts []string) []string {
 	return out
 }
 
-func (m Model) renderAgentPills() string {
-	if len(m.llmChrome) == 0 {
-		return ""
+// refreshLLMChrome 读取 agent 指针快照，供顶栏 provider 徽标使用。
+// 只读本地文件，不访问网络；LLM 未配置或读取失败时清空缓存。
+func (m *Model) refreshLLMChrome() {
+	m.llmChrome = nil
+	if m.mgr.LLM == nil {
+		return
 	}
-	parts := make([]string, 0, len(m.llmChrome)*2-1)
-	for i, row := range m.llmChrome {
-		if i > 0 {
-			parts = append(parts, " ")
-		}
-		label := row.AgentID
-		if label == "" {
-			label = row.AgentName
-		}
-		if row.Pointer != nil && row.Pointer.Provider != "" {
-			parts = append(parts, agentPillOnStyle.Render(label))
-		} else {
-			parts = append(parts, agentPillStyle.Render(label))
-		}
+	sm := llm.NewSwitchManager(m.mgr.LLM, m.mgr.LLMPointer, m.mgr.LLMHome)
+	rows, _, err := sm.Status()
+	if err != nil {
+		return
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	m.llmChrome = rows
 }
 
 // providerBadge 取最近一次切换的 provider 别名；没有任何指针时为空。

@@ -18,14 +18,14 @@ func TestNewDefaultsToEnvTab(t *testing.T) {
 	if m.active != 0 {
 		t.Fatalf("active = %d, want 0 (Env)", m.active)
 	}
-	if len(m.tabs) != 4 {
-		t.Fatalf("tabs = %d, want 4", len(m.tabs))
+	if len(m.tabs) != 5 {
+		t.Fatalf("tabs = %d, want 5", len(m.tabs))
 	}
 	if m.tabs[0].Title() != "Env" {
 		t.Fatalf("tab 0 title = %q, want Env", m.tabs[0].Title())
 	}
-	if m.tabs[1].Title() != "Text" || m.tabs[2].Title() != "Config" || m.tabs[3].Title() != "Backup" {
-		t.Fatalf("unexpected tab titles: %q %q %q", m.tabs[1].Title(), m.tabs[2].Title(), m.tabs[3].Title())
+	if m.tabs[1].Title() != "Text" || m.tabs[2].Title() != "Config" || m.tabs[3].Title() != "Backup" || m.tabs[4].Title() != "Settings" {
+		t.Fatalf("unexpected tab titles: %q %q %q %q", m.tabs[1].Title(), m.tabs[2].Title(), m.tabs[3].Title(), m.tabs[4].Title())
 	}
 }
 
@@ -35,7 +35,7 @@ func TestLLMTabIsThird(t *testing.T) {
 		t.Fatalf("tabs = %d, want at least 3", len(m.tabs))
 	}
 	got := []string{m.tabs[0].Title(), m.tabs[1].Title(), m.tabs[2].Title()}
-	want := []string{"Env", "Text", "LLM"}
+	want := []string{"Env", "Text", "Providers"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("tab %d title = %q, want %q (order %v)", i, got[i], want[i], got)
@@ -54,8 +54,9 @@ func TestTabSwitchByNumber(t *testing.T) {
 		want int
 	}{
 		{"2", 1}, // Text
-		{"3", 2}, // Backup
-		{"4", 3}, // Config
+		{"3", 2}, // Config
+		{"4", 3}, // Backup
+		{"5", 4}, // Settings
 		{"1", 0}, // Env
 	} {
 		out, _ := m.Update(runeKey(tc.key))
@@ -69,9 +70,9 @@ func TestTabSwitchByNumber(t *testing.T) {
 func TestTabSwitchCycle(t *testing.T) {
 	m := New(Managers{})
 
-	// Tab key cycles forward: Env -> Text -> Backup -> Config -> Env.
+	// Tab key cycles forward: Env -> Text -> Config -> Backup -> Settings -> Env.
 	tabMsg := tea.KeyMsg{Type: tea.KeyTab}
-	for _, want := range []int{1, 2, 3, 0} {
+	for _, want := range []int{1, 2, 3, 4, 0} {
 		out, _ := m.Update(tabMsg)
 		m = out.(Model)
 		if m.active != want {
@@ -79,9 +80,9 @@ func TestTabSwitchCycle(t *testing.T) {
 		}
 	}
 
-	// Shift+Tab cycles backward: Env -> Config -> Backup -> Text -> Env.
+	// Shift+Tab cycles backward: Env -> Settings -> Backup -> Config -> Text -> Env.
 	shiftTab := tea.KeyMsg{Type: tea.KeyShiftTab}
-	for _, want := range []int{3, 2, 1, 0} {
+	for _, want := range []int{4, 3, 2, 1, 0} {
 		out, _ := m.Update(shiftTab)
 		m = out.(Model)
 		if m.active != want {

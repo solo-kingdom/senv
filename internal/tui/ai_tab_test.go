@@ -73,16 +73,16 @@ func submitAIForm(t *testing.T, tab *aiTab, values map[string]string) *aiTab {
 }
 
 func TestAITabRegistration(t *testing.T) {
-	if tabs := New(Managers{}); len(tabs.tabs) != 4 {
-		t.Fatalf("base tab count = %d, want 4 (no AI without LLM)", len(tabs.tabs))
+	if tabs := New(Managers{}); len(tabs.tabs) != 5 {
+		t.Fatalf("base tab count = %d, want 5 (no AI without LLM)", len(tabs.tabs))
 	}
 	m := New(Managers{LLM: &llm.ProviderManager{}})
 	for _, tab := range m.tabs {
-		if tab.Title() == "LLM" {
+		if tab.Title() == "Providers" {
 			return
 		}
 	}
-	t.Fatal("LLM tab should be registered when the LLM manager is present")
+	t.Fatal("Providers tab should be registered when the LLM manager is present")
 }
 
 func TestAITabBrowseNoSecretLeak(t *testing.T) {

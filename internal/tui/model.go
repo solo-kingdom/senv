@@ -16,19 +16,21 @@ import (
 	"github.com/wii/senv/internal/text"
 )
 
-// Managers bundles the three domain managers shared by all tabs. The TUI is a
-// pure interaction layer over these existing managers (no storage changes).
-// History 为 nil 时不注册 History Tab（git 模式 / 未配置 server）；
-// Audit 为 nil 时不注册审计 Tab；LLM 为 nil 时不注册 AI Tab；
-// MCP 为 nil 时不注册 MCP Tab。
+// Managers bundles the domain managers shared by all tabs. History 为 nil
+// 时不注册 History Tab（git 模式 / 未配置 server）；Audit 为 nil 时不注册
+// 审计 Tab；LLM 为 nil 时不注册 AI Tab；MCP 为 nil 时不注册 MCP Tab。
 type Managers struct {
-	Env    *env.Manager
-	Text   *text.Manager
-	Backup *backup.Manager
-	Config *config.Manager
-	SSH    *ssh.Manager
-	LLM    *llm.ProviderManager
-	MCP    *mcp.Manager
+	// Theme 是启动时要应用的 TUI 主题 id；空值按 tokyo-night 处理。
+	Theme string
+	// SaveTheme 在用户于设置页切换主题时持久化；nil 时只影响本次会话。
+	SaveTheme func(name string) error
+	Env       *env.Manager
+	Text      *text.Manager
+	Backup    *backup.Manager
+	Config    *config.Manager
+	SSH       *ssh.Manager
+	LLM       *llm.ProviderManager
+	MCP       *mcp.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
@@ -60,8 +62,8 @@ type Managers struct {
 	SnapshotCache *SnapshotCache
 }
 
-// Model is the top-level bubbletea model. It owns the chrome (top bar, left
-// nav, footer), the currently active tab, the content area size, and the
+// Model is the top-level bubbletea model. It owns the chrome (tab strip,
+// footer), the currently active tab, the content area size, and the
 // transient error banner state.
 //
 // Each tab is held by pointer, so its navigation state (selected group, item
@@ -169,10 +171,12 @@ func New(mgr Managers) Model {
 	if mgr.Audit != nil {
 		m.tabs = append(m.tabs, newAuditTab(mgr.Audit, mgr.Sync))
 	}
-	// Backup 排在末尾：整块存取是低频面，不打断前面的高频工作面。
+	// Backup 排在 Settings 之前：整块存取是低频面，不打断前面的高频工作面。
 	m.tabs = append(m.tabs, newBackupTab(mgr))
+	m.tabs = append(m.tabs, newSettingsTab(mgr))
 	m.activated = make([]bool, len(m.tabs))
 	m.activated[m.active] = true
+	applyTheme(mgr.Theme)
 	return m
 }
 
@@ -575,13 +579,17 @@ type jumpFocuser interface{ focusJump(group, key string) }
 
 // tabTitleForResult maps a search result type to its tab title.
 func tabTitleForResult(resultType string) string {
-	if resultType == typeConfig {
+	switch resultType {
+	case typeConfig:
 		return "Config"
+	case typeLLM:
+		return "Providers"
+	default:
+		return resultType
 	}
-	return resultType
 }
 
-// View renders the top bar + left nav + active tab content + status/error bar.
+// View renders the tab strip + active tab content + status/error bar.
 //
 // 渲染不变量（由 frameLayout.renderFrame 保证，与各 Tab 实现无关）：输出
 // 恰好 m.height 行，每行在 grapheme 与 wcwidth 两种宽度模型下都恰好
@@ -596,8 +604,7 @@ func (m Model) View() string {
 		return l.renderTooSmall()
 	}
 
-	top := m.renderTopBar(l.innerW)
-	nav := renderNav(m.tabs, m.active, l.navW, l.bodyH)
+	top := m.renderTabStrip(l.innerW)
 
 	// Active tab content. The search overlay takes over the content pane
 	// while open; the help overlay floats on top of the tab content instead.
@@ -644,11 +651,7 @@ func (m Model) View() string {
 		bottom = m.bottomBar(hintBar(bs), statusBarStyle)
 	}
 
-	if m.search != nil || m.help != nil || m.codexPrompt != nil {
-		// 浮层占满内容区整宽，键位总览与搜索保持原来的排版空间。
-		return l.renderFrameWide(top, content, bottom)
-	}
-	return l.renderFrame(top, nav, content, bottom)
+	return l.renderFrame(top, content, bottom)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
