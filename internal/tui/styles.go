@@ -30,36 +30,37 @@ var (
 // Styles holds all lipgloss styles used by the TUI. They are rebuilt by
 // applyTheme so a runtime theme switch takes effect on the next View.
 var (
-	tabStripStyle      lipgloss.Style
-	topBarStyle        lipgloss.Style
-	brandStyle         lipgloss.Style
-	agentPillStyle     lipgloss.Style
-	agentPillOnStyle   lipgloss.Style
-	providerBadgeStyle lipgloss.Style
-	chipKeyStyle       lipgloss.Style
-	chipDescStyle      lipgloss.Style
-	hintGroupStyle     lipgloss.Style
-	paneTitleStyle     lipgloss.Style
-	tabStyle           lipgloss.Style
-	activeTabStyle     lipgloss.Style
-	tabSeparatorStyle  lipgloss.Style
-	statusBarStyle     lipgloss.Style
-	syncBadgeStyle     lipgloss.Style
-	errorBarStyle      lipgloss.Style
-	warnBarStyle       lipgloss.Style
-	contentStyle       lipgloss.Style
-	paneStyle          lipgloss.Style
-	activePaneStyle    lipgloss.Style
-	selectedLineStyle  lipgloss.Style
-	maskedValueStyle   lipgloss.Style
-	searchOverlayStyle lipgloss.Style
-	typeBadgeStyles    map[string]lipgloss.Style
-	emptyStateStyle    lipgloss.Style
-	faintTextStyle     lipgloss.Style
-	successStyle       lipgloss.Style
-	accentStyle        lipgloss.Style
-	timestampStyle     lipgloss.Style
-	dangerStyle        lipgloss.Style
+	tabStripStyle       lipgloss.Style
+	topBarStyle         lipgloss.Style
+	brandStyle          lipgloss.Style
+	agentPillStyle      lipgloss.Style
+	agentPillOnStyle    lipgloss.Style
+	providerBadgeStyle  lipgloss.Style
+	chipKeyStyle        lipgloss.Style
+	chipDescStyle       lipgloss.Style
+	hintGroupStyle      lipgloss.Style
+	paneTitleStyle      lipgloss.Style
+	tabStyle            lipgloss.Style
+	activeTabStyle      lipgloss.Style
+	tabSeparatorStyle   lipgloss.Style
+	statusBarStyle      lipgloss.Style
+	syncBadgeStyle      lipgloss.Style
+	errorBarStyle       lipgloss.Style
+	warnBarStyle        lipgloss.Style
+	contentStyle        lipgloss.Style
+	paneStyle           lipgloss.Style
+	activePaneStyle     lipgloss.Style
+	selectedLineStyle   lipgloss.Style
+	unselectedLineStyle lipgloss.Style
+	maskedValueStyle    lipgloss.Style
+	searchOverlayStyle  lipgloss.Style
+	typeBadgeStyles     map[string]lipgloss.Style
+	emptyStateStyle     lipgloss.Style
+	faintTextStyle      lipgloss.Style
+	successStyle        lipgloss.Style
+	accentStyle         lipgloss.Style
+	timestampStyle      lipgloss.Style
+	dangerStyle         lipgloss.Style
 )
 
 func rebuildStyles() {
@@ -163,6 +164,10 @@ func rebuildStyles() {
 		Bold(true).
 		Foreground(colorOnAccent).
 		Background(colorCyan)
+
+	unselectedLineStyle = lipgloss.NewStyle().
+		Foreground(colorFg).
+		Background(colorSurface)
 
 	maskedValueStyle = lipgloss.NewStyle().
 		Foreground(colorMuted)

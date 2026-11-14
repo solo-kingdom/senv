@@ -103,6 +103,7 @@ func TestReadableRolesNeverUseDim(t *testing.T) {
 	for name, st := range map[string]lipgloss.Style{
 		"tab": tabStyle, "paneTitle": paneTitleStyle, "statusBar": statusBarStyle,
 		"masked": maskedValueStyle, "empty": emptyStateStyle, "config badge": typeBadgeStyles[typeConfig],
+		"unselected": unselectedLineStyle,
 	} {
 		if st.GetForeground() == lipgloss.TerminalColor(colorDim) {
 			t.Errorf("%s uses colorDim for text", name)

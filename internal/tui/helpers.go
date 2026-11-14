@@ -90,10 +90,14 @@ func cursorLine(line string, selected bool) string {
 }
 
 // cursorLineW 在 width>0 时把选中行铺满整行（背景填充到列宽）。
+// 未选中行也铺上主题前景和 surface 底，避免浅色主题继承终端默认浅色字。
 func cursorLineW(line string, selected bool, width int) string {
 	line = cursorPrefix(selected) + line
 	if !selected {
-		return line
+		if width > 0 {
+			line = padRight(truncateWidth(line, width), width)
+		}
+		return unselectedLineStyle.Render(line)
 	}
 	return selectedRow(line, width)
 }

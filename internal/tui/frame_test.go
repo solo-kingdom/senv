@@ -55,16 +55,16 @@ func TestActiveTabHasAccentPill(t *testing.T) {
 	lipgloss.DefaultRenderer().SetColorProfile(termenv.ANSI256)
 	defer lipgloss.DefaultRenderer().SetColorProfile(prev)
 
-	active := activeTabStyle.Render(tabLabel("Env"))
-	inactive := tabStyle.Render(tabLabel("Env"))
+	active := renderTab("Env", true)
+	inactive := renderTab("Env", false)
 	if !strings.Contains(active, "48;") && !strings.Contains(active, "[48;") {
-		t.Fatalf("activeTabStyle missing background SGR: %q", active)
-	}
-	if strings.Contains(inactive, "48;") || strings.Contains(inactive, "[48;") {
-		t.Fatalf("tabStyle should not set background: %q", inactive)
+		t.Fatalf("active tab missing background SGR: %q", active)
 	}
 	if strings.Contains(active, ";4;") || strings.Contains(active, "[4m") || strings.Contains(active, "[4;") {
-		t.Fatalf("activeTabStyle must not underline: %q", active)
+		t.Fatalf("active tab must not underline: %q", active)
+	}
+	if lipgloss.Width(active) != lipgloss.Width(inactive) {
+		t.Fatalf("active/inactive tab width %d vs %d", lipgloss.Width(active), lipgloss.Width(inactive))
 	}
 
 	m := sizedModel(80, 24)
@@ -72,16 +72,16 @@ func TestActiveTabHasAccentPill(t *testing.T) {
 	if out == "" || out == "starting…" {
 		t.Skip("View() not ready (needs window size)")
 	}
-	if !strings.Contains(out, activeTabStyle.Render(tabLabel("Env"))) {
-		t.Fatalf("View missing active Env pill")
+	if !strings.Contains(out, renderTab("Env", true)) {
+		t.Fatalf("View missing active Env tab")
 	}
 	m.active = 1
 	out = m.View()
-	if !strings.Contains(out, activeTabStyle.Render(tabLabel("Text"))) {
-		t.Fatalf("View missing active Text pill after switch")
+	if !strings.Contains(out, renderTab("Text", true)) {
+		t.Fatalf("View missing active Text tab after switch")
 	}
-	if strings.Contains(out, activeTabStyle.Render(tabLabel("Env"))) {
-		t.Fatalf("View still has Env pill after switching to Text")
+	if strings.Contains(out, renderTab("Env", true)) {
+		t.Fatalf("View still has Env as active after switching to Text")
 	}
 }
 

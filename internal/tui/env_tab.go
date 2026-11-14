@@ -1149,11 +1149,11 @@ func (t *envTab) viewBaseAt(h int) string {
 	right := t.renderItems(rightW, h)
 
 	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(h).Render(left)
-		right = paneStyle.Width(rightW).Height(h).Render(right)
+		left = applyPane(left, leftW, h, true)
+		right = applyPane(right, rightW, h, false)
 	} else {
-		left = paneStyle.Width(leftW).Height(h).Render(left)
-		right = activePaneStyle.Width(rightW).Height(h).Render(right)
+		left = applyPane(left, leftW, h, false)
+		right = applyPane(right, rightW, h, true)
 	}
 	gap := lipgloss.NewStyle().Width(1).Render(" ")
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
@@ -1251,7 +1251,7 @@ func (t *envTab) renderItems(width, height int) string {
 		if i == t.itemIndex {
 			line = selectedLineStyle.Render("▸ "+keyLabel+"=") + renderValue(shown, revealed)
 		} else {
-			line = keyLabel + "=" + renderValue(shown, false)
+			line = unselectedLineStyle.Render(keyLabel+"=") + renderValue(shown, false)
 		}
 		lines = append(lines, line)
 	}

@@ -47,6 +47,55 @@ func tabLabel(title string) string {
 	return title
 }
 
+// tabIconColor 给每个功能一个调色板角色，图标在 surface 上保持
+// 与正文相同的对比度下限（角色本身已由 TestPaletteContrast 约束）。
+func tabIconColor(title string) lipgloss.TerminalColor {
+	switch title {
+	case "Env":
+		return colorCyan
+	case "Text":
+		return colorAccent
+	case "Providers":
+		return colorMagenta
+	case "Config":
+		return colorWarn
+	case "SSH":
+		return colorOk
+	case "KeyPair":
+		return colorMagenta
+	case "MCP":
+		return colorCyan
+	case "History":
+		return colorAccent
+	case "Audit":
+		return colorWarn
+	case "Backup":
+		return colorOk
+	case "Settings":
+		return colorAccent
+	default:
+		return colorMuted
+	}
+}
+
+// renderTab 画一个顶栏菜单项。图标用各自的颜色铺在 surface 上；激活项
+// 只把标题做成强调色胶囊，避免彩色图标压在强调底上对比度不够。左右
+// 各留 1 列空白，宽度与原先 Padding(0,1)+tabLabel 一致。
+func renderTab(title string, active bool) string {
+	icon := tabIcon(title)
+	pad := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
+	iconSt := lipgloss.NewStyle().Foreground(tabIconColor(title)).Background(colorSurface)
+	if active {
+		titleSt := lipgloss.NewStyle().
+			Foreground(colorOnAccent).
+			Background(colorAccent).
+			Bold(true)
+		return pad + iconSt.Render(icon) + iconSt.Render(" ") + titleSt.Render(title) + pad
+	}
+	titleSt := lipgloss.NewStyle().Foreground(colorMuted).Background(colorSurface)
+	return pad + iconSt.Render(icon) + iconSt.Render(" ") + titleSt.Render(title) + pad
+}
+
 // renderTabStrip 画顶栏：左侧 brand `senv`，中间带 icon 的功能菜单，
 // 右侧当前 provider 与同步徽标。预算不够时从右侧截断菜单，保留 brand
 // 与右侧徽标，并保证激活项仍可见。
@@ -61,12 +110,7 @@ func (m Model) renderTabStrip(width int) string {
 		if i > 0 {
 			tabParts = append(tabParts, separator)
 		}
-		label := tabLabel(t.Title())
-		if i == m.active {
-			tabParts = append(tabParts, activeTabStyle.Render(label))
-		} else {
-			tabParts = append(tabParts, tabStyle.Render(label))
-		}
+		tabParts = append(tabParts, renderTab(t.Title(), i == m.active))
 	}
 
 	var rightParts []string
@@ -99,7 +143,7 @@ func (m Model) renderTabStrip(width int) string {
 		}
 		midBudget = maxInt(budget-leftW-1-rightW-gapKeep, 4)
 	}
-	active := tabLabel(m.tabs[m.active].Title())
+	active := m.tabs[m.active].Title()
 	mid := fitTabStrip(tabParts, active, m.active, midBudget)
 	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, tabSeparatorStyle.Render(" "), mid)
 	gap := budget - lipgloss.Width(left) - lipgloss.Width(right)
@@ -133,7 +177,8 @@ func fitTabStrip(parts []string, activeTitle string, active, budget int) string 
 	}
 	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
 	if 2*active >= cut {
-		return activeTabStyle.Render(truncateWidth(activeTitle, maxInt(budget-2, 1)))
+		// budget 至少要留给左右 padding、图标和空格（4 列），其余给标题。
+		return renderTab(truncateWidth(activeTitle, maxInt(budget-4, 1)), true)
 	}
 	if used+1 <= budget {
 		out = append(out, mutedStyle().Background(colorSurface).Render("…"))

@@ -33,7 +33,7 @@ func (d *chromeDummyTab) View() string {
 		}
 		body[i] = line
 	}
-	return paneStyle.Width(maxInt(d.width-2, 4)).Height(d.height).Render(strings.Join(body, "\n"))
+	return applyPane(strings.Join(body, "\n"), maxInt(d.width-2, 4), d.height, false)
 }
 
 func TestModelViewExactHeight(t *testing.T) {
@@ -67,8 +67,8 @@ func TestModelViewExactHeight(t *testing.T) {
 		if !strings.Contains(plain, "Env") || !strings.Contains(plain, "Audit") {
 			t.Fatalf("tab strip missing Env/Audit (height %d)\n%s", height, dumpChrome(view))
 		}
-		if !strings.Contains(view, activeTabStyle.Render(tabLabel("Audit"))) {
-			t.Fatalf("missing active Audit pill (height %d)\n%s", height, dumpChrome(view))
+		if !strings.Contains(view, renderTab("Audit", true)) {
+			t.Fatalf("missing active Audit tab (height %d)\n%s", height, dumpChrome(view))
 		}
 	}
 }

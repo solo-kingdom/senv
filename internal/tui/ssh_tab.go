@@ -1533,11 +1533,11 @@ func (t *sshTab) viewBaseAt(height int) string {
 		side := emptyStateStyle.Render("loading SSH assets…")
 		host := emptyStateStyle.Render("loading SSH assets…")
 		if t.focus == paneGroup {
-			side = activePaneStyle.Width(sideW).Height(height).Render(side)
-			host = paneStyle.Width(hostW).Height(height).Render(host)
+			side = applyPane(side, sideW, height, true)
+			host = applyPane(host, hostW, height, false)
 		} else {
-			side = paneStyle.Width(sideW).Height(height).Render(side)
-			host = activePaneStyle.Width(hostW).Height(height).Render(host)
+			side = applyPane(side, sideW, height, false)
+			host = applyPane(host, hostW, height, true)
 		}
 		return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), host)
 	}
@@ -1553,11 +1553,11 @@ func (t *sshTab) viewBaseAt(height int) string {
 	host := windowedPane(hostTitle, hostLines, t.hostIndex, height, hostW)
 
 	if t.focus == paneGroup {
-		side = activePaneStyle.Width(sideW).Height(height).Render(side)
-		host = paneStyle.Width(hostW).Height(height).Render(host)
+		side = applyPane(side, sideW, height, true)
+		host = applyPane(host, hostW, height, false)
 	} else {
-		side = paneStyle.Width(sideW).Height(height).Render(side)
-		host = activePaneStyle.Width(hostW).Height(height).Render(host)
+		side = applyPane(side, sideW, height, false)
+		host = applyPane(host, hostW, height, true)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), host)
 }

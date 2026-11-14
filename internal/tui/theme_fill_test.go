@@ -108,3 +108,25 @@ func TestSGRResetsBackground(t *testing.T) {
 		}
 	}
 }
+
+func TestUnselectedLineUsesThemeForeground(t *testing.T) {
+	withTrueColor(t)
+	applyTheme(ThemeGruvboxLight)
+
+	line := cursorLineW("Tokyo Night", false, 20)
+	if !strings.Contains(line, "38;2;60;56;54") {
+		t.Fatalf("unselected line missing theme fg: %q", line)
+	}
+	if !strings.Contains(line, "48;2;251;241;199") {
+		t.Fatalf("unselected line missing surface bg: %q", line)
+	}
+
+	card := infoCardBlock("Theme", cursorLineW("Tokyo Night", false, 24), 40)
+	if !strings.Contains(card, "38;2;60;56;54") {
+		t.Fatalf("theme card unselected text missing theme fg: %q", card)
+	}
+	plain := ansi.Strip(card)
+	if !strings.Contains(plain, "╭ Theme ") {
+		t.Fatalf("theme card title not in top border: %q", plain)
+	}
+}
