@@ -2,10 +2,10 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Adaptive color palette for light/dark terminals (Tokyo Night based by
-// default). applyTheme can swap the whole set for a named theme; lipgloss
-// still picks Dark or Light from the detected terminal background when the
-// theme keeps distinct AdaptiveColor values.
+// Color palette for the TUI (Tokyo Night based by default). applyTheme
+// swaps the whole set for a named theme. Tokyo Night keeps AdaptiveColor
+// so lipgloss can pick Dark or Light from the terminal; explicit themes
+// use lipgloss.Color so a light theme stays light on a dark terminal.
 //
 // Contrast floor (enforced by TestPaletteContrast against common dark and
 // light terminal backgrounds and our own surface fills): every text role is
@@ -13,18 +13,18 @@ import "github.com/charmbracelet/lipgloss"
 // visibly quieter than primary text, and colorDim — reserved for borders and
 // separators, never for text you need to read — is >= 3:1.
 var (
-	colorFg        lipgloss.AdaptiveColor
-	colorMuted     lipgloss.AdaptiveColor
-	colorDim       lipgloss.AdaptiveColor
-	colorAccent    lipgloss.AdaptiveColor
-	colorCyan      lipgloss.AdaptiveColor
-	colorMagenta   lipgloss.AdaptiveColor
-	colorDanger    lipgloss.AdaptiveColor
-	colorOk        lipgloss.AdaptiveColor
-	colorWarn      lipgloss.AdaptiveColor
-	colorSurface   lipgloss.AdaptiveColor
-	colorSurfaceHi lipgloss.AdaptiveColor
-	colorOnAccent  lipgloss.AdaptiveColor
+	colorFg        lipgloss.TerminalColor
+	colorMuted     lipgloss.TerminalColor
+	colorDim       lipgloss.TerminalColor
+	colorAccent    lipgloss.TerminalColor
+	colorCyan      lipgloss.TerminalColor
+	colorMagenta   lipgloss.TerminalColor
+	colorDanger    lipgloss.TerminalColor
+	colorOk        lipgloss.TerminalColor
+	colorWarn      lipgloss.TerminalColor
+	colorSurface   lipgloss.TerminalColor
+	colorSurfaceHi lipgloss.TerminalColor
+	colorOnAccent  lipgloss.TerminalColor
 )
 
 // Styles holds all lipgloss styles used by the TUI. They are rebuilt by
@@ -211,5 +211,5 @@ func mutedStyle() lipgloss.Style {
 
 // frameBorderStyle colors the outer frame drawn by frameLayout.renderFrame.
 func frameBorderStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(colorDim)
+	return lipgloss.NewStyle().Foreground(colorDim).Background(colorSurface)
 }

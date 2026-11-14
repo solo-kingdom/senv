@@ -63,8 +63,10 @@ type palette struct {
 	surface, surfaceHi, onAccent                            string
 }
 
-func staticColor(hex string) lipgloss.AdaptiveColor {
-	return lipgloss.AdaptiveColor{Light: hex, Dark: hex}
+func staticColor(hex string) lipgloss.TerminalColor {
+	// 显式主题必须用 Color 而不是 AdaptiveColor{Light:hex, Dark:hex}：
+	// 后者语义上也能固定颜色，但强制主题应当不依赖终端深浅检测。
+	return lipgloss.Color(hex)
 }
 
 // tokyoNight 保持 AdaptiveColor：同一套角色在深/浅终端下各取一值。
