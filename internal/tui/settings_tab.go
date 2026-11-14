@@ -18,13 +18,34 @@ type settingsTab struct {
 }
 
 func newSettingsTab(mgr Managers) *settingsTab {
+	t := &settingsTab{mgr: mgr}
+	t.syncFromApplied()
+	return t
+}
+
+// syncFromApplied 把列表选中项与 Current 对齐到实际已应用的主题（包级
+// currentThemeID，其次 Managers.Theme）。进入/重入设置页时调用，避免
+// 构造时的默认主题残留，或光标停在未应用的项上。
+func (t *settingsTab) syncFromApplied() {
 	id := currentThemeID
 	if id == "" {
-		id = NormalizeTheme(mgr.Theme)
+		id = NormalizeTheme(t.mgr.Theme)
 	}
-	t := &settingsTab{mgr: mgr, current: id}
+	t.current = id
 	t.cursor = themeIndex(id)
-	return t
+}
+
+// appliedID 返回当前画面实际使用的主题；View 用它画 ● 与 Current，
+// 不移动光标（j/k 浏览时仍停在用户所在行）。
+func (t *settingsTab) appliedID() string {
+	if currentThemeID != "" {
+		t.current = currentThemeID
+		return currentThemeID
+	}
+	if t.current != "" {
+		return t.current
+	}
+	return NormalizeTheme(t.mgr.Theme)
 }
 
 func themeIndex(id string) int {
@@ -49,7 +70,10 @@ func (t *settingsTab) Bindings() []KeyAction {
 
 func (t *settingsTab) InputMode() bool { return false }
 
-func (t *settingsTab) Init() tea.Cmd   { return nil }
+func (t *settingsTab) Init() tea.Cmd {
+	t.syncFromApplied()
+	return nil
+}
 func (t *settingsTab) Reload() tea.Cmd { return nil }
 
 func (t *settingsTab) SetSize(width, height int) { t.width, t.height = width, height }
@@ -99,16 +123,17 @@ func (t *settingsTab) View() string {
 	contentW := maxInt(cardW-4, 8)
 
 	var themeLines []string
+	current := t.appliedID()
 	themeLines = append(themeLines, formatCardLine(
 		padLabel("Current", 7),
-		ThemeName(t.current),
+		ThemeName(current),
 		cardCyan,
 		contentW,
 	))
 	themeLines = append(themeLines, "")
 	for i, th := range allThemes() {
 		mark := "○"
-		if th.ID == t.current {
+		if th.ID == current {
 			mark = "●"
 		}
 		line := mark + "  " + th.Name

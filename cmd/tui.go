@@ -98,12 +98,7 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	syncSource := newTUISyncSource()
 	sourcesSt.End(true)
 
-	theme := tui.ThemeTokyoNight
 	store := getStorage()
-	if settings, err := store.LoadSettings(); err == nil && settings.TUI.Theme != "" {
-		theme = settings.TUI.Theme
-	}
-
 	return tui.Managers{
 		Env:           envMgr,
 		Text:          textMgr,
@@ -123,17 +118,29 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 		Refresh:       refresh,
 		Sync:          syncSource,
 		SnapshotCache: tuiSnapshotCache(),
-		Theme:         theme,
-		SaveTheme: func(name string) error {
-			st, err := store.LoadSettings()
-			if err != nil {
-				st = storage.NewSettings()
-			}
-			st.TUI.Theme = name
-			st.UpdatedAt = time.Now().Format(time.RFC3339)
-			return store.SaveSettings(st)
-		},
+		Theme:         loadTUITheme(store),
+		SaveTheme:     func(name string) error { return saveTUITheme(store, name) },
 	}, auditMgr, nil
+}
+
+// loadTUITheme 从 settings.json 读取已保存的 TUI 主题；缺失或空值回落
+// tokyo-night。settings.json 是与 ActiveGroups 等相同的本地设置存储。
+func loadTUITheme(store *storage.Manager) string {
+	if settings, err := store.LoadSettings(); err == nil && settings.TUI.Theme != "" {
+		return settings.TUI.Theme
+	}
+	return tui.ThemeTokyoNight
+}
+
+// saveTUITheme 把主题写入 settings.json，并保留其余字段（provider、session 等）。
+func saveTUITheme(store *storage.Manager, name string) error {
+	st, err := store.LoadSettings()
+	if err != nil {
+		st = storage.NewSettings()
+	}
+	st.TUI.Theme = name
+	st.UpdatedAt = time.Now().Format(time.RFC3339)
+	return store.SaveSettings(st)
 }
 
 // tuiSnapshotCache 用 vault 主密钥构造首屏快照缓存。resolveAuth 在进程内

@@ -142,6 +142,10 @@ func New(mgr Managers) Model {
 		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text, mgr.Backup)
 	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
+	// 先于任何 Tab 构造应用持久化主题：Settings 在 newSettingsTab 时
+	// 读取 currentThemeID。若放在 Tab 创建之后，包 init 留下的 tokyo-night
+	// 会被当成选中项，实际画面却已是保存的主题。
+	applyTheme(mgr.Theme)
 	// 首屏即时（D4）：首个 tab load 之前尝试快照缓存解密并预热 memo；未
 	// 命中（缺失/损坏/指纹不符/开关关闭）静默回退直接解密路径。
 	if c := mgr.SnapshotCache; c != nil {
@@ -176,7 +180,6 @@ func New(mgr Managers) Model {
 	m.tabs = append(m.tabs, newSettingsTab(mgr))
 	m.activated = make([]bool, len(m.tabs))
 	m.activated[m.active] = true
-	applyTheme(mgr.Theme)
 	return m
 }
 
