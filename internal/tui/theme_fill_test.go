@@ -27,7 +27,10 @@ func TestFitLinePaintsSurfaceBackground(t *testing.T) {
 	if w := ansi.StringWidth(got); w != 20 {
 		t.Fatalf("width = %d, want 20: %q", w, got)
 	}
-	// #fbf1c7
+	// #3c3836 on #fbf1c7 — 未设颜色的正文必须用主题前景，不能沿用终端默认浅色字。
+	if !strings.Contains(got, "38;2;60;56;54") {
+		t.Fatalf("unstyled text missing theme fg: %q", got)
+	}
 	if !strings.Contains(got, "48;2;251;241;199") {
 		t.Fatalf("plain padding missing surface bg: %q", got)
 	}
@@ -63,6 +66,23 @@ func TestGruvboxLightFillsFrame(t *testing.T) {
 		if !strings.Contains(line, "48;2;251;241;199") {
 			t.Errorf("row %d missing light surface bg: %q", i, line)
 		}
+		if !strings.Contains(line, "38;2;60;56;54") {
+			t.Errorf("row %d missing theme fg: %q", i, line)
+		}
+	}
+}
+
+func TestFitLineKeepsMutedForeground(t *testing.T) {
+	withTrueColor(t)
+	applyTheme(ThemeGruvboxLight)
+
+	// 次要文本（#504945）不能被默认前景盖掉。
+	got := fitLine(mutedStyle().Render("data-backup")+"  "+"plain", 40)
+	if !strings.Contains(got, "38;2;80;73;69") {
+		t.Fatalf("muted fg lost: %q", got)
+	}
+	if !strings.Contains(got, "38;2;60;56;54") {
+		t.Fatalf("plain text after muted style missing theme fg: %q", got)
 	}
 }
 

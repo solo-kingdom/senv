@@ -218,10 +218,10 @@ func plainText(s string) string {
 	return sanitizeLine(b.String())
 }
 
-// fitLine 把一行（可含 SGR）安全化并截断/右补齐到恰好 w 显示列，再用
-// 当前主题的 surface 填满未上底色的格子。卡片等组件会给自己铺底，但
-// 顶栏空隙、内容区空白和底栏补齐如果只写普通空格，深色终端上就会露出
-// 一块「黑洞」——浅色主题尤其明显。
+// fitLine 把一行（可含 SGR）安全化并截断/右补齐到恰好 w 显示列，再铺上
+// 主题的默认前景与 surface 底色。未设颜色的正文（未选中的列表/分组行）
+// 否则会沿用终端默认色：在深色终端里开浅色主题时，浅色字叠在浅色底上
+// 几乎不可读。
 func fitLine(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -253,7 +253,7 @@ func surfaceFillSeq() string {
 	if surfaceFillSGR != "" && surfaceFillTheme == currentThemeID && surfaceFillProfile == p {
 		return surfaceFillSGR
 	}
-	rendered := lipgloss.NewStyle().Background(colorSurface).Render(" ")
+	rendered := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
 	seq := ""
 	if i := strings.IndexByte(rendered, ' '); i > 0 {
 		seq = rendered[:i]
@@ -262,10 +262,10 @@ func surfaceFillSeq() string {
 	return seq
 }
 
-// paintSurface 给一行铺上主题 surface 底色，但不覆盖格子里已经设好的
-// 背景（活动 tab 胶囊、徽章、选中行等）。做法是在行首和每次「复位背景」
-// 的 SGR 之后重新打开 surface 背景：内层样式里的 \x1b[0m 否则会把外层
-// 容器底色一起清掉，露出终端默认背景。
+// paintSurface 给一行铺上主题默认前景和 surface 底色，但不覆盖格子里
+// 已经设好的颜色（活动 tab 胶囊、徽章、选中行、次要文本等）。做法是在
+// 行首和每次把前景/背景交还给终端默认值的 SGR 之后重新打开这组颜色：
+// 内层样式里的 \x1b[0m 否则会清掉外层容器色，露出终端默认的浅色字/深色底。
 func paintSurface(s string) string {
 	fill := surfaceFillSeq()
 	if fill == "" || s == "" {
