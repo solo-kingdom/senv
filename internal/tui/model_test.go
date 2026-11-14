@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wii/senv/internal/llm"
 )
 
 // runeKey builds a KeyMsg for a rune keystroke (e.g. "2", "q", "v").
@@ -25,6 +26,23 @@ func TestNewDefaultsToEnvTab(t *testing.T) {
 	}
 	if m.tabs[1].Title() != "Text" || m.tabs[2].Title() != "Config" || m.tabs[3].Title() != "Backup" {
 		t.Fatalf("unexpected tab titles: %q %q %q", m.tabs[1].Title(), m.tabs[2].Title(), m.tabs[3].Title())
+	}
+}
+
+func TestLLMTabIsThird(t *testing.T) {
+	m := New(Managers{LLM: &llm.ProviderManager{}})
+	if len(m.tabs) < 3 {
+		t.Fatalf("tabs = %d, want at least 3", len(m.tabs))
+	}
+	got := []string{m.tabs[0].Title(), m.tabs[1].Title(), m.tabs[2].Title()}
+	want := []string{"Env", "Text", "LLM"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tab %d title = %q, want %q (order %v)", i, got[i], want[i], got)
+		}
+	}
+	if m.tabs[3].Title() != "Config" {
+		t.Fatalf("tab 3 title = %q, want Config", m.tabs[3].Title())
 	}
 }
 

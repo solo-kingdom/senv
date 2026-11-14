@@ -151,13 +151,14 @@ func New(mgr Managers) Model {
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
-		newConfigTab(mgr),
 	}
-	if mgr.SSH != nil {
-		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
-	}
+	// LLM 紧随 Env/Text，占据第三位（数字键 3）；未配置时第三位仍是 Config。
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))
+	}
+	m.tabs = append(m.tabs, newConfigTab(mgr))
+	if mgr.SSH != nil {
+		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
 	}
 	if mgr.MCP != nil {
 		m.tabs = append(m.tabs, newMCPTab(mgr))
@@ -168,8 +169,7 @@ func New(mgr Managers) Model {
 	if mgr.Audit != nil {
 		m.tabs = append(m.tabs, newAuditTab(mgr.Audit, mgr.Sync))
 	}
-	// Backup 排在末尾：整块存取是低频面，不打断 Env/Text/Config 这组高频
-	// 数据面，也让数字键 1–3 始终落在 Env/Text/Config 上。
+	// Backup 排在末尾：整块存取是低频面，不打断前面的高频工作面。
 	m.tabs = append(m.tabs, newBackupTab(mgr))
 	m.activated = make([]bool, len(m.tabs))
 	m.activated[m.active] = true

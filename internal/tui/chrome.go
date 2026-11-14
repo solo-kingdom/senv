@@ -29,10 +29,11 @@ func renderNav(tabs []Tab, active, width, height int) string {
 		if i == active {
 			lines = append(lines, activeNavPill(label, inner))
 		} else {
-			lines = append(lines, tabStyle.Width(inner).MaxHeight(1).Render(label))
+			lines = append(lines, tabStyle.Width(inner).MaxHeight(1).Background(colorSurface).Render(label))
 		}
 	}
-	return strings.Join(lines, "\n")
+	block := strings.Join(lines, "\n")
+	return navPaneStyle.Width(width).Height(height).MaxHeight(height).Render(block)
 }
 
 // activeNavPill 渲染左侧导航的激活胶囊，铺满 nav 列宽。测试用同一函数断言，

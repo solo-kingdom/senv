@@ -14,7 +14,7 @@ var (
 	// Core palette roles
 	colorFg      = lipgloss.AdaptiveColor{Dark: "#c0caf5", Light: "#343b58"}
 	colorMuted   = lipgloss.AdaptiveColor{Dark: "#9aa5ce", Light: "#565a6e"}
-	colorDim     = lipgloss.AdaptiveColor{Dark: "#7f88b0", Light: "#7d8296"}
+	colorDim     = lipgloss.AdaptiveColor{Dark: "#8b93b8", Light: "#7d8296"}
 	colorAccent  = lipgloss.AdaptiveColor{Dark: "#7aa2f7", Light: "#2f5fbf"}
 	colorCyan    = lipgloss.AdaptiveColor{Dark: "#7dcfff", Light: "#0b6a8a"}
 	colorMagenta = lipgloss.AdaptiveColor{Dark: "#bb9af7", Light: "#7a4db8"}
@@ -22,9 +22,10 @@ var (
 	colorOk      = lipgloss.AdaptiveColor{Dark: "#9ece6a", Light: "#356a26"}
 	colorWarn    = lipgloss.AdaptiveColor{Dark: "#e0af68", Light: "#925800"}
 
-	// Surfaces (subtle depth without loud fills)
-	colorSurface   = lipgloss.AdaptiveColor{Dark: "#16161e", Light: "#eceef3"}
-	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#1f2335", Light: "#e1e5ef"}
+	// Surfaces follow Tokyo Night Storm: lifted off the near-black Night
+	// background so chrome (top bar, nav rail, footer) does not feel cave-like.
+	colorSurface   = lipgloss.AdaptiveColor{Dark: "#24283b", Light: "#eceef3"}
+	colorSurfaceHi = lipgloss.AdaptiveColor{Dark: "#292e42", Light: "#e1e5ef"}
 	colorOnAccent  = lipgloss.AdaptiveColor{Dark: "#1a1b26", Light: "#ffffff"}
 )
 
@@ -39,6 +40,9 @@ var (
 	// topBarStyle 与历史 tabStripStyle 同形：一行内容 + 底边下划线，高度 2。
 	// 保留 tabStripStyle 别名以免既有测试与引用一起改名。
 	topBarStyle = tabStripStyle
+
+	navPaneStyle = lipgloss.NewStyle().
+			Background(colorSurface)
 
 	brandStyle = lipgloss.NewStyle().
 			Foreground(colorAccent).
