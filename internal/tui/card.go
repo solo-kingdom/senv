@@ -82,8 +82,8 @@ func boxWithTitle(title, body string, width, height int, active bool) string {
 	if active {
 		borderFg = colorAccent
 	}
-	border := lipgloss.NewStyle().Foreground(borderFg)
-	titleSt := lipgloss.NewStyle().Foreground(colorFg).Bold(true)
+	border := lipgloss.NewStyle().Foreground(borderFg).Background(colorSurface)
+	titleSt := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Bold(true)
 	fill := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface)
 
 	titleText := ""

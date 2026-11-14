@@ -357,8 +357,13 @@ func sgrSetsBackground(seq string) bool {
 		switch p {
 		case "", "0", "00", "49":
 			sets = false
-		case "48":
-			sets = true
+		case "38", "48":
+			// 38 只改前景；必须跳过其后的 2;R;G;B / 5;N，否则像
+			// 浅色 colorDim 的 111（#7c6f64）会被 isANSIbg 当成 100–107
+			// 的 ANSI 背景，paintSurface 就会跳过 surface 填充，露出终端黑底。
+			if p == "48" {
+				sets = true
+			}
 			i = skipSGRColorParams(parts, i)
 		default:
 			if isANSIbg(p) {

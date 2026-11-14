@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -129,4 +130,81 @@ func TestUnselectedLineUsesThemeForeground(t *testing.T) {
 	if !strings.Contains(plain, "╭ Theme ") {
 		t.Fatalf("theme card title not in top border: %q", plain)
 	}
+}
+
+func TestSGRSetsBackground(t *testing.T) {
+	cases := []struct {
+		seq  string
+		want bool
+	}{
+		{"\x1b[48;2;7;102;120m", true},
+		{"\x1b[42m", true},
+		{"\x1b[100m", true},
+		{"\x1b[0;48;2;7;102;120m", true},
+		{"\x1b[0m", false},
+		{"\x1b[49m", false},
+		{"\x1b[38;2;60;56;54m", false},
+		// Gruvbox Light colorDim #7c6f64：111 落在 100–107，不能被当成 ANSI 背景。
+		{"\x1b[38;2;124;111;100m", false},
+		// 256 色前景索引 40 也不是背景。
+		{"\x1b[38;5;40m", false},
+		{"\x1b[48;5;40m", true},
+		{"hello", false},
+	}
+	for _, c := range cases {
+		if got := sgrSetsBackground(c.seq); got != c.want {
+			t.Errorf("sgrSetsBackground(%q) = %v, want %v", c.seq, got, c.want)
+		}
+	}
+}
+
+func TestFitLineFillsBorderAfterDimForeground(t *testing.T) {
+	withTrueColor(t)
+	applyTheme(ThemeGruvboxLight)
+
+	// 标题复位后再接只带 dim 前景的分隔线：分隔线必须重新铺上 surface，
+	// 不能露出终端默认黑底。
+	got := fitLine(infoCardBlock("Theme", "  Tokyo Night", 56), 80)
+	plain := ansi.Strip(got)
+	if !strings.Contains(plain, "╭ Theme ") {
+		t.Fatalf("missing title: %q", plain)
+	}
+	// 每条线（顶栏分隔线、正文、底栏、右框）在 0m 之后若还有边框字符，
+	// 中间必须已经重新打开 surface 背景。
+	for i, line := range strings.Split(got, "\n") {
+		if !strings.Contains(line, "─") && !strings.Contains(line, "│") {
+			continue
+		}
+		if !borderCharsHaveSurface(line) {
+			t.Fatalf("line %d border missing surface bg: %q", i, line)
+		}
+	}
+}
+
+func borderCharsHaveSurface(s string) bool {
+	surface := false
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b {
+			end := strings.IndexByte(s[i:], 'm')
+			if end < 0 {
+				return false
+			}
+			seq := s[i : i+end+1]
+			if sgrResetsBackground(seq) {
+				surface = false
+			}
+			if sgrSetsBackground(seq) {
+				surface = strings.Contains(seq, "48;2;251;241;199")
+			}
+			i += end + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if strings.ContainsRune("╭╮╰╯─│", r) && !surface {
+			return false
+		}
+		i += size
+	}
+	return true
 }
