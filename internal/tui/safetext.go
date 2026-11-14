@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -216,7 +218,10 @@ func plainText(s string) string {
 	return sanitizeLine(b.String())
 }
 
-// fitLine 把一行（可含 SGR）安全化并截断/右补齐到恰好 w 显示列。
+// fitLine 把一行（可含 SGR）安全化并截断/右补齐到恰好 w 显示列，再铺上
+// 主题的默认前景与 surface 底色。未设颜色的正文（未选中的列表/分组行）
+// 否则会沿用终端默认色：在深色终端里开浅色主题时，浅色字叠在浅色底上
+// 几乎不可读。
 func fitLine(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -232,7 +237,163 @@ func fitLine(s string, w int) string {
 	if pad := w - ansi.StringWidth(s); pad > 0 {
 		s += strings.Repeat(" ", pad)
 	}
-	return s
+	return paintSurface(s)
+}
+
+// surfaceFill 缓存：主题或颜色档位变化时重算。lipgloss 在 Render 时才
+// 解析颜色，所以不能把序列写死在 applyTheme 里。
+var (
+	surfaceFillSGR     string
+	surfaceFillTheme   string
+	surfaceFillProfile any
+)
+
+func surfaceFillSeq() string {
+	p := lipgloss.DefaultRenderer().ColorProfile()
+	if surfaceFillSGR != "" && surfaceFillTheme == currentThemeID && surfaceFillProfile == p {
+		return surfaceFillSGR
+	}
+	rendered := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
+	seq := ""
+	if i := strings.IndexByte(rendered, ' '); i > 0 {
+		seq = rendered[:i]
+	}
+	surfaceFillSGR, surfaceFillTheme, surfaceFillProfile = seq, currentThemeID, p
+	return seq
+}
+
+// paintSurface 给一行铺上主题默认前景和 surface 底色，但不覆盖格子里
+// 已经设好的颜色（活动 tab 胶囊、徽章、选中行、次要文本等）。做法是在
+// 行首和每次把前景/背景交还给终端默认值的 SGR 之后重新打开这组颜色：
+// 内层样式里的 \x1b[0m 否则会清掉外层容器色，露出终端默认的浅色字/深色底。
+func paintSurface(s string) string {
+	fill := surfaceFillSeq()
+	if fill == "" || s == "" {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(fill)*4)
+	b.WriteString(fill)
+	for len(s) > 0 {
+		if s[0] != 0x1b {
+			i := strings.IndexByte(s, 0x1b)
+			if i < 0 {
+				b.WriteString(s)
+				break
+			}
+			b.WriteString(s[:i])
+			s = s[i:]
+			continue
+		}
+		seq, n := scanEscape(s)
+		b.WriteString(seq)
+		s = s[n:]
+		if sgrResetsBackground(seq) && !nextSGRSetsBackground(s) {
+			b.WriteString(fill)
+		}
+	}
+	return b.String()
+}
+
+// sgrResetsBackground 报告这段 SGR 是否把背景交还给终端默认值（完整复位
+// 或 49）。同一段里若复位后又显式设了背景（例如 0;48;2;…），则不算复位。
+func sgrResetsBackground(seq string) bool {
+	if !isSGR(seq) {
+		return false
+	}
+	body := strings.ReplaceAll(seq[2:len(seq)-1], ":", ";")
+	if body == "" {
+		return true
+	}
+	parts := strings.Split(body, ";")
+	reset := false
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		switch p {
+		case "", "0", "00":
+			reset = true
+		case "49":
+			reset = true
+		case "38", "48":
+			if p == "48" {
+				reset = false
+			}
+			i = skipSGRColorParams(parts, i)
+		default:
+			if isANSIbg(p) {
+				reset = false
+			}
+		}
+	}
+	return reset
+}
+
+// nextSGRSetsBackground 报告紧跟着的 SGR 是否已经设了新背景。若是，
+// 就不必在中间插 surface：既避免打断「复位 + 设底色」的连续样式串
+// （活动胶囊的 Render 结果要能在整行里按子串找到），也对视觉无影响。
+func nextSGRSetsBackground(s string) bool {
+	for len(s) > 0 && s[0] == 0x1b {
+		seq, n := scanEscape(s)
+		if sgrSetsBackground(seq) {
+			return true
+		}
+		if !isSGR(seq) {
+			return false
+		}
+		s = s[n:]
+	}
+	return false
+}
+
+func sgrSetsBackground(seq string) bool {
+	if !isSGR(seq) {
+		return false
+	}
+	body := strings.ReplaceAll(seq[2:len(seq)-1], ":", ";")
+	parts := strings.Split(body, ";")
+	sets := false
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		switch p {
+		case "", "0", "00", "49":
+			sets = false
+		case "38", "48":
+			// 38 只改前景；必须跳过其后的 2;R;G;B / 5;N，否则像
+			// 浅色 colorDim 的 111（#7c6f64）会被 isANSIbg 当成 100–107
+			// 的 ANSI 背景，paintSurface 就会跳过 surface 填充，露出终端黑底。
+			if p == "48" {
+				sets = true
+			}
+			i = skipSGRColorParams(parts, i)
+		default:
+			if isANSIbg(p) {
+				sets = true
+			}
+		}
+	}
+	return sets
+}
+
+func skipSGRColorParams(parts []string, i int) int {
+	if i+1 >= len(parts) {
+		return i
+	}
+	switch parts[i+1] {
+	case "2":
+		return i + 4
+	case "5":
+		return i + 2
+	default:
+		return i + 1
+	}
+}
+
+func isANSIbg(p string) bool {
+	n, err := strconv.Atoi(p)
+	if err != nil {
+		return false
+	}
+	return (n >= 40 && n <= 47) || (n >= 100 && n <= 107)
 }
 
 // fitBlock 把多行文本收敛为恰好 w 列 × h 行的矩形：每行 fitLine，多余行

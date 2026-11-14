@@ -312,3 +312,39 @@ func TestTUISyncSourcePullErrorsStayInProcess(t *testing.T) {
 		}
 	})
 }
+
+func TestTUIThemePersistsInSettingsAndEchoes(t *testing.T) {
+	dir := t.TempDir()
+	cfg, data := newInitializedProject(t, dir, "correct-secret")
+	store := storage.NewManager(cfg, data)
+
+	if got := loadTUITheme(store); got != tui.ThemeTokyoNight {
+		t.Fatalf("default theme = %q, want %s", got, tui.ThemeTokyoNight)
+	}
+
+	// 写入已有 settings 上的主题，不得丢掉默认组等其它字段。
+	if err := saveTUITheme(store, tui.ThemeGruvboxLight); err != nil {
+		t.Fatalf("saveTUITheme: %v", err)
+	}
+	settings, err := store.LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings: %v", err)
+	}
+	if settings.TUI.Theme != tui.ThemeGruvboxLight {
+		t.Fatalf("settings.TUI.Theme = %q, want %s", settings.TUI.Theme, tui.ThemeGruvboxLight)
+	}
+	if settings.DefaultGroup != "default" {
+		t.Fatalf("DefaultGroup was clobbered: %q", settings.DefaultGroup)
+	}
+	if got := loadTUITheme(store); got != tui.ThemeGruvboxLight {
+		t.Fatalf("loadTUITheme = %q, want %s", got, tui.ThemeGruvboxLight)
+	}
+
+	// 再次保存并重新读取，模拟 TUI 重启时从 settings.json 回加载。
+	if err := saveTUITheme(store, tui.ThemeGruvboxDark); err != nil {
+		t.Fatalf("saveTUITheme dark: %v", err)
+	}
+	if got := loadTUITheme(store); got != tui.ThemeGruvboxDark {
+		t.Fatalf("reloaded theme = %q, want %s", got, tui.ThemeGruvboxDark)
+	}
+}

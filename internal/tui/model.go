@@ -16,19 +16,21 @@ import (
 	"github.com/wii/senv/internal/text"
 )
 
-// Managers bundles the three domain managers shared by all tabs. The TUI is a
-// pure interaction layer over these existing managers (no storage changes).
-// History 为 nil 时不注册 History Tab（git 模式 / 未配置 server）；
-// Audit 为 nil 时不注册审计 Tab；LLM 为 nil 时不注册 AI Tab；
-// MCP 为 nil 时不注册 MCP Tab。
+// Managers bundles the domain managers shared by all tabs. History 为 nil
+// 时不注册 History Tab（git 模式 / 未配置 server）；Audit 为 nil 时不注册
+// 审计 Tab；LLM 为 nil 时不注册 AI Tab；MCP 为 nil 时不注册 MCP Tab。
 type Managers struct {
-	Env    *env.Manager
-	Text   *text.Manager
-	Backup *backup.Manager
-	Config *config.Manager
-	SSH    *ssh.Manager
-	LLM    *llm.ProviderManager
-	MCP    *mcp.Manager
+	// Theme 是启动时要应用的 TUI 主题 id；空值按 tokyo-night 处理。
+	Theme string
+	// SaveTheme 在用户于设置页切换主题时持久化；nil 时只影响本次会话。
+	SaveTheme func(name string) error
+	Env       *env.Manager
+	Text      *text.Manager
+	Backup    *backup.Manager
+	Config    *config.Manager
+	SSH       *ssh.Manager
+	LLM       *llm.ProviderManager
+	MCP       *mcp.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
@@ -60,8 +62,9 @@ type Managers struct {
 	SnapshotCache *SnapshotCache
 }
 
-// Model is the top-level bubbletea model. It owns the tab strip, the currently
-// active tab, the content area size, and the transient error banner state.
+// Model is the top-level bubbletea model. It owns the chrome (tab strip,
+// footer), the currently active tab, the content area size, and the
+// transient error banner state.
 //
 // Each tab is held by pointer, so its navigation state (selected group, item
 // cursor, filter, ...) is preserved across tab switches — switching away and
@@ -98,6 +101,8 @@ type Model struct {
 	// cacheSeeded 报告启动时快照缓存是否命中并预热了 snap：命中则 Init
 	// 追加后台校验命令（真实解密完成后逐域比对，不一致即替换展示）。
 	cacheSeeded bool
+	// llmChrome 是顶栏 agent 胶囊 / provider 徽标的只读快照；LLM 未配置时为空。
+	llmChrome []llm.StatusRow
 }
 
 // toastLevel distinguishes a transient success hint from a transient warning.
@@ -137,6 +142,10 @@ func New(mgr Managers) Model {
 		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text, mgr.Backup)
 	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
+	// 先于任何 Tab 构造应用持久化主题：Settings 在 newSettingsTab 时
+	// 读取 currentThemeID。若放在 Tab 创建之后，包 init 留下的 tokyo-night
+	// 会被当成选中项，实际画面却已是保存的主题。
+	applyTheme(mgr.Theme)
 	// 首屏即时（D4）：首个 tab load 之前尝试快照缓存解密并预热 memo；未
 	// 命中（缺失/损坏/指纹不符/开关关闭）静默回退直接解密路径。
 	if c := mgr.SnapshotCache; c != nil {
@@ -148,13 +157,14 @@ func New(mgr Managers) Model {
 	m.tabs = []Tab{
 		newEnvTab(mgr),
 		newTextTab(mgr),
-		newConfigTab(mgr),
 	}
-	if mgr.SSH != nil {
-		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
-	}
+	// LLM 紧随 Env/Text，占据第三位（数字键 3）；未配置时第三位仍是 Config。
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))
+	}
+	m.tabs = append(m.tabs, newConfigTab(mgr))
+	if mgr.SSH != nil {
+		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
 	}
 	if mgr.MCP != nil {
 		m.tabs = append(m.tabs, newMCPTab(mgr))
@@ -165,9 +175,9 @@ func New(mgr Managers) Model {
 	if mgr.Audit != nil {
 		m.tabs = append(m.tabs, newAuditTab(mgr.Audit, mgr.Sync))
 	}
-	// Backup 排在末尾：整块存取是低频面，不打断 Env/Text/Config 这组高频
-	// 数据面，也让数字键 1–3 始终落在 Env/Text/Config 上。
+	// Backup 排在 Settings 之前：整块存取是低频面，不打断前面的高频工作面。
 	m.tabs = append(m.tabs, newBackupTab(mgr))
+	m.tabs = append(m.tabs, newSettingsTab(mgr))
 	m.activated = make([]bool, len(m.tabs))
 	m.activated[m.active] = true
 	return m
@@ -309,10 +319,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		// 区域尺寸只在 frameLayout 一处计算（见 layout.go）；Tab 拿到的是
 		// 内容区格子，View 再把 Tab 输出硬装箱进同一个格子。
-		w, h := computeLayout(m.width, m.height).tabSize()
+		l := computeLayout(m.width, m.height)
+		w, h := l.tabSize()
 		for _, t := range m.tabs {
 			t.SetSize(w, h)
 		}
+		if m.search != nil {
+			m.search.SetSize(m.width, m.height)
+		}
+		if m.help != nil {
+			m.help.SetSize(m.width, m.height)
+		}
+		m.refreshLLMChrome()
 		return m, nil
 
 	case errMsg:
@@ -484,6 +502,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
 	if writeDoneMsg(msg) {
 		m.mgr.snap.Invalidate()
+		m.refreshLLMChrome()
 		if c := m.refreshSync(); c != nil {
 			cmd = tea.Batch(cmd, c)
 		}
@@ -563,10 +582,14 @@ type jumpFocuser interface{ focusJump(group, key string) }
 
 // tabTitleForResult maps a search result type to its tab title.
 func tabTitleForResult(resultType string) string {
-	if resultType == typeConfig {
+	switch resultType {
+	case typeConfig:
 		return "Config"
+	case typeLLM:
+		return "Providers"
+	default:
+		return resultType
 	}
-	return resultType
 }
 
 // View renders the tab strip + active tab content + status/error bar.
@@ -584,27 +607,9 @@ func (m Model) View() string {
 		return l.renderTooSmall()
 	}
 
-	// Tab strip: active tab gets the accent pill, inactive tabs get muted
-	// text, and space separators are rendered between adjacent tabs.
-	separator := tabSeparatorStyle.Render(" ")
-	tabParts := make([]string, 0, len(m.tabs)*2-1)
-	for i, t := range m.tabs {
-		if i > 0 {
-			tabParts = append(tabParts, separator)
-		}
-		label := t.Title()
-		if i == m.active {
-			tabParts = append(tabParts, activeTabStyle.Render(label))
-		} else {
-			tabParts = append(tabParts, tabStyle.Render(label))
-		}
-	}
-	// tabStripStyle 的 Padding(0,1) 占 2 列：预算内放不下的尾部 tab 以 "…"
-	// 收尾，否则宽标签会在 strip 内折行、把整个布局撑高。
-	strip := fitTabStrip(tabParts, m.tabs[m.active].Title(), m.active, l.innerW-2)
-	tabStrip := tabStripStyle.Width(l.innerW).Render(strip)
+	top := m.renderTabStrip(l.innerW)
 
-	// Active tab content. The search overlay takes over the content area
+	// Active tab content. The search overlay takes over the content pane
 	// while open; the help overlay floats on top of the tab content instead.
 	var content string
 	switch {
@@ -619,6 +624,7 @@ func (m Model) View() string {
 	}
 
 	// Bottom bar: error takes precedence over warning, then status hint.
+	// 同步徽标已移到顶栏右侧，底栏只承载状态或 NAV/ACT 芯片。
 	var bottom string
 	switch {
 	case m.err != "":
@@ -645,10 +651,10 @@ func (m Model) View() string {
 		default:
 			bs = m.tabs[m.active].Bindings()
 		}
-		bottom = m.bottomBar(groupBar(bs), statusBarStyle)
+		bottom = m.bottomBar(hintBar(bs), statusBarStyle)
 	}
 
-	return l.renderFrame(tabStrip, content, bottom)
+	return l.renderFrame(top, content, bottom)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：
@@ -693,38 +699,6 @@ func overlayBox(base, box string, w, h int) string {
 		out[r] = strings.Repeat(" ", left) + padRight(bl, bw) + strings.Repeat(" ", w-left-bw)
 	}
 	return strings.Join(out, "\n")
-}
-
-// fitTabStrip 把 tab 条部件截进 budget 显示列：从左往右放，放不下的尾部
-// 以 muted "…" 示意（数字键/Tab 仍可到达被收起的 tab）。若连激活 tab 都放
-// 不下（接近最小宽度），退化为只渲染激活 tab（标签截断到预算内）。
-func fitTabStrip(parts []string, activeTitle string, active, budget int) string {
-	if budget < 4 {
-		budget = 4
-	}
-	var out []string
-	used := 0
-	cut := -1
-	for i, p := range parts {
-		w := lipgloss.Width(p)
-		if used+w > budget {
-			cut = i
-			break
-		}
-		out = append(out, p)
-		used += w
-	}
-	if cut < 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, out...)
-	}
-	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
-	if 2*active >= cut {
-		return activeTabStyle.Render(truncateWidth(activeTitle, maxInt(budget-2, 1)))
-	}
-	if used+1 <= budget {
-		out = append(out, mutedStyle().Render("…"))
-	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 // truncateRunes truncates s to at most max runes, appending "…" if shortened.

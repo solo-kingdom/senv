@@ -70,11 +70,11 @@ func drainCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 func TestHistoryTabRegisteredOnlyWithSource(t *testing.T) {
-	if got := len(New(Managers{}).tabs); got != 4 {
-		t.Fatalf("tabs without source = %d, want 4", got)
+	if got := len(New(Managers{}).tabs); got != 5 {
+		t.Fatalf("tabs without source = %d, want 5", got)
 	}
-	if got := len(New(Managers{History: &fakeHistorySource{}}).tabs); got != 5 {
-		t.Fatalf("tabs with source = %d, want 4", got)
+	if got := len(New(Managers{History: &fakeHistorySource{}}).tabs); got != 6 {
+		t.Fatalf("tabs with source = %d, want 6", got)
 	}
 }
 

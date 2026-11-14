@@ -15,13 +15,13 @@ type chromeDummyTab struct {
 	longSelected  bool
 }
 
-func (d *chromeDummyTab) Title() string                      { return d.title }
-func (d *chromeDummyTab) Init() tea.Cmd                      { return nil }
-func (d *chromeDummyTab) Reload() tea.Cmd                    { return nil }
-func (d *chromeDummyTab) Update(msg tea.Msg) (Tab, tea.Cmd)   { return d, nil }
-func (d *chromeDummyTab) InputMode() bool                    { return false }
-func (d *chromeDummyTab) Bindings() []KeyAction              { return nil }
-func (d *chromeDummyTab) SetSize(w, h int)                   { d.width, d.height = w, h }
+func (d *chromeDummyTab) Title() string                     { return d.title }
+func (d *chromeDummyTab) Init() tea.Cmd                     { return nil }
+func (d *chromeDummyTab) Reload() tea.Cmd                   { return nil }
+func (d *chromeDummyTab) Update(msg tea.Msg) (Tab, tea.Cmd) { return d, nil }
+func (d *chromeDummyTab) InputMode() bool                   { return false }
+func (d *chromeDummyTab) Bindings() []KeyAction             { return nil }
+func (d *chromeDummyTab) SetSize(w, h int)                  { d.width, d.height = w, h }
 func (d *chromeDummyTab) View() string {
 	body := make([]string, max(d.height, 0))
 	for i := range body {
@@ -33,7 +33,7 @@ func (d *chromeDummyTab) View() string {
 		}
 		body[i] = line
 	}
-	return paneStyle.Width(maxInt(d.width-2, 4)).Height(d.height).Render(strings.Join(body, "\n"))
+	return applyPane(strings.Join(body, "\n"), maxInt(d.width-2, 4), d.height, false)
 }
 
 func TestModelViewExactHeight(t *testing.T) {
@@ -43,7 +43,7 @@ func TestModelViewExactHeight(t *testing.T) {
 		&chromeDummyTab{title: "Config"},
 		&chromeDummyTab{title: "SSH"},
 		&chromeDummyTab{title: "KeyPair"},
-		&chromeDummyTab{title: "LLM"},
+		&chromeDummyTab{title: "Providers"},
 		&chromeDummyTab{title: "MCP"},
 		&chromeDummyTab{title: "History", longSelected: true},
 		&chromeDummyTab{title: "Audit", longSelected: true},
@@ -51,23 +51,24 @@ func TestModelViewExactHeight(t *testing.T) {
 	}
 	for _, height := range []int{24, 30, 40} {
 		m := Model{tabs: tabs, active: 8, width: 100, height: height}
+		w, h := computeLayout(m.width, m.height).tabSize()
 		for _, tab := range m.tabs {
-			tab.SetSize(m.width-2, m.height-7)
+			tab.SetSize(w, h)
 		}
 		view := m.View()
-		h := lipgloss.Height(view)
-		if h != height {
-			t.Fatalf("height=%d view=%d\n%s", height, h, dumpChrome(view))
+		gotH := lipgloss.Height(view)
+		if gotH != height {
+			t.Fatalf("height=%d view=%d\n%s", height, gotH, dumpChrome(view))
 		}
-		count := 0
-		for _, l := range strings.Split(view, "\n") {
-			p := plainChrome(l)
-			if strings.Contains(p, "Env") && strings.Contains(p, "Audit") {
-				count++
-			}
+		plain := plainChrome(view)
+		if !strings.Contains(plain, "senv") {
+			t.Fatalf("top bar missing brand (height %d)\n%s", height, dumpChrome(view))
 		}
-		if count != 1 {
-			t.Fatalf("tab strip rows=%d want 1 (height %d)\n%s", count, height, dumpChrome(view))
+		if !strings.Contains(plain, "Env") || !strings.Contains(plain, "Audit") {
+			t.Fatalf("tab strip missing Env/Audit (height %d)\n%s", height, dumpChrome(view))
+		}
+		if !strings.Contains(view, renderTab("Audit", true)) {
+			t.Fatalf("missing active Audit tab (height %d)\n%s", height, dumpChrome(view))
 		}
 	}
 }

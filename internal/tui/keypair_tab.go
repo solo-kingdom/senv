@@ -1035,11 +1035,11 @@ func (t *keyPairTab) viewBaseAt(height int) string {
 		side := emptyStateStyle.Render("loading keypairs…")
 		list := emptyStateStyle.Render("loading keypairs…")
 		if t.focus == kpPaneGroup {
-			side = activePaneStyle.Width(sideW).Height(height).Render(side)
-			list = paneStyle.Width(listW).Height(height).Render(list)
+			side = applyPane(side, sideW, height, true)
+			list = applyPane(list, listW, height, false)
 		} else {
-			side = paneStyle.Width(sideW).Height(height).Render(side)
-			list = activePaneStyle.Width(listW).Height(height).Render(list)
+			side = applyPane(side, sideW, height, false)
+			list = applyPane(list, listW, height, true)
 		}
 		return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), list)
 	}
@@ -1054,11 +1054,11 @@ func (t *keyPairTab) viewBaseAt(height int) string {
 	list := windowedPane(listTitle, keyLines, t.keyIndex, height, listW)
 
 	if t.focus == kpPaneGroup {
-		side = activePaneStyle.Width(sideW).Height(height).Render(side)
-		list = paneStyle.Width(listW).Height(height).Render(list)
+		side = applyPane(side, sideW, height, true)
+		list = applyPane(list, listW, height, false)
 	} else {
-		side = paneStyle.Width(sideW).Height(height).Render(side)
-		list = activePaneStyle.Width(listW).Height(height).Render(list)
+		side = applyPane(side, sideW, height, false)
+		list = applyPane(list, listW, height, true)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, side, strings.Repeat(" ", 1), list)
 }

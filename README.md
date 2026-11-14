@@ -14,7 +14,7 @@
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
-- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/LLM/MCP Server 档案，敏感值默认遮蔽防肩窥
+- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/LLM/MCP Server 档案，敏感值默认遮蔽防肩窥；内置主题可切换（Tokyo Night / Gruvbox 明暗）
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
@@ -333,7 +333,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
-| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略）。顺序为 Env、Text、Config、SSH、KeyPair、LLM、MCP、History、Audit、Backup——Backup 恒在末位，全部注册时它是第 10 个、无数字键，用 `Tab` 到达 |
+| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略）。全部注册时顺序为 Env、Text、Providers、Config、SSH、KeyPair、MCP、History、Audit、Backup、Settings——Backup 与 Settings 恒在末两位，全部注册时它们是第 10、11 个、无数字键，用 `Tab` 到达 |
 | `↑` `↓` / `j` `k` | 列表导航 |
 | `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / LLM / MCP Tab） |
 | `enter` | 打开详情弹层（Config / SSH / LLM / MCP / History，长内容可滚动）／解开当前 env 明文 |
@@ -367,9 +367,11 @@ SSH Tab 管 host（分组侧栏 → host 列表两栏）：`n/e/d` 编辑 host�
 
 KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keypair 列表两栏，组语义与 host 一致：All 置顶 → 字母序 → 「未分组」置底）：`i` 导入（名称 + 私钥路径 + 分组）、`r` 重命名（同一次 mutation 内联动 host `identityKey`）、`e` 编辑分组、`d` 删除（被引用默认拒绝并列出引用者，`F` 强制删除并清引用）、`A` 落盘（确认后写到 `~/.ssh/senv/keys/<分组>/<名>` 0600 与 `<名>.pub` 0644）、`D` 设/取消本机默认（`Host *`，写 `groups/_default.conf`）、`enter` 详情（公钥无缩进，展示 OpenSSH comment/邮箱）、`v` 按需预览私钥（详情弹层，关闭即丢弃）；行内展示指纹摘要、被引用计数（`被 N 个 Host 引用`）与 `default` 标记，零引用灰显「未被引用」。列表永不渲染私钥；导出片段沿用既有规则：悬空 `proxyJump` 报错。
 
-LLM Tab 同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
+LLM Tab（标签显示为 Providers）同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
 MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。写回命中 codex 且本机 daemon 在跑时，完成导出/撤回后同样弹重启确认框。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
+
+Settings Tab 恒在末位：用信息卡在 Tokyo Night / Gruvbox Dark / Gruvbox Light 三套内置主题间切换，选中即生效并写入 `settings.json` 的 `tui.theme`；缺失或无法识别时回落到 Tokyo Night。进入设置页时当前生效主题即为选中项。
 
 重命名与分组管理走存储层的原子重命名（一次 `renameat`，不是「新建 + 删除」）：值/内容、权限与时间戳原样保留，重命名冲突在表单内联报错且不写入。多字段编辑（重命名、元信息、分组名）统一走可复用表单：`tab`/`↑↓` 切换字段、`enter` 提交、`esc` 取消（无副作用），校验失败保持表单打开且不丢已填内容；`$EDITOR` 闭环仍用于多行/自由属性字段。
 

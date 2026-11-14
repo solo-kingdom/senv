@@ -157,7 +157,7 @@ func newAITab(mgr Managers) *aiTab {
 	return &aiTab{mgr: mgr, focusLeft: true}
 }
 
-func (t *aiTab) Title() string { return "LLM" }
+func (t *aiTab) Title() string { return "Providers" }
 
 func (t *aiTab) Bindings() []KeyAction {
 	if t.detail != nil {
@@ -1874,14 +1874,14 @@ func parseDefaultReasoningField(raw string) (map[string]string, string, error) {
 
 func (t *aiTab) View() string {
 	if t.loadErr != "" {
-		return paneTitleStyle.Render("LLM") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
+		return paneTitleStyle.Render("Providers") + "\n" + truncateWidth("ERR "+t.loadErr, maxInt(t.width-2, 8))
 	}
 	if t.detail != nil {
 		return t.detail.View()
 	}
 	if t.loaded && len(t.providers) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
-			paneTitleStyle.Render("LLM"),
+			paneTitleStyle.Render("Providers"),
 			emptyStateStyle.Render("no LLM provider profiles yet; run senv ai provider add or press n to create one, then R to refresh catalog"))
 	}
 	overlay := ""
@@ -1920,11 +1920,11 @@ func (t *aiTab) viewBaseAt(height int) string {
 		left := emptyStateStyle.Render("loading providers…")
 		right := emptyStateStyle.Render("loading providers…")
 		if t.focusLeft {
-			left = activePaneStyle.Width(leftW).Height(height).Render(left)
-			right = paneStyle.Width(rightW).Height(height).Render(right)
+			left = applyPane(left, leftW, height, true)
+			right = applyPane(right, rightW, height, false)
 		} else {
-			left = paneStyle.Width(leftW).Height(height).Render(left)
-			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+			left = applyPane(left, leftW, height, false)
+			right = applyPane(right, rightW, height, true)
 		}
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
@@ -1940,11 +1940,11 @@ func (t *aiTab) viewBaseAt(height int) string {
 	right := windowedPane("Agents · current target", agentLines, t.agentIndex, height, rightW)
 
 	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(height).Render(left)
-		right = paneStyle.Width(rightW).Height(height).Render(right)
+		left = applyPane(left, leftW, height, true)
+		right = applyPane(right, rightW, height, false)
 	} else {
-		left = paneStyle.Width(leftW).Height(height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		left = applyPane(left, leftW, height, false)
+		right = applyPane(right, rightW, height, true)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 }

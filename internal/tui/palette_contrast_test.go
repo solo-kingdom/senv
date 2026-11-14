@@ -43,43 +43,57 @@ func contrastRatio(t *testing.T, a, b string) float64 {
 	return (la + 0.05) / (lb + 0.05)
 }
 
-// TestPaletteContrast 守住深/浅两套主题下的可读性下限（深色主题下灰蓝
+// TestPaletteContrast 守住每套主题的可读性下限（深色主题下灰蓝
 // 文本过暗、看不清是用户反馈的问题）：正文/次要文本/强调色 ≥ 4.5:1
 // （WCAG AA），边框/分隔线 ≥ 3:1；次要文本与正文仍可区分。
 func TestPaletteContrast(t *testing.T) {
-	text := map[string]lipgloss.AdaptiveColor{
-		"fg": colorFg, "muted": colorMuted, "accent": colorAccent, "cyan": colorCyan,
-		"magenta": colorMagenta, "danger": colorDanger, "ok": colorOk, "warn": colorWarn,
-	}
-	modes := []struct {
-		name string
-		pick func(lipgloss.AdaptiveColor) string
-		bgs  []string
-	}{
-		{"dark", func(c lipgloss.AdaptiveColor) string { return c.Dark }, darkBackgrounds},
-		{"light", func(c lipgloss.AdaptiveColor) string { return c.Light }, lightBackgrounds},
-	}
-	for _, mode := range modes {
-		// 文本也画在我们自己的底色上：tab 栏/状态栏（surface）与选中行（surfaceHi）。
-		bgs := append(append([]string{}, mode.bgs...), mode.pick(colorSurface), mode.pick(colorSurfaceHi))
-		for name, c := range text {
-			for _, bg := range bgs {
-				if r := contrastRatio(t, mode.pick(c), bg); r < 4.5 {
-					t.Errorf("%s %s %s on %s: contrast %.2f < 4.5", mode.name, name, mode.pick(c), bg, r)
+	t.Cleanup(func() { applyTheme(ThemeTokyoNight) })
+	textRoles := []string{"fg", "muted", "accent", "cyan", "magenta", "danger", "ok", "warn"}
+	for _, th := range allThemes() {
+		t.Run(th.ID, func(t *testing.T) {
+			applyTheme(th.ID)
+			colors := map[string]lipgloss.TerminalColor{
+				"fg": colorFg, "muted": colorMuted, "accent": colorAccent, "cyan": colorCyan,
+				"magenta": colorMagenta, "danger": colorDanger, "ok": colorOk, "warn": colorWarn,
+			}
+			modes := []struct {
+				name string
+				dark bool
+				bgs  []string
+			}{
+				{"dark", true, darkBackgrounds},
+				{"light", false, lightBackgrounds},
+			}
+			switch th.ID {
+			case ThemeGruvboxDark:
+				modes = modes[:1]
+			case ThemeGruvboxLight:
+				modes = modes[1:]
+			}
+			for _, mode := range modes {
+				pick := func(c lipgloss.TerminalColor) string { return colorHex(t, c, mode.dark) }
+				bgs := append(append([]string{}, mode.bgs...), pick(colorSurface), pick(colorSurfaceHi))
+				for _, name := range textRoles {
+					c := colors[name]
+					for _, bg := range bgs {
+						if r := contrastRatio(t, pick(c), bg); r < 4.5 {
+							t.Errorf("%s %s %s on %s: contrast %.2f < 4.5", mode.name, name, pick(c), bg, r)
+						}
+					}
+				}
+				for _, bg := range mode.bgs {
+					if r := contrastRatio(t, pick(colorDim), bg); r < 3 {
+						t.Errorf("%s dim %s on %s: contrast %.2f < 3", mode.name, pick(colorDim), bg, r)
+					}
+				}
+				if r := contrastRatio(t, pick(colorFg), pick(colorMuted)); r < 1.3 {
+					t.Errorf("%s muted too close to fg (%.2f): secondary text must stay distinguishable", mode.name, r)
+				}
+				if r := contrastRatio(t, pick(colorOnAccent), pick(colorAccent)); r < 4.5 {
+					t.Errorf("%s active tab pill contrast %.2f < 4.5", mode.name, r)
 				}
 			}
-		}
-		for _, bg := range mode.bgs {
-			if r := contrastRatio(t, mode.pick(colorDim), bg); r < 3 {
-				t.Errorf("%s dim %s on %s: contrast %.2f < 3", mode.name, mode.pick(colorDim), bg, r)
-			}
-		}
-		if r := contrastRatio(t, mode.pick(colorFg), mode.pick(colorMuted)); r < 1.3 {
-			t.Errorf("%s muted too close to fg (%.2f): secondary text must stay distinguishable", mode.name, r)
-		}
-		if r := contrastRatio(t, mode.pick(colorOnAccent), mode.pick(colorAccent)); r < 4.5 {
-			t.Errorf("%s active tab pill contrast %.2f < 4.5", mode.name, r)
-		}
+		})
 	}
 }
 
@@ -89,9 +103,28 @@ func TestReadableRolesNeverUseDim(t *testing.T) {
 	for name, st := range map[string]lipgloss.Style{
 		"tab": tabStyle, "paneTitle": paneTitleStyle, "statusBar": statusBarStyle,
 		"masked": maskedValueStyle, "empty": emptyStateStyle, "config badge": typeBadgeStyles[typeConfig],
+		"unselected": unselectedLineStyle,
 	} {
 		if st.GetForeground() == lipgloss.TerminalColor(colorDim) {
 			t.Errorf("%s uses colorDim for text", name)
 		}
+	}
+}
+
+// colorHex 取出一个调色板角色的十六进制值。AdaptiveColor 按终端深浅取
+// Dark/Light；显式主题的 lipgloss.Color 只有一个值，两种模式都返回它。
+func colorHex(t *testing.T, c lipgloss.TerminalColor, dark bool) string {
+	t.Helper()
+	switch v := c.(type) {
+	case lipgloss.AdaptiveColor:
+		if dark {
+			return v.Dark
+		}
+		return v.Light
+	case lipgloss.Color:
+		return string(v)
+	default:
+		t.Fatalf("unsupported color type %T", c)
+		return ""
 	}
 }

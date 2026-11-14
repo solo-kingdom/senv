@@ -196,8 +196,8 @@ func TestMCPLeftPaneExportPicksAgents(t *testing.T) {
 
 func TestMCPTabRegistration(t *testing.T) {
 	m := New(Managers{})
-	if len(m.tabs) != 4 {
-		t.Fatalf("base tabs = %d, want 4", len(m.tabs))
+	if len(m.tabs) != 5 {
+		t.Fatalf("base tabs = %d, want 5", len(m.tabs))
 	}
 	for _, tab := range m.tabs {
 		if tab.Title() == "MCP" {
@@ -206,14 +206,14 @@ func TestMCPTabRegistration(t *testing.T) {
 	}
 
 	full := New(newFullManagers(t))
-	if len(full.tabs) != 10 {
-		t.Fatalf("full tabs = %d, want 10", len(full.tabs))
+	if len(full.tabs) != 11 {
+		t.Fatalf("full tabs = %d, want 11", len(full.tabs))
 	}
 	titles := make([]string, len(full.tabs))
 	for i, tab := range full.tabs {
 		titles[i] = tab.Title()
 	}
-	want := []string{"Env", "Text", "Config", "SSH", "KeyPair", "LLM", "MCP", "History", "Audit", "Backup"}
+	want := []string{"Env", "Text", "Providers", "Config", "SSH", "KeyPair", "MCP", "History", "Audit", "Backup", "Settings"}
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("tab order = %v, want %v", titles, want)
 	}

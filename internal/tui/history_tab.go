@@ -352,6 +352,8 @@ func (t *historyTab) View() string {
 		line := truncateWidth(prefix+body, innerW)
 		if i == t.list.Cursor() {
 			line = selectedLineStyle.Render(line)
+		} else {
+			line = unselectedLineStyle.Render(line)
 		}
 		lines = append(lines, line)
 	}
@@ -379,7 +381,7 @@ func (t *historyTab) View() string {
 		out = out + "\n" + strings.Join(extraRows, "\n")
 	}
 	out = clipLines(out, t.height)
-	return paneStyle.Width(paneW).Height(t.height).Render(out)
+	return applyPane(out, paneW, t.height, false)
 }
 
 // plainPane 把单段提示文本渲染进撑满内容区的固定面板。
@@ -391,7 +393,7 @@ func (t *historyTab) plainPane(text string) string {
 	for i, l := range lines {
 		lines[i] = truncateWidth(l, innerW)
 	}
-	return paneStyle.Width(paneW).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
+	return applyPane(emptyStateStyle.Render(strings.Join(lines, "\n")), paneW, t.height, false)
 }
 
 func (t *historyTab) previewOf(row provider.HistoryVersion) string {

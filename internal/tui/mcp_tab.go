@@ -1568,11 +1568,11 @@ func (t *mcpTab) viewBaseAt(height int) string {
 		left := emptyStateStyle.Render("loading MCP profiles…")
 		right := emptyStateStyle.Render("loading MCP profiles…")
 		if t.focusLeft {
-			left = activePaneStyle.Width(leftW).Height(height).Render(left)
-			right = paneStyle.Width(rightW).Height(height).Render(right)
+			left = applyPane(left, leftW, height, true)
+			right = applyPane(right, rightW, height, false)
 		} else {
-			left = paneStyle.Width(leftW).Height(height).Render(left)
-			right = activePaneStyle.Width(rightW).Height(height).Render(right)
+			left = applyPane(left, leftW, height, false)
+			right = applyPane(right, rightW, height, true)
 		}
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 	}
@@ -1585,11 +1585,11 @@ func (t *mcpTab) viewBaseAt(height int) string {
 	right := windowedPane(fmt.Sprintf("Agents · export status (scope: %s)", t.scopeOrDefault()),
 		t.agentLines(maxInt(rightW-4, 8)), t.agentIndex, height, rightW)
 	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(height).Render(left)
-		right = paneStyle.Width(rightW).Height(height).Render(right)
+		left = applyPane(left, leftW, height, true)
+		right = applyPane(right, rightW, height, false)
 	} else {
-		left = paneStyle.Width(leftW).Height(height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(height).Render(right)
+		left = applyPane(left, leftW, height, false)
+		right = applyPane(right, rightW, height, true)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
 }

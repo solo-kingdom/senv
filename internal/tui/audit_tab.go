@@ -260,6 +260,8 @@ func (t *auditTab) View() string {
 		row := truncateWidth(prefix+body, innerW)
 		if i == t.list.Cursor() {
 			row = selectedLineStyle.Render(row)
+		} else {
+			row = unselectedLineStyle.Render(row)
 		}
 		lines = append(lines, row)
 	}
@@ -284,7 +286,7 @@ func (t *auditTab) View() string {
 		out = out + "\n" + strings.Join(extraRows, "\n")
 	}
 	out = clipLines(out, t.height)
-	return paneStyle.Width(paneW).Height(t.height).Render(out)
+	return applyPane(out, paneW, t.height, false)
 }
 
 // plainPane 把单段提示文本渲染进撑满内容区的固定面板。
@@ -296,5 +298,5 @@ func (t *auditTab) plainPane(text string) string {
 	for i, l := range lines {
 		lines[i] = truncateWidth(l, innerW)
 	}
-	return paneStyle.Width(paneW).Height(t.height).Render(emptyStateStyle.Render(strings.Join(lines, "\n")))
+	return applyPane(emptyStateStyle.Render(strings.Join(lines, "\n")), paneW, t.height, false)
 }
