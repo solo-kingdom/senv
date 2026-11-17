@@ -33,6 +33,49 @@ func codexEnvKeyIn(t *testing.T, configPath, alias string) string {
 	return key
 }
 
+func TestValidEnvVarName(t *testing.T) {
+	for _, name := range []string{"SENV_OPEN_DESIGN_API_KEY", "DEEPSEEK_API_KEY", "_X", "a1"} {
+		if !validEnvVarName(name) {
+			t.Fatalf("%q should be valid", name)
+		}
+	}
+	for _, name := range []string{"", "sk-amr-abc", "sk_amr", "1ABC", "HAS SPACE", "HAS\nNL", "dash-name"} {
+		if validEnvVarName(name) {
+			t.Fatalf("%q should be invalid", name)
+		}
+	}
+}
+
+func TestCodexRejectsInlineCredentialMode(t *testing.T) {
+	pm, _, _ := newTestProviderManager(t)
+	addTestProvider(t, pm, AddProviderOptions{
+		Alias: "main", BaseURL: "https://api.example.com",
+		APIKey: "sk-main", Models: []string{"m1"},
+	})
+	home := t.TempDir()
+	_, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeInline)
+	if err == nil || !strings.Contains(err.Error(), "not inline") {
+		t.Fatalf("Switch(inline) error = %v, want reject inline", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("inline switch must not write config: err=%v", err)
+	}
+}
+
+func TestCodexApplyRejectsSecretAsEnvKey(t *testing.T) {
+	home := t.TempDir()
+	a := codexAdapter()
+	req := SwitchRequest{
+		AgentID: "codex", ProviderAlias: "main", BaseURL: "https://api.example.com",
+		Models: []string{"m1"}, DefaultModel: "m1",
+		Credential: "sk-amr-secret\n", CredentialMode: CredentialEnvVar,
+		ConfigPath: a.ConfigPath(home), Home: home,
+	}
+	if err := a.Apply(req); err == nil || !strings.Contains(err.Error(), "environment variable name") {
+		t.Fatalf("Apply error = %v, want env_key validation failure", err)
+	}
+}
+
 // TestCodexEnvPlanFor 覆盖名字决议：env: 引用复用 key 名，text: 引用派生名 +
 // 默认组兜底引用，非法引用报错。
 func TestCodexEnvPlanFor(t *testing.T) {

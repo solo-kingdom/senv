@@ -1022,8 +1022,10 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	backgroundModel := t.flowBackground
 	credMode := t.flowCredentialModePref()
 	if onlyModel {
-		// 仅换默认模型不涉及凭据写回，显式 inline 避免 auto 触发 env 决议。
-		credMode = llm.CredentialModeInline
+		// 仅换默认模型仍会重写 provider 段（含凭据字段）。对 codex，inline
+		// 会把明文写进 env_key 并必挂，因此统一走 auto：支持 env 的 agent
+		// 重写引用名，claude-code 回落 inline。
+		credMode = llm.CredentialModeAuto
 	}
 	sm := llm.NewSwitchManager(t.mgr.LLM, t.mgr.LLMPointer, t.mgr.LLMHome)
 	return func() tea.Msg {
@@ -1041,6 +1043,7 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 	var notices, failures []string
 	switchedCodex := false
+	codexEnvKey := ""
 	for _, r := range msg.results {
 		if r.err != nil {
 			failures = append(failures, r.agentID+": "+r.err.Error())
@@ -1048,6 +1051,9 @@ func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 		}
 		if r.agentID == "codex" {
 			switchedCodex = true
+			if r.out != nil && r.out.CredentialEnv != "" {
+				codexEnvKey = r.out.CredentialEnv
+			}
 		}
 		out := r.out
 		notice := fmt.Sprintf("%s → %s (default %s, %d models)",
@@ -1083,7 +1089,10 @@ func (t *aiTab) reportBatchSwitch(msg aiSwitchBatchResultMsg) tea.Cmd {
 		cmds = append(cmds, func() tea.Msg { return errMsg{err: err} })
 	}
 	if switchedCodex {
-		cmds = append(cmds, func() tea.Msg { return codexDaemonCheckMsg{source: "senv ai switch codex"} })
+		envKey := codexEnvKey
+		cmds = append(cmds, func() tea.Msg {
+			return codexDaemonCheckMsg{source: "senv ai switch codex", envKey: envKey}
+		})
 	}
 	return tea.Batch(cmds...)
 }

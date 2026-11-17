@@ -215,7 +215,7 @@ func TestSwitchAPIShapeCompatibility(t *testing.T) {
 			t.Fatalf("Switch(kimi) error = %v", err)
 		}
 		// codex 只讲 Responses：chat-only 档案拒绝且不写文件。
-		if _, err := sm.Switch("codex", "main", nil, "", "", CredentialModeInline); err == nil || !strings.Contains(err.Error(), "openai-chat") {
+		if _, err := sm.Switch("codex", "main", nil, "", "", CredentialModeAuto); err == nil || !strings.Contains(err.Error(), "openai-chat") {
 			t.Fatalf("Switch(codex) error = %v, want chat-wire rejection", err)
 		}
 		if _, statErr := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(statErr) {

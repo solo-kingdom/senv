@@ -187,7 +187,7 @@ func TestSwitchShapeURLGate(t *testing.T) {
 		APIKey: "sk-secret", Models: []string{"m1"},
 		ShapeURLs: map[string]string{"openai-responses": "https://resp.example.com/v1"},
 	})
-	out3, err := NewSwitchManager(mgr3, "", t.TempDir()).Switch("codex", "resp", nil, "", "", CredentialModeInline)
+	out3, err := NewSwitchManager(mgr3, "", t.TempDir()).Switch("codex", "resp", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch(codex) error = %v", err)
 	}
@@ -220,7 +220,7 @@ func TestSwitchShapeURLResolution(t *testing.T) {
 		APIKey: "sk-secret", Models: []string{"m1"},
 		ShapeURLs: map[string]string{"openai-chat": "https://chat.example.com/v1"},
 	})
-	if _, err := NewSwitchManager(mgr2, "", t.TempDir()).Switch("codex", "main", nil, "", "", CredentialModeInline); err == nil ||
+	if _, err := NewSwitchManager(mgr2, "", t.TempDir()).Switch("codex", "main", nil, "", "", CredentialModeAuto); err == nil ||
 		!strings.Contains(err.Error(), "openai-chat") ||
 		!strings.Contains(err.Error(), "--shape-url") {
 		t.Fatalf("Switch(codex) error = %v, want chat-wire rejection", err)
@@ -236,7 +236,7 @@ func TestSwitchShapeURLResolution(t *testing.T) {
 			"openai-responses": "https://resp.example.com/v1",
 		},
 	})
-	out2, err := NewSwitchManager(mgr2b, "", t.TempDir()).Switch("codex", "main", nil, "", "", CredentialModeInline)
+	out2, err := NewSwitchManager(mgr2b, "", t.TempDir()).Switch("codex", "main", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch(codex with responses url) error = %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSwitchShapeURLResolution(t *testing.T) {
 		Models: []string{"m1"},
 	})
 	// 未设任何形态地址：地址与来源均为推断路径（回归现状）。
-	out3, err := NewSwitchManager(mgr3, "", t.TempDir()).Switch("codex", "plain", nil, "", "", CredentialModeInline)
+	out3, err := NewSwitchManager(mgr3, "", t.TempDir()).Switch("codex", "plain", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch(codex plain) error = %v", err)
 	}

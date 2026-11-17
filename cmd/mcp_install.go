@@ -40,7 +40,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if mcpInstallAll {
 			err := installAll(mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
-			codexDaemonRestartPrompt(!mcpInstallPrint, false)
+			codexDaemonRestartPrompt(!mcpInstallPrint, false, "")
 			return err
 		}
 		if len(args) == 0 {
@@ -53,7 +53,7 @@ Examples:
 		}
 		err := installInto(target, mcpInstallScope, mcpInstallPrint, cmd.OutOrStdout())
 		if err == nil {
-			codexDaemonRestartPrompt(target.ID == "codex" && !mcpInstallPrint, false)
+			codexDaemonRestartPrompt(target.ID == "codex" && !mcpInstallPrint, false, "")
 		}
 		return err
 	},

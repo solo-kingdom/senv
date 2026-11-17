@@ -17,6 +17,9 @@ import (
 type codexDaemonCheckMsg struct {
 	// source 说明触发它的写回，渲染在确认弹层正文里。
 	source string
+	// envKey 是本次写入的 codex env_key（可空）。非空时跳过/确认文案点名，
+	// 避免用户不知道不重启会 Missing 哪个变量。
+	envKey string
 }
 
 // codexDaemonStateMsg carries the probe result back to the top level.
@@ -33,12 +36,13 @@ type codexDaemonRestartMsg struct{ err error }
 type codexDaemonPrompt struct {
 	// source 说明是哪个写回触发的，用于弹层正文。
 	source string
+	envKey string
 }
 
 // checkCodexDaemon 异步探测本机 daemon。探测本身要拉起 codex 子进程，放主循环
 // 里会卡住渲染。source 说明是哪个写回触发的，用于确认弹层的正文。
-func (m *Model) checkCodexDaemon(source string) tea.Cmd {
-	m.codexPrompt = &codexDaemonPrompt{source: source}
+func (m *Model) checkCodexDaemon(source, envKey string) tea.Cmd {
+	m.codexPrompt = &codexDaemonPrompt{source: source, envKey: envKey}
 	m.codexPromptStage = codexPromptProbing
 	return func() tea.Msg {
 		status, err := codexdaemon.Probe(context.Background())
@@ -70,12 +74,17 @@ func (m Model) updateCodexPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return codexDaemonRestartMsg{err: err}
 		}
 	case "esc", "n":
-		source := ""
+		source, envKey := "", ""
 		if m.codexPrompt != nil {
 			source = m.codexPrompt.source
+			envKey = m.codexPrompt.envKey
 		}
 		m.codexPrompt = nil
-		return m, warnToast("skipped restarting codex daemon after " + source)
+		msg := "skipped restarting codex daemon after " + source
+		if envKey != "" {
+			msg = fmt.Sprintf("skipped restart: Codex may still report Missing environment variable: `%s` (after %s)", envKey, source)
+		}
+		return m, warnToast(msg)
 	}
 	return m, nil
 }
@@ -123,8 +132,12 @@ func (m Model) renderCodexPrompt() string {
 		return modalBox(m.width, m.height, "codex app-server daemon",
 			"checking whether a daemon is running…", "")
 	}
+	body := fmt.Sprintf("%s was written, but a running daemon keeps the configuration and environment it started with.", m.codexPrompt.source)
+	if m.codexPrompt.envKey != "" {
+		body += fmt.Sprintf("\nSkipping leaves Missing environment variable: `%s`.", m.codexPrompt.envKey)
+	}
 	return modalBox(m.width, m.height, "restart codex app-server daemon?",
-		fmt.Sprintf("%s was written, but a running daemon keeps the configuration and environment it started with.", m.codexPrompt.source),
+		body,
 		"enter/y restart · esc/n skip")
 }
 

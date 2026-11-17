@@ -70,14 +70,18 @@ Supported agents: claude-code, codex, kimi, pi, omo, omp, opencode.
          removed when claude-code switches back to inline; a user entry with
          the same name but a different value makes the switch fail closed.
   inline always write the decrypted key into the config file (0600), matching
-         the pre-ADR-0031 behavior.
+         the pre-ADR-0031 behavior. Codex rejects inline: it only has an
+         env_key field (variable name), so plaintext would be misread as the
+         name and surface as Missing environment variable for that secret.
 
 Codex reads its credential from an environment variable whose name senv picks
 so that "senv env export" already provides it: an env:<group>/<key> credential
 reuses <key> unchanged; a text:<group>/<key> credential gets
 SENV_<ALIAS>_API_KEY plus a reference entry in the default env group. The key
 itself never touches the agent config, and the credential must still exist
-locally (switch fails closed otherwise).
+locally (switch fails closed otherwise). After a successful switch, a running
+codex app-server daemon must be restarted (senv prompts) so it inherits that
+env_key; skipping the restart leaves Missing environment variable.
 
 --models picks the Agent model set (= the subset the agent's own model picker
 offers); it accepts a comma-separated list and may be repeated, and defaults to
@@ -153,7 +157,7 @@ OpenAI-compatible agents with it.`,
 		for _, w := range out.Warnings {
 			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ %s\n", w)
 		}
-		codexDaemonRestartPrompt(out.AgentID == "codex", false)
+		codexDaemonRestartPrompt(out.AgentID == "codex", false, out.CredentialEnv)
 		return nil
 	},
 }

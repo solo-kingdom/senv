@@ -156,7 +156,7 @@ func TestSwitchBackgroundModelIgnoredForNonConsumer(t *testing.T) {
 	home := t.TempDir()
 	// codex 不消费后台模型：显式值既不校验也不落盘（TUI 批量切换会把同一份
 	// 值传给所有选中 agent，非消费方必须静默忽略）。
-	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "ghost", CredentialModeInline)
+	out, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "ghost", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
