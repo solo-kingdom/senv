@@ -14,11 +14,11 @@
 - ✅ **Group management** - Control which environment variables take effect via activated groups
 - ✅ **Shell integration** - Recommended: `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **Editor integration** - Edit config files and text snippets with your system default editor
-- ✅ **TUI mode** - Full-screen terminal UI (`senv tui`) to browse/search/edit env/text/config/SSH/LLM/MCP Server profiles in one place, with sensitive values masked by default against shoulder surfing
+- ✅ **TUI mode** - Full-screen terminal UI (`senv tui`) to browse/search/edit env/text/config/SSH/LLM/Skill/MCP Server profiles in one place, with sensitive values masked by default against shoulder surfing
 - ✅ **SSH asset management** - Manage existing host profiles and private keys encrypted, with OpenSSH config export, key materialization on disk, local default keypair, host/keypair CRUD and linking in the TUI (keypair rename cascades to hosts), plus read-only MCP queries
 - ✅ **LLM model catalog** - `senv ai refresh` fetches the models.dev provider/model catalog and caches it locally for offline lookup (`senv ai catalog status`)
 - ✅ **LLM provider management** - `senv ai provider add/edit/rename/list/show/remove` stores AI service profiles encrypted, supports `--api-shape` (openai-chat / openai-responses / anthropic) to declare the API shape, keeps credentials in the vault, assembles model sets automatically from the models.dev catalog, and validates context windows when adding or editing models
-- ✅ **Private Agent Skills** - `senv skill add/list/show/remove/apply` encrypts skill directories into the vault and syncs them; `apply` supports global/`--scope project`, multi-id / `--all`, and `--target agents|claude` (independent of the dotf public catalog)
+- ✅ **Private Agent Skills** - `senv skill add/list/show/remove/apply/unapply` encrypts skill directories into the vault and syncs them; `apply` supports global/`--scope project`, multi-id / `--all`, and `--target agents|claude` (independent of the dotf public catalog)
 
 ## Installation
 
@@ -339,7 +339,7 @@ The bottom bar shows the keybindings for the current context (switching with foc
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | Cycle tabs |
-| `1`–`9` | Jump to the corresponding tab in registration order (out-of-range digits ignored). Order is Env, Text, Config, SSH, KeyPair, LLM, MCP, History, Audit, Backup — Backup is always last, so with everything registered it is the 10th tab with no digit key; reach it with `Tab` |
+| `1`–`9` | Jump to the corresponding tab in registration order (out-of-range digits ignored). Order is Env, Text, Providers, Skill, Config, SSH, KeyPair, MCP, History, Audit, Backup, Settings — Audit/Backup/Settings have no digit keys; reach them with `Tab` |
 | `↑` `↓` / `j` `k` | List navigation |
 | `←` `→` / `h` `l` | Switch focus between panes (Env / Text / Config / SSH / KeyPair / LLM / MCP tabs) |
 | `enter` | Open the detail overlay (Config / SSH / LLM / MCP / History; long content scrolls) / reveal the current env value in plaintext |
@@ -364,7 +364,7 @@ The bottom bar shows the keybindings for the current context (switching with foc
 | `s` | LLM tab: switch to the provider selected in the left pane — with the left pane focused an agent picker opens first (`space` toggle, `a` toggle all, pre-checked with the agents already pointing at that provider; an empty set cannot be submitted), while right-pane focus acts directly on the cursor agent; then multi-select the Agent model set (all selected on entry) → pick the default model → confirm; several agents are written one by one (a single failure does not abort the rest). Codex credentials go through environment variables, not written into config |
 | `M` | LLM tab: for agents already pointing at a provider, change only the default model (no agent picker), candidates limited to the Agent model set already written for that agent (provider and model set unchanged); if not pointing anywhere, it suggests pressing `s` first |
 | `ctrl+r` | Refresh the current tab (`r` on the entry pane = rename) |
-| `S` | Global cross-type search overlay: covers Env/Text/Config/SSH/LLM/MCP, matches identifiers only (key/name, host alias/hostname, provider alias, MCP alias/command) — never values |
+| `S` | Global cross-type search overlay: covers Env/Text/Config/SSH/LLM/Skill/MCP, matches identifiers only (key/name, host alias/hostname, provider alias, MCP alias/command) — never values |
 | `?` | Keymap overview overlay (global keys + current tab keys) |
 | `esc` | Close overlay / cancel |
 | `q` | Quit the TUI (prompts once more if there are pending pushes; press again to exit) |
@@ -381,7 +381,7 @@ Rename and group management go through atomic renames in the storage layer (a si
 
 Panel content is always truncated to fit the width (overlong content ends with `…`; long `base_url`/model lists/paths never wrap); press `enter` to view full content in the detail overlay. Operation results in all tabs go through the bottom status bar: error > warning > success; success messages auto-dismiss after a timeout.
 
-Write operations in the TUI (env/text/config/SSH/LLM/MCP) are recorded in the local operation audit (`senv audit`), with no values included. In server mode with `auto_sync` not disabled, the bottom bar persistently shows the pending push count and last sync time; remote changes are fetched in the background on startup (2-second budget, `--refresh` bypasses the throttle window) and writes are pushed asynchronously in the background after completion (2-second budget). Git mode shows none of this status and performs no background fetch.
+Write operations in the TUI (env/text/config/SSH/LLM/Skill/MCP) are recorded in the local operation audit (`senv audit`), with no values included. In server mode with `auto_sync` not disabled, the bottom bar persistently shows the pending push count and last sync time; remote changes are fetched in the background on startup (2-second budget, `--refresh` bypasses the throttle window) and writes are pushed asynchronously in the background after completion (2-second budget). Git mode shows none of this status and performs no background fetch.
 
 #### Security design
 
@@ -435,6 +435,7 @@ senv skill apply --all --dry-run         # print the plan first (select-all)
 senv skill apply --all --yes             # write ~/.agents/skills/<id> and ~/.claude/skills/<id>
 senv skill apply a b --yes               # multi-select ids
 senv skill apply --all --scope project --target agents --yes  # current project, ./.agents/skills only
+senv skill unapply my-skill --yes        # remove managed local trees only
 senv skill remove my-skill               # removes the vault entry only; applied directories are kept
 ```
 
@@ -448,7 +449,7 @@ Notes:
 - **With the server provider, upgrade senv-server first, then `skill add` / `senv sync`**: an old server does not know `skill` / `skill_index` and rejects the whole push batch (the git provider has no such constraint; see [docs/senv-server.md](docs/senv-server.md) for the release order).
 - **Batching**: one `senv sync` push is a single request and the server body limit defaults to 64 MB; stacking roughly 40+ full-size skills in one push may hit it, so add and sync in several rounds.
 - `description` lives in the plaintext index — keep secrets out of it; the directory contents themselves are encrypted.
-- kiro / Cursor skills roots, `skill unapply`, and TUI/MCP are not covered yet.
+- kiro / Cursor skills roots and a skill MCP tool surface are not covered yet; TUI Skill Tab (after Providers) and `skill unapply` are available.
 
 ### 12. Agent Skill (teach coding agents how to use senv)
 

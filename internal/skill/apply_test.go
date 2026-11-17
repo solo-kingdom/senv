@@ -326,3 +326,56 @@ func TestApplyDetectsSymlinkInsideManagedTree(t *testing.T) {
 		t.Fatalf("a symlink inside the managed tree must count as drift: %+v", plan[0])
 	}
 }
+
+func TestUnapplyRemovesOwnedAndSkipsConflicts(t *testing.T) {
+	a := newTestApplier(t)
+	archive := demoArchive(t, nil)
+	if _, err := a.Apply("demo", archive); err != nil {
+		t.Fatal(err)
+	}
+	plan := a.UnapplyPlan("demo")
+	if len(plan) != 2 || plan[0].Action != ActionRemove || plan[1].Action != ActionRemove {
+		t.Fatalf("unapply plan = %+v", plan)
+	}
+	results := a.Unapply("demo")
+	for _, r := range results {
+		if r.Err != nil || r.Action != ActionRemove {
+			t.Fatalf("result = %+v", r)
+		}
+		if _, err := os.Lstat(r.Target); !os.IsNotExist(err) {
+			t.Fatalf("target still present: %v", err)
+		}
+	}
+	// missing → skip
+	again := a.UnapplyPlan("demo")
+	if again[0].Action != ActionSkip {
+		t.Fatalf("missing should skip: %+v", again[0])
+	}
+	// conflict: directory without owned marker
+	foreign := filepath.Join(a.rootDir(".agents/skills"), "demo")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "SKILL.md"), []byte(goodSkillMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conflict := a.UnapplyPlan("demo")
+	if conflict[0].Action != ActionSkipConflict {
+		t.Fatalf("foreign dir must skip-conflict: %+v", conflict[0])
+	}
+	if results := a.Unapply("demo"); results[0].Action != ActionSkipConflict {
+		t.Fatalf("unapply must not delete foreign: %+v", results[0])
+	}
+	if _, err := os.Stat(filepath.Join(foreign, "SKILL.md")); err != nil {
+		t.Fatalf("foreign content must remain: %v", err)
+	}
+}
+
+func TestTargetShortName(t *testing.T) {
+	if got := TargetShortName(".agents/skills"); got != TargetAgents {
+		t.Fatalf("agents: %q", got)
+	}
+	if got := TargetShortName(".claude/skills"); got != TargetClaude {
+		t.Fatalf("claude: %q", got)
+	}
+}

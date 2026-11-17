@@ -42,7 +42,7 @@ func TestSkillCommandSurface(t *testing.T) {
 	for _, c := range skillCmd.Commands() {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"add", "list", "show", "remove", "apply"} {
+	for _, want := range []string{"add", "list", "show", "remove", "apply", "unapply"} {
 		if !names[want] {
 			t.Errorf("skill %s is missing", want)
 		}

@@ -11,13 +11,14 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
 )
 
-// newFullManagers registers every optional tab (SSH / AI / MCP / History /
-// Audit) so number-key and overlay tests exercise the full tab layout.
+// newFullManagers registers every optional tab (SSH / AI / Skill / MCP /
+// History / Audit) so number-key and overlay tests exercise the full layout.
 func newFullManagers(t *testing.T) Managers {
 	t.Helper()
 	dir := t.TempDir()
@@ -33,6 +34,8 @@ func newFullManagers(t *testing.T) Managers {
 		Config:    config.NewManager(sm, "pw"),
 		SSH:       ssh.NewManager(sm, "pw"),
 		LLM:       llm.NewProviderManager(sm, "pw"),
+		Skill:     skill.NewManager(sm, "pw"),
+		SkillHome: home,
 		MCP:       mcp.NewManager(sm, "pw"),
 		MCPHome:   home,
 		MCPLedger: filepath.Join(home, "mcp-exports.json"),
@@ -43,8 +46,8 @@ func newFullManagers(t *testing.T) Managers {
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 11 {
-		t.Fatalf("tabs = %d, want 11", len(m.tabs))
+	if len(m.tabs) != 12 {
+		t.Fatalf("tabs = %d, want 12", len(m.tabs))
 	}
 	for i := 1; i <= 9; i++ {
 		key := string(rune('0' + i))

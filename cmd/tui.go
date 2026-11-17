@@ -26,7 +26,7 @@ var tuiCmd = &cobra.Command{
 	Use:   "tui",
 	Short: "Launch the full-screen TUI",
 	Long: `Launch the full-screen TUI to browse, search and edit env, text, config,
-SSH, LLM providers and MCP server profiles.
+SSH, LLM providers, private Agent Skills and MCP server profiles.
 
 Reuses a valid session cache when available; otherwise prompts for a one-time
 password (does not write session). Startup never waits on the network: local
@@ -79,6 +79,10 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	if err != nil {
 		return tui.Managers{}, nil, err
 	}
+	skillMgr, err := getSkillManager()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
 	mcpHome, err := agentHomeDir()
 	if err != nil {
 		return tui.Managers{}, nil, err
@@ -109,6 +113,8 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 		LLMPointer:    llmPointer,
 		LLMHome:       llmHome,
 		LLMCatalog:    catalogCachePath(),
+		Skill:         skillMgr,
+		SkillHome:     mcpHome,
 		MCP:           mcpMgr,
 		MCPHome:       mcpHome,
 		MCPLedger:     mcp.LedgerPathForConfigDir(getConfigPath()),

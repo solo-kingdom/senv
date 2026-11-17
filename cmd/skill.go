@@ -197,22 +197,41 @@ Per target directory the plan is one of:
                    (outside the skills directories) before the new one is swapped in
 
 Use --dry-run to print the plan only. Without --yes a confirmation is required.
-Skills are never uninstalled by this command; dotf is not involved.`,
+This command never uninstalls skills; use 'skill unapply' to remove managed trees.
+dotf is not involved.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: runSkillApply,
 }
 
+var skillUnapplyCmd = &cobra.Command{
+	Use:   "unapply [id ...] | --group <group> | --all",
+	Short: "Remove senv-managed skill directories from local agent skills roots",
+	Long: `Remove skill directories that were written by 'skill apply' (directories that
+contain a .senv-owned marker). Selection, --scope, and --target match 'skill apply'.
+
+Per target directory the plan is one of:
+  remove           senv-managed directory will be deleted
+  skip             target is not present
+  skip-conflict    symbolic link, or directory without .senv-owned; left untouched
+
+Vault entries are not deleted. Use --dry-run to print the plan only.`,
+	Args: cobra.ArbitraryArgs,
+	RunE: runSkillUnapply,
+}
+
 func init() {
 	rootCmd.AddCommand(skillCmd)
-	skillCmd.AddCommand(skillAddCmd, skillListCmd, skillShowCmd, skillRemoveCmd, skillApplyCmd)
+	skillCmd.AddCommand(skillAddCmd, skillListCmd, skillShowCmd, skillRemoveCmd, skillApplyCmd, skillUnapplyCmd)
 
-	skillApplyCmd.Flags().StringVar(&skillApplyGroup, "group", "", "apply every skill in this group")
-	skillApplyCmd.Flags().BoolVar(&skillApplyAll, "all", false, "apply every skill in the vault")
-	skillApplyCmd.Flags().StringVar(&skillApplyScope, "scope", "global", "install location: global ($HOME) or project (current directory)")
-	skillApplyCmd.Flags().StringArrayVar(&skillApplyTargets, "target", nil, "skills root to write: agents, claude, or all (repeatable / comma-separated; default all)")
-	skillApplyCmd.Flags().BoolVar(&skillApplyDryRun, "dry-run", false, "print the plan without writing anything")
-	skillApplyCmd.Flags().BoolVarP(&skillApplyYes, "yes", "y", false, "do not ask for confirmation")
-	addRefreshFlag(skillApplyCmd)
+	for _, c := range []*cobra.Command{skillApplyCmd, skillUnapplyCmd} {
+		c.Flags().StringVar(&skillApplyGroup, "group", "", "every skill in this group")
+		c.Flags().BoolVar(&skillApplyAll, "all", false, "every skill in the vault")
+		c.Flags().StringVar(&skillApplyScope, "scope", "global", "install location: global ($HOME) or project (current directory)")
+		c.Flags().StringArrayVar(&skillApplyTargets, "target", nil, "skills root: agents, claude, or all (repeatable / comma-separated; default all)")
+		c.Flags().BoolVar(&skillApplyDryRun, "dry-run", false, "print the plan without writing anything")
+		c.Flags().BoolVarP(&skillApplyYes, "yes", "y", false, "do not ask for confirmation")
+		addRefreshFlag(c)
+	}
 
 	skillAddCmd.Flags().StringVar(&skillSource, "source", "", "skill source directory (SKILL.md at its root)")
 	skillAddCmd.Flags().StringVar(&skillGroup, "group", "", "group name (default: default; with --force keeps the existing group)")
@@ -225,7 +244,14 @@ func init() {
 	addRefreshFlag(skillShowCmd)
 }
 
-func runSkillApply(cmd *cobra.Command, args []string) error {
+type skillApplyContext struct {
+	mgr     *skill.Manager
+	applier *skill.Applier
+	ids     []string
+	scope   string
+}
+
+func resolveSkillApplyContext(cmd *cobra.Command, args []string) (*skillApplyContext, error) {
 	selectors := 0
 	if len(args) > 0 {
 		selectors++
@@ -237,36 +263,36 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		selectors++
 	}
 	if selectors != 1 {
-		return fmt.Errorf("specify exactly one of: skill id(s), --group <group>, --all")
+		return nil, fmt.Errorf("specify exactly one of: skill id(s), --group <group>, --all")
 	}
 	scope := strings.ToLower(strings.TrimSpace(skillApplyScope))
 	if scope == "" {
 		scope = "global"
 	}
 	if scope != "global" && scope != "project" {
-		return fmt.Errorf("--scope must be global or project (got %q)", skillApplyScope)
+		return nil, fmt.Errorf("--scope must be global or project (got %q)", skillApplyScope)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve home directory: %w", err)
+		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
 	base := home
 	if scope == "project" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("resolve project directory: %w", err)
+			return nil, fmt.Errorf("resolve project directory: %w", err)
 		}
 		base = cwd
 	}
 	roots, err := skill.ResolveRoots(skillApplyTargets)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	autoPull(cmd, refreshRequested(cmd))
 	mgr, err := getSkillManager()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var ids []string
 	switch {
@@ -275,7 +301,7 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		for _, raw := range args {
 			entry, err := mgr.Get(raw)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if seen[entry.ID] {
 				continue
@@ -286,33 +312,41 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 	default:
 		entries, err := mgr.List(skillApplyGroup)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, e := range entries {
 			ids = append(ids, e.ID)
 		}
 	}
-	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	if len(ids) == 0 {
-		fmt.Fprintln(out, "No skills to apply")
-		return nil
-	}
-
 	applier := skill.NewApplier(base)
 	applier.Roots = roots
 	if scope == "project" {
 		// Keep backups out of the project tree so agents do not load them as skills.
 		applier.StateDir = filepath.Join(home, ".local", "state", "senv", "skill-apply")
 	}
+	return &skillApplyContext{mgr: mgr, applier: applier, ids: ids, scope: scope}, nil
+}
+
+func runSkillApply(cmd *cobra.Command, args []string) error {
+	ctx, err := resolveSkillApplyContext(cmd, args)
+	if err != nil {
+		return err
+	}
+	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	if len(ctx.ids) == 0 {
+		fmt.Fprintln(out, "No skills to apply")
+		return nil
+	}
+
 	archives := map[string][]byte{}
 	failures := 0
 	changes := 0
 	fmt.Fprintln(out, "Plan:")
-	for _, id := range ids {
-		_, archive, err := mgr.Archive(id)
+	for _, id := range ctx.ids {
+		_, archive, err := ctx.mgr.Archive(id)
 		if err == nil {
 			var items []skill.PlanItem
-			items, err = applier.Plan(id, archive)
+			items, err = ctx.applier.Plan(id, archive)
 			if err == nil {
 				archives[id] = archive
 				for _, it := range items {
@@ -355,12 +389,12 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	for _, id := range ids {
+	for _, id := range ctx.ids {
 		archive, ok := archives[id]
 		if !ok {
 			continue
 		}
-		results, err := applier.Apply(id, archive)
+		results, err := ctx.applier.Apply(id, archive)
 		if err != nil {
 			failures++
 			auditOp(session.AuditOpSkill, "skill:"+id, false, "apply 失败")
@@ -385,6 +419,79 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 			auditOp(session.AuditOpSkill, "skill:"+id, false, "apply 失败")
 		} else {
 			auditOp(session.AuditOpSkill, "skill:"+id, true, "apply")
+		}
+	}
+	return finish()
+}
+
+func runSkillUnapply(cmd *cobra.Command, args []string) error {
+	ctx, err := resolveSkillApplyContext(cmd, args)
+	if err != nil {
+		return err
+	}
+	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	if len(ctx.ids) == 0 {
+		fmt.Fprintln(out, "No skills to unapply")
+		return nil
+	}
+
+	failures := 0
+	changes := 0
+	fmt.Fprintln(out, "Plan:")
+	for _, id := range ctx.ids {
+		items := ctx.applier.UnapplyPlan(id)
+		for _, it := range items {
+			fmt.Fprintf(out, "  [%s] %s -> %s\n", it.Action, it.ID, it.Target)
+			switch {
+			case it.Action == skill.ActionSkipConflict:
+				fmt.Fprintf(errOut, "warning: skipped %s: %s\n", it.Target, it.Reason)
+			case it.Action.Changes():
+				changes++
+			}
+		}
+	}
+
+	finish := func() error {
+		if failures > 0 {
+			return fmt.Errorf("%d skill(s) failed", failures)
+		}
+		return nil
+	}
+	if skillApplyDryRun {
+		fmt.Fprintln(out, "Dry run: nothing was written")
+		return finish()
+	}
+	if changes == 0 {
+		fmt.Fprintln(out, "Nothing to unapply")
+		return finish()
+	}
+	if !skillApplyYes {
+		if !stdinIsTerminal() {
+			return fmt.Errorf("refusing to unapply %d change(s) without confirmation on a non-interactive stdin; pass --yes", changes)
+		}
+		if !confirmPrompt(fmt.Sprintf("Unapply %d change(s)? [y/N] ", changes)) {
+			fmt.Fprintln(out, "Aborted")
+			return nil
+		}
+	}
+
+	for _, id := range ctx.ids {
+		results := ctx.applier.Unapply(id)
+		failed := false
+		for _, r := range results {
+			switch {
+			case r.Err != nil:
+				failed = true
+				fmt.Fprintf(errOut, "error: %s: %v\n", r.Target, r.Err)
+			case r.Action.Changes():
+				fmt.Fprintf(out, "✓ %s %s -> %s\n", r.Action, r.ID, r.Target)
+			}
+		}
+		if failed {
+			failures++
+			auditOp(session.AuditOpSkill, "skill:"+id, false, "unapply 失败")
+		} else {
+			auditOp(session.AuditOpSkill, "skill:"+id, true, "unapply")
 		}
 	}
 	return finish()

@@ -14,11 +14,11 @@
 - ✅ **分组管理** - 通过激活分组控制哪些环境变量生效
 - ✅ **Shell 集成** - 推荐 `session start` + `eval "$(senv env export --if-session)"`
 - ✅ **编辑器集成** - 使用系统默认编辑器编辑配置文件和文本块
-- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/LLM/MCP Server 档案，敏感值默认遮蔽防肩窥；内置主题可切换（Tokyo Night / Gruvbox 明暗）
+- ✅ **TUI 模式** - 全屏终端界面（`senv tui`），统一浏览/搜索/编辑 env/text/config/SSH/LLM/Skill/MCP Server 档案，敏感值默认遮蔽防肩窥；内置主题可切换（Tokyo Night / Gruvbox 明暗）
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
-- ✅ **私有 Agent Skill** - `senv skill add/list/show/remove/apply` 把 skill 目录加密入库，随 `senv sync` 跨机；`apply` 支持全局/`--scope project`、多选 id / `--all`、`--target agents|claude`（与 dotf 公开编目互不干涉）
+- ✅ **私有 Agent Skill** - `senv skill add/list/show/remove/apply/unapply` 把 skill 目录加密入库，随 `senv sync` 跨机；`apply`/`unapply` 支持全局/`--scope project`、多选 id / `--all`、`--target agents|claude`；TUI Skill Tab（在 Providers 后）可管理与导出（与 dotf 公开编目互不干涉）
 
 ## 安装
 
@@ -316,7 +316,7 @@ senv keypair clear-default
 
 ### 9. TUI 模式（全屏界面）
 
-通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host 与 keypair（host 增删改与导出 OpenSSH 片段；keypair 导入、重命名、分组、删除、export 落盘、设本机默认），浏览 LLM provider 档案并切换各 coding agent 的指向，以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
+通过 `senv tui` 启动全屏终端界面：在同一个界面内浏览、搜索与编辑 env/text/config，完整增删改 SSH host 与 keypair（host 增删改与导出 OpenSSH 片段；keypair 导入、重命名、分组、删除、export 落盘、设本机默认），浏览 LLM provider 档案并切换各 coding agent 的指向，管理私有 Agent Skill（vault 增删与 apply/unapply），以及管理 MCP Server 档案并对各 agent 全局配置导出/撤回。
 
 ```bash
 senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码）
@@ -333,13 +333,13 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
-| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略）。全部注册时顺序为 Env、Text、Providers、Config、SSH、KeyPair、MCP、History、Audit、Backup、Settings——Backup 与 Settings 恒在末两位，全部注册时它们是第 10、11 个、无数字键，用 `Tab` 到达 |
+| `1`–`9` | 按注册顺序直达对应标签（越界数字忽略）。全部注册时顺序为 Env、Text、Providers、Skill、Config、SSH、KeyPair、MCP、History、Audit、Backup、Settings——Audit/Backup/Settings 无数字键，用 `Tab` 到达 |
 | `↑` `↓` / `j` `k` | 列表导航 |
-| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Config / SSH / KeyPair / LLM / MCP Tab） |
-| `enter` | 打开详情弹层（Config / SSH / LLM / MCP / History，长内容可滚动）／解开当前 env 明文 |
+| `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Providers / Skill / Config / SSH / KeyPair / MCP Tab） |
+| `enter` | 打开详情弹层（Config / SSH / Providers / Skill / MCP / History，长内容可滚动）／解开当前 env 明文 |
 | `v` | Env：单条切换当前值明文/遮蔽（光标移开自动重新遮蔽）；KeyPair：按需预览私钥 |
 | `e` | 编辑（env=内联输入框，text/config=vim，SSH=host 结构化表单，KeyPair=keypair 分组，LLM=provider 表单，MCP=档案表单） |
-| `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；LLM=新建 provider；MCP=新建档案） |
+| `n` | 新建条目（SSH 主机栏=新建 host，KeyPair 栏=导入 keypair；LLM=新建 provider；Skill=从源目录入库；MCP=新建档案） |
 | `d` | 删除（需确认）；焦点在分组栏时删除整个分组（Env / Text）；KeyPair Tab 中被引用 keypair 默认拒绝并列出引用者，按 `F` 才强制删除并清引用 |
 | `r` | 重命名：分组栏改名分组，条目栏改名 key/name（Env / Text / Config / KeyPair，default 分组不可改名；keypair 重命名同一次 mutation 内联动 host `identityKey`） |
 | `m` | 编辑元信息（Config Tab：分组与描述，走 `config.Manager.SetMeta`） |
@@ -358,7 +358,7 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | `s` | LLM Tab：以左栏选中的 provider 执行切换——焦点在左栏时先弹 agent 多选（`space` 勾选、`a` 全选，进入时勾选已指向该 provider 的 agent；空集不可提交），焦点在右栏时直接作用于右栏光标 agent；随后多选 Agent 模型集（进入时默认全选）→ 选定默认模型 → 确认；选中多个 agent 时逐个写回（单个失败不中止其余）；codex 凭据走环境变量，不写入配置。写回命中 codex 且本机 `codex app-server` daemon 在跑时，完成后弹确认框询问是否重启它（`y`/`enter` 重启、`esc`/`n` 跳过），探测不到 daemon 则不打扰 |
 | `M` | LLM Tab：对右栏已指向某 provider 的 agent 仅更换默认模型（不弹 agent 多选），候选限定在该 agent 已写入的 Agent 模型集内（provider 与模型集不变）；未指向时提示先按 `s` |
 | `ctrl+r` | 刷新当前 Tab（条目栏 `r` = 重命名） |
-| `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/LLM/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
+| `S` | 全局跨类型搜索 overlay：覆盖 Env/Text/Config/SSH/LLM/Skill/MCP，只匹配标识（key/name、host alias/hostname、provider alias、MCP alias/command），绝不匹配值 |
 | `?` | 键位总览 overlay（全局键 + 当前 Tab 键位） |
 | `esc` | 关闭 overlay / 取消操作 |
 | `q` | 退出 TUI（仍有待推送时会先提示一次，再按一次才退出） |
@@ -369,6 +369,8 @@ KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keyp
 
 LLM Tab（标签显示为 Providers）同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
+Skill Tab 是独立两栏（紧挨 LLM/provider 之后）：左栏 vault skill（`n` 从源目录入库、`enter` 详情、`d` 删 vault 且不自动撤回、`/` 过滤），右栏 agents/claude 应用状态（未应用 / 已应用 / 漂移 / 冲突）；`s` 切换 global/project scope；`x`/`X` 应用当前/全部目标、`u`/`U` 撤回当前/全部目标，均先出计划页再确认。冲突与软链跳过，与 CLI `skill apply`/`unapply` 同语义。
+
 MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。写回命中 codex 且本机 daemon 在跑时，完成导出/撤回后同样弹重启确认框。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
 Settings Tab 恒在末位：用信息卡在 Tokyo Night / Gruvbox Dark / Gruvbox Light 三套内置主题间切换，选中即生效并写入 `settings.json` 的 `tui.theme`；缺失或无法识别时回落到 Tokyo Night。进入设置页时当前生效主题即为选中项。
@@ -377,7 +379,7 @@ Settings Tab 恒在末位：用信息卡在 Tokyo Night / Gruvbox Dark / Gruvbox
 
 面板内容一律在宽度内截断（超长以 `…` 结尾，长 `base_url`/模型列表/路径不会折行），完整内容按 `enter` 在详情弹层查看。所有 Tab 的操作结果统一走底部提示条：错误 > 警告 > 成功，成功提示超时自动消失。
 
-TUI 内的写操作（env/text/config/SSH/LLM/MCP）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，启动时在后台拉取远端变更（2 秒预算，`--refresh` 绕过节流窗口），写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态，也不发起后台拉取。
+TUI 内的写操作（env/text/config/SSH/LLM/Skill/MCP）会写入本机操作审计（`senv audit` 可见），不含任何值。server 模式且未关闭 `auto_sync` 时，底部常驻显示待推送条数与最近同步时间，启动时在后台拉取远端变更（2 秒预算，`--refresh` 绕过节流窗口），写操作完成后在后台异步推送（2 秒预算）；git 模式不显示该状态，也不发起后台拉取。
 
 #### 安全设计
 
@@ -431,6 +433,8 @@ senv skill apply --all --dry-run         # 先看计划（全选 vault）
 senv skill apply --all --yes             # 写入 ~/.agents/skills/<id> 与 ~/.claude/skills/<id>
 senv skill apply a b --yes               # 多选若干 id
 senv skill apply --all --scope project --target agents --yes  # 当前项目，只写 ./.agents/skills
+senv skill unapply --all --dry-run       # 撤回计划（只删带 .senv-owned 的托管目录）
+senv skill unapply my-skill --yes        # 撤回本机 apply，vault 条目保留
 senv skill remove my-skill               # 只删 vault 条目，已 apply 的目录保留
 ```
 
@@ -444,7 +448,8 @@ senv skill remove my-skill               # 只删 vault 条目，已 apply 的�
 - **用 server provider 时，先升级 senv-server，再 `skill add` / `senv sync`**：旧 server 不认识 `skill` / `skill_index`，会拒绝整批 push（git provider 无此限制，发布顺序见 [docs/senv-server.md](docs/senv-server.md)）。
 - **批量提示**：一次 `senv sync` push 是一个请求，server 请求体默认上限 64 MB；满额 skill 一次攒到约 40 条以上可能触达上限，请分几次入库、同步。
 - `description` 写在明文索引里，不要放密钥；skill 目录内容本身是加密的。
-- 暂不支持 kiro / Cursor skills 根、`skill unapply`、TUI/MCP。
+- **unapply**：只删除带 `.senv-owned` 的托管目录；软链 / 无标记目录跳过。不删 vault。
+- TUI Skill Tab（在 LLM 之后）可入库、看状态、apply/unapply。暂不支持 kiro / Cursor skills 根，也不提供 skill 的 MCP 工具面。
 
 ### 12. Agent Skill（让 coding agent 学会用 senv）
 

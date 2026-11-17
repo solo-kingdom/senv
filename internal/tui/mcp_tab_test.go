@@ -206,14 +206,14 @@ func TestMCPTabRegistration(t *testing.T) {
 	}
 
 	full := New(newFullManagers(t))
-	if len(full.tabs) != 11 {
-		t.Fatalf("full tabs = %d, want 11", len(full.tabs))
+	if len(full.tabs) != 12 {
+		t.Fatalf("full tabs = %d, want 12", len(full.tabs))
 	}
 	titles := make([]string, len(full.tabs))
 	for i, tab := range full.tabs {
 		titles[i] = tab.Title()
 	}
-	want := []string{"Env", "Text", "Providers", "Config", "SSH", "KeyPair", "MCP", "History", "Audit", "Backup", "Settings"}
+	want := []string{"Env", "Text", "Providers", "Skill", "Config", "SSH", "KeyPair", "MCP", "History", "Audit", "Backup", "Settings"}
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("tab order = %v, want %v", titles, want)
 	}

@@ -12,13 +12,15 @@ import (
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
+	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
 )
 
 // Managers bundles the domain managers shared by all tabs. History 为 nil
 // 时不注册 History Tab（git 模式 / 未配置 server）；Audit 为 nil 时不注册
-// 审计 Tab；LLM 为 nil 时不注册 AI Tab；MCP 为 nil 时不注册 MCP Tab。
+// 审计 Tab；LLM 为 nil 时不注册 AI Tab；Skill 为 nil 时不注册 Skill Tab；
+// MCP 为 nil 时不注册 MCP Tab。
 type Managers struct {
 	// Theme 是启动时要应用的 TUI 主题 id；空值按 tokyo-night 处理。
 	Theme string
@@ -30,7 +32,14 @@ type Managers struct {
 	Config    *config.Manager
 	SSH       *ssh.Manager
 	LLM       *llm.ProviderManager
-	MCP       *mcp.Manager
+	// Skill 为 nil 时不注册 Skill Tab。
+	Skill *skill.Manager
+	// SkillHome 是 global scope 的 base（通常为用户 HOME）；空时回退
+	// os.UserHomeDir。测试注入临时目录以免写进真实 skills 根。
+	SkillHome string
+	// SkillProject 是 project scope 的 base；空时回退 os.Getwd()。
+	SkillProject string
+	MCP *mcp.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
@@ -161,6 +170,10 @@ func New(mgr Managers) Model {
 	// LLM 紧随 Env/Text，占据第三位（数字键 3）；未配置时第三位仍是 Config。
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))
+	}
+	// Skill 紧接 Providers（LLM）之后。
+	if mgr.Skill != nil {
+		m.tabs = append(m.tabs, newSkillTab(mgr))
 	}
 	m.tabs = append(m.tabs, newConfigTab(mgr))
 	if mgr.SSH != nil {

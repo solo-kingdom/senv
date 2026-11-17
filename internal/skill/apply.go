@@ -28,6 +28,18 @@ const (
 	TargetAll    = "all"
 )
 
+// TargetShortName 把相对根路径映射回 CLI 简称（agents / claude）。
+func TargetShortName(root string) string {
+	switch filepath.ToSlash(root) {
+	case ".agents/skills":
+		return TargetAgents
+	case ".claude/skills":
+		return TargetClaude
+	default:
+		return root
+	}
+}
+
 // RootForTarget 把 agents / claude 映射成相对根路径。
 func RootForTarget(name string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
@@ -81,10 +93,13 @@ const (
 	ActionSkip            Action = "skip"
 	ActionSkipConflict    Action = "skip-conflict"
 	ActionBackupOverwrite Action = "backup+overwrite"
+	ActionRemove          Action = "remove"
 )
 
-// Changes 报告该动作是否会写入磁盘。
-func (a Action) Changes() bool { return a == ActionCreate || a == ActionBackupOverwrite }
+// Changes 报告该动作是否会写入磁盘（含 apply 与 unapply）。
+func (a Action) Changes() bool {
+	return a == ActionCreate || a == ActionBackupOverwrite || a == ActionRemove
+}
 
 // PlanItem 是一个 skill 在一个目标根上的计划。
 type PlanItem struct {
@@ -376,6 +391,54 @@ func (a *Applier) backupPath(id string) (string, error) {
 			return path, nil
 		}
 	}
+}
+
+
+// UnapplyPlan 给出撤回计划：只对带 OwnedMarker 的托管目录计划 remove；不存在则 skip；
+// 软链 / 非目录 / 无标记一律 skip-conflict。不需要归档正文。
+func (a *Applier) UnapplyPlan(id string) []PlanItem {
+	items := make([]PlanItem, 0, len(a.Roots))
+	for _, root := range a.Roots {
+		items = append(items, a.unapplyRoot(id, root))
+	}
+	return items
+}
+
+func (a *Applier) unapplyRoot(id, root string) PlanItem {
+	target := filepath.Join(a.rootDir(root), id)
+	item := PlanItem{ID: id, Root: root, Target: target}
+	fi, err := os.Lstat(target)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		item.Action, item.Reason = ActionSkip, "not present"
+	case err != nil:
+		item.Action, item.Reason = ActionSkipConflict, fmt.Sprintf("cannot inspect target: %v", err)
+	case fi.Mode()&fs.ModeSymlink != 0:
+		item.Action, item.Reason = ActionSkipConflict, "target is a symbolic link (not managed by senv)"
+	case !fi.IsDir():
+		item.Action, item.Reason = ActionSkipConflict, "target exists and is not a directory"
+	case !hasOwnedMarker(target):
+		item.Action, item.Reason = ActionSkipConflict, "target directory has no "+OwnedMarker+" (not managed by senv)"
+	default:
+		item.Action, item.Reason = ActionRemove, "senv-managed directory will be removed"
+	}
+	return item
+}
+
+// Unapply 按 UnapplyPlan 删除托管目录。skip / skip-conflict 不碰盘；单根失败记在 Result.Err。
+func (a *Applier) Unapply(id string) []Result {
+	items := a.UnapplyPlan(id)
+	results := make([]Result, 0, len(items))
+	for _, item := range items {
+		res := Result{PlanItem: item}
+		if item.Action == ActionRemove {
+			if err := os.RemoveAll(item.Target); err != nil {
+				res.Err = fmt.Errorf("remove %s: %w", item.Target, err)
+			}
+		}
+		results = append(results, res)
+	}
+	return results
 }
 
 // extractTree 把（已校验的）归档展开到不存在的 dest。只取权限位的 Perm 部分
