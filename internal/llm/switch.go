@@ -150,6 +150,46 @@ func senvEnvKeyName(alias string) string {
 	return "SENV_" + strings.ToUpper(strings.ReplaceAll(sanitizeKey(alias), "-", "_")) + "_API_KEY"
 }
 
+// validEnvVarName 判定名字能否安全写入 codex env_key：必须是 shell 标识符，
+// 且不能长得像密钥（sk-/含空白）。inline 误把明文写进 env_key 时，靠这道
+// 门禁 fail-closed，避免 Codex 把密钥当变量名去 getenv。
+func validEnvVarName(name string) bool {
+	if name == "" || strings.ContainsAny(name, " \t\r\n") {
+		return false
+	}
+	if strings.HasPrefix(name, "sk-") || strings.HasPrefix(name, "sk_") {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// redactEnvVarNameForError 给错误信息用的短展示：合法名原样；疑似密钥只留前缀。
+func redactEnvVarNameForError(name string) string {
+	if validEnvVarName(name) {
+		return name
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "(empty)"
+	}
+	const keep = 8
+	if len(trimmed) <= keep {
+		return trimmed + "…"
+	}
+	return trimmed[:keep] + "…"
+}
+
 func sanitizeKey(alias string) string {
 	var b strings.Builder
 	for _, r := range alias {
@@ -592,6 +632,16 @@ func codexAdapter() AgentAdapter {
 			id := senvProviderID(req.ProviderAlias)
 			if strings.TrimSpace(req.Home) == "" {
 				return fmt.Errorf("codex switch requires the agent home to write the model catalog")
+			}
+			// codex 的 env_key 只能是环境变量名。明文/带换行的密钥写进去后，
+			// Codex 会报 Missing environment variable: `sk-…`。
+			if !validEnvVarName(req.Credential) {
+				return fmt.Errorf(
+					"codex env_key must be an environment variable name, got %q; use --credential-mode=auto|env (inline is not supported for codex)",
+					redactEnvVarNameForError(req.Credential))
+			}
+			if req.CredentialMode != CredentialEnvVar {
+				return fmt.Errorf("codex only writes env_key (environment variable name); credential mode must be env, not inline")
 			}
 			data, err := buildCodexCatalog(req)
 			if err != nil {
@@ -1240,7 +1290,7 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 			}
 			return "", fmt.Errorf("decrypt credential %s: %w", entry.CredentialRef, err)
 		}
-		return value, nil
+		return strings.TrimSpace(value), nil
 	case "env":
 		em := pm.envManager()
 		value, err := em.Get(group, key)
@@ -1251,7 +1301,7 @@ func resolveCredential(entry *storage.LLMProviderEntry, pm *ProviderManager) (st
 			}
 			return "", fmt.Errorf("decrypt credential %s: %w", entry.CredentialRef, err)
 		}
-		return value, nil
+		return strings.TrimSpace(value), nil
 	default:
 		return "", fmt.Errorf("unsupported credential ref %q", entry.CredentialRef)
 	}
@@ -1368,6 +1418,8 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 
 	// 凭据模式决议（ADR-0031）：auto 按 adapter 能力选 env/inline；env 强制
 	// env（adapter 不支持则报错）；inline 强制明文。决议先于任何写回。
+	// codex 只有 env_key 槽、没有明文槽：显式 inline 必须在写盘前拒绝，
+	// 否则会把密钥写进 env_key，Codex 再按「变量名」去 getenv 必挂。
 	resolvedMode := CredentialInline
 	switch credentialMode {
 	case CredentialModeEnv:
@@ -1380,6 +1432,10 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 			resolvedMode = CredentialEnvVar
 		}
 	case CredentialModeInline:
+		if adapter.ID == "codex" {
+			return nil, fmt.Errorf(
+				"codex only supports env_key (environment variable name); use --credential-mode=auto|env, not inline")
+		}
 		resolvedMode = CredentialInline
 	}
 

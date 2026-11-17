@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -135,6 +136,68 @@ func lastLine(output string) string {
 	return ""
 }
 
+// DaemonPID 读取本机 managed daemon 的 pid 文件。文件不存在或无法解析时
+// 返回 (0, false)：调用方应视为「无法核对进程环境」，不要当成「变量已在」。
+func DaemonPID() (int, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return 0, false
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "app-server-daemon", "daemon.pid"))
+	if err != nil {
+		return 0, false
+	}
+	var report struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(raw, &report); err != nil || report.PID <= 0 {
+		return 0, false
+	}
+	return report.PID, true
+}
+
+// ProcessHasEnv 检查 pid 的环境块是否含有 name（只比名字，不读值）。
+// /proc 不可用或进程已退出时返回 error。
+func ProcessHasEnv(pid int, name string) (bool, error) {
+	if pid <= 0 || name == "" {
+		return false, fmt.Errorf("invalid pid or env name")
+	}
+	data, err := readProcessEnviron(pid)
+	if err != nil {
+		return false, err
+	}
+	prefix := name + "="
+	for _, entry := range strings.Split(string(data), "\x00") {
+		if entry == name || strings.HasPrefix(entry, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// MissingEnvInDaemon 返回 daemon 进程环境里缺失的变量名。探测不到 pid 时
+// 返回 (nil, false)：表示「无法核对」，不是「全部都有」。
+func MissingEnvInDaemon(names []string) (missing []string, checked bool) {
+	pid, ok := DaemonPID()
+	if !ok {
+		return nil, false
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		has, err := ProcessHasEnv(pid, name)
+		if err != nil {
+			return nil, false
+		}
+		if !has {
+			missing = append(missing, name)
+		}
+	}
+	return missing, true
+}
+
 // Test seams: production talks to the real codex CLI.
 var (
 	lookPath   = exec.LookPath
@@ -145,5 +208,8 @@ var (
 		cmd := exec.CommandContext(ctx, path, "app-server", "daemon", "restart")
 		cmd.Env = env
 		return cmd.CombinedOutput()
+	}
+	readProcessEnviron = func(pid int) ([]byte, error) {
+		return os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	}
 )

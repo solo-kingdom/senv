@@ -146,6 +146,11 @@ func applyAdapter(t *testing.T, a AgentAdapter, credential string) (string, stri
 		Models: []string{"m1"}, DefaultModel: "m1", Credential: credential, ConfigPath: configPath,
 		Home: home,
 	}
+	// codex Apply 要求 CredentialEnvVar + 合法变量名；其它 adapter 的单测
+	// 仍可直接塞明文。
+	if a.ID == "codex" {
+		req.CredentialMode = CredentialEnvVar
+	}
 	if err := a.Apply(req); err != nil {
 		t.Fatalf("%s Apply() error = %v", a.ID, err)
 	}
@@ -287,7 +292,7 @@ func TestSwitchLegacyReasoningWithoutDefault(t *testing.T) {
 
 	home := t.TempDir()
 	sm := NewSwitchManager(pm, "", home)
-	out, err := sm.Switch("codex", "main", nil, "", "", CredentialModeInline)
+	out, err := sm.Switch("codex", "main", nil, "", "", CredentialModeAuto)
 	if err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
@@ -702,7 +707,7 @@ func TestSwitchBaseURLPerProtocolFamily(t *testing.T) {
 				t.Fatalf("repeated switch BaseURL = %q, want %q", again.BaseURL, out.BaseURL)
 			}
 
-			codexOut, err := sm.Switch("codex", "legacy", nil, "", "", CredentialModeInline)
+			codexOut, err := sm.Switch("codex", "legacy", nil, "", "", CredentialModeAuto)
 			if err != nil {
 				t.Fatalf("Switch(codex) error = %v", err)
 			}
@@ -975,7 +980,7 @@ func TestCodexTopLevelEffortFollowsDefaultModel(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("model_reasoning_effort = 'none'\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeInline); err != nil {
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeAuto); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	var cfg map[string]any
@@ -1006,7 +1011,7 @@ func TestCodexTopLevelEffortFollowsDefaultModel(t *testing.T) {
 	if err := pm.storage.SaveLLMProvider("main", entry, "test-password"); err != nil {
 		t.Fatalf("update provider: %v", err)
 	}
-	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeInline); err != nil {
+	if _, err := NewSwitchManager(pm, "", home).Switch("codex", "main", nil, "", "", CredentialModeAuto); err != nil {
 		t.Fatalf("Switch() error = %v", err)
 	}
 	cfg = nil

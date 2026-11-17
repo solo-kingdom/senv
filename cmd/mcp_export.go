@@ -151,7 +151,7 @@ Examples:
 		if report.Failures > 0 {
 			return fmt.Errorf("%d 项导出失败", report.Failures)
 		}
-		codexDaemonRestartPrompt(writesCodex(report.Items), mcpExportYes)
+		codexDaemonRestartPrompt(writesCodex(report.Items), mcpExportYes, "")
 		return nil
 	},
 }
@@ -221,7 +221,7 @@ profiles are never touched.`,
 		if report.Failures > 0 {
 			return fmt.Errorf("%d 项撤回失败", report.Failures)
 		}
-		codexDaemonRestartPrompt(removesCodex(report.Items), mcpUnexportYes)
+		codexDaemonRestartPrompt(removesCodex(report.Items), mcpUnexportYes, "")
 		return nil
 	},
 }

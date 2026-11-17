@@ -14,7 +14,7 @@ func stubCodexDaemon(t *testing.T, status codexdaemon.Status, probeErr error, re
 	t.Helper()
 	restarted := false
 	var gotEnv map[string]string
-	originalProbe, originalRestart, originalVars := codexDaemonProbe, codexDaemonRestart, codexDaemonExpVars
+	originalProbe, originalRestart, originalVars, originalMissing := codexDaemonProbe, codexDaemonRestart, codexDaemonExpVars, codexDaemonMissing
 	codexDaemonProbe = func(context.Context) (codexdaemon.Status, error) {
 		return status, probeErr
 	}
@@ -26,8 +26,9 @@ func stubCodexDaemon(t *testing.T, status codexdaemon.Status, probeErr error, re
 	codexDaemonExpVars = func() map[string]string {
 		return map[string]string{"DEEPSEEK_API_KEY": "sk-test"}
 	}
+	codexDaemonMissing = func([]string) ([]string, bool) { return nil, false }
 	t.Cleanup(func() {
-		codexDaemonProbe, codexDaemonRestart, codexDaemonExpVars = originalProbe, originalRestart, originalVars
+		codexDaemonProbe, codexDaemonRestart, codexDaemonExpVars, codexDaemonMissing = originalProbe, originalRestart, originalVars, originalMissing
 	})
 	return &restarted, &gotEnv
 }
@@ -58,7 +59,7 @@ func TestCodexDaemonPromptIsSilentWithoutCodexHit(t *testing.T) {
 	setTerminal(t, true)
 	answerYes(t)
 
-	codexDaemonRestartPrompt(false, false)
+	codexDaemonRestartPrompt(false, false, "")
 
 	if *restarted {
 		t.Fatal("restarted the daemon although codex was not written")
@@ -70,7 +71,7 @@ func TestCodexDaemonPromptIsSilentWithoutRunningDaemon(t *testing.T) {
 	setTerminal(t, true)
 	answerYes(t)
 
-	codexDaemonRestartPrompt(true, false)
+	codexDaemonRestartPrompt(true, false, "")
 
 	if *restarted {
 		t.Fatal("restarted a daemon that is not running")
@@ -82,7 +83,7 @@ func TestCodexDaemonPromptIsSilentOnProbeFailure(t *testing.T) {
 	setTerminal(t, true)
 	answerYes(t)
 
-	codexDaemonRestartPrompt(true, false)
+	codexDaemonRestartPrompt(true, false, "")
 
 	if *restarted {
 		t.Fatal("restarted after a failed probe")
@@ -94,7 +95,7 @@ func TestCodexDaemonPromptRestartsWhenConfirmed(t *testing.T) {
 	setTerminal(t, true)
 	answerYes(t)
 
-	codexDaemonRestartPrompt(true, false)
+	codexDaemonRestartPrompt(true, false, "")
 
 	if !*restarted {
 		t.Fatal("confirmation did not restart the daemon")
@@ -109,7 +110,7 @@ func TestCodexDaemonPromptSkipsWhenDeclined(t *testing.T) {
 	setTerminal(t, true)
 	answerNo(t)
 
-	codexDaemonRestartPrompt(true, false)
+	codexDaemonRestartPrompt(true, false, "")
 
 	if *restarted {
 		t.Fatal("declining the prompt still restarted the daemon")
@@ -131,7 +132,7 @@ func TestCodexDaemonPromptNeverRestartsNonInteractively(t *testing.T) {
 			setTerminal(t, tc.terminal)
 			answerYes(t)
 
-			codexDaemonRestartPrompt(true, tc.nonInter)
+			codexDaemonRestartPrompt(true, tc.nonInter, "")
 
 			if *restarted {
 				t.Fatal("non-interactive run restarted the daemon")
@@ -147,7 +148,7 @@ func TestCodexDaemonPromptSurvivesRestartFailure(t *testing.T) {
 
 	// A failed restart is reported, not fatal: the configuration write already
 	// succeeded, so the command must still exit successfully.
-	codexDaemonRestartPrompt(true, false)
+	codexDaemonRestartPrompt(true, false, "")
 
 	if !*restarted {
 		t.Fatal("restart was not attempted")

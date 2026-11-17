@@ -298,7 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// probe result must land even if the user switched tabs meanwhile.
 	switch msg := msg.(type) {
 	case codexDaemonCheckMsg:
-		return m, m.checkCodexDaemon(msg.source)
+		return m, m.checkCodexDaemon(msg.source, msg.envKey)
 	case codexDaemonStateMsg:
 		return m.finishCodexProbe(msg)
 	case codexDaemonRestartMsg:
