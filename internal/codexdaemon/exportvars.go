@@ -3,6 +3,7 @@ package codexdaemon
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/ref"
@@ -43,7 +44,10 @@ func ExportVars(envMgr *env.Manager, getter ref.ValueGetter) (map[string]string,
 		for _, w := range keyWarnings {
 			warnings = append(warnings, fmt.Sprintf("%s: %s", key, w))
 		}
-		resolved[key] = value
+		// API key 等凭据若在 text 入库时带了尾随换行，注入 daemon 后会变成
+		// Authorization: Bearer …\n → 网关 401 missing_api_key。导出给进程环境
+		// 的值去掉首尾空白，与 resolveCredential 对齐。
+		resolved[key] = strings.TrimSpace(value)
 	}
 
 	collisions, err := envMgr.KeyCollisionWarnings()

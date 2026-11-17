@@ -71,6 +71,22 @@ func TestExportVarsResolvesReferences(t *testing.T) {
 	}
 }
 
+func TestExportVarsTrimsTrailingNewlineFromResolvedSecrets(t *testing.T) {
+	mgr := newEnvManager(t)
+	if err := mgr.Set("default", "SENV_OPEN_DESIGN_API_KEY", "{{text:llm-keys:open-design}}"); err != nil {
+		t.Fatal(err)
+	}
+	getter := stubGetter{text: map[string]string{"llm-keys/open-design": "sk-amr-testsecret\n"}}
+
+	vars, _, err := ExportVars(mgr, getter)
+	if err != nil {
+		t.Fatalf("ExportVars: %v", err)
+	}
+	if got := vars["SENV_OPEN_DESIGN_API_KEY"]; got != "sk-amr-testsecret" {
+		t.Fatalf("SENV_OPEN_DESIGN_API_KEY = %q, want trimmed secret without newline", got)
+	}
+}
+
 // A reference synced from another machine may be missing locally. Export keeps
 // the template and warns, matching `senv env export` — the restart must not fail
 // over one unresolved key.
