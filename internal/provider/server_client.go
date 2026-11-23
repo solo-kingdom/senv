@@ -64,6 +64,9 @@ const BlockedGuidance = "已清除本机解锁缓存，本地加密数据保留�
 type serverAPI interface {
 	GetMetadata(ctx context.Context, vault string) ([]byte, error)
 	PutMetadata(ctx context.Context, vault string, blob []byte) error
+	// PutMetadataIfMatch 带乐观锁写入 metadata：baseHash 非空时服务端校验当前值，
+	// 不一致返回 409（metadata 期间被其它设备更新）。旧 server 忽略该字段。
+	PutMetadataIfMatch(ctx context.Context, vault string, blob []byte, baseHash string) error
 	Push(ctx context.Context, vault string, entries []Entry) ([]Entry, int64, error)
 	Pull(ctx context.Context, vault string, since int64) ([]Entry, int64, error)
 }
@@ -194,6 +197,27 @@ func (c *serverClient) GetMetadata(ctx context.Context, vault string) ([]byte, e
 
 func (c *serverClient) PutMetadata(ctx context.Context, vault string, blob []byte) error {
 	return c.do(ctx, "PUT", "/v1/vaults/"+vault+"/metadata", map[string][]byte{"blob": blob}, nil)
+}
+
+// PutMetadataIfMatch 带 base_hash 写入 metadata；服务端不一致时返回 409。
+func (c *serverClient) PutMetadataIfMatch(ctx context.Context, vault string, blob []byte, baseHash string) error {
+	body := map[string]any{"blob": blob}
+	if baseHash != "" {
+		body["base_hash"] = baseHash
+	}
+	return c.do(ctx, "PUT", "/v1/vaults/"+vault+"/metadata", body, nil)
+}
+
+// MetadataHistory 拉取 metadata 历史版本（新到旧）
+func (c *serverClient) MetadataHistory(ctx context.Context, vault string, limit int) ([]MetadataVersion, error) {
+	var resp struct {
+		History []MetadataVersion `json:"history"`
+	}
+	path := fmt.Sprintf("/v1/vaults/%s/metadata/history?limit=%d", vault, limit)
+	if err := c.do(ctx, "GET", path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.History, nil
 }
 
 func (c *serverClient) Push(ctx context.Context, vault string, entries []Entry) ([]Entry, int64, error) {

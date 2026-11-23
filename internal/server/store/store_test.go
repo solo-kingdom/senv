@@ -59,7 +59,7 @@ func TestMetadataRoundtrip(t *testing.T) {
 
 	// 写入即建 vault；读取原样返回 blob
 	blob := []byte("opaque-encrypted-metadata")
-	if err := st.PutMetadata(ctx, userID, "main", blob); err != nil {
+	if err := st.PutMetadata(ctx, userID, "main", blob, ""); err != nil {
 		t.Fatalf("PutMetadata: %v", err)
 	}
 	got, err := st.GetMetadata(ctx, userID, "main")
@@ -71,7 +71,7 @@ func TestMetadataRoundtrip(t *testing.T) {
 	}
 
 	// 覆盖写
-	if err := st.PutMetadata(ctx, userID, "main", []byte("v2")); err != nil {
+	if err := st.PutMetadata(ctx, userID, "main", []byte("v2"), ""); err != nil {
 		t.Fatalf("PutMetadata v2: %v", err)
 	}
 	got, _ = st.GetMetadata(ctx, userID, "main")
@@ -199,7 +199,7 @@ func TestVaultIsolation(t *testing.T) {
 	alice := newUser(t, st, "alice2")
 	bob := newUser(t, st, "bob2")
 
-	st.PutMetadata(ctx, alice, "main", []byte("alice-meta"))
+	st.PutMetadata(ctx, alice, "main", []byte("alice-meta"), "")
 	st.PushEntries(ctx, alice, 0, "main", []Entry{
 		{Kind: "env", Grp: "default", Key: "SECRET", Ciphertext: []byte("x"), BaseRevision: 0},
 	})

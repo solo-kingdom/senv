@@ -62,3 +62,19 @@ client SHALL 支持将某历史版本恢复为当前值：按本地解密→写�
 - **WHEN** 用户恢复已删除条目的最后历史版本
 - **THEN** 该条目以历史内容重新出现并正常同步
 
+
+### Requirement: vault metadata 历史与乐观锁
+
+vault metadata（salt / passwordKey）SHALL 在每次覆盖前保存上一版，保留 N 版（N 取 `--history-retain`），内容未变化时不写前像；写入 SHALL 支持 `base_hash`（sha256 hex）乐观锁，与当前值不一致时 MUST 返回 409 且不写入。client SHALL 提供 `senv history --metadata` 查看历史、`--restore <序号>` 恢复（1 = 最近一版），恢复 MUST 先备份本地 metadata，推送失败时回滚本地文件。
+
+#### Scenario: 覆盖产生 metadata 历史
+- **WHEN** 某设备带正确 base_hash 覆盖 vault metadata
+- **THEN** 上一版进入历史，保留最近 N 版
+
+#### Scenario: 过期 base 被拒
+- **WHEN** 设备用过期 base_hash 推送 metadata
+- **THEN** 返回 409，当前 metadata 不被覆盖
+
+#### Scenario: 恢复并可回滚
+- **WHEN** 用户执行 `senv history --metadata --restore 1` 并确认
+- **THEN** 历史 blob 写回本地并带当前 hash 推送；若推送冲突，则本地 metadata 回滚为操作前内容

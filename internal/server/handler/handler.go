@@ -97,6 +97,7 @@ func New(st store.Store, opts ...Options) *Server {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata", s.auth(s.handleGetMetadata))
+	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata/history", s.auth(s.handleMetadataHistory))
 	s.mux.HandleFunc("PUT /v1/vaults/{vault}/metadata", s.auth(s.handlePutMetadata))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/entries", s.auth(s.handlePull))
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries", s.auth(s.handlePush))
@@ -164,9 +165,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// metadataRequest/Response 的 blob 为客户端产物的不透明数据（base64 由 encoding/json 处理）
+// metadataRequest/Response 的 blob 为客户端产物的不透明数据（base64 由 encoding/json 处理）。
+// base_hash 非空时服务端做乐观锁（sha256 hex），不一致返回 409。
 type metadataRequest struct {
-	Blob []byte `json:"blob"`
+	Blob     []byte `json:"blob"`
+	BaseHash string `json:"base_hash,omitempty"`
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +196,14 @@ func (s *Server) handlePutMetadata(w http.ResponseWriter, r *http.Request) {
 		s.writeDecodeError(w, err)
 		return
 	}
-	if err := s.store.PutMetadata(r.Context(), userID, vault, req.Blob); err != nil {
+	if err := s.store.PutMetadata(r.Context(), userID, vault, req.Blob, req.BaseHash); err != nil {
+		var conflictErr *store.MetadataConflictError
+		if errors.As(err, &conflictErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "metadata conflict",
+			})
+			return
+		}
 		var verr *store.ValidationError
 		if errors.As(err, &verr) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -204,6 +214,33 @@ func (s *Server) handlePutMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleMetadataHistory 处理 GET /v1/vaults/{vault}/metadata/history：返回 metadata 历史版本
+// （新到旧；blob 为不透明内容，服务端不解析）。
+func (s *Server) handleMetadataHistory(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFrom(r.Context())
+	vault := r.PathValue("vault")
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit parameter")
+			return
+		}
+		limit = n
+	}
+	versions, err := s.store.GetMetadataHistory(r.Context(), userID, vault, limit)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "vault metadata not found")
+			return
+		}
+		slog.Error("metadata history failed", "vault", vault, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": versions})
 }
 
 // pushRequest 乐观锁批量推送请求

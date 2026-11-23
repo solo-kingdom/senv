@@ -96,6 +96,65 @@ var ErrHistoryUnsupported = errors.New("当前 server 不支持条目历史查�
 // historyAPI 由支持历史查询的 server client 实现；独立窄接口使旧测试 fake 无感
 type historyAPI interface {
 	History(ctx context.Context, vault string, f HistoryFilter) ([]HistoryVersion, error)
+	MetadataHistory(ctx context.Context, vault string, limit int) ([]MetadataVersion, error)
+}
+
+// MetadataVersion 是 server 端保留的一份 vault metadata 历史（不透明 blob）
+type MetadataVersion struct {
+	Blob       []byte    `json:"blob"`
+	ReplacedAt time.Time `json:"replaced_at"`
+}
+
+// MetadataHistory 查询 vault metadata 的历史版本（只读）
+func (p *ServerProvider) MetadataHistory(ctx context.Context, limit int) ([]MetadataVersion, error) {
+	api, ok := p.api.(historyAPI)
+	if !ok {
+		return nil, ErrHistoryUnsupported
+	}
+	return api.MetadataHistory(ctx, p.vault, limit)
+}
+
+// RestoreMetadata 把一份历史 metadata 恢复为当前值：先备份本地当前文件 → 写回历史
+// blob → 带远端当前 hash 推送（不绕过乐观锁）。推送失败时回滚本地文件。
+// metadata 决定 vault 能否解锁，恢复前必须由调用方向用户确认。
+func (p *ServerProvider) RestoreMetadata(ctx context.Context, blob []byte) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	remote, err := p.api.GetMetadata(ctx, p.vault)
+	base := ""
+	switch {
+	case err == nil:
+		base = hashBytes(remote)
+	case errors.Is(err, ErrVaultNotFound):
+	default:
+		return err
+	}
+
+	local, err := p.cache.readMetadata()
+	if err != nil {
+		return err
+	}
+	if err := p.cache.writeMetadata(blob); err != nil {
+		return err
+	}
+	if err := p.api.PutMetadataIfMatch(ctx, p.vault, blob, base); err != nil {
+		if local != nil {
+			if rbErr := p.cache.writeMetadata(local); rbErr != nil {
+				return fmt.Errorf("%w（本地 metadata 回滚失败: %v）", err, rbErr)
+			}
+		}
+		return err
+	}
+	st, err := p.cache.loadState()
+	if err != nil {
+		return err
+	}
+	st.MetadataHash = hashBytes(blob)
+	return p.cache.saveStateOpts(st, stateWriteOptions{writerPath: "restoreMetadata"})
 }
 
 // History 查询条目历史（只读，不改本地缓存与同步状态）
@@ -702,7 +761,9 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 		}
 	}
 	if metadataDirty {
-		if err := p.api.PutMetadata(ctx, p.vault, localMeta); err != nil {
+		// 带快照哈希做乐观锁：期间其它设备改过 metadata → 409，不静默覆盖。
+		// 首次上传（快照为空）没有 base，服务端按既有语义接受。
+		if err := p.api.PutMetadataIfMatch(ctx, p.vault, localMeta, st.MetadataHash); err != nil {
 			return nil, err
 		}
 		st.MetadataHash = hashBytes(localMeta)

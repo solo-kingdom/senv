@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -11,13 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/syncschema"
-	"sync"
 )
 
 // 推送批量与单条大小上限（见 server-api spec：单条密文不超过 512KB）
@@ -122,7 +123,8 @@ type Store interface {
 
 	// vault metadata
 	GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error)
-	PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error
+	PutMetadata(ctx context.Context, userID int64, vault string, blob []byte, baseHash string) error
+	GetMetadataHistory(ctx context.Context, userID int64, vault string, limit int) ([]MetadataVersion, error)
 
 	// 同步
 	PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error)
@@ -403,8 +405,11 @@ func (s *pgStore) GetMetadata(ctx context.Context, userID int64, vault string) (
 	return blob, nil
 }
 
-// PutMetadata 写入 vault metadata blob（vault 不存在时自动创建）
-func (s *pgStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
+// PutMetadata 写入 vault metadata blob（vault 不存在时自动创建）。
+// baseHash 非空时做乐观锁：与当前 blob 的 sha256 不一致返回 MetadataConflictError；
+// 覆盖前把上一版写入 vault_metadata_history（保留 historyRetain 版）；内容未变化时
+// 不写前像、不更新时间（重复推送不消耗历史）。
+func (s *pgStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte, baseHash string) error {
 	if err := validateVaultName(vault); err != nil {
 		return err
 	}
@@ -422,6 +427,25 @@ func (s *pgStore) PutMetadata(ctx context.Context, userID int64, vault string, b
 
 	vaultID, err := ensureVault(ctx, tx, userID, vault)
 	if err != nil {
+		return err
+	}
+	var current []byte
+	err = tx.QueryRow(ctx, `SELECT blob FROM vault_metadata WHERE vault_id = $1 FOR UPDATE`, vaultID).Scan(&current)
+	switch {
+	case err == nil:
+		if baseHash != "" && metadataHash(current) != baseHash {
+			return &MetadataConflictError{}
+		}
+		if bytes.Equal(current, blob) {
+			// 内容未变化：不写前像、不推进更新时间
+			return tx.Commit(ctx)
+		}
+		if err := recordMetadataPreimage(ctx, tx, vaultID, s.historyRetain); err != nil {
+			return err
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		// 首次写入：没有前像可留
+	default:
 		return err
 	}
 	_, err = tx.Exec(ctx,

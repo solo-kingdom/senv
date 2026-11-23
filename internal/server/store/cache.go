@@ -138,8 +138,13 @@ func (c *cachedStore) GetMetadata(ctx context.Context, userID int64, vault strin
 }
 
 // PutMetadata 透传
-func (c *cachedStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error {
-	return c.inner.PutMetadata(ctx, userID, vault, blob)
+func (c *cachedStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte, baseHash string) error {
+	return c.inner.PutMetadata(ctx, userID, vault, blob, baseHash)
+}
+
+// GetMetadataHistory 透传（低频只读路径）
+func (c *cachedStore) GetMetadataHistory(ctx context.Context, userID int64, vault string, limit int) ([]MetadataVersion, error) {
+	return c.inner.GetMetadataHistory(ctx, userID, vault, limit)
 }
 
 // PushEntries 透传，成功后把返回的最新 revision 写入 seq 缓存（同进程

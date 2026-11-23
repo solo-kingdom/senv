@@ -39,6 +39,10 @@ func (f *fakeServer) GetMetadata(_ context.Context, vault string) ([]byte, error
 	return blob, nil
 }
 
+func (f *fakeServer) PutMetadataIfMatch(ctx context.Context, vault string, blob []byte, baseHash string) error {
+	return f.PutMetadata(ctx, vault, blob)
+}
+
 func (f *fakeServer) PutMetadata(_ context.Context, vault string, blob []byte) error {
 	if f.fail {
 		return errors.New("无法连接 server: connection refused")

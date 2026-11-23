@@ -30,6 +30,7 @@ serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DS
 ```
 
 - 采用 `admin` 时，可把 serve 角色对 `entries_history` 收紧为 `SELECT, INSERT`（见 `sql/roles.sql` 注释中的语句）。
+- **vault metadata 也有历史**：每次覆盖前保存上一版（同样保留 N 版，N 取 `--history-retain`）；内容未变不写前像。写入支持 `base_hash` 乐观锁（客户端推送会带；不一致返回 409，不静默覆盖）。查看与恢复：`senv history --metadata`、`senv history --metadata --restore <序号>`（1 = 最近一版；恢复先备份本地文件，推送失败自动回滚本地）。
 
 ### admin 操作审计
 

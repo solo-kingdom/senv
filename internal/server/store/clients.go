@@ -4,10 +4,10 @@
 package store
 
 import (
-	"log/slog"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"

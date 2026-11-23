@@ -3,6 +3,8 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ var (
 	historyLimit     int
 	historyRestore   int64
 	historyAssumeYes bool
+	historyMetadata  bool
 )
 
 var historyCmd = &cobra.Command{
@@ -40,8 +43,9 @@ var historyCmd = &cobra.Command{
 
 func init() {
 	historyCmd.Flags().IntVar(&historyLimit, "limit", 20, "返回的历史版本条数")
-	historyCmd.Flags().Int64Var(&historyRestore, "restore", 0, "恢复到指定 revision（需条目参数）")
+	historyCmd.Flags().Int64Var(&historyRestore, "restore", 0, "恢复到指定 revision（条目）或序号（--metadata，1=最近一版）")
 	historyCmd.Flags().BoolVar(&historyAssumeYes, "yes", false, "恢复时跳过确认")
+	historyCmd.Flags().BoolVar(&historyMetadata, "metadata", false, "查看 vault metadata 的历史版本（覆盖写前像）")
 	rootCmd.AddCommand(historyCmd)
 }
 
@@ -62,6 +66,12 @@ func runHistory(cmd *cobra.Command, args []string) error {
 	sp, err := getServerProvider()
 	if err != nil {
 		return err
+	}
+	if historyMetadata {
+		if len(args) > 0 {
+			return fmt.Errorf("--metadata 不接受条目参数（metadata 属于整个 vault）")
+		}
+		return runHistoryMetadata(sp)
 	}
 	var filter provider.HistoryFilter
 	if len(args) > 0 {
@@ -194,6 +204,63 @@ func contentPreviewString(data []byte) string {
 		return string(data[:max]) + fmt.Sprintf("…（共 %d 字节）", len(data))
 	}
 	return string(data)
+}
+
+// runHistoryMetadata 查看 / 恢复 vault metadata 历史（覆盖写前像）。
+// metadata 决定 vault 能否解锁，恢复必须显式确认；序号 1 = 最近一版。
+func runHistoryMetadata(sp *provider.ServerProvider) error {
+	versions, err := sp.MetadataHistory(context.Background(), historyLimit)
+	if err != nil {
+		if errors.Is(err, provider.ErrVaultNotFound) {
+			return fmt.Errorf("server 上不存在 vault（先同步一次再查看历史）")
+		}
+		return err
+	}
+	if len(versions) == 0 {
+		fmt.Println("（无 metadata 历史：未被覆盖过，或 server 未开启历史留存）")
+		return nil
+	}
+
+	if historyRestore != 0 {
+		idx := int(historyRestore)
+		if idx < 1 || idx > len(versions) {
+			return fmt.Errorf("--restore 需为 1..%d（1 = 最近一版）", len(versions))
+		}
+		v := versions[idx-1]
+		fmt.Printf("将用 metadata 历史 #%d（替换时间 %s，%d 字节，sha256 %s）覆盖当前值。\n",
+			idx, v.ReplacedAt.Local().Format("2006-01-02 15:04:05"), len(v.Blob), shortHash(v.Blob))
+		fmt.Println("注意：metadata 决定所有设备的解锁，恢复后各端需重新同步。")
+		if !historyAssumeYes {
+			fmt.Print("确认恢复？[y/N] ")
+			reader := bufio.NewReader(os.Stdin)
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(strings.ToLower(answer))
+			if answer != "y" && answer != "yes" {
+				fmt.Println("已取消")
+				return nil
+			}
+		}
+		if err := sp.RestoreMetadata(context.Background(), v.Blob); err != nil {
+			auditOp(session.AuditOpRestore, "metadata", false, "metadata 恢复失败")
+			return err
+		}
+		auditOp(session.AuditOpRestore, "metadata", true, fmt.Sprintf("恢复到历史 #%d", idx))
+		fmt.Println("✓ metadata 已恢复并推送（产生新版本）")
+		return nil
+	}
+
+	fmt.Printf("%-4s %-20s %-10s %s\n", "#", "替换时间", "大小", "sha256")
+	for i, v := range versions {
+		fmt.Printf("%-4d %-20s %-10d %s\n", i+1,
+			v.ReplacedAt.Local().Format("2006-01-02 15:04:05"), len(v.Blob), shortHash(v.Blob))
+	}
+	return nil
+}
+
+// shortHash 返回 blob 的 sha256 前 12 位十六进制（展示用）
+func shortHash(blob []byte) string {
+	sum := sha256.Sum256(blob)
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // restoreHistoryVersion 从已拉取的历史中找到目标 revision，确认后恢复
