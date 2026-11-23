@@ -38,6 +38,9 @@ type Options struct {
 	AlertWebhook string
 	// AlertAuthFailThreshold 同一来源连续 AUTH-FAILED 告警阈值（0=默认 10）
 	AlertAuthFailThreshold int
+	// AlertMassDeleteThreshold 单次 push 的 tombstone 数达到该值即触发
+	// mass_delete 告警（0=关闭；main 侧默认 50）
+	AlertMassDeleteThreshold int
 	// AlertDebounce 同一 (告警类型, 对象) 最小通知间隔（0=默认 5 分钟）
 	AlertDebounce time.Duration
 	// AlertBodyTemplate 请求体模板（env SENV_SERVER_ALERT_BODY_TEMPLATE）。
@@ -88,7 +91,7 @@ func New(st store.Store, opts ...Options) *Server {
 	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
 		trustProxyHeaders: o.TrustProxyHeaders}
 	if o.AlertWebhook != "" {
-		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertDebounce, o.AlertBodyTemplate)
+		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertMassDeleteThreshold, o.AlertDebounce, o.AlertBodyTemplate)
 		go s.alerts.run(context.Background())
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -232,6 +235,15 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	if err := s.decodeBody(w, r, &req); err != nil {
 		s.writeDecodeError(w, err)
 		return
+	}
+	// 记录推送规模：日志与 mass_delete 告警据此判断「谁在何时删了多少」。
+	if info := accessInfoFrom(r.Context()); info != nil {
+		info.nEntries = len(req.Entries)
+		for _, e := range req.Entries {
+			if e.Deleted {
+				info.nDeleted++
+			}
+		}
 	}
 	entries, latest, err := s.store.PushEntries(r.Context(), userID, clientID, vault, req.Entries)
 	if err != nil {

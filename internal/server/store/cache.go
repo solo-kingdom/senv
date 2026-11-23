@@ -264,6 +264,9 @@ func (c *cachedStore) SetHistoryRetain(n int) { c.inner.SetHistoryRetain(n) }
 // SetHistoryPrune 透传（history 裁剪策略属 serve 启动配置）
 func (c *cachedStore) SetHistoryPrune(prune bool) { c.inner.SetHistoryPrune(prune) }
 
+// SetMaxTombstonesPerPush 透传（serve 启动配置）
+func (c *cachedStore) SetMaxTombstonesPerPush(n int) { c.inner.SetMaxTombstonesPerPush(n) }
+
 // PruneAllHistory 透传（admin CLI 低频路径）
 func (c *cachedStore) PruneAllHistory(ctx context.Context, retain int) (int64, error) {
 	return c.inner.PruneAllHistory(ctx, retain)

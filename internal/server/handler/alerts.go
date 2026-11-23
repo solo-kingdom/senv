@@ -37,6 +37,9 @@ type alertDetector struct {
 	webhook   string
 	threshold int           // 同一来源连续 AUTH-FAILED 告警阈值
 	debounce  time.Duration // 同一 (类型, 对象) 最小通知间隔
+	// massDeleteThreshold 单次 push 的 tombstone 数达到该值触发 mass_delete；
+	// 0 关闭
+	massDeleteThreshold int
 	// bodyTmpl 非 nil 时按模板渲染请求体（对接飞书/钉钉等要求固定 body 结构的
 	// 网关）；nil = 直接 POST alertPayload JSON
 	bodyTmpl *template.Template
@@ -51,7 +54,7 @@ type alertDetector struct {
 
 // newAlertDetector 创建检测器（调用方保证 webhook 非空）；bodyTemplate 为空或
 // 解析失败时回落默认 JSON 载荷（解析失败会记 Error 日志，绝不静默）
-func newAlertDetector(st store.Store, webhook string, threshold int, debounce time.Duration, bodyTemplate string) *alertDetector {
+func newAlertDetector(st store.Store, webhook string, threshold, massDeleteThreshold int, debounce time.Duration, bodyTemplate string) *alertDetector {
 	if threshold <= 0 {
 		threshold = defaultAlertAuthFailThreshold
 	}
@@ -59,14 +62,15 @@ func newAlertDetector(st store.Store, webhook string, threshold int, debounce ti
 		debounce = defaultAlertDebounce
 	}
 	d := &alertDetector{
-		store:      st,
-		webhook:    webhook,
-		threshold:  threshold,
-		debounce:   debounce,
-		ch:         make(chan store.AccessEvent, alertChanBuffer),
-		failCounts: map[string]int{},
-		lastIP:     map[int64]string{},
-		lastSent:   map[string]time.Time{},
+		store:               st,
+		webhook:             webhook,
+		threshold:           threshold,
+		massDeleteThreshold: massDeleteThreshold,
+		debounce:            debounce,
+		ch:                  make(chan store.AccessEvent, alertChanBuffer),
+		failCounts:          map[string]int{},
+		lastIP:              map[int64]string{},
+		lastSent:            map[string]time.Time{},
 	}
 	if bodyTemplate != "" {
 		tpl, err := template.New("alert-body").Option("missingkey=error").Parse(bodyTemplate)
@@ -121,7 +125,7 @@ func (d *alertDetector) loadLastIPs(ctx context.Context) {
 // alertPayload 是 webhook POST 的 JSON 体；只含 access_log 已有元数据，
 // 绝不包含 token、口令或密文
 type alertPayload struct {
-	Alert    string    `json:"alert"` // auth_fail_storm / client_blocked / client_registered / client_new_ip
+	Alert    string    `json:"alert"` // auth_fail_storm / client_blocked / client_registered / client_new_ip / mass_delete
 	Time     time.Time `json:"time"`
 	IP       string    `json:"ip"`
 	UserID   int64     `json:"user_id,omitempty"`
@@ -169,6 +173,16 @@ func (d *alertDetector) handle(ctx context.Context, e store.AccessEvent) {
 		}
 		d.lastIP[e.ClientID] = e.IP
 		d.mu.Unlock()
+	}
+
+	// 单次推送删除规模超阈值 → mass_delete（比换 IP 更严重，覆盖之）
+	if d.massDeleteThreshold > 0 && e.NDeleted >= d.massDeleteThreshold {
+		alertType, count = "mass_delete", e.NDeleted
+		if e.ClientID > 0 {
+			key = clientKey(e.ClientID)
+		} else {
+			key = "ip:" + e.IP
+		}
 	}
 
 	if alertType == "" {

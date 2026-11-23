@@ -9,6 +9,10 @@ type accessInfo struct {
 	userID   int64
 	clientID int64
 	reason   string
+	// nEntries/nDeleted 是 push 请求的规模（条目数 / 其中 tombstone 数）；
+	// 由 push handler 在解码后写入，供访问日志与告警使用。
+	nEntries int
+	nDeleted int
 }
 
 func contextWithAccessInfo(ctx context.Context, info *accessInfo) context.Context {

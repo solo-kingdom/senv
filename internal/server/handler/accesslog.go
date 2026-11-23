@@ -32,15 +32,26 @@ func (r *accessRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-// outcomeFromStatus 把响应状态映射为安全事件结果
+// outcomeFromStatus 把响应状态映射为安全事件结果：
+// 认证类 401/403/429 保留既有分类；被拒绝的写入类请求（400/409/413/415/422，
+// 如乐观锁冲突、body 超限、tombstone 上限）记 REJECTED；5xx 记 ERROR；其余
+// （含有效凭证的 404）记 OK。旧实现把这些失败一律记成 OK，导致推送失败不可见。
 func outcomeFromStatus(status int) string {
-	switch status {
-	case http.StatusUnauthorized:
+	switch {
+	case status == http.StatusUnauthorized:
 		return store.AccessOutcomeAuthFailed
-	case http.StatusForbidden:
+	case status == http.StatusForbidden:
 		return store.AccessOutcomeBlocked
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		return store.AccessOutcomeRateLimited
+	case status >= 500:
+		return store.AccessOutcomeError
+	case status == http.StatusBadRequest,
+		status == http.StatusConflict,
+		status == http.StatusRequestEntityTooLarge,
+		status == http.StatusUnsupportedMediaType,
+		status == http.StatusUnprocessableEntity:
+		return store.AccessOutcomeRejected
 	default:
 		return store.AccessOutcomeOK
 	}
@@ -57,6 +68,8 @@ func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Req
 		UserID:   info.userID,
 		Outcome:  outcomeFromStatus(rec.status),
 		Reason:   info.reason,
+		NEntries: info.nEntries,
+		NDeleted: info.nDeleted,
 	}
 	// 告警检测在非阻塞 channel 上：队列满丢弃 + slog，绝不拖慢响应路径
 	if s.alerts != nil {

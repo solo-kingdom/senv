@@ -48,7 +48,11 @@ serve 支持通用 webhook（不内置任何第三方 provider，自行接 n8n/�
 # 或环境变量 SENV_SERVER_ALERT_WEBHOOK
 ```
 
-触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问。payload 为 JSON，只含时间/IP/client/user 名等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问、**单次推送删除 ≥ `--alert-mass-delete-threshold` 条（默认 50，0 关闭）**。payload 为 JSON，只含时间/IP/client/user 名与本次删除条数等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+
+### 破坏性写防护
+
+`--max-tombstones-per-push N`（默认 0 = 不限制，生产建议 200）：单批推送的 tombstone 数超过 N 时整批拒绝（400，reason 指明上限）。它防的是「合法但已失陷的 client 一次抹掉大量条目」；建议先只开 `mass_delete` 告警观察一段时间，再启用硬上限。注意它按**批**计：客户端已按 ≤500 条/批分批，因此这里的 N 是单批口径。
 
 **HTTP 200 不等于送达**：飞书自定义机器人这类网关拒收时（缺群关键词、限流）返回 `200` + `{"code":19024,"msg":"Key Words Not Found"}`。serve 会读取响应体的 `code`/`errcode`/`error_code` 判定成败——非零即失败并重试，重试耗尽后日志带状态码与响应体片段。响应体不是 JSON 或没有这些字段时按成功处理（普通网关语义）。
 

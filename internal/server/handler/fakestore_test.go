@@ -343,6 +343,8 @@ func (f *fakeStore) SetHistoryRetain(n int) {
 
 func (f *fakeStore) SetHistoryPrune(prune bool) {}
 
+func (f *fakeStore) SetMaxTombstonesPerPush(n int) {}
+
 func (f *fakeStore) PruneAllHistory(_ context.Context, _ int) (int64, error) {
 	return 0, errors.New("fakeStore: not implemented")
 }

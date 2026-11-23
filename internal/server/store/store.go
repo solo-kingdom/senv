@@ -127,6 +127,8 @@ type Store interface {
 	// 同步
 	PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error)
 	PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error)
+	// SetMaxTombstonesPerPush 设置单批推送允许的最大删除条数；<=0 表示不限制
+	SetMaxTombstonesPerPush(n int)
 
 	// client 设备
 	CreateRegistrationCode(ctx context.Context, userID int64, ttl time.Duration) (string, error)
@@ -159,6 +161,9 @@ type pgStore struct {
 	// historyPrune 为 true 时在 push 事务内裁剪历史（默认，兼容旧行为）；
 	// false 时交给 admin cron，历史对 serve 角色成为纯追加表。
 	historyPrune bool
+	// maxTombstones 是单批推送允许的最大删除条数（0 = 不限制）。
+	// 防「合法但已失陷的 client」一次抹掉大量条目；默认关闭，部署侧按需启用。
+	maxTombstones int
 
 	// tokenPepper 配置后 token 存储哈希为 HMAC-SHA256(pepper, token)；
 	// 空 = 原 SHA-256 行为。只驻留进程内存，绝不入库或入日志。
@@ -182,6 +187,14 @@ func NewSQL(pool *pgxpool.Pool) *pgStore {
 // 保持原 SHA-256 行为不变。pepper 只驻留进程内存，绝不入库或入日志。
 func (s *pgStore) SetTokenPepper(pepper []byte) {
 	s.tokenPepper = pepper
+}
+
+// SetMaxTombstonesPerPush 设置单批推送允许的最大删除条数；<=0 不限制。
+func (s *pgStore) SetMaxTombstonesPerPush(n int) {
+	if n < 0 {
+		n = 0
+	}
+	s.maxTombstones = n
 }
 
 // hashTokenPeppered 按当前配置计算 token 的存储哈希：配置 pepper 时为
@@ -476,6 +489,17 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 	for _, e := range entries {
 		if verr := validateEntry(e); verr != nil {
 			return nil, 0, verr
+		}
+	}
+	if s.maxTombstones > 0 {
+		deleted := 0
+		for _, e := range entries {
+			if e.Deleted {
+				deleted++
+			}
+		}
+		if deleted > s.maxTombstones {
+			return nil, 0, validationErrorf("单批删除条目数 %d 超过上限 %d（--max-tombstones-per-push）", deleted, s.maxTombstones)
 		}
 	}
 

@@ -1,7 +1,7 @@
 # server-alerts Specification
 
 ## Purpose
-server 将安全事件流中的异常模式（连续认证失败、屏蔽事件、新设备注册、client 换 IP）主动推送到管理员配置的通用 webhook，无需人工翻查访问日志即可发现异常。
+server 将安全事件流中的异常模式（连续认证失败、屏蔽事件、新设备注册、client 换 IP、单次批量删除）主动推送到管理员配置的通用 webhook，无需人工翻查访问日志即可发现异常。
 ## Requirements
 ### Requirement: 通用 webhook 告警
 
@@ -14,6 +14,10 @@ server SHALL 支持通过环境变量 `SENV_SERVER_ALERT_WEBHOOK`（或等效 fl
 #### Scenario: 连续爆破告警
 - **WHEN** 同一来源连续 AUTH-FAILED 超阈值
 - **THEN** 向 webhook POST 一条 auth_fail_storm 告警，含来源 IP 与次数
+
+#### Scenario: 批量删除告警
+- **WHEN** 单次 push 的 tombstone 数达到 `--alert-mass-delete-threshold`（默认 50，0 关闭）
+- **THEN** 向 webhook POST 一条 mass_delete 告警，`count` 为本次删除条数，带 client 标识（无 client 时带来源 IP）
 
 #### Scenario: 请求路径不受投递影响
 - **WHEN** webhook 端点不可达

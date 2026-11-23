@@ -66,9 +66,9 @@ Commands:
                              屏蔽 client（其名下 token 立即失效，可解封）
   admin unblock-client --client <name> [--user <user>]
                              解封 client
-  admin logs [--user u] [--client c] [--since d] [--until d] [--outcome o] [--limit n]
-                             查询访问日志（时间/IP/身份/结果/原因，含日期；
-                             outcome 含 OK/AUTH-FAILED/BLOCKED/RATE-LIMITED/ADMIN）
+  admin logs [--user u] [--client c] [--ip addr] [--since d] [--until d] [--outcome o] [--limit n]
+                             查询访问日志（时间/IP/身份/结果/原因/推送规模，含日期；
+                             outcome 含 OK/AUTH-FAILED/BLOCKED/RATE-LIMITED/REJECTED/ERROR/ADMIN）
   admin logs-prune --before <YYYY-MM-DD>
                              清理该日期之前的访问日志
   admin history-prune --retain N
@@ -87,6 +87,11 @@ serve 专属:
   --history-prune-mode M push（默认，push 事务内裁剪）或 admin（serve 不再裁剪，
                          由 cron 执行 admin history-prune；serve 角色对
                          entries_history 只需 INSERT+SELECT）
+  --max-tombstones-per-push N
+                         单批推送的删除条数超过 N 时整批拒绝（默认 0=不限制；
+                         生产建议 200，防失陷 client 一次抹掉大量条目）
+  --alert-mass-delete-threshold N
+                         单次推送删除 ≥N 条即发 mass_delete 告警（默认 50；0 关闭）
   --alert-webhook URL    告警 webhook（默认取 SENV_SERVER_ALERT_WEBHOOK；
                          空则告警关闭）：连续爆破/屏蔽/新注册/换 IP 时 POST JSON
   --alert-auth-fail-threshold N
@@ -128,12 +133,16 @@ func runServe(args []string) {
 		"history versions kept per entry (0 or negative disables entry history)")
 	historyPruneMode := fs.String("history-prune-mode", "push",
 		"where entry history is pruned: push (in push transaction, serve needs DELETE on entries_history) or admin (serve only INSERT+SELECT; run `admin history-prune` from cron)")
+	maxTombstones := fs.Int("max-tombstones-per-push", 0,
+		"reject a push whose tombstone count exceeds N (0 disables; recommended 200 in production)")
 	trustProxy := fs.Bool("trust-proxy-headers", false,
 		"trust X-Real-IP/X-Forwarded-For only when the direct peer is loopback or a private address (same-host or private-network reverse proxy)")
 	alertWebhook := fs.String("alert-webhook", os.Getenv("SENV_SERVER_ALERT_WEBHOOK"),
 		"alert webhook URL (POST JSON on auth-failure storms, blocks, registrations, client IP changes); empty disables alerting")
 	alertFailThreshold := fs.Int("alert-auth-fail-threshold", 10,
 		"consecutive AUTH-FAILED per source IP before an alert fires")
+	alertMassDelete := fs.Int("alert-mass-delete-threshold", 50,
+		"a single push deleting at least N entries fires a mass_delete alert (0 disables)")
 	alertDebounce := fs.Duration("alert-debounce", 5*time.Minute,
 		"minimum interval between repeated alerts of the same type and target")
 	alertBodyTemplate := fs.String("alert-body-template", os.Getenv("SENV_SERVER_ALERT_BODY_TEMPLATE"),
@@ -175,6 +184,7 @@ func runServe(args []string) {
 	// store.Store；失效广播监听在下方启动
 	st := store.WithCache(pg)
 	st.SetHistoryRetain(*historyRetain)
+	st.SetMaxTombstonesPerPush(*maxTombstones)
 	switch *historyPruneMode {
 	case "push", "":
 		// 兼容旧行为：push 事务内裁剪
@@ -186,13 +196,14 @@ func runServe(args []string) {
 	}
 
 	srv := handler.New(st, handler.Options{
-		MaxBodyBytes:           *maxBodyMB,
-		AuthRateLimit:          *rateLimit,
-		TrustProxyHeaders:      *trustProxy,
-		AlertWebhook:           *alertWebhook,
-		AlertAuthFailThreshold: *alertFailThreshold,
-		AlertDebounce:          *alertDebounce,
-		AlertBodyTemplate:      *alertBodyTemplate,
+		MaxBodyBytes:             *maxBodyMB,
+		AuthRateLimit:            *rateLimit,
+		TrustProxyHeaders:        *trustProxy,
+		AlertWebhook:             *alertWebhook,
+		AlertAuthFailThreshold:   *alertFailThreshold,
+		AlertMassDeleteThreshold: *alertMassDelete,
+		AlertDebounce:            *alertDebounce,
+		AlertBodyTemplate:        *alertBodyTemplate,
 	})
 
 	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。
@@ -314,6 +325,7 @@ func runAdmin(args []string) {
 	logsSince := fs.String("since", "", "起始日期（YYYY-MM-DD 或 RFC3339，含）")
 	logsUntil := fs.String("until", "", "结束日期（YYYY-MM-DD 或 RFC3339，含当天）")
 	logsBefore := fs.String("before", "", "清理该日期之前的日志（YYYY-MM-DD）")
+	logsIP := fs.String("ip", "", "按来源 IP 过滤访问日志")
 	logsLimit := fs.Int("limit", 100, "最多显示条数")
 	historyRetain := fs.Int("retain", store.DefaultHistoryRetain,
 		"条目历史每个条目保留的版本数（admin history-prune）")
@@ -414,7 +426,7 @@ func runAdmin(args []string) {
 	case "logs":
 		requireDSN(*dsn)
 		withStore(*dsn, func(st store.Store) error {
-			f := store.AccessLogFilter{Outcome: *outcome, Limit: *logsLimit}
+			f := store.AccessLogFilter{Outcome: *outcome, Limit: *logsLimit, IP: *logsIP}
 			if *userFilter != "" {
 				id, err := st.UserIDByName(context.Background(), *userFilter)
 				if err != nil {

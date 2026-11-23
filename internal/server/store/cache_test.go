@@ -57,6 +57,8 @@ func (f *fakeInner) SetHistoryRetain(n int) { f.retainN = n }
 
 func (f *fakeInner) SetHistoryPrune(prune bool) { f.prune = prune }
 
+func (f *fakeInner) SetMaxTombstonesPerPush(n int) {}
+
 func (f *fakeInner) PruneAllHistory(_ context.Context, _ int) (int64, error) { return 0, nil }
 
 func (f *fakeInner) TouchClient(_ context.Context, clientID int64) {
