@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +15,20 @@ import (
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/syncschema"
 )
+
+// defaultPushBatchSize 是单次 push 请求携带的条目上限；服务端 MaxBatchEntries 为 1000。
+// 条目总数过千（rekey、批量导入、台账记录增长）时必须分批，否则整批被拒。
+const defaultPushBatchSize = 500
+
+// pushBatchSize 返回本次推送的批大小；SENV_PUSH_BATCH 可覆盖（1..1000，非法值回退默认）。
+func pushBatchSize() int {
+	if v := strings.TrimSpace(os.Getenv("SENV_PUSH_BATCH")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			return n
+		}
+	}
+	return defaultPushBatchSize
+}
 
 // ServerProvider 是 server provider：本地缓存（复用 storage.Manager 文件格式）为工作副本，
 // senv-server 为远端。同步 = 增量 pull 落盘 + 收集 dirty 条目乐观锁批量 push。
@@ -613,11 +630,23 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 	}
 	// removed 收集本次推送的删除标记（合法消失的快照），供防退化护栏放行。
 	removed := make(map[string]bool)
-	if len(dirty) > 0 {
+	// 分批推送：服务端单批上限 1000，条目总数过千时一次性推送会被整批拒绝。
+	// 先按标识排序保证批次可复现；每批成功后立即持久化同步状态，中途失败不丢已推进度。
+	sort.Slice(dirty, func(i, j int) bool {
+		ki, kj := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key), entryID(dirty[j].Kind, dirty[j].Grp, dirty[j].Key)
+		return ki < kj
+	})
+	batch := pushBatchSize()
+	for len(dirty) > 0 {
+		n := batch
+		if n > len(dirty) {
+			n = len(dirty)
+		}
+		chunk, rest := dirty[:n], dirty[n:]
 		for attempt := 0; ; attempt++ {
-			pushed, latest, err := p.api.Push(ctx, p.vault, dirty)
+			pushed, latest, err := p.api.Push(ctx, p.vault, chunk)
 			if err == nil {
-				res.Pushed = len(pushed)
+				res.Pushed += len(pushed)
 				res.LatestRevision = latest
 				for _, e := range pushed {
 					id := entryID(e.Kind, e.Grp, e.Key)
@@ -629,6 +658,12 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 					}
 				}
 				st.LastSyncedRevision = latest
+				if err := p.cache.saveStateOpts(st, stateWriteOptions{
+					writerPath:     "pushLocked",
+					removedEntries: removed,
+				}); err != nil {
+					return nil, err
+				}
 				break
 			}
 			var conflictErr *ConflictError
@@ -636,20 +671,28 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 				return nil, err
 			}
 			// 409 先做假冲突自愈：快照缺失导致的新增误判 + 两端密文一致 → 收养远端 revision。
-			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, dirty, conflictErr.Conflicts)
+			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, chunk, conflictErr.Conflicts)
 			if healErr != nil {
 				// 自愈所需的 Pull(0) 失败：不落盘、不误报内容冲突，返回原始网络错误。
 				return nil, healErr
 			}
 			res.Healed += healed
 			if len(remaining) > 0 {
-				return nil, p.buildConflictError(ctx, remaining, metadataConflict, retry, remoteCandidates, localMeta, remoteMetaBlob)
+				// 真实冲突：停止后续批次；已推批次的状态已持久化，未推条目保留 dirty。
+				if saveErr := p.cache.saveStateOpts(st, stateWriteOptions{
+					writerPath:     "pushLocked",
+					removedEntries: removed,
+				}); saveErr != nil {
+					return nil, saveErr
+				}
+				return nil, p.buildConflictError(ctx, remaining, metadataConflict, append(retry, rest...), remoteCandidates, localMeta, remoteMetaBlob)
 			}
-			dirty = retry
-			if len(dirty) == 0 {
-				break // 全部为假冲突并已收养，无需再次推送
+			chunk = retry
+			if len(chunk) == 0 {
+				break // 本批全部为假冲突并已收养，无需再次推送
 			}
 		}
+		dirty = rest
 	}
 
 	if metadataConflict {

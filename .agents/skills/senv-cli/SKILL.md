@@ -172,7 +172,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 - **存量软链不自动迁移**：agent-data、transit 等现有「仓内目录 + 手工软链」的私有 skill 不会自动入库；要纳入需用户明确决定后手工 `skill add`，并先自行处理原软链（否则 apply 会 `skip-conflict`）。
 - **体积上限**：目录打包后明文 ≤ **1 MiB**；`skill` kind 密文单条上限 **1.5 MiB**（server 按 kind 判断；其它 kind 仍是 512 KiB）。超限报错点名上限，不截断。
 - **server provider 发布顺序**：`skill`/`skill_index` 在同步白名单里，白名单编进 senv-server 二进制。**必须先升级 senv-server 镜像，再让任何 client `skill add` / `senv sync` push**，否则旧 server 拒绝未知 kind，整批 push 失败（对齐 backup 的发布顺序，见 `docs/senv-server.md`）。git provider 无此约束。
-- **批量与请求体**：一次 `senv sync` push 是一个请求，server 请求体上限默认 64 MB。满额 skill（约 1.5 MiB）一次攒到约 40 条以上可能触达上限（413）；大批量入库请分几次 `skill add` + `senv sync`，client 目前不自动分批。
+- **批量与请求体**：客户端按 **≤500 条/批自动分批**推送（`SENV_PUSH_BATCH` 可调 1..1000，非法值回退默认），服务端单批上限 1000；每批成功后立即持久化同步状态，批内出现真实冲突会**停止后续批次**并保留未推条目（下次 `senv sync` 续推）。请求体上限 64 MB 仍按批生效；满额 skill（约 1.5 MiB）单批约 40 条可能触达该上限（413），大批量入库仍建议分几次 `skill add` + `senv sync`。
 - 其它：`skill` 写操作进本机审计（`op_skill`，只记标识不记内容）；`senv passwd`（rekey）、`doctor` 与孤儿数据检测都覆盖 `skills/`。可用 `skill unapply` 撤回带 `.senv-owned` 的托管目录（不删 vault）；TUI Skill Tab（Providers 之后）支持入库/详情/删除 vault、按 scope 查看状态、apply/unapply（计划页确认）。仍不做 skill 的 MCP 工具面与 kiro 根。
 
 ## server 模式
