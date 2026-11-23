@@ -35,6 +35,9 @@ const (
 	KindBackupMeta  = syncschema.KindBackupMeta
 	KindSkill       = syncschema.KindSkill
 	KindSkillIndex  = syncschema.KindSkillIndex
+	KindLedger      = syncschema.KindLedger
+	KindLedgerLog   = syncschema.KindLedgerLog
+	KindLedgerMeta  = syncschema.KindLedgerMeta
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -159,6 +162,12 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.BackupDirName, grp, key + storage.BackupFileSuffix}}, nil
 	case KindSkill:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.SkillDirName, grp, key + storage.SkillFileSuffix}}, nil
+	case KindLedger:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.LedgerDirName, grp, key + storage.LedgerFileSuffix}}, nil
+	case KindLedgerLog:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.LedgerLogDirName, grp, key + storage.LedgerFileSuffix}}, nil
+	case KindLedgerMeta:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.LedgerDirName, grp, storage.EnvMetaFileName}}, nil
 	case KindSkillIndex:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.SkillIndexFile}}, nil
 	case KindConfig:
@@ -303,6 +312,53 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, reads, err
+	}
+
+	// 台账：实体头（ledgers/）与不可变记录（ledger_logs/），组说明存 ledgers/<grp>/.meta.enc
+	collectLedgerDir := func(dir, kind, metaKind string) error {
+		groups, err := dataRoot.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		for _, group := range groups {
+			if !group.IsDir {
+				return fmt.Errorf("invalid ledger cache entry type")
+			}
+			files, err := dataRoot.ReadDir(dir, group.Name)
+			if err != nil {
+				return err
+			}
+			for _, file := range files {
+				if file.IsDir {
+					return fmt.Errorf("invalid ledger cache entry type")
+				}
+				ident := fileIdent{size: file.Size, sec: file.ModSec, nsec: file.ModNsec}
+				switch {
+				case file.Name == storage.EnvMetaFileName && metaKind != "":
+					if err := add(metaKind, group.Name, "", ident, dataRoot, dir, group.Name, file.Name); err != nil {
+						return err
+					}
+				case strings.HasSuffix(file.Name, storage.LedgerFileSuffix):
+					key := strings.TrimSuffix(file.Name, storage.LedgerFileSuffix)
+					if key == "" {
+						continue
+					}
+					if err := add(kind, group.Name, key, ident, dataRoot, dir, group.Name, file.Name); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := collectLedgerDir(storage.LedgerDirName, KindLedger, KindLedgerMeta); err != nil {
+		return nil, nil, reads, err
+	}
+	if err := collectLedgerDir(storage.LedgerLogDirName, KindLedgerLog, ""); err != nil {
 		return nil, nil, reads, err
 	}
 

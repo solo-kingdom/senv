@@ -32,6 +32,7 @@ type ConsistencyReport struct {
 	KeyPairFiles   FileProbes
 	ProviderFiles  FileProbes
 	MCPServerFiles FileProbes
+	LedgerFiles    FileProbes
 	// QuarantinedConfigNames lists legacy config entries whose identities are
 	// structurally consistent but non-portable. They are skipped (not probed,
 	// not counted) and surfaced separately as repair guidance.
@@ -49,7 +50,8 @@ func (r *ConsistencyReport) AllOK() bool {
 		r.HostFiles.OK == r.HostFiles.Total &&
 		r.KeyPairFiles.OK == r.KeyPairFiles.Total &&
 		r.ProviderFiles.OK == r.ProviderFiles.Total &&
-		r.MCPServerFiles.OK == r.MCPServerFiles.Total
+		r.MCPServerFiles.OK == r.MCPServerFiles.Total &&
+		r.LedgerFiles.OK == r.LedgerFiles.Total
 }
 
 // CheckConsistency probes whether the given key can decrypt the metadata
@@ -140,6 +142,53 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 				report.TextFiles.OK++
 			} else {
 				report.TextFiles.Failed = append(report.TextFiles.Failed, rel)
+			}
+		}
+	}
+
+	ledgerGroups, err := m.ListLedgerGroups(LedgerDirName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ledger groups: %w", err)
+	}
+	for _, group := range ledgerGroups {
+		keys, err := m.ListLedgerKeys(LedgerDirName, group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ledger group %q: %w", group, err)
+		}
+		for _, name := range keys {
+			rel := filepath.Join(LedgerDirName, group, name+LedgerFileSuffix)
+			ciphertext, err := dataRoot.Read(LedgerDirName, group, name+LedgerFileSuffix)
+			if err != nil {
+				return nil, err
+			}
+			report.LedgerFiles.Total++
+			if canDecrypt(key, string(ciphertext)) {
+				report.LedgerFiles.OK++
+			} else {
+				report.LedgerFiles.Failed = append(report.LedgerFiles.Failed, rel)
+			}
+		}
+	}
+	logGroups, err := m.ListLedgerGroups(LedgerLogDirName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ledger log groups: %w", err)
+	}
+	for _, group := range logGroups {
+		keys, err := m.ListLedgerKeys(LedgerLogDirName, group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list ledger log group %q: %w", group, err)
+		}
+		for _, name := range keys {
+			rel := filepath.Join(LedgerLogDirName, group, name+LedgerFileSuffix)
+			ciphertext, err := dataRoot.Read(LedgerLogDirName, group, name+LedgerFileSuffix)
+			if err != nil {
+				return nil, err
+			}
+			report.LedgerFiles.Total++
+			if canDecrypt(key, string(ciphertext)) {
+				report.LedgerFiles.OK++
+			} else {
+				report.LedgerFiles.Failed = append(report.LedgerFiles.Failed, rel)
 			}
 		}
 	}
@@ -323,6 +372,9 @@ func (m *Manager) HasOrphanedData() bool {
 					return true
 				}
 			}
+			if (name == LedgerDirName || name == LedgerLogDirName) && hasLedgerFiles(m.dataPath, name) {
+				return true
+			}
 			if name == EnvDirName {
 				if hasEnvVarFiles(m.dataPath) {
 					return true
@@ -368,6 +420,32 @@ func hasManagedEncFiles(dataPath, dir string) bool {
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ConfigFileSuffix) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasLedgerFiles(dataPath, dir string) bool {
+	root := filepath.Join(dataPath, dir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			if strings.HasSuffix(e.Name(), LedgerFileSuffix) && e.Name() != EnvMetaFileName {
+				return true
+			}
+			continue
+		}
+		sub, err := os.ReadDir(filepath.Join(root, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range sub {
+			if strings.HasSuffix(f.Name(), LedgerFileSuffix) && f.Name() != EnvMetaFileName {
+				return true
+			}
 		}
 	}
 	return false

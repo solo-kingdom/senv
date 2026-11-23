@@ -393,7 +393,6 @@ func (a *Applier) backupPath(id string) (string, error) {
 	}
 }
 
-
 // UnapplyPlan 给出撤回计划：只对带 OwnedMarker 的托管目录计划 remove；不存在则 skip；
 // 软链 / 非目录 / 无标记一律 skip-conflict。不需要归档正文。
 func (a *Applier) UnapplyPlan(id string) []PlanItem {

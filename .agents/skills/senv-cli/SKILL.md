@@ -196,6 +196,16 @@ git provider 之外，vault 可托管在 senv-server 上：
   - `serve` 告警 flags：`--alert-webhook URL`（默认取 `SENV_SERVER_ALERT_WEBHOOK`，空则告警关闭、零开销）——连续 `AUTH-FAILED` 超 `--alert-auth-fail-threshold`（默认 10）、client 被屏蔽、新 client 注册成功、client 换 IP 首次访问、**单次推送删除 ≥ `--alert-mass-delete-threshold`（默认 50，0 关闭）** 时向 webhook POST JSON（只含元数据，异步 goroutine 投递 + 去抖 `--alert-debounce` 默认 5m，失败丢弃记日志）。另有 `--max-tombstones-per-push N`（默认 0 不限制，生产建议 200）：单批删除数超过 N 时整批拒绝。
   - `serve` `--alert-body-template`（env `SENV_SERVER_ALERT_BODY_TEMPLATE`）：把告警 body 渲染成 provider 专有格式（飞书机器人需 `{"msg_type":"text","content":{"text":"…"}}` 且文本含群关键词）。变量 `{{.alert}}` `{{.time}}` `{{.ip}}` `{{.user_id}}` `{{.client_id}}` `{{.user}}` `{{.client}}` `{{.reason}}` `{{.count}}`；不配置则投默认扁平 JSON。注意 **HTTP 200 ≠ 送达**：飞书一类网关拒收时返回 200 + `{"code":19024,…}`，server 会读响应 envelope 里的 `code`/`errcode`/`error_code` 判失败并重试，最终丢弃的日志带状态码与响应体片段。
 
+## 台账（`senv ledger`）
+
+台账是「实体 + 只追加操作记录」的配置源，随 vault 同步（server / git 两种通道都支持）。
+
+- **结构**：实体头（kind `ledger`）保存 `description`、`tags`、有序字段与最近 2 条状态；操作记录（kind `ledger_log`）不可变，一条记录一个同步条目，因此**多台设备/多个 agent 并发追加不会冲突**。组说明用 kind `ledger_meta`。
+- **键**：实体键 `<type>.<id>`（type 为小写 kebab-case 的开放枚举：device / infra / service / agent / container…，id 用别名、禁 `@`）；记录键 `<实体键>@<UTC 时间戳>-<4hex>`，按前缀枚举实体记录、按字典序即时间序。
+- **命令**：`senv ledger create <type>.<id> --description …`、`list [--type] [--json]`、`get`、`log`、`timeline [--type]`、`append <组:实体键> --summary … [--body|--body-file] [--kind op|note|correction] [--agent] [--at YYYY-MM-DD]`、`edit --field 名称=值`（空值删字段）、`set-status --text … [--level]`、`delete-record`（确认后删，同步为 tombstone）。
+- **回滚语义**：记录没有更新命令——写错就追加 `--kind correction`；删除是显式动作，最后版本留在条目历史（`senv history ledger_log:…`）。实体头修改走既有冲突检测。
+- **限制**：台账内不放密钥值（只写指纹/引用）；MCP 工具面、TUI 台账 Tab、`import`/`export` 属后续变更，当前未提供。
+
 ## 常用命令速查
 
 ```bash

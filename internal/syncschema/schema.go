@@ -26,6 +26,9 @@ const (
 	KindBackupMeta  = "backup_meta"
 	KindSkill       = "skill"
 	KindSkillIndex  = "skill_index"
+	KindLedger      = "ledger"
+	KindLedgerLog   = "ledger_log"
+	KindLedgerMeta  = "ledger_meta"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -70,7 +73,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := ValidateEnvKey(key); err != nil {
 			return invalid("invalid env key")
 		}
-	case KindText, KindBackup, KindSkill:
+	case KindText, KindBackup, KindSkill, KindLedger, KindLedgerLog:
 		if grp == "" || key == "" {
 			return invalid("kind requires grp and key")
 		}
@@ -80,7 +83,7 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := securefs.ValidateSegment(key); err != nil {
 			return invalid("invalid key")
 		}
-	case KindEnvMeta, KindTextMeta, KindBackupMeta:
+	case KindEnvMeta, KindTextMeta, KindBackupMeta, KindLedgerMeta:
 		if grp == "" || key != "" {
 			return invalid("group meta requires grp and empty key")
 		}

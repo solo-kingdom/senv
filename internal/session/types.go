@@ -93,6 +93,7 @@ const (
 	AuditOpBackup      AuditEventType = "op_backup"
 	AuditOpConfig      AuditEventType = "op_config"
 	AuditOpSkill       AuditEventType = "op_skill"
+	AuditOpLedger      AuditEventType = "op_ledger"
 	AuditOpInstall     AuditEventType = "op_install"
 	AuditOpUninstall   AuditEventType = "op_uninstall"
 	AuditOpSync        AuditEventType = "op_sync"

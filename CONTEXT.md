@@ -105,6 +105,14 @@ _Avoid_: 备注、注释、note、remark、annotation、comment（OpenSSH 私钥
 Host 的多值自由标注，与单值的 Group 正交：只用于列表行内展示与过滤，不参与分组侧栏。
 _Avoid_: 分组（指 Group 时）
 
+**台账（Ledger）/ 实体（Entity）/ 记录（Record）**:
+按实体组织的配置源：实体头（kind `ledger`）保存静态信息与最近状态；操作记录（kind `ledger_log`）只追加且不可变，一条记录一个同步条目，因此多机并发追加不冲突。实体键为 `<type>.<id>`（type 是开放小写枚举，id 用别名），记录键为 `<实体键>@<UTC 时间戳>-<4hex>`。写错了追加 `correction` 记录；删除只走显式命令（同步为 tombstone，最后版本留在条目历史）。「更正」指 `kind=correction` 的记录，用 `supersedes` 指向被更正的记录。
+_Avoid_: 日志（指记录时）、流水、本机台账（指 `mcp-exports.json` 的导出登记时）
+
+**导出登记（Export Ledger）**:
+机器本地的 MCP 导出状态文件（`mcp-exports.json`），只用于判断哪些条目由 senv 写入；不进 vault、不同步。旧文档里的「本机台账」即此意。
+_Avoid_: 台账（指配置源时）
+
 ### 日志与历史
 
 **操作审计（Operation Audit）**:
