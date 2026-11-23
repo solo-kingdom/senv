@@ -172,7 +172,11 @@ vault 名规则：仅限可移植路径段字符（禁止 `/` `\` `:`、`.`/`..`
 server 侧会拒绝非法 vault 名（400）。默认值 `main` 天然合规。
 
 地址scheme：客户端默认只接受 `https://` 的 server 地址；可信内网要用明文 http 时，
-显式设置环境变量 `SENV_ALLOW_INSECURE_HTTP=1`（构造 provider 时会向 stderr 打警告）。
+显式设置环境变量 `SENV_ALLOW_INSECURE_HTTP=1`。豁免生效后，只有链路可能出内网的地址
+（公网域名 / 公网 IP）才在构造 provider 时向 stderr 打警告；目标是内网/本机地址时不再告警——
+包括私网网段、回环、链路本地、IPv6 ULA、CGNAT（100.64.0.0/10）的字面量 IP，以及
+`localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名。判定只做字面量，不做 DNS 解析
+（域名解析到私网 IP 的情况仍按公网地址告警）。
 
 ## 自动同步行为
 

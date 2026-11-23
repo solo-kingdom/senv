@@ -6,6 +6,7 @@ package provider
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -25,10 +26,45 @@ const (
 // 豁免是机器级决策，故用环境变量而非可同步/可备份的 settings 字段。
 const allowInsecureHTTPEnv = "SENV_ALLOW_INSECURE_HTTP"
 
+// internalHostSuffixes 是本地/内网专用的保留域名后缀：这些名字不会从公网根域
+// 解析到外部主机（RFC 6761 的 localhost、RFC 6762 的 mDNS local、RFC 8375 的
+// home.arpa、ICANN 保留的 internal，以及未在根域委派的 lan）。
+var internalHostSuffixes = []string{".lan", ".local", ".internal", ".home.arpa"}
+
+// cgnatPrefix 是 RFC 6598 运营商级 NAT 段：公网不可路由，Tailscale 等
+// overlay 网络也用它做节点地址。
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+// isInternalHost 判断 URL 主机是否是内网/本机地址：私网网段、回环、链路本地、
+// IPv6 ULA、CGNAT 或未指定地址的字面量 IP，以及 localhost 与本地保留域名。
+// 只做字面量判断、不发起 DNS 解析——provider 构造在每条命令的启动路径上，
+// 解析会给离线或慢 DNS 场景引入额外延迟。
+func isInternalHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+			addr.IsUnspecified() || cgnatPrefix.Contains(addr)
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	for _, suffix := range internalHostSuffixes {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateServerAddress 强制 server 地址使用 https：明文 http 会把 Bearer
 // token 与全部密文未加密地送上链路。可信内网可通过
 // SENV_ALLOW_INSECURE_HTTP=1 显式豁免；豁免生效时向 stderr 输出警告以保持
-// 可审计。
+// 可审计，但目标是内网/本机地址（见 isInternalHost）时链路本身不出内网，
+// 不再重复告警。
 func ValidateServerAddress(address string) error {
 	u, err := url.Parse(strings.TrimSpace(address))
 	if err != nil || u.Scheme == "" || u.Host == "" {
@@ -39,7 +75,9 @@ func ValidateServerAddress(address string) error {
 		return nil
 	case "http":
 		if os.Getenv(allowInsecureHTTPEnv) == "1" {
-			fmt.Fprintf(os.Stderr, "⚠ provider server: %s 使用明文 http(%s=1 豁免),token 与密文未加密传输\n", address, allowInsecureHTTPEnv)
+			if !isInternalHost(u.Hostname()) {
+				fmt.Fprintf(os.Stderr, "⚠ provider server: %s 使用明文 http(%s=1 豁免),token 与密文未加密传输\n", address, allowInsecureHTTPEnv)
+			}
 			return nil
 		}
 		return fmt.Errorf("provider server: 地址 %q 为明文 http,token 与密文将未加密传输;仅接受 https。确认内网可信后可设 %s=1 豁免", address, allowInsecureHTTPEnv)
