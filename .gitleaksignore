@@ -8,3 +8,11 @@ adf7dab3f393d7cc5e81f5e88634b0b657088449:EXAMPLES.md:generic-api-key:129
 5ca15990fb9ff2461f996cb812b6a17536310a3b:SESSION_USAGE.md:generic-api-key:295
 5ca15990fb9ff2461f996cb812b6a17536310a3b:SESSION_USAGE.md:generic-api-key:300
 1f1036e466cf2aa35f9edc949ee7a96d26d3741e:docs/git-and-interactive.md:generic-api-key:239
+
+# 工作区（dir）扫描的指纹不带 commit，按 file:rule:line 记录；
+# 命中的都是文档里的 sk-* 占位符示例（docs 换行后需同步行号）。
+SESSION_USAGE.md:generic-api-key:371
+SESSION_USAGE.md:generic-api-key:376
+EXAMPLES.md:generic-api-key:63
+EXAMPLES.md:generic-api-key:129
+docs/git-and-interactive.md:generic-api-key:258
