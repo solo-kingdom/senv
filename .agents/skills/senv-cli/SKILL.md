@@ -7,9 +7,13 @@ metadata:
 
 # senv：agent 使用指南
 
-senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config）、私有 Agent Skill（skill），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
+senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config）、私有 Agent Skill（skill），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
 
-## 维护约定（给开发本仓库的 agent）
+> **分发**：本 skill 以本仓库目录为唯一事实源（SSOT），经 `senv skill add senv-cli --source .agents/skills/senv-cli --force --description "<索引说明>"` → `senv sync` → 各机 `senv skill apply senv-cli` 分发；`--force` 会清空 description，必须显式带。vault 包由本目录重建，**不要直接改 vault 或已安装副本**——任何改动先进本仓库。
+>
+> **定位约定**：文中 `knowledge/experience/...` 相对 **agent-data 仓根**；不在仓根时先 `bash ~/.agents/skills/agent-data/scripts/locate.sh`。
+
+## 维护约定（给开发 senv 仓的 agent）
 
 - 本文档是 agent 使用 senv 的权威说明。**新增/修改/删除 `cmd/` 下用户可见的命令、flag、交互/安全约束，或 MCP 工具清单与语义变化时，必须同步更新本文档**，并与功能变更一并提交。
 - 事实来源：`senv --help`、`senv <cmd> --help`、`senv mcp list-tools`。不要凭记忆写命令用法。本机已安装的二进制可能落后于仓库 HEAD，开发本仓库时以 `go run . <cmd> --help` 为准。
@@ -126,6 +130,7 @@ senv 是本仓库的 CLI：AES-256-GCM 加密存储环境变量（env）、文�
 - 公共目录操作不需要解锁 vault：`senv ai refresh`、`senv ai catalog status`、`senv ai status`。
 - 档案与凭据存 vault：`senv ai provider add/edit/rename/list/show/remove`。`show`/`list` 不返回凭据明文；`add`/`edit` 可带 `--description`（档案说明，不是模型目录文案）；`add` 禁止 `--api-key`，用 TTY prompt、`--api-key-stdin` 或 `--key-ref env:<group>/<key>`。HTTP base URL 必须显式 `--allow-http`。`add`/`edit` 可带 `--background-model <model>` 声明档案后台模型（必须属于模型集；edit 传空串清除声明，未传则保留）。MCP `llm_provider_list` 只读返回档案元数据（含 `api_shape`、`background_model` 与已设置的 `shape_urls`，未声明则省略），不含凭据明文。
 - 新增或替换模型集时必须校验每个模型的 context window：`--catalog-provider` 从 models.dev `limit.context` 读取；自定义模型或目录缺字段时用重复的 `--model-context <model>=<tokens>` 显式提供。缺失即报错且不写档案；已有档案不强制迁移，仍可读取，需要时可 `senv ai provider edit <alias> --model-context ...` 补齐。输出上限、推理档位、无档位推理能力、默认推理档与输入模态可显式设置：重复的 `--model-output <model>=<tokens>`、`--model-reasoning <model>=<effort>[;<effort>...]`（档位分号分隔；非空即视为推理模型）、`--model-reasoning-support <model>`（支持推理但没有可选 effort 档位，如 adaptive/toggle 模型）、`--model-default-reasoning <model>=<effort>`、`--model-modalities <model>=<mod>[,<mod>...]`，以及集合级 `--default-reasoning <effort>`（只填充有档位且尚未解析出默认档的模型）。有档位的模型必须声明默认推理档，且该值必须属于档位列表；senv 不从列表首项或模型名推断。TUI 表单对应「模型输出」「模型推理」「自适应推理」「默认推理档」「输入模态」字段。`show`/MCP 的 `model_info` 展示已保存的 context window/output/reasoning/default_reasoning/input_modalities。
+- **操作 provider 先查 models.dev、推理档位声明=网关实测**（2026-11-16 open-design→pi 坑，全文 `knowledge/experience/pi-only-off-thinking-without-declared-efforts.md`）：新增/编辑模型集或补元数据前，先拉 `https://models.dev/api.json` 核对目标模型的 `limit`/`modalities`/`reasoning_options`（context 缺失本就会报错拦下；efforts 目录只作参考）。**声明推理档位（`--model-reasoning`）前必须对该 provider 的网关实测**——目录≠网关，同一模型各网关接受的档位集不同（实例：models.dev 有条目声明 `max`，网关实测 400）：`bogus` 档位值对照确认 `reasoning_effort` 被校验而非静默丢弃；`none`/`off` 看 usage reasoning_tokens 归零（真关思考）；强制推理题对照各档 reasoning_tokens 非零（真生效）。**不声明的代价**：切 pi 后该模型思考档只剩 off——pi 对 `reasoning` 缺失恒只给 `off`；想让 pi 保留 off 选项，档位列表必须显式含 `none`。缺声明的已上线档案用 `edit` 补齐后，须在各机重跑 `senv ai switch` 重投影。
 - 推理模型必须显式声明能力：有 effort 档位用 `--model-reasoning`/`--model-default-reasoning`；确认会思考但没有可选 effort 档位的模型（adaptive/toggle）用 `--model-reasoning-support`。两者都没有时 codex catalog 写空档位且不设默认档，不会自动发 `reasoning.effort="none"`。none 是「关闭思考」的有效指令，强制思考模型会拒绝（2026-09-28 scnet 10013、2026-10-20 MiniMax-M3.1-Flash 2013）。接入走网关（new-api 等）多协议转换的 provider 时，接入验收不能只测 chat：anthropic 流式也要实测收尾（同日实测 qwen3.8 经 new-api OpenAI→Anthropic 转换丢 `message_stop`，claude code 必断流；无前缀直连渠道正常）。
 - `senv ai provider edit <alias>` 就地编辑：alias 是主键不可改；只改传入的字段，省略的保持原值。元数据 flag 传入但无有效值（如 `--model-output ""`）表示清空该维度；TUI 编辑表单清空字段同义。轮换自有凭据用 `--rotate-key`（TTY）或 `--api-key-stdin`；改走外部引用用 `--key-ref`（会删除原自有凭据）。任一步失败不留部分更新。
 - `senv ai provider rename <old> <new>`：同次操作内改档案别名；规范自有凭据 `text:llm-keys/<old>` 一并改名并更新 `credential_ref`；**env 全部分组中值精确等于 `{{text:llm-keys/<old>}}` 的条目改写为 `{{text:llm-keys/<new>}}`**（如 codex switch 写入的 SeedRef）；本机 agent 指针中的 provider 字段同步改写。目标别名或目标 `llm-keys/<new>` 已存在时拒绝且零写入。外部 `--key-ref` 不移动。不改写 coding agent 原生配置或 catalog——输出提醒重跑 `senv ai switch <agent> <new>`。TUI LLM Tab `r` 等价。

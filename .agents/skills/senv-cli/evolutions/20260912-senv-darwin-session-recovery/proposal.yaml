@@ -1,0 +1,36 @@
+skill: senv-cli
+
+problem:
+  ① skill 写了会话四态(Unverifiable)但没写 darwin 上的高频形态(tmpfs fail-closed)
+     与各命令处置差异——agent 遇报错易误判为环境故障,试图"修环境"而非引导重建会话;
+  ② 没有会话卡死的恢复套路(坏缓存两份载体、session clear 自身可能被卡死);
+  ③ 「维护约定」的事实来源条款只防"二进制落后于仓库 HEAD",没防反向:本机源码
+     clone 可能落后于已装二进制,拿旧源码推新二进制行为会系统性误导排障。
+
+evidence:
+  - mbp14(v0.1.26 darwin)实测:tui/status/session clear 对 Unverifiable 硬失败,
+    session start 回退弹密码(同二进制行为差异,一次会话内多命令交叉验证)
+  - 二进制 strings 证实无 Keychain 文本,而本地 clone(v0.1.17)有——版本错位
+    导致约 30 分钟方向性绕路,最后以 strings + go version -m + 实测定案
+  - 深夜坏缓存两载体(login keychain senv.session.<uid> 条目 + 磁盘槽镜像),
+    session clear 命令自身被卡死,需 security delete-generic-password 手动清
+  - fleet 面已有多台 darwin(公司 MacBook、m2mini、mbp14)同一二进制通道,
+    同类卡死会复现
+
+pattern:
+  darwin 上 senv 会话类报错("no secure session store available")→ 先引导
+  `senv session start` 重建而非修环境;行为判定以已装二进制取证为准,不以
+  任何源码 checkout 为准。
+
+proposed_change:
+  「会话(session)」节追加一条 darwin 会话卡死恢复(约 5 行):tmpfs fail-closed
+  报错文案、tui/status/clear 硬失败 vs start 回退的差异、两份载体清理
+  (security delete-generic-password + 槽文件,含"确认无唯一钥匙风险"前提)、
+  start 重建收尾;「维护约定」事实来源条款补反向防误导半句
+  (go version -m 定版本、strings 验证特性/文案、行为以实测为准)。
+
+expected_improvement:
+  darwin 设备同类卡死从"读源码侦探式排障(本例 ~30 分钟)"收敛为
+  "按套路两步恢复(start 重建;确认安全后才清残留载体)";避免旧源码误导。
+
+risk: low
