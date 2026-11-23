@@ -14,6 +14,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	mcpserver "github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/search"
@@ -90,6 +91,7 @@ type managers struct {
 	llmPointer string
 	llmHome    string
 	mcpServer  *mcpserver.Manager
+	ledger     *ledger.Manager
 	autoPull   func()
 }
 
@@ -200,6 +202,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			llmPointer: filepath.Join(configPath, "agent-pointers.json"),
 			llmHome:    home,
 			mcpServer:  mcpserver.NewManagerWithKey(store, key),
+			ledger:     ledger.NewManager(store, key),
 		}
 		release := func() {
 			session.ZeroKey(key)
@@ -210,6 +213,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			requestManagers.ssh = nil
 			requestManagers.llm = nil
 			requestManagers.mcpServer = nil
+			requestManagers.ledger = nil
 		}
 		return requestManagers, release, nil
 	}

@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
-	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
@@ -82,7 +82,6 @@ func TestSkillTabOrderAfterProviders(t *testing.T) {
 		t.Fatalf("Skill must follow Providers, got %v", titles)
 	}
 }
-
 
 func TestSkillTabApplyUnapplyPlanAndStatus(t *testing.T) {
 	tab, home := newSkillTestTab(t)

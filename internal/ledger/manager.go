@@ -76,6 +76,8 @@ type Head struct {
 	Links       []Link        `json:"links,omitempty"`
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
+	// Group 运行时填充（列表/搜索结果用），不写入载荷。
+	Group string `json:"-"`
 }
 
 // Entity 是记录引用的实体
@@ -192,6 +194,7 @@ func (m *Manager) GetHead(group, headKey string) (*Head, error) {
 	if err := m.storage.LoadLedgerJSON(storage.LedgerDirName, group, headKey, &h, m.key); err != nil {
 		return nil, err
 	}
+	h.Group = group
 	return &h, nil
 }
 

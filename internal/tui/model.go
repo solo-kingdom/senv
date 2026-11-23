@@ -39,7 +39,7 @@ type Managers struct {
 	SkillHome string
 	// SkillProject 是 project scope 的 base；空时回退 os.Getwd()。
 	SkillProject string
-	MCP *mcp.Manager
+	MCP          *mcp.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器

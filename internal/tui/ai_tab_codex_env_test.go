@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wii/senv/internal/env"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/storage"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wii/senv/internal/text"
 )
 
