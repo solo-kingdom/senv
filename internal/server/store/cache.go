@@ -144,8 +144,8 @@ func (c *cachedStore) PutMetadata(ctx context.Context, userID int64, vault strin
 
 // PushEntries 透传，成功后把返回的最新 revision 写入 seq 缓存（同进程
 // 写路径是 seq 唯一的推进来源，缓存因此始终不低于库内事实）
-func (c *cachedStore) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
-	out, latest, err := c.inner.PushEntries(ctx, userID, vault, entries)
+func (c *cachedStore) PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error) {
+	out, latest, err := c.inner.PushEntries(ctx, userID, clientID, vault, entries)
 	if err == nil {
 		c.putVaultSeq(vaultSeqKey{userID, vault}, latest)
 	}
@@ -260,6 +260,14 @@ func (c *cachedStore) PruneAccessLogs(ctx context.Context, before time.Time) (in
 
 // SetHistoryRetain 透传
 func (c *cachedStore) SetHistoryRetain(n int) { c.inner.SetHistoryRetain(n) }
+
+// SetHistoryPrune 透传（history 裁剪策略属 serve 启动配置）
+func (c *cachedStore) SetHistoryPrune(prune bool) { c.inner.SetHistoryPrune(prune) }
+
+// PruneAllHistory 透传（admin CLI 低频路径）
+func (c *cachedStore) PruneAllHistory(ctx context.Context, retain int) (int64, error) {
+	return c.inner.PruneAllHistory(ctx, retain)
+}
 
 // ListHistory 透传：低频只读路径，收益不值得缓存
 func (c *cachedStore) ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error) {

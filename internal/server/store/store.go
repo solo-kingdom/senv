@@ -125,7 +125,7 @@ type Store interface {
 	PutMetadata(ctx context.Context, userID int64, vault string, blob []byte) error
 
 	// 同步
-	PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error)
+	PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error)
 	PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error)
 
 	// client 设备
@@ -145,6 +145,10 @@ type Store interface {
 
 	// 条目历史
 	SetHistoryRetain(n int)
+	// SetHistoryPrune 控制是否在 push 事务内裁剪；false 时由 admin cron 裁剪
+	SetHistoryPrune(prune bool)
+	// PruneAllHistory 把所有 vault 的条目历史裁剪到最近 retain 版（admin 用）
+	PruneAllHistory(ctx context.Context, retain int) (int64, error)
 	ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error)
 }
 
@@ -152,6 +156,9 @@ type Store interface {
 type pgStore struct {
 	pool          *pgxpool.Pool
 	historyRetain int
+	// historyPrune 为 true 时在 push 事务内裁剪历史（默认，兼容旧行为）；
+	// false 时交给 admin cron，历史对 serve 角色成为纯追加表。
+	historyPrune bool
 
 	// tokenPepper 配置后 token 存储哈希为 HMAC-SHA256(pepper, token)；
 	// 空 = 原 SHA-256 行为。只驻留进程内存，绝不入库或入日志。
@@ -168,7 +175,7 @@ const legacyFallbackWindow = time.Minute
 
 // NewSQL 创建 pgStore（条目历史默认保留 DefaultHistoryRetain 版）
 func NewSQL(pool *pgxpool.Pool) *pgStore {
-	return &pgStore{pool: pool, historyRetain: DefaultHistoryRetain, legacyOK: map[string]time.Time{}}
+	return &pgStore{pool: pool, historyRetain: DefaultHistoryRetain, historyPrune: true, legacyOK: map[string]time.Time{}}
 }
 
 // SetTokenPepper 配置 token 哈希 pepper（HMAC-SHA256 的 key）。空/未调用
@@ -454,8 +461,9 @@ func validateEntry(e Entry) *ValidationError {
 	return nil
 }
 
-// PushEntries 乐观锁批量推送：整批一个事务，任一冲突则整批拒绝
-func (s *pgStore) PushEntries(ctx context.Context, userID int64, vault string, entries []Entry) ([]Entry, int64, error) {
+// PushEntries 乐观锁批量推送：整批一个事务，任一冲突则整批拒绝。
+// clientID/userID 由调用方从已认证 token 推出，写入历史行作为操作者归因。
+func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, 0, err
 	}
@@ -518,7 +526,7 @@ func (s *pgStore) PushEntries(ctx context.Context, userID int64, vault string, e
 	// 历史留存（可由 --history-retain<=0 关闭）：先把受影响条目的当前值
 	// 写入前像历史，推送事务整体回滚时历史随之回滚。
 	if s.historyRetain > 0 {
-		if err := recordHistoryPreimages(ctx, tx, vaultID, entries); err != nil {
+		if err := recordHistoryPreimages(ctx, tx, vaultID, entries, userID, clientID); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -549,7 +557,7 @@ func (s *pgStore) PushEntries(ctx context.Context, userID int64, vault string, e
 			return nil, 0, err
 		}
 	}
-	if s.historyRetain > 0 {
+	if s.historyRetain > 0 && s.historyPrune {
 		if err := pruneHistory(ctx, tx, vaultID, s.historyRetain); err != nil {
 			return nil, 0, err
 		}

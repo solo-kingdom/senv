@@ -71,6 +71,9 @@ Commands:
                              outcome 含 OK/AUTH-FAILED/BLOCKED/RATE-LIMITED/ADMIN）
   admin logs-prune --before <YYYY-MM-DD>
                              清理该日期之前的访问日志
+  admin history-prune --retain N
+                             把全部 vault 的条目历史裁剪到每条目 N 版
+                             （配合 serve --history-prune-mode admin 的 cron 使用）
 
 Flags（serve/migrate/admin 通用）:
   --dsn    Postgres 连接串（默认取环境变量 SENV_SERVER_DSN）
@@ -80,6 +83,10 @@ serve 专属:
   --trust-proxy-headers  反代对端为 loopback/私网（同机或 docker 网桥）时采信
                          X-Real-IP/X-Forwarded-For（默认关闭）
   --logs-retain-days N   访问日志保留天数（默认 90，0 关闭自动清理）
+  --history-retain N     每条目保留的历史版本数（默认 3，0 关闭）
+  --history-prune-mode M push（默认，push 事务内裁剪）或 admin（serve 不再裁剪，
+                         由 cron 执行 admin history-prune；serve 角色对
+                         entries_history 只需 INSERT+SELECT）
   --alert-webhook URL    告警 webhook（默认取 SENV_SERVER_ALERT_WEBHOOK；
                          空则告警关闭）：连续爆破/屏蔽/新注册/换 IP 时 POST JSON
   --alert-auth-fail-threshold N
@@ -119,6 +126,8 @@ func runServe(args []string) {
 		"allowed auth failures per minute per source IP (negative disables the limiter)")
 	historyRetain := fs.Int("history-retain", store.DefaultHistoryRetain,
 		"history versions kept per entry (0 or negative disables entry history)")
+	historyPruneMode := fs.String("history-prune-mode", "push",
+		"where entry history is pruned: push (in push transaction, serve needs DELETE on entries_history) or admin (serve only INSERT+SELECT; run `admin history-prune` from cron)")
 	trustProxy := fs.Bool("trust-proxy-headers", false,
 		"trust X-Real-IP/X-Forwarded-For only when the direct peer is loopback or a private address (same-host or private-network reverse proxy)")
 	alertWebhook := fs.String("alert-webhook", os.Getenv("SENV_SERVER_ALERT_WEBHOOK"),
@@ -166,6 +175,15 @@ func runServe(args []string) {
 	// store.Store；失效广播监听在下方启动
 	st := store.WithCache(pg)
 	st.SetHistoryRetain(*historyRetain)
+	switch *historyPruneMode {
+	case "push", "":
+		// 兼容旧行为：push 事务内裁剪
+	case "admin":
+		st.SetHistoryPrune(false)
+	default:
+		fmt.Fprintf(os.Stderr, "错误: --history-prune-mode 只接受 push 或 admin，收到 %q\n", *historyPruneMode)
+		os.Exit(1)
+	}
 
 	srv := handler.New(st, handler.Options{
 		MaxBodyBytes:           *maxBodyMB,
@@ -297,6 +315,8 @@ func runAdmin(args []string) {
 	logsUntil := fs.String("until", "", "结束日期（YYYY-MM-DD 或 RFC3339，含当天）")
 	logsBefore := fs.String("before", "", "清理该日期之前的日志（YYYY-MM-DD）")
 	logsLimit := fs.Int("limit", 100, "最多显示条数")
+	historyRetain := fs.Int("retain", store.DefaultHistoryRetain,
+		"条目历史每个条目保留的版本数（admin history-prune）")
 	fs.Parse(args[1:])
 
 	switch sub {
@@ -461,6 +481,20 @@ func runAdmin(args []string) {
 				return err
 			}
 			fmt.Printf("✓ 已删除 %d 条 %s 之前的访问日志\n", n, before.Format("2006-01-02 15:04:05"))
+			return nil
+		})
+	case "history-prune":
+		requireDSN(*dsn)
+		if *historyRetain <= 0 {
+			fmt.Fprintln(os.Stderr, "用法: senv-server admin history-prune --retain N（N > 0） [--dsn ...]")
+			os.Exit(1)
+		}
+		withStore(*dsn, func(st store.Store) error {
+			n, err := st.PruneAllHistory(context.Background(), *historyRetain)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✓ 条目历史已裁剪到每条目 %d 版（删除 %d 行）\n", *historyRetain, n)
 			return nil
 		})
 	case "create-user":

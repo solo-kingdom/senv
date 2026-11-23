@@ -253,6 +253,11 @@ type HistoryVersion struct {
 	Revision   int64     `json:"revision"`
 	CreatedAt  time.Time `json:"created_at"`
 	Deleted    bool      `json:"deleted"`
+	// ReplacedAt 是该前像被替换的时刻；Actor* 是服务端认定的操作者。
+	ReplacedAt      time.Time `json:"replaced_at"`
+	ActorClientID   int64     `json:"actor_client_id,omitempty"`
+	ActorUserID     int64     `json:"actor_user_id,omitempty"`
+	ActorClientName string    `json:"actor_client_name,omitempty"`
 }
 
 // HistoryFilter 过滤历史查询；零值字段不过滤

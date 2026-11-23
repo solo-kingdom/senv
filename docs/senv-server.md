@@ -18,6 +18,19 @@ serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DS
 0 3 * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv'   /usr/local/bin/senv-server-bin admin logs-prune --before $(date -d '90 days ago' +%F)
 ```
 
+### 条目历史：保留、归因与裁剪位置
+
+- `--history-retain N`（默认 3，0 关闭）：每条目保留最近 N 个**不同**密文版本。相同密文重推、tombstone 重推不写前像、不消耗版本（防「只持 token 即可清历史」）。
+- 历史行记录 `replaced_at`（变更时刻）与操作者（push 事务内由 token 推出的 client / user id）；`senv history` 每行显示「变更时间 + 操作者」。
+- `--history-prune-mode push|admin`：默认 `push`（推送事务内裁剪，serve 角色因此需要 `entries_history` 的 DELETE）。设为 `admin` 后 serve 不再裁剪，改由 cron 执行（推荐生产；历史对 serve 成为纯追加表）：
+
+```bash
+# 每小时把条目历史裁到每条目 10 版（admin 角色 DSN）
+0 * * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv' /usr/local/bin/senv-server-bin admin history-prune --retain 10
+```
+
+- 采用 `admin` 时，可把 serve 角色对 `entries_history` 收紧为 `SELECT, INSERT`（见 `sql/roles.sql` 注释中的语句）。
+
 ### admin 操作审计
 
 `admin create-user / revoke-token / create-registration / block-client / unblock-client` 成功后各写一条 `outcome=ADMIN` 事件（reason 记操作类型与目标）。查询：
@@ -100,7 +113,7 @@ server 本身跑明文 HTTP，TLS 由反向代理终结（回环或内网监听�
 
 ### 元数据泄露边界
 
-零知识架构保证 server 与 DB 持有者看不到条目内容，但以下元数据对「拿到数据库的人」可见：vault 名、条目数量、revision 变化频率、访问时间与来源 IP（access_log）。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+零知识架构保证 server 与 DB 持有者看不到条目内容，但以下元数据对「拿到数据库的人」可见：vault 名、**条目身份（kind / group / key）**、条目数量、revision 变化频率、访问时间与来源 IP（access_log）；另外 `config_index` 与 `skill_index` 两个同步条目以明文 JSON 存储（含配置名、target path、skill id 与 description）。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
 
 
 senv-server 是零知识密文托管服务端：独立二进制，与 `senv` CLI 同仓（`senv-server/` main 包），

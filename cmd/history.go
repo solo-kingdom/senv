@@ -103,13 +103,28 @@ func runHistory(cmd *cobra.Command, args []string) error {
 		return restoreHistoryVersion(sp, history, key)
 	}
 
-	fmt.Printf("%-20s %-8s %-6s %s\n", "时间", "kind", "rev", "值/内容")
+	fmt.Printf("%-20s %-12s %-8s %-6s %s\n", "变更时间", "操作者", "kind", "rev", "值/内容")
 	for _, h := range history {
-		fmt.Printf("%-20s %-8s %-6d %s\n",
-			h.CreatedAt.Local().Format("2006-01-02 15:04:05"),
-			h.Kind, h.Revision, historyDisplay(h, key))
+		when := h.ReplacedAt
+		if when.IsZero() {
+			when = h.CreatedAt
+		}
+		fmt.Printf("%-20s %-12s %-8s %-6d %s\n",
+			when.Local().Format("2006-01-02 15:04:05"),
+			historyActor(h), h.Kind, h.Revision, historyDisplay(h, key))
 	}
 	return nil
+}
+
+// historyActor 渲染服务端认定的操作者；旧版本无归因时显示 "-"。
+func historyActor(h provider.HistoryVersion) string {
+	if h.ActorClientName != "" {
+		return h.ActorClientName
+	}
+	if h.ActorClientID > 0 {
+		return fmt.Sprintf("client#%d", h.ActorClientID)
+	}
+	return "-"
 }
 
 // parseEntryAddress 解析 kind:group:key 三段地址

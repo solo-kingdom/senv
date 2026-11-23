@@ -223,13 +223,17 @@ type revisionAck struct {
 
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r.Context())
+	clientID := int64(0)
+	if info := accessInfoFrom(r.Context()); info != nil {
+		clientID = info.clientID
+	}
 	vault := r.PathValue("vault")
 	var req pushRequest
 	if err := s.decodeBody(w, r, &req); err != nil {
 		s.writeDecodeError(w, err)
 		return
 	}
-	entries, latest, err := s.store.PushEntries(r.Context(), userID, vault, req.Entries)
+	entries, latest, err := s.store.PushEntries(r.Context(), userID, clientID, vault, req.Entries)
 	if err != nil {
 		var conflictErr *store.ConflictError
 		if errors.As(err, &conflictErr) {

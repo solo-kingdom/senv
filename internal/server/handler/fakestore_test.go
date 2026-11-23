@@ -200,7 +200,7 @@ func (f *fakeStore) vaultID(userID int64, vault string, create bool) (int64, err
 	return id, nil
 }
 
-func (f *fakeStore) PushEntries(_ context.Context, userID int64, vault string, entries []store.Entry) ([]store.Entry, int64, error) {
+func (f *fakeStore) PushEntries(_ context.Context, userID, clientID int64, vault string, entries []store.Entry) ([]store.Entry, int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, err := f.vaultID(userID, vault, true)
@@ -339,6 +339,12 @@ func (f *fakeStore) SetHistoryRetain(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retain = n
+}
+
+func (f *fakeStore) SetHistoryPrune(prune bool) {}
+
+func (f *fakeStore) PruneAllHistory(_ context.Context, _ int) (int64, error) {
+	return 0, errors.New("fakeStore: not implemented")
 }
 
 func (f *fakeStore) ListHistory(_ context.Context, userID int64, vault string, _ store.HistoryFilter) ([]store.HistoryVersion, error) {

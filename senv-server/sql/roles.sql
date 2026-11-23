@@ -21,6 +21,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
 TO senv_server;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO senv_server;
 
+-- 条目历史：默认 `--history-prune-mode push` 时由 serve 在推送事务内裁剪，
+-- 故上面保留了 entries_history 的 DELETE。生产推荐改用 `--history-prune-mode
+-- admin`（裁剪由 cron 执行 `admin history-prune --retain N`），随后执行：
+--   REVOKE UPDATE, DELETE ON entries_history FROM senv_server;
+--   GRANT SELECT, INSERT ON entries_history TO senv_server;
+-- 这样历史对 serve 进程成为纯追加表，被攻陷的 serve 也无法抹除历史。
+
 -- schema 版本表：serve 启动即校验版本（migrate.CheckCurrent），缺 SELECT 会被
 -- 误判成「未初始化」并以「schema 版本不匹配」退出。迁移仍由高权限角色执行，
 -- 故这里只给 SELECT。每次 migrate 建新表后须重跑本文件补授权。
