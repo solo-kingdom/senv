@@ -11,6 +11,7 @@ import (
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ssh"
@@ -99,5 +100,49 @@ func TestGatherIncludesSSHHostname(t *testing.T) {
 	}
 	if res.Total != 1 || res.Hits[0].Key != "box" {
 		t.Fatalf("ssh hits = %+v", res.Hits)
+	}
+}
+
+func TestGatherLedgerHeadsOnlyAndMatchByTag(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewManager(filepath.Join(dir, "cfg"), filepath.Join(dir, "data"))
+	if err := store.Initialize("pw"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	key, err := store.DeriveKeyFromPassword("pw")
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	lm := ledger.NewManager(store, key)
+	h, err := ledger.NewHead("device", "lnv", "self-hosted node", []string{"homelab"})
+	if err != nil {
+		t.Fatalf("new head: %v", err)
+	}
+	if err := lm.SaveHead("personal", h); err != nil {
+		t.Fatalf("save head: %v", err)
+	}
+	if _, _, err := lm.Append("personal", "device.lnv", ledger.RecordInput{
+		Summary: "secret-summary-xyz", Body: "secret-body-xyz",
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	items := Gather(Sources{Ledger: lm})
+	res, err := Run(items, "homelab", []Kind{KindLedger}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 || res.Hits[0].Key != "device.lnv" {
+		t.Fatalf("tag search hits = %+v", res.Hits)
+	}
+	// Record summaries/bodies must never be indexed or leaked.
+	for _, q := range []string{"secret-summary-xyz", "secret-body-xyz"} {
+		got, err := Run(items, q, []Kind{KindLedger}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Total != 0 {
+			t.Fatalf("record text %q must not be searchable: %+v", q, got.Hits)
+		}
 	}
 }

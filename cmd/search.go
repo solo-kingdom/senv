@@ -11,6 +11,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/search"
@@ -27,9 +28,10 @@ var (
 var searchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Fuzzy-search vault metadata (no values)",
-	Long: `Search across env, text, backup, config, SSH hosts, LLM providers and MCP
-server profiles. Matching uses identifiers and descriptions only — values,
-private keys, credentials and MCP env values are never matched or returned.
+	Long: `Search across env, text, backup, config, SSH hosts, LLM providers, MCP
+server profiles and ledger entity heads. Matching uses identifiers and
+descriptions only — values, private keys, credentials, MCP env values and
+ledger record bodies are never matched or returned.
 
 Query is required. Results are capped by --limit (default 20).`,
 	Args: cobra.ArbitraryArgs,
@@ -50,7 +52,7 @@ Query is required. Results are capped by --limit (default 20).`,
 
 func init() {
 	rootCmd.AddCommand(searchCmd)
-	searchCmd.Flags().StringSliceVar(&searchKinds, "kind", nil, "restrict kinds (env,text,backup,config,ssh,llm,mcp; repeatable or comma-separated)")
+	searchCmd.Flags().StringSliceVar(&searchKinds, "kind", nil, "restrict kinds (env,text,backup,config,ssh,llm,mcp,ledger; repeatable or comma-separated)")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", search.DefaultLimit, "max hits to return")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "emit JSON (metadata only)")
 	addRefreshFlag(searchCmd)
@@ -62,6 +64,13 @@ func searchSources() (search.Sources, error) {
 		return search.Sources{}, err
 	}
 	store := auth.storage
+	key := auth.key
+	if len(key) == 0 {
+		key, err = store.DeriveKeyFromPassword(auth.password)
+		if err != nil {
+			return search.Sources{}, err
+		}
+	}
 	if auth.hasKey() {
 		return search.Sources{
 			Env:    env.NewManagerWithKey(store, auth.key),
@@ -71,6 +80,7 @@ func searchSources() (search.Sources, error) {
 			SSH:    ssh.NewManagerWithKey(store, auth.key),
 			LLM:    llm.NewProviderManagerWithKey(store, auth.key),
 			MCP:    mcp.NewManagerWithKey(store, auth.key),
+			Ledger: ledger.NewManager(store, key),
 		}, nil
 	}
 	return search.Sources{
@@ -81,6 +91,7 @@ func searchSources() (search.Sources, error) {
 		SSH:    ssh.NewManager(store, auth.password),
 		LLM:    llm.NewProviderManager(store, auth.password),
 		MCP:    mcp.NewManager(store, auth.password),
+		Ledger: ledger.NewManager(store, key),
 	}, nil
 }
 

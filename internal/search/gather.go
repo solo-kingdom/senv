@@ -7,6 +7,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ssh"
@@ -22,6 +23,7 @@ type Sources struct {
 	SSH    *ssh.Manager
 	LLM    *llm.ProviderManager
 	MCP    *mcp.Manager
+	Ledger *ledger.Manager
 }
 
 // Gather builds a metadata-only inventory across all present sources.
@@ -35,6 +37,7 @@ func Gather(src Sources) []Item {
 	out = append(out, gatherSSH(src.SSH)...)
 	out = append(out, gatherLLM(src.LLM)...)
 	out = append(out, gatherMCP(src.MCP)...)
+	out = append(out, gatherLedger(src.Ledger)...)
 	return out
 }
 
@@ -212,6 +215,35 @@ func gatherMCP(m *mcp.Manager) []Item {
 			Description: s.Description,
 			Preview:     s.Command,
 			match:       JoinMatch(s.Alias, s.Command, s.Description),
+		})
+	}
+	return out
+}
+
+// gatherLedger indexes only entity heads (id/description/tags). Records stay out
+// of search: their bodies are read via `senv ledger log --grep`.
+func gatherLedger(m *ledger.Manager) []Item {
+	if m == nil {
+		return nil
+	}
+	heads, err := m.ListHeads("")
+	if err != nil {
+		return nil
+	}
+	var out []Item
+	for i := range heads {
+		h := &heads[i]
+		key, err := ledger.HeadKey(h.Type, h.ID)
+		if err != nil {
+			continue
+		}
+		out = append(out, Item{
+			Kind:        KindLedger,
+			Group:       h.Group,
+			Key:         key,
+			Description: h.Description,
+			Preview:     h.Description,
+			match:       JoinMatch(h.Type, h.ID, h.Description, strings.Join(h.Tags, " ")),
 		})
 	}
 	return out

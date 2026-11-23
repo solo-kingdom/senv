@@ -21,7 +21,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 26 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，以及元数据检索 `senv_search`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 30 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，元数据检索 `senv_search`，以及台账 `senv_ledger_list/get/append/update`（无删除）。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。查找条目优先 `senv search`（与 `senv_search` 同语义）。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi|omp|omo|dsh>`（`omp` 别名 `oh-my-pi`、`omo` 别名 `oh-my-openagent`，别名只在查找时接受）。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
@@ -84,7 +84,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **text import/export**：`senv text import <key|group:key> --file <path>` 把文件内容加密入库（upsert：已存在 key 直接覆盖并刷新 `updated_at`，无确认提示；源文件保持不动；`--file` 必填，缺失即报错，不回落 stdin/编辑器）。`senv text export <key|group:key> --path <path>` 把明文值原子落盘，固定 0600（覆盖既有宽松文件会收紧；目标或父目录为符号链接时拒绝；内容逐字节原样导出、**不经引用解析**——要解码导出用 `text get -d -o`）；成功只打印路径、不回显明文；导出是读取面，不新增审计事件。export 写出明文文件，执行前先向用户确认。
 - **backup**：独立 kind（`backups/{group}/{key}.enc`），不与 text 混用。上限 `MaxBackupSize`（512KB，只计 value 明文，超限拒绝不截断）。`senv backup set/get/list/delete/import/export` 与 `backup group list/add/delete`；`backup get` **无** `-d/--decode/--loose`；`backup list` 只显示 key、大小、时间与说明，不含正文。set 输入优先级与 text 相同（`--file` > stdin > 参数 > 编辑器）；import/export 语义与 text 对齐（`--file`/`--path` 必填、upsert 无确认、0600、拒符号链接、成功只打印路径）。backup 无 activate/deactivate，也不参与引用。
-- **元数据搜索（优先于全量 list）**：`senv search <query>` / MCP `senv_search` 跨 env/text/backup/config/ssh/llm/mcp 做模糊检索（大小写不敏感 substring，多 token AND）。只匹配标识与 description 等非秘密字段，**结果永不含 value**；空 query 拒绝；默认 `--limit 20`，可 `--kind env,text`、`--json`。命中后再按需 `get` 单条取值。TUI `S` 与此字段表对齐（空输入仍可浏览 inventory）。
+- **元数据搜索（优先于全量 list）**：`senv search <query>` / MCP `senv_search` 跨 env/text/backup/config/ssh/llm/mcp/ledger 做模糊检索（大小写不敏感 substring，多 token AND；ledger 只命中实体头，不含记录正文）。只匹配标识与 description 等非秘密字段，**结果永不含 value**；空 query 拒绝；默认 `--limit 20`，可 `--kind env,text`、`--json`。命中后再按需 `get` 单条取值。TUI `S` 与此字段表对齐（空输入仍可浏览 inventory）。
 - **输出默认含明文值（最小暴露的前提）**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`。定位条目优先用 `senv search` / `senv_search`，不要为找键去拉全量 `senv_env_list`。`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。取密钥三条硬规则：
   1. **只要键名/元数据时不碰值**：用 `senv search <query>`（或 MCP `senv_search`）；列组用 `senv env group list`。**永不把 `env list` / `senv_env_list` 的原始输出送进会话**；text/backup 的 `list` 本身不含值，可直接看。
   2. **取值留在变量内、同一命令消费完，不回显**：`TOKEN="$(senv env get g:KEY)" && curl -H "Authorization: Bearer $TOKEN" …`。需要判断格式时只打印派生信息（`${#TOKEN}` 长度、字段名、掩码后前缀），且掩码必须同时覆盖两种值块形态——URI 内嵌凭据（`scheme://user:pass@host`）与多行块「一行一个字段」（`password: xxx`），两种形态都要在掩码命令里，例如：
@@ -204,7 +204,9 @@ git provider 之外，vault 可托管在 senv-server 上：
 - **键**：实体键 `<type>.<id>`（type 为小写 kebab-case 的开放枚举：device / infra / service / agent / container…，id 用别名、禁 `@`）；记录键 `<实体键>@<UTC 时间戳>-<4hex>`，按前缀枚举实体记录、按字典序即时间序。
 - **命令**：`senv ledger create <type>.<id> --description …`、`list [--type] [--json]`、`get`、`log`、`timeline [--type]`、`append <组:实体键> --summary … [--body|--body-file] [--kind op|note|correction] [--agent] [--at YYYY-MM-DD]`、`edit --field 名称=值`（空值删字段）、`set-status --text … [--level]`、`delete-record`（确认后删，同步为 tombstone）。
 - **回滚语义**：记录没有更新命令——写错就追加 `--kind correction`；删除是显式动作，最后版本留在条目历史（`senv history ledger_log:…`）。实体头修改走既有冲突检测。
-- **限制**：台账内不放密钥值（只写指纹/引用）；MCP 工具面、TUI 台账 Tab、`import`/`export` 属后续变更，当前未提供。
+- **MCP 面**：`senv_ledger_list` / `senv_ledger_get` / `senv_ledger_append` / `senv_ledger_update`（只读 + 追加 + 单字段/状态更新；**刻意无删除**，失控 agent 的最大破坏半径只是多写几条可更正记录）。`senv_search --kind ledger` 只命中实体头（type/id/description/tags），不含记录正文。
+- **TUI Ledger Tab**：左栏分组侧栏（All + 各组），右栏实体列表；`enter` 详情（字段/状态/时间线），`a` 追加记录（summary + 可选 body 走 $EDITOR），`e` 改单字段（空值删字段），`s` 写最近状态，`/` 过滤。写入与 CLI 同语义并记 `op_ledger` 审计。
+- **限制**：台账内不放密钥值（只写指纹/引用）；`import`/`export` 属迁移变更（`senv ledger import/export`），当前未提供。
 
 ## 常用命令速查
 

@@ -9,6 +9,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/skill"
@@ -18,7 +19,7 @@ import (
 )
 
 // newFullManagers registers every optional tab (SSH / AI / Skill / MCP /
-// History / Audit) so number-key and overlay tests exercise the full layout.
+// Ledger / History / Audit) so number-key and overlay tests exercise the full layout.
 func newFullManagers(t *testing.T) Managers {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,6 +28,10 @@ func newFullManagers(t *testing.T) Managers {
 		t.Fatalf("initialize: %v", err)
 	}
 	home := t.TempDir()
+	ledgerKey, err := sm.DeriveKeyFromPassword("pw")
+	if err != nil {
+		t.Fatalf("derive ledger key: %v", err)
+	}
 	return Managers{
 		Env:       env.NewManager(sm, "pw"),
 		Text:      text.NewManager(sm, "pw"),
@@ -37,6 +42,7 @@ func newFullManagers(t *testing.T) Managers {
 		Skill:     skill.NewManager(sm, "pw"),
 		SkillHome: home,
 		MCP:       mcp.NewManager(sm, "pw"),
+		Ledger:    ledger.NewManager(sm, ledgerKey),
 		MCPHome:   home,
 		MCPLedger: filepath.Join(home, "mcp-exports.json"),
 		History:   &fakeHistorySource{},
@@ -46,8 +52,8 @@ func newFullManagers(t *testing.T) Managers {
 
 func TestNumberKeyReachesEveryRegisteredTab(t *testing.T) {
 	m := New(newFullManagers(t))
-	if len(m.tabs) != 12 {
-		t.Fatalf("tabs = %d, want 12", len(m.tabs))
+	if len(m.tabs) != 13 {
+		t.Fatalf("tabs = %d, want 13", len(m.tabs))
 	}
 	for i := 1; i <= 9; i++ {
 		key := string(rune('0' + i))
