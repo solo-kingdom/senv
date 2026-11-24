@@ -468,11 +468,11 @@ func runAdmin(args []string) {
 			for _, e := range events {
 				fmt.Printf("%-20s %-15s %-28s %-14s %-12s %-13s %s\n",
 					e.Time.Local().Format("2006-01-02 15:04:05"),
-					truncateCell(e.IP, 15),
-					truncateCell(e.Method+" "+e.Path, 28),
-					truncateCell(clientDisplay(e), 14),
-					truncateCell(userDisplay(e), 12),
-					e.Outcome, e.Reason)
+					truncateCell(sanitizeTerminalField(e.IP), 15),
+					truncateCell(sanitizeTerminalField(e.Method)+" "+sanitizeTerminalField(e.Path), 28),
+					truncateCell(sanitizeTerminalField(clientDisplay(e)), 14),
+					truncateCell(sanitizeTerminalField(userDisplay(e)), 12),
+					sanitizeTerminalField(e.Outcome), sanitizeTerminalField(e.Reason))
 			}
 			return nil
 		})
@@ -668,6 +668,18 @@ func parseAdminDate(value string, endOfDay bool) (time.Time, error) {
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("无法解析日期，支持 YYYY-MM-DD 或 RFC3339")
+}
+
+func sanitizeTerminalField(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == '\ufffd' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func truncateCell(s string, max int) string {

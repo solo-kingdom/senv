@@ -33,8 +33,8 @@ func NewAuditLogger(configPath string) (*AuditLogger, error) {
 
 	logPath := filepath.Join(logDir, "audit.log")
 
-	// Open log file in append mode
-	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	// Open log file in append mode without following symlinks
+	file, err := openAppendNoFollow(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audit log: %w", err)
 	}
@@ -212,8 +212,8 @@ func (al *AuditLogger) Rotate(maxSize int64, maxBackups int) error {
 	backupPath := fmt.Sprintf("%s.1", al.logPath)
 	os.Rename(al.logPath, backupPath)
 
-	// Open new log file
-	file, err := os.OpenFile(al.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	// Open new log file without following symlinks
+	file, err := openAppendNoFollow(al.logPath)
 	if err != nil {
 		return fmt.Errorf("failed to open new audit log: %w", err)
 	}

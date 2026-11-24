@@ -71,7 +71,7 @@ func codexDaemonRestartPrompt(hitCodex, nonInteractive bool, requiredEnvKey stri
 		fmt.Println("已跳过重启：可稍后手动执行 codex app-server daemon restart")
 		return
 	}
-	vars := codexDaemonExpVars()
+	vars := filterCodexDaemonVars(codexDaemonExpVars(), envKey)
 	if envKey != "" {
 		if vars == nil || vars[envKey] == "" {
 			fmt.Fprintf(os.Stderr,
@@ -102,6 +102,42 @@ func confirmPromptDefaultYes(prompt string) bool {
 	_, _ = fmt.Scanln(&answer)
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "" || answer == "y" || answer == "yes"
+}
+
+func isDangerousDaemonEnvKey(k string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(k))
+	if strings.HasPrefix(upper, "LD_") || strings.HasPrefix(upper, "DYLD_") {
+		return true
+	}
+	switch upper {
+	case "BASH_ENV", "ENV", "NODE_OPTIONS", "PYTHONSTARTUP", "PYTHONPATH", "RUBYOPT", "PERL5OPT":
+		return true
+	default:
+		return false
+	}
+}
+
+func filterCodexDaemonVars(vars map[string]string, requiredEnvKey string) map[string]string {
+	if len(vars) == 0 {
+		return nil
+	}
+	if requiredEnvKey != "" {
+		if isDangerousDaemonEnvKey(requiredEnvKey) {
+			return map[string]string{}
+		}
+		if v, ok := vars[requiredEnvKey]; ok {
+			return map[string]string{requiredEnvKey: v}
+		}
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if isDangerousDaemonEnvKey(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // codexDaemonExportVars 尽力解析 `senv env export` 的变量集合；拿不到就返回

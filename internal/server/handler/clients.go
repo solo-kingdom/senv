@@ -14,6 +14,9 @@ import (
 // MaxClientNameLen 是设备名长度上限（与条目 grp 同量级，防御性约束）
 const MaxClientNameLen = 128
 
+// MaxRegisterBodyBytes 限制未认证 /v1/register 请求体大小，防止 64 MiB 畸形 JSON 灌入。
+const MaxRegisterBodyBytes = 4096
+
 type registerRequest struct {
 	Code string `json:"code"`
 	Name string `json:"name"`
@@ -34,21 +37,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req registerRequest
-	if err := s.decodeBody(w, r, &req); err != nil {
+	if err := s.decodeBodyLimit(w, r, &req, MaxRegisterBodyBytes); err != nil {
+		s.limiter.countFailure(ip)
 		s.writeDecodeError(w, err)
 		return
 	}
 	req.Code = strings.TrimSpace(req.Code)
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Code == "" || req.Name == "" || len(req.Name) > MaxClientNameLen {
+		s.limiter.countFailure(ip)
 		writeError(w, http.StatusBadRequest, "code 与 name（1-128 字符）必填")
 		return
 	}
-	// 拒绝控制字符：设备名会回显在 admin list-clients/logs 输出里，
-	// 终端转义序列可污染管理员控制台
+	// 拒绝控制字符及 JSON 结构分隔符（" / \）：设备名会回显在日志与 webhook 模板中。
 	for _, r := range req.Name {
-		if unicode.IsControl(r) {
-			writeError(w, http.StatusBadRequest, "name 不能包含控制字符")
+		if unicode.IsControl(r) || r == '"' || r == '\\' {
+			s.limiter.countFailure(ip)
+			writeError(w, http.StatusBadRequest, "name 不能包含控制字符、引号或反斜杠")
 			return
 		}
 	}

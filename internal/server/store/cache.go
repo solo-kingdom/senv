@@ -50,9 +50,10 @@ type cachedStore struct {
 	authTTL  time.Duration
 	vaultTTL time.Duration
 
-	mu       sync.Mutex
-	auth     map[authKey]authEntry
-	vaultSeq map[vaultSeqKey]vaultSeqEntry
+	mu        sync.Mutex
+	auth      map[authKey]authEntry
+	authEpoch uint64
+	vaultSeq  map[vaultSeqKey]vaultSeqEntry
 
 	// last_seen 内存节流缓冲（touch 切片）：TouchClient 只记内存，由
 	// StartTouchFlusher 周期或停机前 FlushTouches 批量落库。纯展示字段，
@@ -83,6 +84,7 @@ func (c *cachedStore) ClearAuth() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.auth = map[authKey]authEntry{}
+	c.authEpoch++
 }
 
 // Close 透传 inner
@@ -119,6 +121,7 @@ func (c *cachedStore) AuthenticateWithClient(ctx context.Context, token string) 
 	now := c.now()
 	c.mu.Lock()
 	e, ok := c.auth[key]
+	epoch := c.authEpoch
 	c.mu.Unlock()
 	if ok && now.Before(e.expires) {
 		return e.result, nil
@@ -126,7 +129,9 @@ func (c *cachedStore) AuthenticateWithClient(ctx context.Context, token string) 
 	res, err := c.inner.AuthenticateWithClient(ctx, token)
 	if err == nil {
 		c.mu.Lock()
-		c.auth[key] = authEntry{result: res, expires: now.Add(c.authTTL)}
+		if c.authEpoch == epoch {
+			c.auth[key] = authEntry{result: res, expires: now.Add(c.authTTL)}
+		}
 		c.mu.Unlock()
 	}
 	return res, err

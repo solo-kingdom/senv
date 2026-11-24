@@ -35,12 +35,33 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || err "required command not found: $1"
 }
 
+TMPDIR_CLEANUP=""
+cleanup() {
+  if [ -n "${TMPDIR_CLEANUP:-}" ]; then
+    rm -rf "$TMPDIR_CLEANUP"
+  fi
+}
+
+validate_repo() {
+  local repo="$1"
+  if [[ "$repo" == *".."* ]] || ! [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    err "invalid repository: ${repo}"
+  fi
+}
+
+validate_version() {
+  local ver="$1"
+  if [[ "$ver" == *".."* ]] || ! [[ "$ver" =~ ^[tv]?[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$ ]]; then
+    err "invalid version tag: ${ver}"
+  fi
+}
+
 resolve_tag() {
   if [ "$VERSION" = "latest" ]; then
     need_cmd curl
     local api_url="https://api.github.com/repos/${REPO}/releases/latest"
     local tag
-    tag="$(curl -fsSL "$api_url" | grep '"tag_name"' | head -n1 | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/')"
+    tag="$(curl -fsSL --proto '=https' --tlsv1.2 "$api_url" | grep '"tag_name"' | head -n1 | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/')"
     [ -n "$tag" ] || err "failed to resolve latest release for ${REPO}"
     echo "$tag"
   else
@@ -51,14 +72,13 @@ resolve_tag() {
 download_file() {
   local url="$1"
   local dest="$2"
-  curl -fsSL "$url" -o "$dest"
+  curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$dest"
 }
 
 verify_checksum() {
   local archive="$1"
-  local checksums="$2"
-  local name
-  name="$(basename "$archive")"
+  local name="$2"
+  local checksums="$3"
   local expected
   expected="$(grep "  ${name}$" "$checksums" | awk '{print $1}')"
   [ -n "$expected" ] || err "checksum not found for ${name}"
@@ -86,22 +106,25 @@ main() {
   need_cmd tar
 
   local os arch tag asset archive_url checksums_url tmpdir archive checksums
+  validate_repo "$REPO"
   os="$(detect_os)"
   arch="$(detect_arch)"
   tag="$(resolve_tag)"
+  validate_version "$tag"
   asset="${BINARY}_${tag}_${os}_${arch}.tar.gz"
   archive_url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
   checksums_url="https://github.com/${REPO}/releases/download/${tag}/checksums.txt"
 
   tmpdir="$(mktemp -d)"
-  trap "rm -rf '$tmpdir'" EXIT
-  archive="${tmpdir}/${asset}"
+  TMPDIR_CLEANUP="$tmpdir"
+  trap 'cleanup' EXIT
+  archive="${tmpdir}/archive.tar.gz"
   checksums="${tmpdir}/checksums.txt"
 
   info "Downloading ${asset}..."
   download_file "$archive_url" "$archive"
   download_file "$checksums_url" "$checksums"
-  verify_checksum "$archive" "$checksums"
+  verify_checksum "$archive" "$asset" "$checksums"
 
   if [ ! -d "$INSTALL_DIR" ]; then
     if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then

@@ -10,7 +10,7 @@ import (
 
 func platformOpenRead(rootFD int, segments []string) (int, error) {
 	how := &unix.OpenHow{
-		Flags:   unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC,
+		Flags:   unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS,
 	}
 	fd, err := unix.Openat2(rootFD, displayPath(segments), how)

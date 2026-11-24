@@ -101,8 +101,7 @@ func initFromEnv() {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "perf.log"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := openAppendNoFollow(filepath.Join(dir, "perf.log"))
 	if err != nil {
 		return
 	}

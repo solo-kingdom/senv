@@ -81,6 +81,9 @@ func (is *interactiveSession) clearSession() {
 		fmt.Printf("❌ 清除失败: %v\n", err)
 		return
 	}
+	is.password = ""
+	is.envManager = nil
+	is.configManager = nil
 
 	fmt.Println("✓ 会话已清除")
 }

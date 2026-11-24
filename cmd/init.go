@@ -74,6 +74,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read password: %w", err)
 	}
+	if password == "" {
+		return fmt.Errorf("password cannot be empty")
+	}
 
 	// Confirm password
 	confirmPassword, err := promptPassword("Senv - Confirm password: ")

@@ -646,6 +646,7 @@ func (t *envTab) handleModalKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.filterBox.Clear() // esc 清词并退出，恢复完整列表
 		}
 		t.mode = envModeNormal
+		t.input.SetValue("")
 		t.input.Blur()
 		return t, nil
 	case "enter":
@@ -687,12 +688,14 @@ func (t *envTab) submitModal() (Tab, tea.Cmd) {
 		group := t.focusGroup(it)
 		key := it.key
 		t.mode = envModeNormal
+		t.input.SetValue("")
 		t.input.Blur()
 		return t, t.doSet(group, key, value, nil)
 
 	case envModeAddGroup:
 		name := t.input.Value()
 		t.mode = envModeNormal
+		t.input.SetValue("")
 		t.input.Blur()
 		if name == "" {
 			return t, warnToast("group name cannot be empty")

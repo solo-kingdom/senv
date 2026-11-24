@@ -11,16 +11,54 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
 
 const (
-	DefaultRepo   = "solo-kingdom/senv"
-	binaryName    = "senv"
-	writeTestFile = ".senv-write-test"
+	DefaultRepo         = "solo-kingdom/senv"
+	binaryName          = "senv"
+	maxReleaseMetaBytes = 1 << 20
+	maxChecksumsBytes   = 1 << 20
+	maxArchiveBytes     = 128 << 20
+	maxBinaryBytes      = 256 << 20
 )
+
+var (
+	repoPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	versionPattern = regexp.MustCompile(`^[tv]?[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$`)
+)
+
+func validateRepo(repo string) error {
+	if !repoPattern.MatchString(repo) || strings.Contains(repo, "..") {
+		return fmt.Errorf("invalid repository %q", repo)
+	}
+	return nil
+}
+
+func validateVersion(v string) error {
+	if !versionPattern.MatchString(v) || strings.Contains(v, "..") {
+		return fmt.Errorf("invalid version tag %q", v)
+	}
+	return nil
+}
+
+func defaultHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-HTTPS URL %s", req.URL.Scheme)
+			}
+			if len(via) >= 5 {
+				return fmt.Errorf("stopped after 5 redirects")
+			}
+			return nil
+		},
+	}
+}
 
 type Options struct {
 	Repo       string
@@ -47,7 +85,7 @@ func client(opts Options) *http.Client {
 	if opts.HTTPClient != nil {
 		return opts.HTTPClient
 	}
-	return &http.Client{Timeout: 2 * time.Minute}
+	return defaultHTTPClient(2 * time.Minute)
 }
 
 func logf(opts Options, format string, args ...any) {
@@ -78,8 +116,11 @@ func DetectPlatform() (osName, arch string, err error) {
 }
 
 func FetchLatestRelease(repo string, httpClient *http.Client) (string, error) {
+	if err := validateRepo(repo); err != nil {
+		return "", err
+	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = defaultHTTPClient(30 * time.Second)
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -100,11 +141,14 @@ func FetchLatestRelease(repo string, httpClient *http.Client) (string, error) {
 	}
 
 	var info releaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReleaseMetaBytes)).Decode(&info); err != nil {
 		return "", fmt.Errorf("decode latest release: %w", err)
 	}
 	if info.TagName == "" {
 		return "", fmt.Errorf("latest release has no tag_name")
+	}
+	if err := validateVersion(info.TagName); err != nil {
+		return "", fmt.Errorf("latest release %w", err)
 	}
 	return info.TagName, nil
 }
@@ -134,6 +178,10 @@ func resolveInstallDir(installDir string) (string, error) {
 }
 
 func downloadFile(client *http.Client, url, dest string) error {
+	return downloadFileWithLimit(client, url, dest, maxArchiveBytes)
+}
+
+func downloadFileWithLimit(client *http.Client, url, dest string, maxBytes int64) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -154,14 +202,21 @@ func downloadFile(client *http.Client, url, dest string) error {
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
 		return err
+	}
+	if n > maxBytes {
+		return fmt.Errorf("download exceeds maximum allowed size (%d bytes)", maxBytes)
 	}
 	return f.Close()
 }
 
 func verifyChecksum(archivePath, checksumsPath string) error {
-	name := filepath.Base(archivePath)
+	return verifyChecksumForAsset(archivePath, filepath.Base(archivePath), checksumsPath)
+}
+
+func verifyChecksumForAsset(archivePath, assetName, checksumsPath string) error {
 	data, err := os.ReadFile(checksumsPath)
 	if err != nil {
 		return err
@@ -176,13 +231,13 @@ func verifyChecksum(archivePath, checksumsPath string) error {
 		if len(parts) != 2 {
 			continue
 		}
-		if parts[1] == name {
+		if parts[1] == assetName {
 			expected = parts[0]
 			break
 		}
 	}
 	if expected == "" {
-		return fmt.Errorf("checksum not found for %s", name)
+		return fmt.Errorf("checksum not found for %s", assetName)
 	}
 
 	f, err := os.Open(archivePath)
@@ -197,7 +252,7 @@ func verifyChecksum(archivePath, checksumsPath string) error {
 	}
 	actual := hex.EncodeToString(h.Sum(nil))
 	if actual != expected {
-		return fmt.Errorf("checksum mismatch for %s", name)
+		return fmt.Errorf("checksum mismatch for %s", assetName)
 	}
 	return nil
 }
@@ -231,9 +286,14 @@ func extractBinary(archivePath, dest string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(out, tr); err != nil {
+		n, err := io.Copy(out, io.LimitReader(tr, maxBinaryBytes+1))
+		if err != nil {
 			out.Close()
 			return err
+		}
+		if n > maxBinaryBytes {
+			out.Close()
+			return fmt.Errorf("%s binary exceeds maximum allowed size (%d bytes)", binaryName, maxBinaryBytes)
 		}
 		return out.Close()
 	}
@@ -252,14 +312,28 @@ func installBinary(src, installDir string) (string, error) {
 		return "", fmt.Errorf("%s is not a directory", installDir)
 	}
 
-	testFile := filepath.Join(installDir, writeTestFile)
-	if err := os.WriteFile(testFile, []byte("ok"), 0o644); err != nil {
+	probe, err := os.CreateTemp(installDir, ".senv-write-test-*")
+	if err != nil {
 		return "", fmt.Errorf("no write permission for %s; try sudo or --install-dir", installDir)
 	}
-	_ = os.Remove(testFile)
+	probePath := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
 
 	dest := filepath.Join(installDir, binaryName)
-	tmp := dest + ".new"
+	tmpFile, err := os.CreateTemp(installDir, ".senv-install-*")
+	if err != nil {
+		return "", fmt.Errorf("create staging binary: %w", err)
+	}
+	tmp := tmpFile.Name()
+	_ = tmpFile.Close()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmp)
+		}
+	}()
+
 	if err := os.Rename(src, tmp); err != nil {
 		if err := copyFile(src, tmp); err != nil {
 			return "", err
@@ -272,6 +346,7 @@ func installBinary(src, installDir string) (string, error) {
 	if err := os.Rename(tmp, dest); err != nil {
 		return "", fmt.Errorf("install binary: %w", err)
 	}
+	cleanupTmp = false
 	return dest, nil
 }
 
@@ -299,6 +374,9 @@ func Update(opts Options) (*Result, error) {
 	if repo == "" {
 		repo = DefaultRepo
 	}
+	if err := validateRepo(repo); err != nil {
+		return nil, err
+	}
 
 	osName, arch, err := DetectPlatform()
 	if err != nil {
@@ -313,6 +391,9 @@ func Update(opts Options) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := validateVersion(targetVersion); err != nil {
+		return nil, err
 	}
 
 	result := &Result{
@@ -341,18 +422,18 @@ func Update(opts Options) (*Result, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	archivePath := filepath.Join(tmpDir, asset)
+	archivePath := filepath.Join(tmpDir, "archive.tar.gz")
 	checksumsPath := filepath.Join(tmpDir, "checksums.txt")
 	binaryPath := filepath.Join(tmpDir, binaryName)
 
 	logf(opts, "Downloading %s...\n", asset)
-	if err := downloadFile(httpClient, archiveURL, archivePath); err != nil {
+	if err := downloadFileWithLimit(httpClient, archiveURL, archivePath, maxArchiveBytes); err != nil {
 		return nil, fmt.Errorf("download %s: %w", asset, err)
 	}
-	if err := downloadFile(httpClient, checksumsURL, checksumsPath); err != nil {
+	if err := downloadFileWithLimit(httpClient, checksumsURL, checksumsPath, maxChecksumsBytes); err != nil {
 		return nil, fmt.Errorf("download checksums.txt: %w", err)
 	}
-	if err := verifyChecksum(archivePath, checksumsPath); err != nil {
+	if err := verifyChecksumForAsset(archivePath, asset, checksumsPath); err != nil {
 		return nil, err
 	}
 	if err := extractBinary(archivePath, binaryPath); err != nil {

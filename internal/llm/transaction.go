@@ -104,7 +104,10 @@ func newConfigTransaction(paths ...string) (*configTransaction, error) {
 	}
 	unlock := lockPaths(unique...)
 	tx := &configTransaction{unlock: unlock}
-	rollback := func() { _ = tx.rollback() }
+	rollback := func() {
+		_ = tx.rollback()
+		tx.unlock()
+	}
 	for _, path := range unique {
 		if err := storageEnsurePrivateDir(filepath.Dir(path)); err != nil {
 			rollback()
@@ -287,6 +290,13 @@ func (tx *configTransaction) rollback() error {
 	for i := len(tx.snapshots) - 1; i >= 0; i-- {
 		snapshot := tx.snapshots[i]
 		if !snapshot.touched {
+			if snapshot.backup != "" {
+				if err := os.Remove(snapshot.backup); err != nil && !os.IsNotExist(err) && firstErr == nil {
+					firstErr = fmt.Errorf("remove untouched config backup: %w", err)
+				} else if err == nil || os.IsNotExist(err) {
+					snapshot.backup = ""
+				}
+			}
 			continue
 		}
 		var err error
