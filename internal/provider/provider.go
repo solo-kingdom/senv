@@ -61,10 +61,10 @@ func isInternalHost(host string) bool {
 }
 
 // ValidateServerAddress 强制 server 地址使用 https：明文 http 会把 Bearer
-// token 与全部密文未加密地送上链路。可信内网可通过
-// SENV_ALLOW_INSECURE_HTTP=1 显式豁免；豁免生效时向 stderr 输出警告以保持
-// 可审计，但目标是内网/本机地址（见 isInternalHost）时链路本身不出内网，
-// 不再重复告警。
+// token 与全部密文未加密地送上链路。目标是内网/本机地址（见 isInternalHost）
+// 时链路本身不出内网，http 直接放行、不需要任何豁免；公网地址仍须通过
+// SENV_ALLOW_INSECURE_HTTP=1 显式豁免，且豁免生效时向 stderr 输出警告以保持
+// 可审计。
 func ValidateServerAddress(address string) error {
 	u, err := url.Parse(strings.TrimSpace(address))
 	if err != nil || u.Scheme == "" || u.Host == "" {
@@ -74,15 +74,16 @@ func ValidateServerAddress(address string) error {
 	case "https":
 		return nil
 	case "http":
-		if os.Getenv(allowInsecureHTTPEnv) == "1" {
-			if !isInternalHost(u.Hostname()) {
-				fmt.Fprintf(os.Stderr, "⚠ provider server: %s 使用明文 http(%s=1 豁免),token 与密文未加密传输\n", address, allowInsecureHTTPEnv)
-			}
+		if isInternalHost(u.Hostname()) {
 			return nil
 		}
-		return fmt.Errorf("provider server: 地址 %q 为明文 http,token 与密文将未加密传输;仅接受 https。确认内网可信后可设 %s=1 豁免", address, allowInsecureHTTPEnv)
+		if os.Getenv(allowInsecureHTTPEnv) == "1" {
+			fmt.Fprintf(os.Stderr, "⚠ provider server: %s 使用明文 http(%s=1 豁免),token 与密文未加密传输\n", address, allowInsecureHTTPEnv)
+			return nil
+		}
+		return fmt.Errorf("provider server: 地址 %q 为明文 http,token 与密文将未加密传输;公网地址仅接受 https,内网 http 需指向内网/本机地址或设 %s=1 豁免", address, allowInsecureHTTPEnv)
 	default:
-		return fmt.Errorf("provider server: 地址 %q 的 scheme %q 不受支持,仅接受 https(内网 http 需 %s=1)", address, u.Scheme, allowInsecureHTTPEnv)
+		return fmt.Errorf("provider server: 地址 %q 的 scheme %q 不受支持,仅接受 https(http 仅限内网/本机地址)", address, u.Scheme)
 	}
 }
 

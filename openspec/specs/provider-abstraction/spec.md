@@ -41,17 +41,22 @@ git provider 经抽象层暴露的同步行为 SHALL 与现有 `git-sync` capabi
 
 ### Requirement: server provider 地址 scheme 校验
 
-构造 server provider 时，系统 SHALL 默认仅接受 https 地址；非 https 地址 MUST 拒绝构造，错误信息 MUST 包含地址、拒绝原因与显式豁免方法。豁免（如内网 http）SHALL 通过显式环境变量开启，且开启时 MUST 在错误/日志路径保持可审计。git provider 不受此约束。
+构造 server provider 时，系统 SHALL 默认仅接受 https 地址。明文 http 地址 MUST 按主机是否内网分流：目标是内网/本机地址时直接放行、无需豁免；目标不是内网地址时 MUST 拒绝构造，错误信息 MUST 包含地址、拒绝原因与显式豁免方法。公网 http 的豁免 SHALL 通过显式环境变量开启，且生效时 MUST 向 stderr 输出告警以保持可审计。内网判定 SHALL 只做字面量（私网网段、回环、链路本地、IPv6 ULA、CGNAT、未指定地址的 IP 字面量，以及 `localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名），不发起 DNS 解析。git provider 不受此约束。
 
-#### Scenario: http 地址默认被拒
+#### Scenario: 公网 http 地址默认被拒
 
 - **WHEN** 用户将 provider 配置为 `http://example.com` 并执行任意需同步的命令
 - **THEN** 构造失败，错误信息说明仅接受 https 及豁免方法，不发起任何请求
 
-#### Scenario: 显式豁免后内网 http 可用
+#### Scenario: 内网 http 地址无需豁免
 
-- **WHEN** 用户设置豁免环境变量后使用 `http://内网地址`
-- **THEN** 构造成功，同步行为与 https 一致
+- **WHEN** 用户将 provider 配置为 `http://10.0.0.5:8080`、`http://senv.lan` 或 `http://localhost:8080`，且未设置任何豁免环境变量
+- **THEN** 构造成功，同步行为与 https 一致，且不输出告警
+
+#### Scenario: 显式豁免后公网 http 可用
+
+- **WHEN** 用户设置豁免环境变量后使用 `http://公网地址`
+- **THEN** 构造成功，同步行为与 https 一致，并向 stderr 输出明文传输告警
 
 #### Scenario: https 地址不受影响
 
