@@ -112,6 +112,7 @@ func printDoctorReport(out io.Writer, r *storage.ConsistencyReport) {
 	printFileProbes(out, "env files", r.EnvFiles)
 	printFileProbes(out, "text files", r.TextFiles)
 	printFileProbes(out, "ledgers", r.LedgerFiles)
+	printFileProbes(out, "trees", r.TreeFiles)
 	printFileProbes(out, "skills", r.SkillFiles)
 	printFileProbes(out, "config files", r.ConfigFiles)
 	printFileProbes(out, "hosts", r.HostFiles)

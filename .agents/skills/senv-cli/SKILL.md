@@ -21,7 +21,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 30 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，元数据检索 `senv_search`，以及台账 `senv_ledger_list/get/append/update`（无删除）。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 33 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，元数据检索 `senv_search`，台账 `senv_ledger_list/get/append/update`（无删除），以及路径树 `senv_tree_ls/get/set`（无删除）。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。查找条目优先 `senv search`（与 `senv_search` 同语义）。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi|omp|omo|dsh>`（`omp` 别名 `oh-my-pi`、`omo` 别名 `oh-my-openagent`，别名只在查找时接受）。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
@@ -207,6 +207,16 @@ git provider 之外，vault 可托管在 senv-server 上：
 - **MCP 面**：`senv_ledger_list` / `senv_ledger_get` / `senv_ledger_append` / `senv_ledger_update`（只读 + 追加 + 单字段/状态更新；**刻意无删除**，失控 agent 的最大破坏半径只是多写几条可更正记录）。`senv_search --kind ledger` 只命中实体头（type/id/description/tags），不含记录正文。
 - **TUI Ledger Tab**：左栏分组侧栏（All + 各组），右栏实体列表；`enter` 详情（字段/状态/时间线），`a` 追加记录（summary + 可选 body 走 $EDITOR），`e` 改单字段（空值删字段），`s` 写最近状态，`/` 过滤。写入与 CLI 同语义并记 `op_ledger` 审计。
 - **限制**：台账内不放密钥值（只写指纹/引用）；`import`/`export` 属迁移变更（`senv ledger import/export`），当前未提供。
+
+## 路径树（`senv tree`）
+
+加密多级文件树，承接 `deploy/`、`wireguard/` 这类带目录层级的编排与模板（ADR-0036）。**一文件一条加密记录**，不建共享索引，多机并发改不同文件互不冲突；单文件历史走 `senv history tree:<组>:<相对路径>`。
+
+- **寻址**：`<group>:<相对路径>`（如 `deploy:tcbj/caddy/Caddyfile`）。组必须先 `senv tree group add <name> --description …`；路径为 POSIX 相对路径，禁 `.`/`..`/空段/`\`/`:`，深度 ≤ 16、长度 ≤ 512；同组内文件与目录前缀不能同名冲突。
+- **命令**：`ls <组[:前缀]> [--json]`、`get <组:路径> [-o 文件]`、`set <组:路径> --file f|stdin [--exec] [--description]`、`edit <组:路径>`（仅 TTY，$EDITOR）、`rm --yes`、`diff <组[:前缀]> <本地目录>`、`pull <组[:前缀]> <目录> [--dry-run] [--yes] [--delete]`、`push <本地目录> <组[:前缀]> [--dry-run] [--yes] [--delete] [--include-ignored]`、`group list|add|delete`。
+- **安全默认**：`push` 默认忽略 `.git/`、`.env`/`.env.*`（`.env.example` 除外）、`*.dump`、`*.sql.gz`、`*.key`、`*.pem`、`*.p12`、`*.bak*`；单文件明文 ≤ 384 KiB；保留 0600/0644/0755（只关心可执行位）；pull 拒绝覆盖符号链接。不做 `{{env:…}}` 解引用，模板原文入库。
+- **MCP 面**：`senv_tree_ls`、`senv_tree_get`（仅文本）、`senv_tree_set`（单文件写，拒绝 `.env`/`*.key`/`*.pem` 路径）。**刻意不提供 rm / pull / push**，目录级落盘与批量删除走 CLI。
+- **发布顺序**：新 kind `tree`/`tree_meta`，**先升级 senv-server，再升级全部客户端，最后才能 push**（旧客户端拉到未知 kind 整批拒绝同步）。
 
 ## 常用命令速查
 

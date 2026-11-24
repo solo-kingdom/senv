@@ -12,6 +12,7 @@ import (
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
+	"github.com/wii/senv/internal/tree"
 )
 
 // Sources holds optional domain managers. Nil managers are skipped.
@@ -24,6 +25,7 @@ type Sources struct {
 	LLM    *llm.ProviderManager
 	MCP    *mcp.Manager
 	Ledger *ledger.Manager
+	Tree   *tree.Manager
 }
 
 // Gather builds a metadata-only inventory across all present sources.
@@ -38,6 +40,7 @@ func Gather(src Sources) []Item {
 	out = append(out, gatherLLM(src.LLM)...)
 	out = append(out, gatherMCP(src.MCP)...)
 	out = append(out, gatherLedger(src.Ledger)...)
+	out = append(out, gatherTree(src.Tree)...)
 	return out
 }
 
@@ -245,6 +248,34 @@ func gatherLedger(m *ledger.Manager) []Item {
 			Preview:     h.Description,
 			match:       JoinMatch(h.Type, h.ID, h.Description, strings.Join(h.Tags, " ")),
 		})
+	}
+	return out
+}
+
+func gatherTree(m *tree.Manager) []Item {
+	if m == nil {
+		return nil
+	}
+	groups, _, err := m.ListGroups()
+	if err != nil {
+		return nil
+	}
+	var out []Item
+	for _, g := range groups {
+		metas, err := m.List(g, "")
+		if err != nil {
+			continue
+		}
+		for _, mt := range metas {
+			out = append(out, Item{
+				Kind:        KindTree,
+				Group:       g,
+				Key:         mt.Path,
+				Description: mt.Description,
+				Preview:     mt.Description,
+				match:       JoinMatch(g, mt.Path, mt.Description),
+			})
+		}
 	}
 	return out
 }

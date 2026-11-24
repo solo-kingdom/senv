@@ -14,6 +14,7 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // RekeyResult reports how many files were re-encrypted.
@@ -28,10 +29,11 @@ type RekeyResult struct {
 	ProviderFiles  int
 	MCPServerFiles int
 	LedgerFiles    int
+	TreeFiles      int
 }
 
 func (r *RekeyResult) Total() int {
-	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles + r.LedgerFiles
+	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles + r.LedgerFiles + r.TreeFiles
 }
 
 type rekeyEntryKind uint8
@@ -47,6 +49,7 @@ const (
 	rekeyEntryMCPServer
 	rekeyEntrySkill
 	rekeyEntryLedger
+	rekeyEntryTree
 )
 
 type rekeyEntry struct {
@@ -404,6 +407,8 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 			result.MCPServerFiles++
 		case rekeyEntryLedger:
 			result.LedgerFiles++
+		case rekeyEntryTree:
+			result.TreeFiles++
 		}
 		return nil
 	})
@@ -490,6 +495,23 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 			return 0, fmt.Errorf("invalid ledger log key: %w", err)
 		}
 		return rekeyEntryLedger, nil
+	case len(segments) >= 3 && segments[0] == TreeDirName:
+		if err := securefs.ValidateSegment(segments[1]); err != nil {
+			return 0, fmt.Errorf("invalid tree group: %w", err)
+		}
+		if len(segments) == 3 && segments[2] == EnvMetaFileName {
+			return rekeyEntryTree, nil
+		}
+		last := segments[len(segments)-1]
+		if !strings.HasSuffix(last, TreeFileSuffix) || last == TreeFileSuffix {
+			return 0, fmt.Errorf("invalid tree entry identity %q", strings.Join(segments, "/"))
+		}
+		relParts := append([]string(nil), segments[2:len(segments)-1]...)
+		relParts = append(relParts, strings.TrimSuffix(last, TreeFileSuffix))
+		if err := syncschema.ValidateRelativePath(strings.Join(relParts, "/")); err != nil {
+			return 0, fmt.Errorf("invalid tree path: %w", err)
+		}
+		return rekeyEntryTree, nil
 	case len(segments) == 3 && segments[0] == BackupDirName:
 		if err := securefs.ValidateSegment(segments[1]); err != nil {
 			return 0, fmt.Errorf("invalid backup group: %w", err)

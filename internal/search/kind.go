@@ -17,16 +17,17 @@ const (
 	KindLLM    Kind = "llm"
 	KindMCP    Kind = "mcp"
 	KindLedger Kind = "ledger"
+	KindTree   Kind = "tree"
 )
 
 // AllKinds is the stable default search scope (aligned with TUI global search).
 var AllKinds = []Kind{
-	KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger,
+	KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger, KindTree,
 }
 
 func (k Kind) valid() bool {
 	switch k {
-	case KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger:
+	case KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger, KindTree:
 		return true
 	default:
 		return false

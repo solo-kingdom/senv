@@ -17,6 +17,7 @@ import (
 	"github.com/wii/senv/internal/search"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
+	"github.com/wii/senv/internal/tree"
 )
 
 var (
@@ -81,6 +82,7 @@ func searchSources() (search.Sources, error) {
 			LLM:    llm.NewProviderManagerWithKey(store, auth.key),
 			MCP:    mcp.NewManagerWithKey(store, auth.key),
 			Ledger: ledger.NewManager(store, key),
+			Tree:   tree.NewManager(store, key),
 		}, nil
 	}
 	return search.Sources{
@@ -92,6 +94,7 @@ func searchSources() (search.Sources, error) {
 		LLM:    llm.NewProviderManager(store, auth.password),
 		MCP:    mcp.NewManager(store, auth.password),
 		Ledger: ledger.NewManager(store, key),
+		Tree:   tree.NewManager(store, key),
 	}, nil
 }
 
