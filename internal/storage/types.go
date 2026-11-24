@@ -27,7 +27,13 @@ type Settings struct {
 	Session      SessionConfig  `json:"session"`            // Session cache configuration
 	Provider     ProviderConfig `json:"provider,omitempty"` // Remote sync provider configuration (empty = git)
 	TUI          TUISettings    `json:"tui,omitempty"`      // TUI chrome preferences (theme, …)
+	Vault        VaultSettings  `json:"vault,omitempty"`    // Vault cryptographic policy (require_v2, …)
 	UpdatedAt    string         `json:"updated_at"`
+}
+
+// VaultSettings holds vault-wide security/envelope policies in settings.json.
+type VaultSettings struct {
+	RequireV2 bool `json:"require_v2,omitempty"`
 }
 
 // TUISettings holds TUI-only preferences persisted in settings.json.
@@ -308,6 +314,7 @@ func NewMetadata(salt, passwordKey string) *Metadata {
 		Salt:          salt,
 		PasswordKey:   passwordKey,
 		KDFIterations: crypto.IterationsForNewVault(),
+		KeyEpoch:      1,
 	}
 }
 

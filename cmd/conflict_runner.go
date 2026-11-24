@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	renderconflict "github.com/wii/senv/internal/conflict"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/storage"
 	syncconflict "github.com/wii/senv/internal/tui/conflict"
 )
 
@@ -16,16 +19,17 @@ import (
 // for plaintext; `senv sync` itself remains token-only.
 func cachedConflictAuth(remoteMetadata []byte) renderconflict.Auth {
 	configPath, dataPath := getConfigPath(), getDataPath()
+	localMetadata, _ := os.ReadFile(filepath.Join(configPath, storage.MetadataFile))
 	if auth := lookupAuthMemo(configPath, dataPath); auth != nil {
 		if key, err := resolveKeyForAuth(auth); err == nil {
-			return renderconflict.NewAuth(key, remoteMetadata)
+			return renderconflict.NewAuthWithLocalMetadata(key, localMetadata, remoteMetadata)
 		}
 	}
 	key, err := session.NewManager(configPath, dataPath).GetCachedKey()
 	if err != nil || len(key) == 0 {
 		return renderconflict.Auth{}
 	}
-	return renderconflict.NewAuth(key, remoteMetadata)
+	return renderconflict.NewAuthWithLocalMetadata(key, localMetadata, remoteMetadata)
 }
 
 func providerResolutionPlan(

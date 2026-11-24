@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/syncschema"
 )
@@ -91,7 +90,7 @@ func (m *Manager) SaveTreeJSON(group, relPath string, payload any, cryptoKey []b
 	if err != nil {
 		return fmt.Errorf("failed to serialize tree payload: %w", err)
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindTree, group, relPath, data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt tree payload: %w", err)
 	}
@@ -120,7 +119,7 @@ func (m *Manager) LoadTreeJSON(group, relPath string, out any, cryptoKey []byte)
 		if err != nil {
 			return struct{}{}, fmt.Errorf("tree entry %q not found in group %q: %w", relPath, group, err)
 		}
-		decrypted, err := crypto.Decrypt(cryptoKey, string(encrypted))
+		decrypted, err := locked.decryptEntryLocked(cryptoKey, syncschema.KindTree, group, relPath, string(encrypted))
 		if err != nil {
 			return struct{}{}, fmt.Errorf("failed to decrypt tree payload: %w", err)
 		}
@@ -246,7 +245,7 @@ func (m *Manager) SaveTreeGroupMeta(group, description string, cryptoKey []byte)
 	if err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindTreeMeta, group, "", data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt tree group meta: %w", err)
 	}
@@ -282,7 +281,7 @@ func (m *Manager) LoadTreeGroupMeta(group string, cryptoKey []byte) (*EnvGroupMe
 			}
 			return nil, err
 		}
-		decrypted, err := crypto.Decrypt(cryptoKey, string(encrypted))
+		decrypted, err := locked.decryptEntryLocked(cryptoKey, syncschema.KindTreeMeta, group, "", string(encrypted))
 		if err != nil {
 			return nil, fmt.Errorf("failed to decrypt tree group meta: %w", err)
 		}

@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // ConfigRepairItem describes one planned fix for a quarantined legacy config
@@ -32,12 +35,14 @@ func SuggestPortableConfigName(name string) string {
 }
 
 // PlanConfigRepair builds the full repair plan for quarantined index entries.
-// It fails before any filesystem change when a suggested name is invalid or
-// collides with an existing entry (or another suggestion). Entries whose
-// ciphertext is missing are marked MissingFile; the caller decides whether to
-// allow dropping them.
 func (m *Manager) PlanConfigRepair() ([]ConfigRepairItem, error) {
-	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
+	return m.PlanConfigRepairWithKey(nil)
+}
+
+// PlanConfigRepairWithKey builds the full repair plan for quarantined index entries,
+// decrypting encrypted v2 config indexes using key when present.
+func (m *Manager) PlanConfigRepairWithKey(key []byte) ([]ConfigRepairItem, error) {
+	index, quarantined, err := m.LoadConfigIndexWithQuarantineAndKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -74,18 +79,25 @@ func (m *Manager) PlanConfigRepair() ([]ConfigRepairItem, error) {
 }
 
 // ExecuteConfigRepair applies an explicit repair decision set under the vault
-// mutation lock: every quarantined entry must be either renamed or (when
-// missing and dropMissing is set) dropped. File renames happen before the
-// index rewrite; a mid-flight failure attempts to roll back already-renamed
-// files so the on-disk index stays authoritative.
+// mutation lock (unkeyed legacy entry point).
 func (m *Manager) ExecuteConfigRepair(renames map[string]string, dropMissing bool) error {
+	return m.ExecuteConfigRepairWithKey(renames, dropMissing, nil)
+}
+
+// ExecuteConfigRepairWithKey applies an explicit repair decision set under the
+// vault mutation lock, re-encrypting v2 entries under their new AAD when key is provided.
+func (m *Manager) ExecuteConfigRepairWithKey(renames map[string]string, dropMissing bool, key []byte) error {
 	return m.mutate(func(locked *Manager) error {
-		return locked.executeConfigRepairLocked(renames, dropMissing)
+		return locked.executeConfigRepairLocked(renames, dropMissing, key)
 	})
 }
 
-func (m *Manager) executeConfigRepairLocked(renames map[string]string, dropMissing bool) error {
-	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
+func (m *Manager) executeConfigRepairLocked(renames map[string]string, dropMissing bool, key []byte) error {
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return err
+	}
+	index, quarantined, err := m.LoadConfigIndexWithQuarantineAndKey(key)
 	if err != nil {
 		return err
 	}
@@ -102,7 +114,12 @@ func (m *Manager) executeConfigRepairLocked(renames map[string]string, dropMissi
 		repaired.Configs[name] = config
 	}
 
-	type fileRename struct{ from, to string }
+	type fileRename struct {
+		oldName, newName string
+		from, to         string
+		reencrypt        bool
+		newCiphertext    []byte
+	}
 	var renamesToDo []fileRename
 	seenNew := make(map[string]bool, len(renames))
 	for _, q := range quarantined {
@@ -160,28 +177,67 @@ func (m *Manager) executeConfigRepairLocked(renames map[string]string, dropMissi
 		if err := checkRepairRenameTarget(oldPath, newPath); err != nil {
 			return err
 		}
-		renamesToDo = append(renamesToDo, fileRename{from: oldPath, to: newPath})
+		raw, err := os.ReadFile(oldPath)
+		if err != nil {
+			return fmt.Errorf("read legacy ciphertext %q: %w", q.Record.EncryptedFile, err)
+		}
+		rn := fileRename{oldName: q.Name, newName: newName, from: oldPath, to: newPath}
+		if crypto.IsV2Ciphertext(string(raw)) {
+			if len(key) == 0 {
+				return ErrEncryptedRenameRequiresKey
+			}
+			plain, err := decryptWithPolicy(key, syncschema.KindConfig, "", q.Name, string(raw), policy)
+			if err != nil {
+				return fmt.Errorf("decrypt config %q for repair: %w", q.Name, err)
+			}
+			newCT, err := encryptWithPolicy(key, syncschema.KindConfig, "", newName, plain, policy)
+			if err != nil {
+				return fmt.Errorf("encrypt config %q for repair: %w", newName, err)
+			}
+			rn.reencrypt = true
+			rn.newCiphertext = []byte(newCT)
+		}
+		renamesToDo = append(renamesToDo, rn)
 		repaired.Configs[newName] = record
 		delete(repaired.Configs, q.Name)
 	}
 
-	// All decisions validated: rename files first, then rewrite the index. On
-	// failure, roll back completed renames so the old index stays truthful.
+	// All decisions validated: write/rename targets first, then rewrite the index. On
+	// failure, roll back completed targets so the old index stays truthful.
 	completed := make([]fileRename, 0, len(renamesToDo))
 	rollback := func(cause error) error {
 		for i := len(completed) - 1; i >= 0; i-- {
-			_ = os.Rename(completed[i].to, completed[i].from)
+			if completed[i].reencrypt {
+				_ = os.Remove(completed[i].to)
+			} else {
+				_ = os.Rename(completed[i].to, completed[i].from)
+			}
 		}
 		return cause
 	}
 	for _, rn := range renamesToDo {
-		if err := os.Rename(rn.from, rn.to); err != nil {
+		if rn.reencrypt {
+			if err := os.WriteFile(rn.to, rn.newCiphertext, 0o600); err != nil {
+				return rollback(fmt.Errorf("write repaired config ciphertext %q: %w", filepath.Base(rn.to), err))
+			}
+		} else if err := os.Rename(rn.from, rn.to); err != nil {
 			return rollback(fmt.Errorf("rename config ciphertext %q -> %q: %w", filepath.Base(rn.from), filepath.Base(rn.to), err))
 		}
 		completed = append(completed, rn)
 	}
-	if err := m.SaveConfigIndex(repaired); err != nil {
-		return rollback(fmt.Errorf("save repaired config index: %w", err))
+	var saveErr error
+	if len(key) > 0 {
+		saveErr = m.SaveConfigIndexWithKey(repaired, key)
+	} else {
+		saveErr = m.SaveConfigIndex(repaired)
+	}
+	if saveErr != nil {
+		return rollback(fmt.Errorf("save repaired config index: %w", saveErr))
+	}
+	for _, rn := range completed {
+		if rn.reencrypt {
+			_ = os.Remove(rn.from)
+		}
 	}
 	return nil
 }

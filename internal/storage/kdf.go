@@ -83,6 +83,10 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 		iterations = int(value)
 	}
 
+	if wire.KeyEpoch < 0 {
+		return fmt.Errorf("%w: key_epoch must be non-negative", ErrInvalidKDFParameters)
+	}
+
 	*m = Metadata{
 		Version:       wire.Version,
 		CreatedAt:     wire.CreatedAt,

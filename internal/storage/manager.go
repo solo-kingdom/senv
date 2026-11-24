@@ -12,6 +12,7 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // ErrDataDesync indicates that metadata.json and the encrypted data files do
@@ -152,18 +153,18 @@ func (m *Manager) Initialize(password string) error {
 	// Derive key from password with the vault's KDF parameters
 	key := deriveKeyWithIterations(password, salt, crypto.IterationsForNewVault())
 
-	// Generate a verification key (encrypted hash of the password)
-	passwordHash := crypto.HashPassword(password)
-	passwordKey, err := crypto.Encrypt(key, []byte(passwordHash))
-	if err != nil {
-		return fmt.Errorf("failed to encrypt password key: %w", err)
-	}
-
 	// Create metadata
 	metadata := NewMetadata(
 		base64.StdEncoding.EncodeToString(salt),
-		passwordKey,
+		"",
 	)
+	// Generate a verification key (encrypted hash of the password) bound to KeyEpoch.
+	passwordHash := crypto.HashPassword(password)
+	passwordKey, err := crypto.EncryptWithAAD(key, []byte(passwordHash), metadataVerifierAAD(metadata.KeyEpoch))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt password key: %w", err)
+	}
+	metadata.PasswordKey = passwordKey
 
 	// Save metadata. Anything after this point is rolled back on failure so a
 	// half-initialized vault cannot trap the caller behind "already initialized".
@@ -188,7 +189,7 @@ func (m *Manager) completeInitialize(password string, key []byte) error {
 	}
 
 	configIndex := NewConfigIndex()
-	if err := m.SaveConfigIndex(configIndex); err != nil {
+	if err := m.SaveConfigIndexWithKey(configIndex, key); err != nil {
 		return fmt.Errorf("failed to save config index: %w", err)
 	}
 
@@ -273,7 +274,7 @@ func (m *Manager) VerifyKey(key []byte) (bool, error) {
 		return false, fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	if _, err := crypto.Decrypt(key, metadata.PasswordKey); err != nil {
+	if _, err := crypto.DecryptWithAAD(key, metadata.PasswordKey, metadataVerifierAAD(metadata.KeyEpoch)); err != nil {
 		return false, nil
 	}
 
@@ -298,7 +299,7 @@ func (m *Manager) VerifyPassword(password string) (bool, error) {
 	}
 	key := deriveKeyWithIterations(password, salt, iterations)
 
-	passwordHash, err := crypto.Decrypt(key, metadata.PasswordKey)
+	passwordHash, err := crypto.DecryptWithAAD(key, metadata.PasswordKey, metadataVerifierAAD(metadata.KeyEpoch))
 	if err != nil {
 		return false, nil // Password is incorrect
 	}
@@ -451,12 +452,20 @@ func (m *Manager) loadEnvGroupWithRoot(root securefs.TrustedRoot, group string, 
 }
 
 func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group string, key []byte) (*EnvGroup, error) {
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
+	return m.loadEnvGroupNewFormatFromRootWithPolicy(root, group, key, policy)
+}
+
+func (m *Manager) loadEnvGroupNewFormatFromRootWithPolicy(root securefs.TrustedRoot, group string, key []byte, policy vaultCryptoPolicy) (*EnvGroup, error) {
 	envGroup := &EnvGroup{
 		Name:      group,
 		Variables: make(map[string]string),
 	}
 
-	meta, err := loadEnvGroupMetaFromRoot(root, group, key)
+	meta, err := loadEnvGroupMetaFromRootWithPolicy(root, group, key, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +481,7 @@ func (m *Manager) loadEnvGroupNewFormatFromRoot(root securefs.TrustedRoot, group
 		return nil, err
 	}
 	for _, k := range vars {
-		entry, err := loadEnvVarEntryFromRoot(root, group, k, key)
+		entry, err := loadEnvVarEntryFromRootWithPolicy(root, group, k, key, policy)
 		if err != nil {
 			return nil, fmt.Errorf("load var %s/%s: %w", group, k, err)
 		}
@@ -550,13 +559,17 @@ func (m *Manager) loadEnvVaultWithKey(cryptoKey []byte) (map[string]*EnvGroup, e
 		}
 	}
 
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[string]*EnvGroup, len(groups))
 	for _, name := range groups {
 		if seenDir := func() bool {
 			_, err := root.ReadDir(EnvDirName, name)
 			return err == nil
 		}(); seenDir {
-			eg, err := m.loadEnvGroupNewFormatFromRoot(root, name, cryptoKey)
+			eg, err := m.loadEnvGroupNewFormatFromRootWithPolicy(root, name, cryptoKey, policy)
 			if err != nil {
 				return nil, err
 			}
@@ -667,7 +680,7 @@ func (m *Manager) SaveEnvVarWithKey(group, key string, entry *EnvVarEntry, crypt
 	if err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindEnv, group, key, data)
 	if err != nil {
 		return err
 	}
@@ -707,16 +720,20 @@ func (m *Manager) LoadEnvVarWithKey(group, key string, cryptoKey []byte) (*EnvVa
 		return nil, err
 	}
 	defer root.Close()
-	return loadEnvVarEntryFromRoot(root, group, key, cryptoKey)
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
+	return loadEnvVarEntryFromRootWithPolicy(root, group, key, cryptoKey, policy)
 }
 
-// loadEnvVarEntryFromRoot 在共享 root 上读取单个变量（调用方已持锁/开 root）。
-func loadEnvVarEntryFromRoot(root securefs.TrustedRoot, group, key string, cryptoKey []byte) (*EnvVarEntry, error) {
+// loadEnvVarEntryFromRootWithPolicy 在共享 root 上读取单个变量（调用方已持锁/开 root）。
+func loadEnvVarEntryFromRootWithPolicy(root securefs.TrustedRoot, group, key string, cryptoKey []byte, policy vaultCryptoPolicy) (*EnvVarEntry, error) {
 	data, err := root.Read(EnvDirName, group, key+EnvVarSuffix)
 	if err != nil {
 		return nil, err
 	}
-	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	decrypted, err := decryptWithPolicy(cryptoKey, syncschema.KindEnv, group, key, string(data), policy)
 	if err != nil {
 		return nil, err
 	}
@@ -823,7 +840,7 @@ func (m *Manager) SaveEnvGroupMetaWithKey(group string, meta *EnvGroupMeta, cryp
 	if err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindEnvMeta, group, "", data)
 	if err != nil {
 		return err
 	}
@@ -848,11 +865,15 @@ func (m *Manager) LoadEnvGroupMetaWithKey(group string, cryptoKey []byte) (*EnvG
 		return nil, err
 	}
 	defer root.Close()
-	return loadEnvGroupMetaFromRoot(root, group, cryptoKey)
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
+	return loadEnvGroupMetaFromRootWithPolicy(root, group, cryptoKey, policy)
 }
 
-// loadEnvGroupMetaFromRoot 在共享 root 上读取分组 meta（调用方已持锁/开 root）。
-func loadEnvGroupMetaFromRoot(root securefs.TrustedRoot, group string, cryptoKey []byte) (*EnvGroupMeta, error) {
+// loadEnvGroupMetaFromRootWithPolicy 在共享 root 上读取分组 meta（调用方已持锁/开 root）。
+func loadEnvGroupMetaFromRootWithPolicy(root securefs.TrustedRoot, group string, cryptoKey []byte, policy vaultCryptoPolicy) (*EnvGroupMeta, error) {
 	if err := ValidateName(group); err != nil {
 		return nil, fmt.Errorf("invalid env group %q: %w", group, err)
 	}
@@ -860,7 +881,7 @@ func loadEnvGroupMetaFromRoot(root securefs.TrustedRoot, group string, cryptoKey
 	if err != nil {
 		return nil, err
 	}
-	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	decrypted, err := decryptWithPolicy(cryptoKey, syncschema.KindEnvMeta, group, "", string(data), policy)
 	if err != nil {
 		return nil, err
 	}
@@ -922,9 +943,15 @@ func (m *Manager) DeriveKeyFromPassword(password string) ([]byte, error) {
 	return m.deriveKeyFromPassword(password)
 }
 
-// LoadConfigIndex loads the config file index
+// LoadConfigIndex loads the config file index (plaintext or encrypted when unkeyed fallback).
 func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
-	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
+	return m.LoadConfigIndexWithKey(nil)
+}
+
+// LoadConfigIndexWithKey loads the config file index, decrypting v2 AAD-bound
+// index files using key when encrypted.
+func (m *Manager) LoadConfigIndexWithKey(key []byte) (*ConfigIndex, error) {
+	index, quarantined, err := m.LoadConfigIndexWithQuarantineAndKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -939,19 +966,27 @@ func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
 var ErrEncryptedIndexRequiresKey = errors.New("index is encrypted; unlock vault to read")
 
 // ParseConfigIndexData decodes a config index from either legacy plaintext JSON
-// or a v2 AAD-encrypted envelope (Phase 1 read compatibility).
+// or a v2 AAD-encrypted envelope.
 func ParseConfigIndexData(data, key []byte, keyEpoch int) (*ConfigIndex, error) {
+	return ParseConfigIndexDataStrict(data, key, keyEpoch, false)
+}
+
+// ParseConfigIndexDataStrict decodes a config index and, when requireV2 is true,
+// rejects legacy plaintext JSON with ErrPlaintextIndexRejected.
+func ParseConfigIndexDataStrict(data, key []byte, keyEpoch int, requireV2 bool) (*ConfigIndex, error) {
 	payload := data
 	if crypto.IsV2Ciphertext(string(data)) {
 		if len(key) == 0 {
 			return nil, ErrEncryptedIndexRequiresKey
 		}
-		aad := crypto.BuildEntryAAD("config_index", "", "", keyEpoch)
-		plain, err := crypto.DecryptWithAAD(key, string(data), aad)
+		aad := crypto.BuildEntryAAD(syncschema.KindConfigIndex, "", "", keyEpoch)
+		plain, err := crypto.DecryptWithAADStrict(key, string(data), aad, requireV2)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt config index: %w", err)
 		}
 		payload = plain
+	} else if requireV2 {
+		return nil, ErrPlaintextIndexRejected
 	}
 	var configIndex ConfigIndex
 	if err := FromJSON(payload, &configIndex); err != nil {
@@ -960,18 +995,24 @@ func ParseConfigIndexData(data, key []byte, keyEpoch int) (*ConfigIndex, error) 
 	return &configIndex, nil
 }
 
-// LoadConfigIndexWithQuarantine loads the config file index and separates
-// structurally consistent legacy entries whose identities are non-portable
-// (for example a ":" in the name) into the quarantine slice. Read-only
-// callers may skip those entries and surface a warning; mutating callers must
-// keep using LoadConfigIndex so the vault stays fail-closed until repair. A
-// missing index file is an empty index rather than an error.
+// LoadConfigIndexWithQuarantine loads the config file index without a vault key.
 func (m *Manager) LoadConfigIndexWithQuarantine() (*ConfigIndex, []ConfigQuarantine, error) {
+	return m.LoadConfigIndexWithQuarantineAndKey(nil)
+}
+
+// LoadConfigIndexWithQuarantineAndKey loads the config file index and separates
+// structurally consistent legacy entries whose identities are non-portable
+// (for example a ":" in the name) into the quarantine slice.
+func (m *Manager) LoadConfigIndexWithQuarantineAndKey(key []byte) (*ConfigIndex, []ConfigQuarantine, error) {
 	type result struct {
 		index       *ConfigIndex
 		quarantined []ConfigQuarantine
 	}
 	loaded, err := withVaultRead(m, func(locked *Manager) (result, error) {
+		policy, err := locked.readCryptoPolicyLocked()
+		if err != nil {
+			return result{}, err
+		}
 		root, err := locked.openConfigRoot()
 		if err != nil {
 			return result{}, err
@@ -988,7 +1029,7 @@ func (m *Manager) LoadConfigIndexWithQuarantine() (*ConfigIndex, []ConfigQuarant
 			return result{}, err
 		}
 
-		configIndex, err := ParseConfigIndexData(data, nil, 0)
+		configIndex, err := ParseConfigIndexDataStrict(data, key, policy.KeyEpoch, policy.RequireV2)
 		if err != nil {
 			return result{}, err
 		}
@@ -1004,7 +1045,7 @@ func (m *Manager) LoadConfigIndexWithQuarantine() (*ConfigIndex, []ConfigQuarant
 	return loaded.index, loaded.quarantined, nil
 }
 
-// SaveConfigIndex saves the config file index
+// SaveConfigIndex saves the config file index as plaintext JSON (rejected when require_v2 is active).
 func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 	normalized, err := normalizeConfigIndex(configIndex)
 	if err != nil {
@@ -1012,6 +1053,13 @@ func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 	}
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error { return locked.SaveConfigIndex(normalized) })
+	}
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return err
+	}
+	if policy.RequireV2 {
+		return ErrPlaintextIndexRejected
 	}
 	data, err := ToJSON(normalized)
 	if err != nil {
@@ -1023,6 +1071,34 @@ func (m *Manager) SaveConfigIndex(configIndex *ConfigIndex) error {
 	}
 	defer root.Close()
 	return root.AtomicWrite([]string{ConfigIndexFile}, data, 0o600)
+}
+
+// SaveConfigIndexWithKey saves the config file index encrypted with a v2 AAD-bound envelope.
+func (m *Manager) SaveConfigIndexWithKey(configIndex *ConfigIndex, key []byte) error {
+	normalized, err := normalizeConfigIndex(configIndex)
+	if err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.SaveConfigIndexWithKey(normalized, key) })
+	}
+	if err := m.requireCurrentKey(key); err != nil {
+		return err
+	}
+	data, err := ToJSON(normalized)
+	if err != nil {
+		return err
+	}
+	encrypted, err := m.encryptEntryLocked(key, syncschema.KindConfigIndex, "", "", data)
+	if err != nil {
+		return err
+	}
+	root, err := m.openConfigRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.AtomicWrite([]string{ConfigIndexFile}, []byte(encrypted), 0o600)
 }
 
 // SaveConfigFile saves an encrypted configuration file
@@ -1050,7 +1126,7 @@ func (m *Manager) SaveConfigFileWithKey(name string, content []byte, key []byte)
 	if err := m.requireCurrentKey(key); err != nil {
 		return err
 	}
-	encryptedData, err := crypto.Encrypt(key, content)
+	encryptedData, err := m.encryptEntryLocked(key, syncschema.KindConfig, "", name, content)
 	if err != nil {
 		return err
 	}
@@ -1107,7 +1183,7 @@ func (m *Manager) LoadConfigFileWithKey(name string, key []byte) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	return crypto.Decrypt(key, string(encryptedData))
+	return m.decryptEntryLocked(key, syncschema.KindConfig, "", name, string(encryptedData))
 }
 
 // ListEnvGroups lists all environment variable groups.
@@ -1224,7 +1300,7 @@ func (m *Manager) SaveTextGroupMetaWithKey(group string, meta *EnvGroupMeta, cry
 	if err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindTextMeta, group, "", data)
 	if err != nil {
 		return err
 	}
@@ -1279,7 +1355,7 @@ func (m *Manager) LoadTextGroupMetaWithKey(group string, cryptoKey []byte) (*Env
 	if err != nil {
 		return nil, err
 	}
-	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	decrypted, err := m.decryptEntryLocked(cryptoKey, syncschema.KindTextMeta, group, "", string(data))
 	if err != nil {
 		return nil, err
 	}
@@ -1339,7 +1415,7 @@ func (m *Manager) SaveTextFileWithKey(group, key string, entry *TextEntry, crypt
 	if err != nil {
 		return fmt.Errorf("failed to serialize text entry: %w", err)
 	}
-	encryptedData, err := crypto.Encrypt(cryptoKey, data)
+	encryptedData, err := m.encryptEntryLocked(cryptoKey, syncschema.KindText, group, key, data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt text entry: %w", err)
 	}
@@ -1381,7 +1457,7 @@ func (m *Manager) LoadTextFileWithKey(group, key string, cryptoKey []byte) (*Tex
 	if err != nil {
 		return nil, fmt.Errorf("text %q not found in group %q: %w", key, group, err)
 	}
-	decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+	decryptedData, err := m.decryptEntryLocked(cryptoKey, syncschema.KindText, group, key, string(encryptedData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt text entry: %w", err)
 	}
@@ -1519,6 +1595,10 @@ func (m *Manager) LoadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 }
 
 func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, error) {
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
 	root, err := m.openDataRoot()
 	if err != nil {
 		return nil, err
@@ -1580,7 +1660,7 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 				groupErr = fmt.Errorf("failed to read text %q in group %q: %w", f.key, gd.Name, err)
 				break
 			}
-			decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+			decryptedData, err := decryptWithPolicy(cryptoKey, syncschema.KindText, gd.Name, f.key, string(encryptedData), policy)
 			if err != nil {
 				groupErr = fmt.Errorf("failed to decrypt text entry: %w", err)
 				break

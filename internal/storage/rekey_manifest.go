@@ -13,6 +13,7 @@ import (
 
 	"sync"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
 )
 
@@ -24,17 +25,18 @@ const (
 type rekeyManifestEntryKind string
 
 const (
-	rekeyManifestEntryEnv       rekeyManifestEntryKind = "env"
-	rekeyManifestEntryText      rekeyManifestEntryKind = "text"
-	rekeyManifestEntryBackup    rekeyManifestEntryKind = "backup"
-	rekeyManifestEntryConfig    rekeyManifestEntryKind = "config"
-	rekeyManifestEntryHost      rekeyManifestEntryKind = "host"
-	rekeyManifestEntryKeyPair   rekeyManifestEntryKind = "keypair"
-	rekeyManifestEntryProvider  rekeyManifestEntryKind = "provider"
-	rekeyManifestEntryMCPServer rekeyManifestEntryKind = "mcp_server"
-	rekeyManifestEntrySkill     rekeyManifestEntryKind = "skill"
-	rekeyManifestEntryLedger    rekeyManifestEntryKind = "ledger"
-	rekeyManifestEntryTree      rekeyManifestEntryKind = "tree"
+	rekeyManifestEntryEnv        rekeyManifestEntryKind = "env"
+	rekeyManifestEntryText       rekeyManifestEntryKind = "text"
+	rekeyManifestEntryBackup     rekeyManifestEntryKind = "backup"
+	rekeyManifestEntryConfig     rekeyManifestEntryKind = "config"
+	rekeyManifestEntryHost       rekeyManifestEntryKind = "host"
+	rekeyManifestEntryKeyPair    rekeyManifestEntryKind = "keypair"
+	rekeyManifestEntryProvider   rekeyManifestEntryKind = "provider"
+	rekeyManifestEntryMCPServer  rekeyManifestEntryKind = "mcp_server"
+	rekeyManifestEntrySkill      rekeyManifestEntryKind = "skill"
+	rekeyManifestEntrySkillIndex rekeyManifestEntryKind = "skill_index"
+	rekeyManifestEntryLedger     rekeyManifestEntryKind = "ledger"
+	rekeyManifestEntryTree       rekeyManifestEntryKind = "tree"
 )
 
 type rekeyStage string
@@ -55,14 +57,16 @@ type rekeyManifestEntry struct {
 }
 
 type rekeyManifest struct {
-	Version         int                  `json:"version"`
-	TransactionID   string               `json:"transaction_id"`
-	Stage           rekeyStage           `json:"stage"`
-	ConfigRootHash  string               `json:"config_root_hash"`
-	DataRootHash    string               `json:"data_root_hash"`
-	OldMetadataHash string               `json:"old_metadata_hash"`
-	NewMetadataHash string               `json:"new_metadata_hash"`
-	Entries         []rekeyManifestEntry `json:"entries"`
+	Version            int                  `json:"version"`
+	TransactionID      string               `json:"transaction_id"`
+	Stage              rekeyStage           `json:"stage"`
+	ConfigRootHash     string               `json:"config_root_hash"`
+	DataRootHash       string               `json:"data_root_hash"`
+	OldMetadataHash    string               `json:"old_metadata_hash"`
+	NewMetadataHash    string               `json:"new_metadata_hash"`
+	OldConfigIndexHash string               `json:"old_config_index_hash,omitempty"`
+	NewConfigIndexHash string               `json:"new_config_index_hash,omitempty"`
+	Entries            []rekeyManifestEntry `json:"entries"`
 }
 
 var (
@@ -124,22 +128,42 @@ func (m *Manager) validateManifestIdentities(manifest *rekeyManifest) error {
 	if err != nil {
 		return fmt.Errorf("read config index for rekey identities: %w", err)
 	}
-	var parsedIndex ConfigIndex
-	if err := FromJSON(indexData, &parsedIndex); err != nil {
-		return fmt.Errorf("parse config index for rekey identities: %w", err)
-	}
-	index, err := normalizeConfigIndex(&parsedIndex)
-	if err != nil {
-		return fmt.Errorf("validate config index for rekey identities: %w", err)
-	}
-	expectedConfigs := make(map[string]bool, len(index.Configs))
-	for mapName, config := range index.Configs {
-		if config.Name != mapName {
-			return fmt.Errorf("config index identity mismatch for %q", mapName)
+	indexEncrypted := crypto.IsV2Ciphertext(string(indexData))
+	expectedConfigs := make(map[string]bool)
+	if !indexEncrypted {
+		var parsedIndex ConfigIndex
+		if err := FromJSON(indexData, &parsedIndex); err != nil {
+			return fmt.Errorf("parse config index for rekey identities: %w", err)
 		}
-		expectedConfigs[config.EncryptedFile] = false
+		index, err := normalizeConfigIndex(&parsedIndex)
+		if err != nil {
+			return fmt.Errorf("validate config index for rekey identities: %w", err)
+		}
+		expectedConfigs = make(map[string]bool, len(index.Configs))
+		for mapName, config := range index.Configs {
+			if config.Name != mapName {
+				return fmt.Errorf("config index identity mismatch for %q", mapName)
+			}
+			expectedConfigs[config.EncryptedFile] = false
+		}
 	}
 	for _, entry := range manifest.Entries {
+		if entry.Kind == rekeyManifestEntrySkillIndex {
+			if len(entry.Identity) != 1 || entry.Identity[0] != SkillIndexFile {
+				return fmt.Errorf("invalid skill index rekey entry identity %q", strings.Join(entry.Identity, "/"))
+			}
+			continue
+		}
+		if indexEncrypted && len(entry.Identity) == 1 && entry.Kind == rekeyManifestEntryConfig {
+			seg := entry.Identity[0]
+			if IsMachineLocalDataArtifact(seg) ||
+				(strings.HasPrefix(seg, EnvFilePrefix) && strings.HasSuffix(seg, EnvFileSuffix)) ||
+				!strings.HasSuffix(seg, ConfigFileSuffix) ||
+				securefs.ValidateSegment(strings.TrimSuffix(seg, ConfigFileSuffix)) != nil {
+				return fmt.Errorf("invalid config rekey entry identity %q", seg)
+			}
+			continue
+		}
 		kind, err := classifyRekeyEntry(entry.Identity, expectedConfigs)
 		if err != nil {
 			return fmt.Errorf("invalid rekey entry identity %q: %w", strings.Join(entry.Identity, "/"), err)
@@ -171,6 +195,8 @@ func rekeyManifestKind(kind rekeyEntryKind) rekeyManifestEntryKind {
 		return rekeyManifestEntryMCPServer
 	case rekeyEntrySkill:
 		return rekeyManifestEntrySkill
+	case rekeyEntrySkillIndex:
+		return rekeyManifestEntrySkillIndex
 	case rekeyEntryLedger:
 		return rekeyManifestEntryLedger
 	case rekeyEntryTree:
@@ -209,12 +235,18 @@ func (m *Manager) validateManifest(manifest *rekeyManifest) error {
 	if !rekeyHashRE.MatchString(manifest.OldMetadataHash) || !rekeyHashRE.MatchString(manifest.NewMetadataHash) || manifest.OldMetadataHash == manifest.NewMetadataHash {
 		return fmt.Errorf("invalid rekey metadata hashes")
 	}
+	if manifest.OldConfigIndexHash != "" || manifest.NewConfigIndexHash != "" {
+		if !rekeyHashRE.MatchString(manifest.OldConfigIndexHash) || !rekeyHashRE.MatchString(manifest.NewConfigIndexHash) || manifest.OldConfigIndexHash == manifest.NewConfigIndexHash {
+			return fmt.Errorf("invalid rekey config index hashes")
+		}
+	}
 	seen := make(map[string]struct{}, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
 		switch entry.Kind {
 		case rekeyManifestEntryEnv, rekeyManifestEntryText, rekeyManifestEntryBackup, rekeyManifestEntryConfig,
 			rekeyManifestEntryHost, rekeyManifestEntryKeyPair, rekeyManifestEntryProvider,
-			rekeyManifestEntryMCPServer, rekeyManifestEntrySkill, rekeyManifestEntryLedger, rekeyManifestEntryTree:
+			rekeyManifestEntryMCPServer, rekeyManifestEntrySkill, rekeyManifestEntrySkillIndex,
+			rekeyManifestEntryLedger, rekeyManifestEntryTree:
 		default:
 			return fmt.Errorf("invalid rekey entry kind %q", entry.Kind)
 		}
@@ -360,4 +392,8 @@ func rekeySidecar(identity []string, tx string, suffix string) []string {
 
 func rekeyMetadataSidecar(tx string) []string {
 	return []string{MetadataFile + ".rekey-" + tx + ".new"}
+}
+
+func rekeyConfigIndexSidecar(tx string, suffix string) []string {
+	return []string{ConfigIndexFile + ".rekey-" + tx + suffix}
 }

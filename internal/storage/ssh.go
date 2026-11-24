@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/wii/senv/internal/crypto"
 )
 
 const (
@@ -163,7 +161,7 @@ func (m *Manager) saveSSHEntry(dir, name string, entry any, cryptoKey []byte) er
 	if err != nil {
 		return fmt.Errorf("failed to serialize %s entry: %w", dir, err)
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, sshAADKindForDir(dir), "", name, data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt SSH %s entry: %w", dir, err)
 	}
@@ -196,7 +194,7 @@ func (m *Manager) loadSSHEntry(dir, name string, target any, cryptoKey []byte) e
 	if err != nil {
 		return fmt.Errorf("%s %q not found: %w", entryKindForDir(dir), name, err)
 	}
-	decrypted, err := crypto.Decrypt(cryptoKey, string(encrypted))
+	decrypted, err := m.decryptEntryLocked(cryptoKey, sshAADKindForDir(dir), "", name, string(encrypted))
 	if err != nil {
 		return fmt.Errorf("failed to decrypt %s %q: %w", entryKindForDir(dir), name, err)
 	}

@@ -113,6 +113,11 @@ func runHistory(cmd *cobra.Command, args []string) error {
 	}
 	defer session.ZeroKey(key)
 
+	keyEpoch := 0
+	if md, mdErr := auth.storage.LoadMetadata(); mdErr == nil && md != nil {
+		keyEpoch = md.KeyEpoch
+	}
+
 	if historyRestore != 0 {
 		if len(args) == 0 {
 			return fmt.Errorf("--restore 需要条目参数（kind:group:key）")
@@ -128,7 +133,7 @@ func runHistory(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("%-20s %-12s %-8s %-6d %s\n",
 			when.Local().Format("2006-01-02 15:04:05"),
-			historyActor(h), h.Kind, h.Revision, historyDisplay(h, key, historyReveal))
+			historyActor(h), h.Kind, h.Revision, historyDisplayWithEpoch(h, key, keyEpoch, historyReveal))
 	}
 	return nil
 }
@@ -155,10 +160,14 @@ func parseEntryAddress(s string) (kind, grp, key string, ok bool) {
 
 // historyDisplay 解密并渲染历史版本内容；默认遮蔽敏感值，仅单条目 --reveal 展开非私钥明文。
 func historyDisplay(h provider.HistoryVersion, key []byte, reveal bool) string {
+	return historyDisplayWithEpoch(h, key, 16, reveal)
+}
+
+func historyDisplayWithEpoch(h provider.HistoryVersion, key []byte, keyEpoch int, reveal bool) string {
 	if h.Deleted {
 		return "(墓碑记录，无可恢复内容)"
 	}
-	plaintext, err := decryptHistoryValue(h, key)
+	plaintext, err := decryptHistoryValueWithEpoch(h, key, keyEpoch)
 	if err != nil {
 		return fmt.Sprintf("<无法解密该版本: %v>", err)
 	}
@@ -248,12 +257,29 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 	return renderRevealedHistory(kind, plaintext)
 }
 
-// decryptHistoryValue 按条目类型解密：config_index 同步条目本身是明文 JSON
+// decryptHistoryValue 按条目类型解密：未加密的旧版索引直接返回明文；v2 密文按
+// (kind, grp, key, keyEpoch) 校验 AAD，兼容当前及更早 epoch 与 v1 密文。
 func decryptHistoryValue(h provider.HistoryVersion, key []byte) ([]byte, error) {
-	if h.Kind == "config_index" || h.Kind == "skill_index" {
+	return decryptHistoryValueWithEpoch(h, key, 16)
+}
+
+func decryptHistoryValueWithEpoch(h provider.HistoryVersion, key []byte, maxEpoch int) ([]byte, error) {
+	if (h.Kind == "config_index" || h.Kind == "skill_index") && !crypto.IsV2Ciphertext(string(h.Ciphertext)) {
 		return h.Ciphertext, nil
 	}
-	return crypto.Decrypt(key, string(h.Ciphertext))
+	if !crypto.IsV2Ciphertext(string(h.Ciphertext)) {
+		return crypto.Decrypt(key, string(h.Ciphertext))
+	}
+	if maxEpoch < 0 {
+		maxEpoch = 0
+	}
+	for e := maxEpoch; e >= 0; e-- {
+		aad := crypto.BuildEntryAAD(h.Kind, h.Grp, h.Key, e)
+		if plain, err := crypto.DecryptWithAAD(key, string(h.Ciphertext), aad); err == nil {
+			return plain, nil
+		}
+	}
+	return nil, crypto.ErrDecryptionFailed
 }
 
 func contentPreviewString(data []byte) string {

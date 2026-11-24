@@ -703,7 +703,11 @@ func (m *Manager) RenameKey(group, oldKey, newKey string) error {
 	if _, err := m.loadTextFile(group, newKey); err == nil {
 		return fmt.Errorf("text block %s already exists in group %s", newKey, group)
 	}
-	return m.storage.RenameTextFile(group, oldKey, newKey)
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	return m.storage.RenameTextFileWithKey(group, oldKey, newKey, cryptoKey)
 }
 
 // RenameGroup renames a text group directory; every block inside keeps its
@@ -741,19 +745,5 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 	if err != nil {
 		return err
 	}
-	meta, err := m.storage.LoadTextGroupMetaWithKey(oldName, cryptoKey)
-	if err != nil {
-		return err
-	}
-	if err := m.storage.RenameTextGroup(oldName, newName); err != nil {
-		return err
-	}
-	if meta != nil {
-		meta.Name = newName
-		if err := m.storage.SaveTextGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
-			_ = m.storage.RenameTextGroup(newName, oldName)
-			return fmt.Errorf("failed to rewrite group metadata: %w", err)
-		}
-	}
-	return nil
+	return m.storage.RenameTextGroupWithKey(oldName, newName, cryptoKey)
 }

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // --- Backup file storage methods (parallel to text) ---
@@ -69,7 +69,7 @@ func (m *Manager) SaveBackupGroupMetaWithKey(group string, meta *EnvGroupMeta, c
 	if err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindBackupMeta, group, "", data)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func (m *Manager) LoadBackupGroupMetaWithKey(group string, cryptoKey []byte) (*E
 	if err != nil {
 		return nil, err
 	}
-	decrypted, err := crypto.Decrypt(cryptoKey, string(data))
+	decrypted, err := m.decryptEntryLocked(cryptoKey, syncschema.KindBackupMeta, group, "", string(data))
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (m *Manager) SaveBackupFileWithKey(group, key string, entry *BackupEntry, c
 	if err != nil {
 		return fmt.Errorf("failed to serialize backup entry: %w", err)
 	}
-	encryptedData, err := crypto.Encrypt(cryptoKey, data)
+	encryptedData, err := m.encryptEntryLocked(cryptoKey, syncschema.KindBackup, group, key, data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt backup entry: %w", err)
 	}
@@ -207,7 +207,7 @@ func (m *Manager) LoadBackupFileWithKey(group, key string, cryptoKey []byte) (*B
 	if err != nil {
 		return nil, fmt.Errorf("backup %q not found in group %q: %w", key, group, err)
 	}
-	decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+	decryptedData, err := m.decryptEntryLocked(cryptoKey, syncschema.KindBackup, group, key, string(encryptedData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt backup entry: %w", err)
 	}
@@ -345,6 +345,10 @@ func (m *Manager) LoadBackupVaultWithKey(cryptoKey []byte) (*BackupVaultSnapshot
 }
 
 func (m *Manager) loadBackupVaultWithKey(cryptoKey []byte) (*BackupVaultSnapshot, error) {
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
 	root, err := m.openDataRoot()
 	if err != nil {
 		return nil, err
@@ -406,7 +410,7 @@ func (m *Manager) loadBackupVaultWithKey(cryptoKey []byte) (*BackupVaultSnapshot
 				groupErr = fmt.Errorf("failed to read backup %q in group %q: %w", f.key, gd.Name, err)
 				break
 			}
-			decryptedData, err := crypto.Decrypt(cryptoKey, string(encryptedData))
+			decryptedData, err := decryptWithPolicy(cryptoKey, syncschema.KindBackup, gd.Name, f.key, string(encryptedData), policy)
 			if err != nil {
 				groupErr = fmt.Errorf("failed to decrypt backup entry: %w", err)
 				break

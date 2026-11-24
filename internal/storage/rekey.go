@@ -30,10 +30,11 @@ type RekeyResult struct {
 	MCPServerFiles int
 	LedgerFiles    int
 	TreeFiles      int
+	IndexFiles     int
 }
 
 func (r *RekeyResult) Total() int {
-	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles + r.LedgerFiles + r.TreeFiles
+	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles + r.LedgerFiles + r.TreeFiles + r.IndexFiles
 }
 
 type rekeyEntryKind uint8
@@ -48,6 +49,7 @@ const (
 	rekeyEntryProvider
 	rekeyEntryMCPServer
 	rekeyEntrySkill
+	rekeyEntrySkillIndex
 	rekeyEntryLedger
 	rekeyEntryTree
 )
@@ -55,6 +57,9 @@ const (
 type rekeyEntry struct {
 	identity   []string
 	kind       rekeyEntryKind
+	aadKind    string
+	aadGrp     string
+	aadKey     string
 	plaintext  []byte
 	oldContent []byte
 	newContent []byte
@@ -121,25 +126,53 @@ func (m *Manager) rekeyLocked(oldKey, newKey []byte, newSaltB64, newPasswordKey 
 		return nil, fmt.Errorf("validate target metadata: %w", err)
 	}
 
-	entries, result, oldMetadata, err := m.rekeyPreflight(oldKey)
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, fmt.Errorf("read crypto policy: %w", err)
+	}
+	newEpoch := currentMetadata.KeyEpoch + 1
+
+	preflight, err := m.rekeyPreflight(oldKey, policy)
 	if err != nil {
 		return nil, fmt.Errorf("pre-flight decryption failed: %w", err)
 	}
+	entries := preflight.entries
+	result := preflight.result
+	oldMetadata := preflight.oldMetadata
 
-	encrypt := crypto.Encrypt
-	if m.rekeyHooks != nil && m.rekeyHooks.encrypt != nil {
-		encrypt = m.rekeyHooks.encrypt
-	}
 	for i := range entries {
 		if err := m.rekeyBefore("encrypt", i); err != nil {
 			return nil, fmt.Errorf("prepare encryption: %w", err)
 		}
-		ciphertext, err := encrypt(newKey, entries[i].plaintext)
+		var ciphertext string
+		if m.rekeyHooks != nil && m.rekeyHooks.encrypt != nil {
+			ciphertext, err = m.rekeyHooks.encrypt(newKey, entries[i].plaintext)
+		} else {
+			aad := crypto.BuildEntryAAD(entries[i].aadKind, entries[i].aadGrp, entries[i].aadKey, newEpoch)
+			ciphertext, err = crypto.EncryptWithAAD(newKey, entries[i].plaintext, aad)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("encrypt entry %q: %w", strings.Join(entries[i].identity, "/"), err)
 		}
 		entries[i].newContent = []byte(ciphertext)
 	}
+
+	var newConfigIndex []byte
+	if m.rekeyHooks != nil && m.rekeyHooks.encrypt != nil {
+		ct, err := m.rekeyHooks.encrypt(newKey, preflight.configIndexPlaintext)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt config index: %w", err)
+		}
+		newConfigIndex = []byte(ct)
+	} else {
+		aad := crypto.BuildEntryAAD(syncschema.KindConfigIndex, "", "", newEpoch)
+		ct, err := crypto.EncryptWithAAD(newKey, preflight.configIndexPlaintext, aad)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt config index: %w", err)
+		}
+		newConfigIndex = []byte(ct)
+	}
+	result.IndexFiles++
 
 	var metadata Metadata
 	if err := FromJSON(oldMetadata, &metadata); err != nil {
@@ -148,6 +181,7 @@ func (m *Manager) rekeyLocked(oldKey, newKey []byte, newSaltB64, newPasswordKey 
 	metadata.Salt = newSaltB64
 	metadata.PasswordKey = newPasswordKey
 	metadata.KDFIterations = newIterations
+	metadata.KeyEpoch = newEpoch
 	metadata.UpdatedAt = time.Now()
 	newMetadata, err := ToJSON(&metadata)
 	if err != nil {
@@ -169,6 +203,11 @@ func (m *Manager) rekeyLocked(oldKey, newKey []byte, newSaltB64, newPasswordKey 
 	}
 	manifest, err := m.newManifest(tx, oldMetadata, newMetadata, manifestEntries)
 	if err != nil {
+		return nil, err
+	}
+	manifest.OldConfigIndexHash = contentHash(preflight.configIndexOld)
+	manifest.NewConfigIndexHash = contentHash(newConfigIndex)
+	if err := m.validateManifest(manifest); err != nil {
 		return nil, err
 	}
 
@@ -207,6 +246,9 @@ func (m *Manager) rekeyLocked(oldKey, newKey []byte, newSaltB64, newPasswordKey 
 	}
 	if err := configRoot.AtomicWrite(rekeyMetadataSidecar(tx), newMetadata, 0o600); err != nil {
 		return nil, fmt.Errorf("prepare metadata generation: %w", err)
+	}
+	if err := configRoot.AtomicWrite(rekeyConfigIndexSidecar(tx, ".new"), newConfigIndex, 0o600); err != nil {
+		return nil, fmt.Errorf("prepare config index generation: %w", err)
 	}
 	for i, entry := range entries {
 		if err := m.rekeyBefore("write_new", i); err != nil {
@@ -250,6 +292,13 @@ func (m *Manager) rekeyLocked(oldKey, newKey []byte, newSaltB64, newPasswordKey 
 			return nil, fmt.Errorf("activate new entry %q: %w", strings.Join(entry.identity, "/"), err)
 		}
 		m.rekeyCheckpoint(rekeyCheckpointDataEntry)
+	}
+
+	if err := configRoot.Rename([]string{ConfigIndexFile}, rekeyConfigIndexSidecar(tx, ".old")); err != nil {
+		return nil, fmt.Errorf("preserve old config index: %w", err)
+	}
+	if err := configRoot.Rename(rekeyConfigIndexSidecar(tx, ".new"), []string{ConfigIndexFile}); err != nil {
+		return nil, fmt.Errorf("activate new config index: %w", err)
 	}
 
 	manifest.Stage = rekeyStageSwitchMetadata
@@ -306,39 +355,51 @@ func newRekeyTransactionID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []byte, error) {
+type rekeyPreflightResult struct {
+	entries              []rekeyEntry
+	result               *RekeyResult
+	oldMetadata          []byte
+	configIndexOld       []byte
+	configIndexPlaintext []byte
+}
+
+func (m *Manager) rekeyPreflight(oldKey []byte, policy vaultCryptoPolicy) (*rekeyPreflightResult, error) {
 	configRoot, err := securefs.OpenRoot(m.configPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open config root: %w", err)
+		return nil, fmt.Errorf("open config root: %w", err)
 	}
 	defer configRoot.Close()
 	dataRoot, err := securefs.OpenRoot(m.dataPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open data root: %w", err)
+		return nil, fmt.Errorf("open data root: %w", err)
 	}
 	defer dataRoot.Close()
 
 	oldMetadata, err := configRoot.Read(MetadataFile)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read metadata: %w", err)
+		return nil, fmt.Errorf("read metadata: %w", err)
 	}
 	indexData, err := configRoot.Read(ConfigIndexFile)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read config index: %w", err)
+		return nil, fmt.Errorf("read config index: %w", err)
 	}
-	var parsedIndex ConfigIndex
-	if err := FromJSON(indexData, &parsedIndex); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse config index: %w", err)
-	}
-	index, err := normalizeConfigIndex(&parsedIndex)
+	parsedIndex, err := ParseConfigIndexDataStrict(indexData, oldKey, policy.KeyEpoch, policy.RequireV2)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("validate config index: %w", err)
+		return nil, fmt.Errorf("parse config index: %w", err)
+	}
+	index, err := normalizeConfigIndex(parsedIndex)
+	if err != nil {
+		return nil, fmt.Errorf("validate config index: %w", err)
+	}
+	configIndexPlain, err := ToJSON(index)
+	if err != nil {
+		return nil, fmt.Errorf("serialize config index: %w", err)
 	}
 	expectedConfigs := make(map[string]bool, len(index.Configs))
 	for mapName, config := range index.Configs {
 		expectedConfigs[config.EncryptedFile] = false
 		if config.Name != mapName {
-			return nil, nil, nil, fmt.Errorf("config index identity mismatch for %q", mapName)
+			return nil, fmt.Errorf("config index identity mismatch for %q", mapName)
 		}
 	}
 
@@ -370,22 +431,60 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 		if len(segments) == 1 && IsMachineLocalDataArtifact(segments[0]) {
 			return nil
 		}
-		if dirEntry.IsDir() || !strings.HasSuffix(dirEntry.Name(), ".enc") {
+		if dirEntry.IsDir() {
+			return nil
+		}
+		if len(segments) == 1 && segments[0] == SkillIndexFile {
+			raw, err := dataRoot.Read(segments...)
+			if err != nil {
+				return err
+			}
+			skillIndex, err := ParseSkillIndexDataStrict(raw, oldKey, policy.KeyEpoch, policy.RequireV2)
+			if err != nil {
+				return fmt.Errorf("decrypt/parse %q: %w", SkillIndexFile, err)
+			}
+			skillPlain, err := ToJSON(skillIndex)
+			if err != nil {
+				return fmt.Errorf("serialize %q: %w", SkillIndexFile, err)
+			}
+			entries = append(entries, rekeyEntry{
+				identity:   []string{SkillIndexFile},
+				kind:       rekeyEntrySkillIndex,
+				aadKind:    syncschema.KindSkillIndex,
+				plaintext:  skillPlain,
+				oldContent: raw,
+			})
+			result.IndexFiles++
+			return nil
+		}
+		if !strings.HasSuffix(dirEntry.Name(), ".enc") {
 			return nil
 		}
 		kind, err := classifyRekeyEntry(segments, expectedConfigs)
 		if err != nil {
 			return err
 		}
+		aadKind, aadGrp, aadKey, ok := entryAADIdentity(segments)
+		if !ok {
+			return fmt.Errorf("cannot derive AAD identity for %q", filepath.ToSlash(rel))
+		}
 		ciphertext, err := dataRoot.Read(segments...)
 		if err != nil {
 			return err
 		}
-		plaintext, err := crypto.Decrypt(oldKey, string(ciphertext))
+		plaintext, err := decryptWithPolicy(oldKey, aadKind, aadGrp, aadKey, string(ciphertext), policy)
 		if err != nil {
 			return fmt.Errorf("decrypt %q: %w", filepath.ToSlash(rel), err)
 		}
-		entries = append(entries, rekeyEntry{identity: append([]string(nil), segments...), kind: kind, plaintext: plaintext, oldContent: ciphertext})
+		entries = append(entries, rekeyEntry{
+			identity:   append([]string(nil), segments...),
+			kind:       kind,
+			aadKind:    aadKind,
+			aadGrp:     aadGrp,
+			aadKey:     aadKey,
+			plaintext:  plaintext,
+			oldContent: ciphertext,
+		})
 		switch kind {
 		case rekeyEntryEnv:
 			result.EnvFiles++
@@ -413,17 +512,23 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 		return nil
 	})
 	if walkErr != nil {
-		return nil, nil, nil, walkErr
+		return nil, walkErr
 	}
 	for name, seen := range expectedConfigs {
 		if !seen {
-			return nil, nil, nil, fmt.Errorf("config index references missing encrypted file %q", name)
+			return nil, fmt.Errorf("config index references missing encrypted file %q", name)
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return strings.Join(entries[i].identity, "\x00") < strings.Join(entries[j].identity, "\x00")
 	})
-	return entries, result, oldMetadata, nil
+	return &rekeyPreflightResult{
+		entries:              entries,
+		result:               result,
+		oldMetadata:          oldMetadata,
+		configIndexOld:       indexData,
+		configIndexPlaintext: configIndexPlain,
+	}, nil
 }
 
 func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rekeyEntryKind, error) {
@@ -591,9 +696,15 @@ func (m *Manager) recoverRekeyLocked() error {
 		if err := recoverEntries(dataRoot, manifest, false); err != nil {
 			return fmt.Errorf("%w: rollback: %v", ErrRekeyRecoveryRequired, err)
 		}
+		if err := recoverConfigIndex(configRoot, manifest, false); err != nil {
+			return fmt.Errorf("%w: rollback config index: %v", ErrRekeyRecoveryRequired, err)
+		}
 	case manifest.NewMetadataHash:
 		if err := recoverEntries(dataRoot, manifest, true); err != nil {
 			return fmt.Errorf("%w: roll forward: %v", ErrRekeyRecoveryRequired, err)
+		}
+		if err := recoverConfigIndex(configRoot, manifest, true); err != nil {
+			return fmt.Errorf("%w: roll forward config index: %v", ErrRekeyRecoveryRequired, err)
 		}
 	default:
 		return fmt.Errorf("%w: metadata hash matches neither transaction generation", ErrRekeyRecoveryRequired)
@@ -649,6 +760,38 @@ func recoverEntries(root *securefs.Root, manifest *rekeyManifest, rollForward bo
 	return nil
 }
 
+func recoverConfigIndex(configRoot *securefs.Root, manifest *rekeyManifest, rollForward bool) error {
+	if manifest.OldConfigIndexHash == "" && manifest.NewConfigIndexHash == "" {
+		return nil
+	}
+	want := manifest.OldConfigIndexHash
+	source := rekeyConfigIndexSidecar(manifest.TransactionID, ".old")
+	if rollForward {
+		want = manifest.NewConfigIndexHash
+		source = rekeyConfigIndexSidecar(manifest.TransactionID, ".new")
+	}
+	current, exists, err := readOptional(configRoot, []string{ConfigIndexFile})
+	if err != nil {
+		return err
+	}
+	if exists && contentHash(current) == want {
+		return nil
+	}
+	generation, genExists, err := readOptional(configRoot, source)
+	if err != nil {
+		return err
+	}
+	if !genExists || contentHash(generation) != want {
+		return fmt.Errorf("config index has no verified %s generation", map[bool]string{false: "old", true: "new"}[rollForward])
+	}
+	if exists {
+		if err := configRoot.Remove(ConfigIndexFile); err != nil {
+			return err
+		}
+	}
+	return configRoot.Rename(source, []string{ConfigIndexFile})
+}
+
 func (m *Manager) cleanupRekeyLocked(manifest *rekeyManifest, dataRoot, configRoot *securefs.Root) error {
 	for i, entry := range manifest.Entries {
 		for _, suffix := range []string{".old", ".new"} {
@@ -658,6 +801,11 @@ func (m *Manager) cleanupRekeyLocked(manifest *rekeyManifest, dataRoot, configRo
 			if err := removeOptional(dataRoot, rekeySidecar(entry.Identity, manifest.TransactionID, suffix)); err != nil {
 				return err
 			}
+		}
+	}
+	for _, suffix := range []string{".old", ".new"} {
+		if err := removeOptional(configRoot, rekeyConfigIndexSidecar(manifest.TransactionID, suffix)); err != nil {
+			return err
 		}
 	}
 	if err := removeOptional(configRoot, rekeyMetadataSidecar(manifest.TransactionID)); err != nil {

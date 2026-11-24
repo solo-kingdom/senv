@@ -110,11 +110,12 @@ func TestSettingsPermission(t *testing.T) {
 
 func TestConfigIndexPermission(t *testing.T) {
 	testConfigWritePermissions(t, ConfigIndexFile, func(m *Manager) error {
-		index, err := m.LoadConfigIndex()
+		key := derivedKey(t, m, "test-password")
+		index, err := m.LoadConfigIndexWithKey(key)
 		if err != nil {
 			return err
 		}
-		return m.SaveConfigIndex(index)
+		return m.SaveConfigIndexWithKey(index, key)
 	})
 }
 

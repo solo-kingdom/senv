@@ -11,6 +11,7 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/securefs"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 const (
@@ -125,19 +126,27 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 }
 
 // ParseSkillIndexData decodes a skill index from either legacy plaintext JSON
-// or a v2 AAD-encrypted envelope (Phase 1 read compatibility).
+// or a v2 AAD-encrypted envelope.
 func ParseSkillIndexData(data, key []byte, keyEpoch int) (*SkillIndex, error) {
+	return ParseSkillIndexDataStrict(data, key, keyEpoch, false)
+}
+
+// ParseSkillIndexDataStrict decodes a skill index and, when requireV2 is true,
+// rejects legacy plaintext JSON with ErrPlaintextIndexRejected.
+func ParseSkillIndexDataStrict(data, key []byte, keyEpoch int, requireV2 bool) (*SkillIndex, error) {
 	payload := data
 	if crypto.IsV2Ciphertext(string(data)) {
 		if len(key) == 0 {
 			return nil, ErrEncryptedIndexRequiresKey
 		}
-		aad := crypto.BuildEntryAAD("skill_index", "", "", keyEpoch)
-		plain, err := crypto.DecryptWithAAD(key, string(data), aad)
+		aad := crypto.BuildEntryAAD(syncschema.KindSkillIndex, "", "", keyEpoch)
+		plain, err := crypto.DecryptWithAADStrict(key, string(data), aad, requireV2)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt skill index: %w", err)
 		}
 		payload = plain
+	} else if requireV2 {
+		return nil, ErrPlaintextIndexRejected
 	}
 	var index SkillIndex
 	if err := FromJSON(payload, &index); err != nil {
@@ -146,9 +155,18 @@ func ParseSkillIndexData(data, key []byte, keyEpoch int) (*SkillIndex, error) {
 	return normalizeSkillIndex(&index)
 }
 
-// LoadSkillIndex 读取 skill 索引；文件不存在视为空索引。
+// LoadSkillIndex 读取 skill 索引（无密钥兼容入口）；文件不存在视为空索引。
 func (m *Manager) LoadSkillIndex() (*SkillIndex, error) {
+	return m.LoadSkillIndexWithKey(nil)
+}
+
+// LoadSkillIndexWithKey 读取 skill 索引，并在索引为 v2 密文时使用 key 解密。
+func (m *Manager) LoadSkillIndexWithKey(key []byte) (*SkillIndex, error) {
 	return withVaultRead(m, func(locked *Manager) (*SkillIndex, error) {
+		policy, err := locked.readCryptoPolicyLocked()
+		if err != nil {
+			return nil, err
+		}
 		root, err := locked.openDataRoot()
 		if err != nil {
 			return nil, err
@@ -161,11 +179,11 @@ func (m *Manager) LoadSkillIndex() (*SkillIndex, error) {
 			}
 			return nil, err
 		}
-		return ParseSkillIndexData(data, nil, 0)
+		return ParseSkillIndexDataStrict(data, key, policy.KeyEpoch, policy.RequireV2)
 	})
 }
 
-// SaveSkillIndex 校验并原子写入 skill 索引。
+// SaveSkillIndex 校验并原子写入明文 skill 索引（require_v2 开启时拒绝明文）。
 func (m *Manager) SaveSkillIndex(index *SkillIndex) error {
 	normalized, err := normalizeSkillIndex(index)
 	if err != nil {
@@ -173,6 +191,13 @@ func (m *Manager) SaveSkillIndex(index *SkillIndex) error {
 	}
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error { return locked.SaveSkillIndex(normalized) })
+	}
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return err
+	}
+	if policy.RequireV2 {
+		return ErrPlaintextIndexRejected
 	}
 	data, err := ToJSON(normalized)
 	if err != nil {
@@ -184,6 +209,34 @@ func (m *Manager) SaveSkillIndex(index *SkillIndex) error {
 	}
 	defer func() { _ = root.Close() }()
 	return root.AtomicWrite([]string{SkillIndexFile}, data, 0o600)
+}
+
+// SaveSkillIndexWithKey 校验并使用 v2 AAD 信封加密写入 skill 索引。
+func (m *Manager) SaveSkillIndexWithKey(index *SkillIndex, key []byte) error {
+	normalized, err := normalizeSkillIndex(index)
+	if err != nil {
+		return err
+	}
+	if !m.mutationLocked {
+		return m.mutate(func(locked *Manager) error { return locked.SaveSkillIndexWithKey(normalized, key) })
+	}
+	if err := m.requireCurrentKey(key); err != nil {
+		return err
+	}
+	data, err := ToJSON(normalized)
+	if err != nil {
+		return err
+	}
+	encrypted, err := m.encryptEntryLocked(key, syncschema.KindSkillIndex, "", "", data)
+	if err != nil {
+		return err
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return root.AtomicWrite([]string{SkillIndexFile}, []byte(encrypted), 0o600)
 }
 
 // SaveSkillWithKey 加密并写入 skills/<group>/<id>.enc。archive 是 ustar tar 明文，
@@ -201,7 +254,7 @@ func (m *Manager) SaveSkillWithKey(group, id string, archive []byte, cryptoKey [
 	if err := m.requireCurrentKey(cryptoKey); err != nil {
 		return err
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, archive)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindSkill, group, id, archive)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt skill: %w", err)
 	}
@@ -231,7 +284,7 @@ func (m *Manager) LoadSkillWithKey(group, id string, cryptoKey []byte) ([]byte, 
 		if err != nil {
 			return nil, fmt.Errorf("skill %q not found in group %q: %w", id, group, err)
 		}
-		plaintext, err := crypto.Decrypt(cryptoKey, string(ciphertext))
+		plaintext, err := locked.decryptEntryLocked(cryptoKey, syncschema.KindSkill, group, id, string(ciphertext))
 		if err != nil {
 			return nil, fmt.Errorf("failed to decrypt skill %q: %w", id, err)
 		}
