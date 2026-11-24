@@ -22,9 +22,10 @@ type ledgerTab struct {
 	width, height int
 	loaded        bool
 
-	heads  []ledger.Head // 全部实体（跨分组）
-	groups []string      // 已排序的分组名（不含 "All"）
-	// groupIndex 0 = "All" 伪组；>0 指向 groups[index-1]。
+	heads          []ledger.Head // 全部实体（跨分组）
+	groups         []string      // 已排序的分组名（不含 "All"）
+	expandedGroups map[string]bool
+	// groupIndex 指向 navNodes() 中的当前行（0 = "All"）。
 	groupIndex int
 	focusLeft  bool
 	itemIndex  int
@@ -56,7 +57,7 @@ type ledgerDetailMsg struct {
 }
 
 func newLedgerTab(mgr Managers) *ledgerTab {
-	return &ledgerTab{mgr: mgr, focusLeft: true}
+	return &ledgerTab{mgr: mgr, focusLeft: true, expandedGroups: map[string]bool{}}
 }
 
 func (t *ledgerTab) Title() string { return "Ledger" }
@@ -72,7 +73,10 @@ func (t *ledgerTab) Bindings() []KeyAction {
 		return filterBindings(true)
 	}
 	if t.focusLeft {
-		return append(navBindings(true), actFilter, actRefresh)
+		return append(navBindings(true),
+			KeyAction{[]string{"space"}, "expand/collapse", grpItem, false},
+			actFilter, actRefresh,
+		)
 	}
 	return append(navBindings(true),
 		actDetail,
@@ -126,24 +130,74 @@ func (t *ledgerTab) load() tea.Cmd {
 
 // --- derived lists ---
 
-func (t *ledgerTab) currentGroup() string {
-	if t.groupIndex <= 0 || t.groupIndex >= len(t.groups)+1 {
-		return ""
+type ledgerNavNode struct {
+	group  string // "" = All
+	typ    string // "" = group level
+	count  int
+	isType bool
+}
+
+func (t *ledgerTab) navNodes() []ledgerNavNode {
+	groupCounts := map[string]int{}
+	typesByGroup := map[string]map[string]int{}
+	for _, h := range t.heads {
+		groupCounts[h.Group]++
+		if typesByGroup[h.Group] == nil {
+			typesByGroup[h.Group] = map[string]int{}
+		}
+		typesByGroup[h.Group][h.Type]++
 	}
-	return t.groups[t.groupIndex-1]
+	nodes := make([]ledgerNavNode, 0, len(t.groups)+1)
+	nodes = append(nodes, ledgerNavNode{count: len(t.heads)})
+	for _, g := range t.groups {
+		nodes = append(nodes, ledgerNavNode{group: g, count: groupCounts[g]})
+		if t.expandedGroups != nil && t.expandedGroups[g] {
+			types := make([]string, 0, len(typesByGroup[g]))
+			for tp := range typesByGroup[g] {
+				types = append(types, tp)
+			}
+			sort.Strings(types)
+			for _, tp := range types {
+				nodes = append(nodes, ledgerNavNode{
+					group:  g,
+					typ:    tp,
+					count:  typesByGroup[g][tp],
+					isType: true,
+				})
+			}
+		}
+	}
+	return nodes
+}
+
+func (t *ledgerTab) currentNode() ledgerNavNode {
+	nodes := t.navNodes()
+	if t.groupIndex < 0 || t.groupIndex >= len(nodes) {
+		return ledgerNavNode{}
+	}
+	return nodes[t.groupIndex]
+}
+
+func (t *ledgerTab) currentGroup() string {
+	return t.currentNode().group
 }
 
 func (t *ledgerTab) baseHeads() []ledger.Head {
-	if g := t.currentGroup(); g != "" {
-		out := make([]ledger.Head, 0, len(t.heads))
-		for _, h := range t.heads {
-			if h.Group == g {
-				out = append(out, h)
-			}
-		}
-		return out
+	node := t.currentNode()
+	if node.group == "" {
+		return t.heads
 	}
-	return t.heads
+	out := make([]ledger.Head, 0, len(t.heads))
+	for _, h := range t.heads {
+		if h.Group != node.group {
+			continue
+		}
+		if node.isType && h.Type != node.typ {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 func (t *ledgerTab) filteredHeads() []ledger.Head {
@@ -172,14 +226,15 @@ func (t *ledgerTab) currentHead() (ledger.Head, bool) {
 
 func (t *ledgerTab) focusListLen() int {
 	if t.focusLeft {
-		return len(t.groups) + 1 // "All" + real groups
+		return len(t.navNodes())
 	}
 	return len(t.filteredHeads())
 }
 
 func (t *ledgerTab) moveCursor(delta int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(t.groupIndex+delta, 0, len(t.groups))
+		n := len(t.navNodes())
+		t.groupIndex = clamp(t.groupIndex+delta, 0, maxInt(n-1, 0))
 		t.itemIndex = 0
 		return
 	}
@@ -188,7 +243,8 @@ func (t *ledgerTab) moveCursor(delta int) {
 
 func (t *ledgerTab) jumpCursor(idx int) {
 	if t.focusLeft {
-		t.groupIndex = clamp(idx, 0, len(t.groups))
+		n := len(t.navNodes())
+		t.groupIndex = clamp(idx, 0, maxInt(n-1, 0))
 		t.itemIndex = 0
 		return
 	}
@@ -196,8 +252,33 @@ func (t *ledgerTab) jumpCursor(idx int) {
 }
 
 func (t *ledgerTab) clampCursors() {
-	t.groupIndex = clamp(t.groupIndex, 0, len(t.groups))
+	n := len(t.navNodes())
+	t.groupIndex = clamp(t.groupIndex, 0, maxInt(n-1, 0))
 	t.itemIndex = clamp(t.itemIndex, 0, maxInt(len(t.filteredHeads())-1, 0))
+}
+
+func (t *ledgerTab) toggleExpand() {
+	if !t.focusLeft {
+		return
+	}
+	node := t.currentNode()
+	if node.group == "" {
+		return
+	}
+	if t.expandedGroups == nil {
+		t.expandedGroups = map[string]bool{}
+	}
+	t.expandedGroups[node.group] = !t.expandedGroups[node.group]
+	if node.isType && !t.expandedGroups[node.group] {
+		// Collapsing from a child type node moves cursor back to parent group.
+		for i, nd := range t.navNodes() {
+			if nd.group == node.group && !nd.isType {
+				t.groupIndex = i
+				break
+			}
+		}
+	}
+	t.itemIndex = 0
 }
 
 // focusJump 定位到某个实体（全局搜索跳转）。
@@ -207,9 +288,9 @@ func (t *ledgerTab) focusJump(group, key string) {
 	t.focusLeft = false
 	t.itemIndex = 0
 	if group != "" {
-		for i, g := range t.groups {
-			if g == group {
-				t.groupIndex = i + 1
+		for i, nd := range t.navNodes() {
+			if nd.group == group && !nd.isType {
+				t.groupIndex = i
 				break
 			}
 		}
@@ -347,6 +428,10 @@ func (t *ledgerTab) updateKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		t.jumpCursor(t.cursorForFocus() + pageStep(t.height))
 	case "enter":
 		return t.openDetail()
+	case " ":
+		if t.focusLeft {
+			t.toggleExpand()
+		}
 	case "a":
 		if !t.focusLeft {
 			return t.enterAppend()
@@ -598,23 +683,28 @@ func (t *ledgerTab) viewBaseAt(height int) string {
 }
 
 func (t *ledgerTab) renderGroups(width, height int) string {
-	rows := make([]SidebarRow, 0, len(t.groups)+1)
-	counts := map[string]int{}
-	for _, h := range t.heads {
-		counts[h.Group]++
-	}
-	rows = append(rows, SidebarRow{
-		Marker:   " ",
-		Name:     ledgerAllLabel,
-		Count:    len(t.heads),
-		Selected: t.groupIndex == 0 && t.focusLeft,
-	})
-	for i, g := range t.groups {
+	nodes := t.navNodes()
+	rows := make([]SidebarRow, 0, len(nodes))
+	for i, nd := range nodes {
+		marker := " "
+		name := ledgerAllLabel
+		if nd.group != "" {
+			if nd.isType {
+				name = "  " + nd.typ
+			} else {
+				name = nd.group
+				if t.expandedGroups != nil && t.expandedGroups[nd.group] {
+					marker = "▾"
+				} else {
+					marker = "▸"
+				}
+			}
+		}
 		rows = append(rows, SidebarRow{
-			Marker:   " ",
-			Name:     g,
-			Count:    counts[g],
-			Selected: t.groupIndex == i+1 && t.focusLeft,
+			Marker:   marker,
+			Name:     name,
+			Count:    nd.count,
+			Selected: i == t.groupIndex && t.focusLeft,
 		})
 	}
 	return renderSidebar(rows, t.groupIndex, height, width)
@@ -622,9 +712,12 @@ func (t *ledgerTab) renderGroups(width, height int) string {
 
 func (t *ledgerTab) renderHeads(width, height int) string {
 	items := t.filteredHeads()
-	label := t.currentGroup()
+	nd := t.currentNode()
+	label := nd.group
 	if label == "" {
 		label = ledgerAllLabel
+	} else if nd.isType {
+		label = nd.group + "/" + nd.typ
 	}
 	header := fmt.Sprintf("%s (%d)", label, len(items))
 	if t.filterBox.Term() != "" {

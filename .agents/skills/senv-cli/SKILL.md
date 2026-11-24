@@ -205,7 +205,7 @@ git provider 之外，vault 可托管在 senv-server 上：
 - **命令**：`senv ledger create <type>.<id> --description …`、`list [--type] [--json]`、`get`、`log`、`timeline [--type]`、`append <组:实体键> --summary … [--body|--body-file] [--kind op|note|correction] [--agent] [--at YYYY-MM-DD]`、`edit --field 名称=值`（空值删字段）、`set-status --text … [--level]`、`delete-record`（确认后删，同步为 tombstone）。
 - **回滚语义**：记录没有更新命令——写错就追加 `--kind correction`；删除是显式动作，最后版本留在条目历史（`senv history ledger_log:…`）。实体头修改走既有冲突检测。
 - **MCP 面**：`senv_ledger_list` / `senv_ledger_get` / `senv_ledger_append` / `senv_ledger_update`（只读 + 追加 + 单字段/状态更新；**刻意无删除**，失控 agent 的最大破坏半径只是多写几条可更正记录）。`senv_search --kind ledger` 只命中实体头（type/id/description/tags），不含记录正文。
-- **TUI Ledger Tab**：左栏分组侧栏（All + 各组），右栏实体列表；`enter` 详情（字段/状态/时间线），`a` 追加记录（summary + 可选 body 走 $EDITOR），`e` 改单字段（空值删字段），`s` 写最近状态，`/` 过滤。写入与 CLI 同语义并记 `op_ledger` 审计。
+- **TUI Ledger Tab**：左栏分组侧栏（All + 各组，按 `space` 可展开/折叠该组下的 `type` 子树），右栏实体列表；`enter` 详情（字段/状态/时间线），`a` 追加记录（summary + 可选 body 走 $EDITOR），`e` 改单字段（空值删字段），`s` 写最近状态，`/` 过滤。写入与 CLI 同语义并记 `op_ledger` 审计。
 - **限制**：台账内不放密钥值（只写指纹/引用）；`import`/`export` 属迁移变更（`senv ledger import/export`），当前未提供。
 
 ## 路径树（`senv tree`）
@@ -216,6 +216,7 @@ git provider 之外，vault 可托管在 senv-server 上：
 - **命令**：`ls <组[:前缀]> [--json]`、`get <组:路径> [-o 文件]`、`set <组:路径> --file f|stdin [--exec] [--description]`、`edit <组:路径>`（仅 TTY，$EDITOR）、`rm --yes`、`diff <组[:前缀]> <本地目录>`、`pull <组[:前缀]> <目录> [--dry-run] [--yes] [--delete]`、`push <本地目录> <组[:前缀]> [--dry-run] [--yes] [--delete] [--include-ignored]`、`group list|add|delete`。
 - **安全默认**：`push` 默认忽略 `.git/`、`.env`/`.env.*`（`.env.example` 除外）、`*.dump`、`*.sql.gz`、`*.key`、`*.pem`、`*.p12`、`*.bak*`；单文件明文 ≤ 384 KiB；保留 0600/0644/0755（只关心可执行位）；pull 拒绝覆盖符号链接。不做 `{{env:…}}` 解引用，模板原文入库。
 - **MCP 面**：`senv_tree_ls`、`senv_tree_get`（仅文本）、`senv_tree_set`（单文件写，拒绝 `.env`/`*.key`/`*.pem` 路径）。**刻意不提供 rm / pull / push**，目录级落盘与批量删除走 CLI。
+- **TUI Tree Tab**：紧随 Ledger Tab 之后；左栏可折叠分组/目录树（`space` 展开/折叠子目录），右栏文件列表（`enter` 预览内容、`e` 经 `$EDITOR` 编辑写回并记 `op_tree` 审计、`S` 全局搜索可直达）。
 - **发布顺序**：新 kind `tree`/`tree_meta`，**先升级 senv-server，再升级全部客户端，最后才能 push**（旧客户端拉到未知 kind 整批拒绝同步）。
 
 ## 常用命令速查

@@ -227,6 +227,23 @@ var keymapConsistencyContract = []struct {
 			"pgup", "pgdown", "enter", "a", "e", "s", "esc", "/", "ctrl+r"},
 	},
 	{
+		name: "tree/nav",
+		new:  func() Tab { return newTreeTab(Managers{}) },
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "space", "/", "ctrl+r"},
+		absent: []string{"enter", "e"},
+	},
+	{
+		name: "tree/files",
+		new: func() Tab {
+			t := newTreeTab(Managers{})
+			t.focusLeft = false
+			return t
+		},
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "enter", "e", "esc", "/", "ctrl+r"},
+	},
+	{
 		name: "mcp/import-report",
 		new: func() Tab {
 			t := newMCPTab(Managers{})

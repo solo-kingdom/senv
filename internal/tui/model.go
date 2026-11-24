@@ -16,6 +16,7 @@ import (
 	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/text"
+	"github.com/wii/senv/internal/tree"
 )
 
 // Managers bundles the domain managers shared by all tabs. History 为 nil
@@ -43,6 +44,8 @@ type Managers struct {
 	MCP          *mcp.Manager
 	// Ledger 为 nil 时不注册 Ledger Tab。
 	Ledger *ledger.Manager
+	// Tree 为 nil 时不注册 Tree Tab。
+	Tree *tree.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
@@ -187,6 +190,9 @@ func New(mgr Managers) Model {
 	}
 	if mgr.Ledger != nil {
 		m.tabs = append(m.tabs, newLedgerTab(mgr))
+	}
+	if mgr.Tree != nil {
+		m.tabs = append(m.tabs, newTreeTab(mgr))
 	}
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
