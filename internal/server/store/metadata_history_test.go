@@ -71,3 +71,48 @@ func TestMetadataHistoryAndBaseHash(t *testing.T) {
 		t.Fatalf("pruned history = %q/%q, want v4/v3", h[0].Blob, h[1].Blob)
 	}
 }
+
+func TestMetadataHistoryRetainZeroAndAdminPruneMode(t *testing.T) {
+	s := NewSQL(testdb.New(t))
+	ctx := context.Background()
+	userID, _ := newTestUser(t, s, "alice")
+
+	// retain=0 时关闭留存，覆盖写不新增历史行
+	s.SetHistoryRetain(0)
+	if err := s.PutMetadata(ctx, userID, "main", []byte("v1"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMetadata(ctx, userID, "main", []byte("v2"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := s.GetMetadataHistory(ctx, userID, "main", 10); err != nil || len(h) != 0 {
+		t.Fatalf("retain=0 history = %d (err=%v), want 0", len(h), err)
+	}
+
+	// historyPrune=false（admin 模式）：写入只追加不裁剪，由 PruneAllHistory 统一裁剪
+	s.SetHistoryRetain(1)
+	s.SetHistoryPrune(false)
+	for _, v := range []string{"v3", "v4", "v5"} {
+		if err := s.PutMetadata(ctx, userID, "main", []byte(v), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.GetMetadataHistory(ctx, userID, "main", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h) != 3 {
+		t.Fatalf("admin-prune mode should not delete inline, got %d rows, want 3", len(h))
+	}
+	deleted, err := s.PruneAllHistory(ctx, 1)
+	if err != nil {
+		t.Fatalf("PruneAllHistory: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("PruneAllHistory deleted = %d, want 2", deleted)
+	}
+	h, err = s.GetMetadataHistory(ctx, userID, "main", 10)
+	if err != nil || len(h) != 1 || string(h[0].Blob) != "v4" {
+		t.Fatalf("after admin prune = %+v (err=%v), want single v4", h, err)
+	}
+}

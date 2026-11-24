@@ -25,11 +25,12 @@ var (
 	configDescription string
 	configListGroup   string
 
-	configInstallAll  bool
-	configDryRun      bool
-	configYes         bool
-	configExportMode  string
-	configInstallMode string
+	configInstallAll   bool
+	configDryRun       bool
+	configYes          bool
+	configForceChanged bool
+	configExportMode   string
+	configInstallMode  string
 
 	configRepairDryRun      bool
 	configRepairYes         bool
@@ -319,13 +320,17 @@ storage entries are never touched.`,
 			return nil
 		}
 
-		// --yes confirms everything including changed items; otherwise ask
-		// per changed item.
+		// --yes skips the upfront plan confirmation, but modified targets
+		// (ActionChanged) still require explicit --force-changed (or interactive
+		// confirmation) so tampered or locally edited files are never silently deleted.
 		confirmChanged := func(item config.UninstallItem) bool {
+			if configForceChanged {
+				return true
+			}
+			if configYes || !stdinIsTerminal() {
+				return false
+			}
 			return confirmPrompt(fmt.Sprintf("目标文件已被本地修改，确认删除 %s? [y/N]: ", item.TargetPath))
-		}
-		if configYes {
-			confirmChanged = func(config.UninstallItem) bool { return true }
 		}
 
 		uninstallErr := configManager.ExecuteUninstall(plan, confirmChanged)
@@ -475,7 +480,8 @@ func init() {
 	configUninstallCmd.Flags().StringVar(&configListGroup, "group", "", "uninstall all configs in a group")
 	configUninstallCmd.Flags().BoolVar(&configInstallAll, "all", false, "uninstall all configs")
 	configUninstallCmd.Flags().BoolVar(&configDryRun, "dry-run", false, "show the plan without executing")
-	configUninstallCmd.Flags().BoolVar(&configYes, "yes", false, "skip confirmation prompts (including modified files)")
+	configUninstallCmd.Flags().BoolVar(&configYes, "yes", false, "skip upfront plan confirmation (modified targets still require --force-changed)")
+	configUninstallCmd.Flags().BoolVar(&configForceChanged, "force-changed", false, "also delete targets modified since install")
 
 	configCmd.AddCommand(configCreateCmd)
 	configCmd.AddCommand(configEditCmd)

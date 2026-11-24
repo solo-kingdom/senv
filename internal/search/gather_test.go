@@ -146,3 +146,23 @@ func TestGatherLedgerHeadsOnlyAndMatchByTag(t *testing.T) {
 		}
 	}
 }
+
+func TestGatherSkipsReservedLLMKeys(t *testing.T) {
+	src := testSources(t)
+	if err := src.Text.Set(llm.LLMKeysGroup, "openai-secret", "sk-live-999999"); err != nil {
+		t.Fatalf("seed llm-keys: %v", err)
+	}
+	items := Gather(src)
+	for _, it := range items {
+		if it.Kind == KindText && strings.EqualFold(it.Group, llm.LLMKeysGroup) {
+			t.Fatalf("Gather indexed reserved llm-keys entry: %+v", it)
+		}
+	}
+	res, err := Run(items, "openai-secret", nil, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 0 {
+		t.Fatalf("reserved llm-keys entry must not appear in search results: %+v", res.Hits)
+	}
+}

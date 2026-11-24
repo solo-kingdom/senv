@@ -17,6 +17,7 @@ type Metadata struct {
 	Salt          string    `json:"salt"`                     // Base64 encoded salt
 	PasswordKey   string    `json:"password_key"`             // Base64 encoded encrypted password hash
 	KDFIterations int       `json:"kdf_iterations,omitempty"` // PBKDF2 iterations; 0 = legacy
+	KeyEpoch      int       `json:"key_epoch,omitempty"`      // Monotonic epoch incremented on rekey (0 = pre-v2)
 }
 
 // Settings represents the user settings

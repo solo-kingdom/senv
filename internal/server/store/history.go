@@ -77,8 +77,9 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, vaultID int64, retain int) err
 	return err
 }
 
-// PruneAllHistory 由 admin 侧清理：把所有 vault 的条目历史裁剪到最近 retain 版。
-// 供 `--history-prune-mode admin` 部署配合 cron 使用；返回删除行数。
+// PruneAllHistory 由 admin 侧清理：把所有 vault 的条目历史与 metadata 历史
+// 裁剪到最近 retain 版。供 `--history-prune-mode admin` 部署配合 cron 使用；
+// 返回总删除行数。
 func (s *pgStore) PruneAllHistory(ctx context.Context, retain int) (int64, error) {
 	if retain <= 0 {
 		return 0, validationErrorf("history retain 必须大于 0")
@@ -94,7 +95,18 @@ func (s *pgStore) PruneAllHistory(ctx context.Context, retain int) (int64, error
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	metaTag, err := s.pool.Exec(ctx,
+		`DELETE FROM vault_metadata_history WHERE id IN (
+		   SELECT id FROM (
+		     SELECT id, ROW_NUMBER() OVER (
+		       PARTITION BY vault_id ORDER BY replaced_at DESC, id DESC) AS rn
+		     FROM vault_metadata_history
+		   ) ranked WHERE ranked.rn > $1
+		 )`, retain)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected() + metaTag.RowsAffected(), nil
 }
 
 // HistoryFilter 过滤历史查询；零值字段表示不过滤

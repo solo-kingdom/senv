@@ -725,3 +725,54 @@ func TestClassifyAuthCause(t *testing.T) {
 		})
 	}
 }
+
+func TestRenewSessionBlocksPasswordlessEscalation(t *testing.T) {
+	isolateSessionCache(t)
+	configPath, dataPath := setupProject(t, "correct-secret")
+	sm := sessionManagerForTest(t, configPath, dataPath)
+	defer sm.Close()
+
+	shortTimeout, _ := ParseTimeout("30m")
+	if err := sm.StartSession("correct-secret", shortTimeout); err != nil {
+		t.Fatalf("start 30m session: %v", err)
+	}
+	initial, _ := sm.LoadCache()
+
+	// 1. Duration -> restart must be refused without password.
+	restartTimeout, _ := ParseTimeout("restart")
+	if err := sm.RenewSession(restartTimeout); !errors.Is(err, ErrSessionEscalationRequiresPassword) {
+		t.Fatalf("RenewSession(restart) err = %v, want ErrSessionEscalationRequiresPassword", err)
+	}
+	afterRestartAttempt, _ := sm.LoadCache()
+	if afterRestartAttempt.TimeoutType != string(TimeoutDuration) {
+		t.Fatalf("cache escalated to %q after rejected refresh", afterRestartAttempt.TimeoutType)
+	}
+
+	// 2. Duration -> 1y (exceeding default 24h max_lifetime) must be refused without password.
+	oneYear, _ := ParseTimeout("1y")
+	if err := sm.RenewSession(oneYear); !errors.Is(err, ErrSessionEscalationRequiresPassword) {
+		t.Fatalf("RenewSession(1y) err = %v, want ErrSessionEscalationRequiresPassword", err)
+	}
+	afterYearAttempt, _ := sm.LoadCache()
+	if !afterYearAttempt.ExpiresAt.Equal(initial.ExpiresAt) {
+		t.Fatalf("cache expiry changed after rejected 1y refresh: %s -> %s", initial.ExpiresAt, afterYearAttempt.ExpiresAt)
+	}
+
+	// 3. Duration within max_lifetime (8h <= 24h) is allowed and capped at CreatedAt+24h.
+	eightHours, _ := ParseTimeout("8h")
+	if err := sm.RenewSession(eightHours); err != nil {
+		t.Fatalf("RenewSession(8h) failed: %v", err)
+	}
+	after8h, _ := sm.LoadCache()
+	if after8h.ExpiresAt.After(initial.CreatedAt.Add(DefaultMaxLifetime)) {
+		t.Fatalf("renewed expiry %s exceeded max_lifetime cap", after8h.ExpiresAt)
+	}
+
+	// 4. Restart session renewing as restart stays allowed without password.
+	if err := sm.StartSession("correct-secret", restartTimeout); err != nil {
+		t.Fatalf("start restart session: %v", err)
+	}
+	if err := sm.RenewSession(restartTimeout); err != nil {
+		t.Fatalf("RenewSession(restart) on restart session failed: %v", err)
+	}
+}

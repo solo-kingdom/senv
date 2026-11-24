@@ -498,15 +498,19 @@ type PullResult struct {
 // 阶段 3 的状态基线不会被并发 sync 改写。本地 dirty 的条目不被远端覆盖
 // （留给 push 乐观锁判定）——语义与旧单锁实现一致。
 func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
+	return p.pullWithOpts(ctx, true)
+}
+
+func (p *ServerProvider) pullWithOpts(ctx context.Context, allowMetadataKeyChange bool) (*PullResult, error) {
 	manifest, err := p.pullManifest()
 	if err != nil {
 		return nil, err
 	}
-	remote, latest, remoteMeta, err := p.pullFetch(ctx, manifest.LastSyncedRevision)
+	remote, latest, remoteMeta, vaultFound, err := p.pullFetch(ctx, manifest.LastSyncedRevision)
 	if err != nil {
 		return nil, err
 	}
-	return p.pullApply(manifest, remote, latest, remoteMeta)
+	return p.pullApply(manifest, remote, latest, remoteMeta, vaultFound, allowMetadataKeyChange)
 }
 
 // pullManifest 是 pull 阶段 1：短暂持有 vault 锁读取同步状态（版本/指纹），
@@ -529,34 +533,40 @@ func (p *ServerProvider) pullManifest() (*syncState, error) {
 // pullFetch 是 pull 阶段 2：不持有 vault 锁执行 api.Pull 与 api.GetMetadata，
 // 网络等待与本地 vault 读取/写入并行。返回的远端条目已在任何落盘前完成
 // 身份校验（含将被 dirty 跳过的条目）。
-func (p *ServerProvider) pullFetch(ctx context.Context, since int64) (entries []Entry, latest int64, remoteMeta []byte, err error) {
+func (p *ServerProvider) pullFetch(ctx context.Context, since int64) (entries []Entry, latest int64, remoteMeta []byte, vaultFound bool, err error) {
 	t := perflog.Start("sync.pull-net")
 	defer func() { t.End(err == nil) }()
+	vaultFound = true
 	entries, latest, err = p.api.Pull(ctx, p.vault, since)
 	if errors.Is(err, ErrVaultNotFound) {
 		entries, latest, err = nil, 0, nil
+		vaultFound = false
 	}
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, false, err
 	}
 	if err := validateRemoteEntries(entries); err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, false, err
 	}
 	remoteMeta, err = p.api.GetMetadata(ctx, p.vault)
-	if err != nil && !errors.Is(err, ErrVaultNotFound) {
-		return nil, 0, nil, err
+	if err != nil {
+		if errors.Is(err, ErrVaultNotFound) {
+			vaultFound = false
+			return entries, latest, nil, false, nil
+		}
+		return nil, 0, nil, false, err
 	}
-	return entries, latest, remoteMeta, nil
+	return entries, latest, remoteMeta, vaultFound, nil
 }
 
 // pullApply 是 pull 阶段 3：持有 vault 写锁把远端响应应用落盘。单事务写入
 // 条目 + metadata + 状态文件，任何同步失败整体回滚。
-func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, remoteMeta []byte) (*PullResult, error) {
+func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, remoteMeta []byte, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
 	t := perflog.Start("sync.pull-apply")
 	var res *PullResult
 	err := p.withVaultMutation(func() error {
 		var inner error
-		res, inner = p.pullApplyLocked(st, remote, latest, remoteMeta)
+		res, inner = p.pullApplyLocked(st, remote, latest, remoteMeta, vaultFound, allowMetadataKeyChange)
 		return inner
 	})
 	t.End(err == nil)
@@ -566,7 +576,10 @@ func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, 
 // pullApplyLocked 在写锁内重算 dirty 并应用远端条目。阶段 2 不持锁，本地写
 // 可能已落入——这里重新对比快照与现状，dirty 条目（含网络窗口内新增的写）
 // 跳过不覆盖，保持 dirty 队列语义不变，交给后续 push 乐观锁判定。
-func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest int64, remoteMeta []byte) (*PullResult, error) {
+func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest int64, remoteMeta []byte, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
+	if vaultFound && st.LastSyncedRevision > 0 && latest < st.LastSyncedRevision {
+		return nil, fmt.Errorf("检测到远端同步版本号回滚（local=%d, remote=%d），已拒绝拉取", st.LastSyncedRevision, latest)
+	}
 	current, err := p.cache.collect()
 	if err != nil {
 		return nil, err
@@ -583,6 +596,14 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 			res.RemoteCandidates = append(res.RemoteCandidates, e)
 			continue
 		}
+		if prev, hasPrev := st.Entries[id]; hasPrev {
+			if e.Revision < prev.Revision {
+				return nil, fmt.Errorf("检测到远端条目 %s/%s/%s 版本回滚（local=%d, remote=%d），已拒绝拉取", e.Kind, e.Grp, e.Key, prev.Revision, e.Revision)
+			}
+			if e.Revision == prev.Revision && !e.Deleted && prev.Hash != "" && hashBytes(e.Ciphertext) != prev.Hash {
+				return nil, fmt.Errorf("检测到远端条目 %s/%s/%s 同版本密文被篡改（revision=%d），已拒绝拉取", e.Kind, e.Grp, e.Key, e.Revision)
+			}
+		}
 		toApply = append(toApply, e)
 		res.Applied++
 		if e.Deleted {
@@ -597,12 +618,37 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 	if err != nil {
 		return nil, err
 	}
+	if localParsed, perr := storage.ParseMetadata(localMeta); perr == nil {
+		if iter, ierr := localParsed.ValidatedKDFIterations(); ierr == nil && iter > st.MinKDFIterations {
+			st.MinKDFIterations = iter
+		}
+	}
 	localHash := hashBytes(localMeta)
 	remoteHash := hashBytes(remoteMeta)
 	updateMetadata := false
 	if remoteHash != localHash {
-		if localHash == st.MetadataHash {
+		// 能解析的远端 metadata 才做防降级与 salt 变更判定；不可解析的保持旧语义
+		// （更新时由 applyRemoteOpts 校验并拒绝）。
+		remoteIter := 0
+		keyChanged := false
+		if remoteParsed, perr := storage.ParseMetadata(remoteMeta); perr == nil {
+			iter, ierr := remoteParsed.ValidatedKDFIterations()
+			if ierr != nil {
+				return nil, fmt.Errorf("invalid remote metadata KDF: %w", ierr)
+			}
+			remoteIter = iter
+			if st.MinKDFIterations > 0 && remoteIter < st.MinKDFIterations {
+				return nil, fmt.Errorf("远端 metadata 试图将 KDF 迭代次数从 %d 降级至 %d，已拒绝", st.MinKDFIterations, remoteIter)
+			}
+			if localParsed, lerr := storage.ParseMetadata(localMeta); lerr == nil {
+				keyChanged = localParsed.Salt != remoteParsed.Salt || localParsed.PasswordKey != remoteParsed.PasswordKey
+			}
+		}
+		if localHash == st.MetadataHash && (allowMetadataKeyChange || !keyChanged) {
 			st.MetadataHash = remoteHash
+			if remoteIter > st.MinKDFIterations {
+				st.MinKDFIterations = remoteIter
+			}
 			res.MetadataUpdated = true
 			updateMetadata = true
 		} else {

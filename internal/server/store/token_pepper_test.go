@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"testing"
+	"time"
 
 	"github.com/wii/senv/internal/server/testdb"
 )
@@ -125,5 +126,39 @@ func TestTokenNoPepperUnchanged(t *testing.T) {
 	}
 	if _, err := s.Authenticate(ctx, token); err != nil {
 		t.Fatalf("authenticate: %v", err)
+	}
+}
+
+func TestRegisterClientUsesTokenPepper(t *testing.T) {
+	ctx := context.Background()
+	pool := testdb.New(t)
+	s := NewSQL(pool)
+
+	pepper := []byte("register-pepper")
+	s.SetTokenPepper(pepper)
+
+	uid, _ := newTestUser(t, s, "reg-pepper-user")
+	code, err := s.CreateRegistrationCode(ctx, uid, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("CreateRegistrationCode: %v", err)
+	}
+	token, client, err := s.RegisterClient(ctx, code, "laptop")
+	if err != nil {
+		t.Fatalf("RegisterClient: %v", err)
+	}
+
+	var stored []byte
+	if err := pool.QueryRow(ctx, `SELECT token_hash FROM tokens WHERE client_id = $1`, client.ID).Scan(&stored); err != nil {
+		t.Fatalf("read registered token_hash: %v", err)
+	}
+	legacy := sha256.Sum256([]byte(token))
+	if bytes.Equal(stored, legacy[:]) {
+		t.Fatal("RegisterClient 绕过了 token pepper，写入了裸 SHA-256")
+	}
+	if !bytes.Equal(stored, hmacHash(t, pepper, token)) {
+		t.Fatal("RegisterClient 写入的 token_hash 与 HMAC(pepper, token) 不符")
+	}
+	if _, err := s.AuthenticateWithClient(ctx, token); err != nil {
+		t.Fatalf("AuthenticateWithClient: %v", err)
 	}
 }

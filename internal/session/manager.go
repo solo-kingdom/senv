@@ -382,9 +382,16 @@ func (m *Manager) HasValidSession() bool {
 	return m.DescribeCache().State == StateActive
 }
 
+// ErrSessionEscalationRequiresPassword is returned by RenewSession when a
+// passwordless refresh attempts to weaken or bypass the active session's
+// lifetime bounds (switching duration -> restart, or raising timeout past the
+// session's absolute cap).
+var ErrSessionEscalationRequiresPassword = errors.New("extending session beyond its cap or switching to restart requires password re-authentication")
+
 // RenewSession extends an already-validated session without a password. An
-// explicit timeout resets the sliding window; the absolute ceiling and
-// CreatedAt are preserved so renewal cannot outlive the vault's session cap.
+// explicit timeout adjusts the sliding window only within the existing
+// session's cap (max of configured max_lifetime and original session timeout),
+// and cannot escalate a duration session into a boot-bound restart session.
 func (m *Manager) RenewSession(timeout *SessionTimeout) error {
 	if timeout == nil {
 		return fmt.Errorf("session cache is disabled in configuration")
@@ -398,6 +405,9 @@ func (m *Manager) RenewSession(timeout *SessionTimeout) error {
 	updated := *cache
 	switch timeout.Type {
 	case TimeoutRestart:
+		if cache.TimeoutType != string(TimeoutRestart) {
+			return fmt.Errorf("%w: run 'senv session start -t restart'", ErrSessionEscalationRequiresPassword)
+		}
 		bootID, err := systemBootID()
 		if err != nil {
 			return fmt.Errorf("failed to get boot ID: %w", err)
@@ -407,8 +417,18 @@ func (m *Manager) RenewSession(timeout *SessionTimeout) error {
 		updated.BootID = bootID
 		updated.TimeoutSeconds = 0
 	case TimeoutDuration:
+		ceiling := m.maxLifetime()
+		if cache.TimeoutType == string(TimeoutDuration) && cache.TimeoutSeconds > 0 {
+			if orig := time.Duration(cache.TimeoutSeconds) * time.Second; orig > ceiling {
+				ceiling = orig
+			}
+		}
+		if timeout.Value > ceiling {
+			return fmt.Errorf("%w: requested timeout %s exceeds session cap %s; run 'senv session start -t %s'",
+				ErrSessionEscalationRequiresPassword, timeout.String(), formatDuration(ceiling), timeout.String())
+		}
 		updated.TimeoutType = string(TimeoutDuration)
-		updated.ExpiresAt = renewalExpiry(cache.CreatedAt, timeout.Value, m.maxLifetime(), timeNow())
+		updated.ExpiresAt = renewalExpiry(cache.CreatedAt, timeout.Value, ceiling, timeNow())
 		updated.TimeoutSeconds = int64(timeout.Value.Seconds())
 	default:
 		return fmt.Errorf("unknown timeout type: %s", timeout.Type)

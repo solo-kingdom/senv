@@ -82,12 +82,40 @@ type serverClient struct {
 	blockedOnce sync.Once
 }
 
+const (
+	// maxServerResponseBytes 限制单次成功响应体的最大解压字节数（覆盖服务端
+	// 默认 64 MiB 批量同步上限，防止被攻陷服务端或 MITM 用 gzip 炸弹打爆内存）。
+	maxServerResponseBytes int64 = 64 << 20
+	// maxServerErrorBodyBytes 限制错误响应体解码上限。
+	maxServerErrorBodyBytes int64 = 64 << 10
+)
+
 func newServerClient(baseURL, token string) *serverClient {
 	return &serverClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+			// 同步 API 不应跟随任何 HTTP 重定向，防止 HTTPS->HTTP 降级或子域重定向
+			// 导致 net/http 自动携带 Authorization: Bearer 凭据泄露。
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
+}
+
+// decodeBoundedJSON 从受限 reader 读取完整响应体并反序列化；若超出 limit 明确报错，
+// 防止超大响应或压缩炸弹耗尽客户端内存。
+func decodeBoundedJSON(r io.Reader, limit int64, out any) error {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("server 响应体超过上限（%d 字节）", limit)
+	}
+	return json.Unmarshal(data, out)
 }
 
 // do 发起认证请求并统一错误解析（401/404/409/其他），附耗时日志与建连维度
@@ -136,14 +164,16 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 		if out == nil {
 			return nil
 		}
-		return json.NewDecoder(resp.Body).Decode(out)
+		return decodeBoundedJSON(resp.Body, maxServerResponseBytes, out)
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return fmt.Errorf("server 返回重定向（%d），已拒绝跟随以保护认证凭据", resp.StatusCode)
 	case resp.StatusCode == http.StatusUnauthorized:
 		return fmt.Errorf("server 认证失败（401）：token 无效或已吊销")
 	case resp.StatusCode == http.StatusForbidden:
 		var body struct {
 			Error string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = decodeBoundedJSON(resp.Body, maxServerErrorBodyBytes, &body)
 		if body.Error == "client_blocked" {
 			// 仅机器可读的屏蔽语义触发本地清理；其余 403 按普通错误处理，
 			// 防御旧 server 或未知语义导致误清解锁缓存
@@ -162,7 +192,7 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 			Error     string     `json:"error"`
 			Conflicts []Conflict `json:"conflicts"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		if err := decodeBoundedJSON(resp.Body, maxServerResponseBytes, &body); err != nil {
 			return fmt.Errorf("推送冲突，但无法解析冲突清单: %w", err)
 		}
 		if len(body.Conflicts) == 0 {
@@ -177,7 +207,7 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 		var body struct {
 			Error string `json:"error"`
 		}
-		json.NewDecoder(resp.Body).Decode(&body)
+		_ = decodeBoundedJSON(resp.Body, maxServerErrorBodyBytes, &body)
 		if body.Error == "" {
 			body.Error = resp.Status
 		}

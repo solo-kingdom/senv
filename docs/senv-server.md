@@ -29,8 +29,8 @@ serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DS
 0 * * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv' /usr/local/bin/senv-server-bin admin history-prune --retain 10
 ```
 
-- 采用 `admin` 时，可把 serve 角色对 `entries_history` 收紧为 `SELECT, INSERT`（见 `sql/roles.sql` 注释中的语句）。
-- **vault metadata 也有历史**：每次覆盖前保存上一版（同样保留 N 版，N 取 `--history-retain`）；内容未变不写前像。写入支持 `base_hash` 乐观锁（客户端推送会带；不一致返回 409，不静默覆盖）。查看与恢复：`senv history --metadata`、`senv history --metadata --restore <序号>`（1 = 最近一版；恢复先备份本地文件，推送失败自动回滚本地）。
+- 采用 `admin` 时，可把 serve 角色对 `entries_history` 与 `vault_metadata_history` 收紧为 `SELECT, INSERT`（见 `sql/roles.sql` 注释中的语句），由 `admin history-prune --retain N` 统一裁剪两张历史表。
+- **vault metadata 也有历史**：每次覆盖前保存上一版（受 `--history-retain` 与 `--history-prune-mode` 控制，`--history-retain 0` 关闭留存）；内容未变不写前像。写入支持 `base_hash` 乐观锁（客户端推送会带；不一致返回 409，不静默覆盖）。查看与恢复：`senv history --metadata`、`senv history --metadata --restore <序号>`（1 = 最近一版；恢复先备份本地文件，推送失败自动回滚本地）。
 
 ### admin 操作审计
 
@@ -409,11 +409,12 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
   }
   ```
 
-  caddy 自动附加 X-Forwarded-For，作为 X-Real-IP 缺失时的回落；两者都缺失或
-  非法时 server 按代理自身 IP 计数（fail-safe）。server 的 `--trust-proxy-headers`
-  仅在直连对端为 loopback 或私网地址（RFC1918/ULA，覆盖 docker 网桥反代）时
-  才采信这些头，外网直连伪造无效。开启后同一私网内的其他主机也被视为可信
-  代理（可借伪造头获得独立限速窗口），仅当私网对端全部可信时才应开启。
+  caddy 自动附加 X-Forwarded-For，作为 X-Real-IP 缺失时的回落；server 对
+  X-Forwarded-For 自右向左跳过可信私网/回环代理跳取最右真实来源 IP（忽略客户端
+  在最左端伪造的值），两者都缺失或最右项非法时按代理自身 IP 计数（fail-safe）。
+  server 的 `--trust-proxy-headers` 仅在直连对端为 loopback 或私网地址（RFC1918/ULA，
+  覆盖 docker 网桥反代）时才采信这些头，外网直连伪造无效。开启后同一私网内的其他主机
+  也被视为可信代理（可借伪造头获得独立限速窗口），仅当私网对端全部可信时才应开启。
 - 认证限速：server 内置按来源 IP 的失败限速（默认 30 次/分钟）；如需在边缘再加一层，
   可用 caddy 的 `rate_limit` 插件对 `/v1/` 路径限速
 - 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简；

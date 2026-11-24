@@ -440,8 +440,10 @@ func (s *pgStore) PutMetadata(ctx context.Context, userID int64, vault string, b
 			// 内容未变化：不写前像、不推进更新时间
 			return tx.Commit(ctx)
 		}
-		if err := recordMetadataPreimage(ctx, tx, vaultID, s.historyRetain); err != nil {
-			return err
+		if s.historyRetain > 0 {
+			if err := recordMetadataPreimage(ctx, tx, vaultID, s.historyRetain, s.historyPrune); err != nil {
+				return err
+			}
 		}
 	case errors.Is(err, pgx.ErrNoRows):
 		// 首次写入：没有前像可留

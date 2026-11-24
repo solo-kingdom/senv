@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -315,5 +316,20 @@ func TestConfigExportModeRejectsSpecialBitsBeforeBackup(t *testing.T) {
 	backups, err := filepath.Glob(target + ".senv-backup-*")
 	if err != nil || len(backups) != 0 {
 		t.Fatalf("invalid mode created backups: %v, err=%v", backups, err)
+	}
+}
+
+func TestConfigExportRefusesSenvManagedDirectory(t *testing.T) {
+	m := newTestManager(t)
+	src := filepath.Join(t.TempDir(), "source")
+	writeFile(t, src, "secret")
+	if err := m.Create("app", src, filepath.Join(m.storage.GetConfigPath(), "settings.json"), "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Export("app", ""); err == nil || !strings.Contains(err.Error(), "senv managed directory") {
+		t.Fatalf("expected refusal for senv configPath target, got %v", err)
+	}
+	if err := m.Export("app", filepath.Join(m.storage.GetDataPath(), "evil.enc")); err == nil || !strings.Contains(err.Error(), "senv managed directory") {
+		t.Fatalf("expected refusal for senv dataPath target, got %v", err)
 	}
 }

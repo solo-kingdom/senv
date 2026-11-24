@@ -59,6 +59,7 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 		Salt          string          `json:"salt"`
 		PasswordKey   string          `json:"password_key"`
 		KDFIterations json.RawMessage `json:"kdf_iterations"`
+		KeyEpoch      int             `json:"key_epoch"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -89,6 +90,7 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 		Salt:          wire.Salt,
 		PasswordKey:   wire.PasswordKey,
 		KDFIterations: iterations,
+		KeyEpoch:      wire.KeyEpoch,
 	}
 	_, err := m.ValidatedKDFIterations()
 	return err

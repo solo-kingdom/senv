@@ -351,6 +351,9 @@ func (m *Manager) ExportWithMode(name string, targetPath string, mode fs.FileMod
 	if err != nil {
 		return fmt.Errorf("failed to resolve target path: %w", err)
 	}
+	if err := m.validateSafeTargetPath(targetPath); err != nil {
+		return err
+	}
 
 	// Load and decrypt
 	content, err := m.loadConfigFile(name)
@@ -593,6 +596,32 @@ func ResolveTargetPath(raw string) (string, error) {
 		return "", fmt.Errorf("path %q resolves to empty", raw)
 	}
 	return path, nil
+}
+
+// validateSafeTargetPath prevents exporting/installing/uninstalling into senv's
+// own configPath or dataPath directories (defense-in-depth against tampered
+// index entries or accidental self-overwrite).
+func (m *Manager) validateSafeTargetPath(resolvedTarget string) error {
+	absTarget, err := filepath.Abs(resolvedTarget)
+	if err != nil {
+		return fmt.Errorf("resolve target path: %w", err)
+	}
+	absTarget = filepath.Clean(absTarget)
+	for _, root := range []string{m.storage.GetConfigPath(), m.storage.GetDataPath()} {
+		if root == "" {
+			continue
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		absRoot = filepath.Clean(absRoot)
+		rel, err := filepath.Rel(absRoot, absTarget)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			return fmt.Errorf("refusing target path %q inside senv managed directory %q", resolvedTarget, root)
+		}
+	}
+	return nil
 }
 
 // Rename renames a config entry (its name and index key). The target path,

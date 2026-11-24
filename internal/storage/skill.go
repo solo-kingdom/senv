@@ -124,6 +124,28 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 	return normalized, nil
 }
 
+// ParseSkillIndexData decodes a skill index from either legacy plaintext JSON
+// or a v2 AAD-encrypted envelope (Phase 1 read compatibility).
+func ParseSkillIndexData(data, key []byte, keyEpoch int) (*SkillIndex, error) {
+	payload := data
+	if crypto.IsV2Ciphertext(string(data)) {
+		if len(key) == 0 {
+			return nil, ErrEncryptedIndexRequiresKey
+		}
+		aad := crypto.BuildEntryAAD("skill_index", "", "", keyEpoch)
+		plain, err := crypto.DecryptWithAAD(key, string(data), aad)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt skill index: %w", err)
+		}
+		payload = plain
+	}
+	var index SkillIndex
+	if err := FromJSON(payload, &index); err != nil {
+		return nil, fmt.Errorf("parse skill index: %w", err)
+	}
+	return normalizeSkillIndex(&index)
+}
+
 // LoadSkillIndex 读取 skill 索引；文件不存在视为空索引。
 func (m *Manager) LoadSkillIndex() (*SkillIndex, error) {
 	return withVaultRead(m, func(locked *Manager) (*SkillIndex, error) {
@@ -139,11 +161,7 @@ func (m *Manager) LoadSkillIndex() (*SkillIndex, error) {
 			}
 			return nil, err
 		}
-		var index SkillIndex
-		if err := FromJSON(data, &index); err != nil {
-			return nil, fmt.Errorf("parse skill index: %w", err)
-		}
-		return normalizeSkillIndex(&index)
+		return ParseSkillIndexData(data, nil, 0)
 	})
 }
 
