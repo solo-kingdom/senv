@@ -39,7 +39,7 @@ func newBenchEnv(b *testing.B) (uncached, cached Store, token string, userID int
 			Ciphertext: bytes.Repeat([]byte("x"), 512),
 		})
 	}
-	if _, latest, err = uncached.PushEntries(ctx, userID, "main", entries); err != nil {
+	if _, latest, err = uncached.PushEntries(ctx, userID, 0, "main", entries); err != nil {
 		b.Fatal(err)
 	}
 	if _, err := cached.AuthenticateWithClient(ctx, token); err != nil {

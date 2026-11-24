@@ -38,6 +38,9 @@ type Options struct {
 	AlertWebhook string
 	// AlertAuthFailThreshold 同一来源连续 AUTH-FAILED 告警阈值（0=默认 10）
 	AlertAuthFailThreshold int
+	// AlertMassDeleteThreshold 单次 push 的 tombstone 数达到该值即触发
+	// mass_delete 告警（0=关闭；main 侧默认 50）
+	AlertMassDeleteThreshold int
 	// AlertDebounce 同一 (告警类型, 对象) 最小通知间隔（0=默认 5 分钟）
 	AlertDebounce time.Duration
 	// AlertBodyTemplate 请求体模板（env SENV_SERVER_ALERT_BODY_TEMPLATE）。
@@ -88,12 +91,13 @@ func New(st store.Store, opts ...Options) *Server {
 	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
 		trustProxyHeaders: o.TrustProxyHeaders}
 	if o.AlertWebhook != "" {
-		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertDebounce, o.AlertBodyTemplate)
+		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertMassDeleteThreshold, o.AlertDebounce, o.AlertBodyTemplate)
 		go s.alerts.run(context.Background())
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata", s.auth(s.handleGetMetadata))
+	s.mux.HandleFunc("GET /v1/vaults/{vault}/metadata/history", s.auth(s.handleMetadataHistory))
 	s.mux.HandleFunc("PUT /v1/vaults/{vault}/metadata", s.auth(s.handlePutMetadata))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/entries", s.auth(s.handlePull))
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries", s.auth(s.handlePush))
@@ -161,9 +165,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// metadataRequest/Response 的 blob 为客户端产物的不透明数据（base64 由 encoding/json 处理）
+// metadataRequest/Response 的 blob 为客户端产物的不透明数据（base64 由 encoding/json 处理）。
+// base_hash 非空时服务端做乐观锁（sha256 hex），不一致返回 409。
 type metadataRequest struct {
-	Blob []byte `json:"blob"`
+	Blob     []byte `json:"blob"`
+	BaseHash string `json:"base_hash,omitempty"`
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +196,14 @@ func (s *Server) handlePutMetadata(w http.ResponseWriter, r *http.Request) {
 		s.writeDecodeError(w, err)
 		return
 	}
-	if err := s.store.PutMetadata(r.Context(), userID, vault, req.Blob); err != nil {
+	if err := s.store.PutMetadata(r.Context(), userID, vault, req.Blob, req.BaseHash); err != nil {
+		var conflictErr *store.MetadataConflictError
+		if errors.As(err, &conflictErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "metadata conflict",
+			})
+			return
+		}
 		var verr *store.ValidationError
 		if errors.As(err, &verr) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -201,6 +214,33 @@ func (s *Server) handlePutMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleMetadataHistory 处理 GET /v1/vaults/{vault}/metadata/history：返回 metadata 历史版本
+// （新到旧；blob 为不透明内容，服务端不解析）。
+func (s *Server) handleMetadataHistory(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFrom(r.Context())
+	vault := r.PathValue("vault")
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid limit parameter")
+			return
+		}
+		limit = n
+	}
+	versions, err := s.store.GetMetadataHistory(r.Context(), userID, vault, limit)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "vault metadata not found")
+			return
+		}
+		slog.Error("metadata history failed", "vault", vault, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": versions})
 }
 
 // pushRequest 乐观锁批量推送请求
@@ -223,13 +263,26 @@ type revisionAck struct {
 
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r.Context())
+	clientID := int64(0)
+	if info := accessInfoFrom(r.Context()); info != nil {
+		clientID = info.clientID
+	}
 	vault := r.PathValue("vault")
 	var req pushRequest
 	if err := s.decodeBody(w, r, &req); err != nil {
 		s.writeDecodeError(w, err)
 		return
 	}
-	entries, latest, err := s.store.PushEntries(r.Context(), userID, vault, req.Entries)
+	// 记录推送规模：日志与 mass_delete 告警据此判断「谁在何时删了多少」。
+	if info := accessInfoFrom(r.Context()); info != nil {
+		info.nEntries = len(req.Entries)
+		for _, e := range req.Entries {
+			if e.Deleted {
+				info.nDeleted++
+			}
+		}
+	}
+	entries, latest, err := s.store.PushEntries(r.Context(), userID, clientID, vault, req.Entries)
 	if err != nil {
 		var conflictErr *store.ConflictError
 		if errors.As(err, &conflictErr) {

@@ -16,16 +16,17 @@ const (
 	KindSSH    Kind = "ssh"
 	KindLLM    Kind = "llm"
 	KindMCP    Kind = "mcp"
+	KindLedger Kind = "ledger"
 )
 
 // AllKinds is the stable default search scope (aligned with TUI global search).
 var AllKinds = []Kind{
-	KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP,
+	KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger,
 }
 
 func (k Kind) valid() bool {
 	switch k {
-	case KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP:
+	case KindEnv, KindText, KindBackup, KindConfig, KindSSH, KindLLM, KindMCP, KindLedger:
 		return true
 	default:
 		return false
@@ -48,7 +49,7 @@ func ParseKinds(raw []string) ([]Kind, error) {
 			}
 			k := Kind(name)
 			if !k.valid() {
-				return nil, fmt.Errorf("unknown kind %q (want env|text|backup|config|ssh|llm|mcp)", name)
+				return nil, fmt.Errorf("unknown kind %q (want env|text|backup|config|ssh|llm|mcp|ledger)", name)
 			}
 			if _, ok := seen[k]; ok {
 				continue

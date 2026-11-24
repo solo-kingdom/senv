@@ -1,5 +1,5 @@
 // 条目历史：推送前像留存、按条目保留裁剪与查询。
-// 历史行只含密文与 revision/时间戳，server 保持零知识。
+// 历史行只含密文、revision/时间戳与操作者标识（client/user id），server 保持零知识。
 package store
 
 import (
@@ -16,7 +16,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 // DefaultHistoryRetain 是每条目默认保留的历史版本数
 const DefaultHistoryRetain = 3
 
-// HistoryVersion 是条目的一个历史版本（前像密文）
+// HistoryVersion 是条目的一个历史版本（前像密文 + 归因）
 type HistoryVersion struct {
 	Kind       string    `json:"kind"`
 	Grp        string    `json:"grp"`
@@ -25,21 +25,37 @@ type HistoryVersion struct {
 	Revision   int64     `json:"revision"`
 	CreatedAt  time.Time `json:"created_at"`
 	Deleted    bool      `json:"deleted"`
+	// ReplacedAt 是该前像被替换的时刻（变更时间）；旧行为前像写入时间回填。
+	ReplacedAt time.Time `json:"replaced_at"`
+	// Actor 是服务端从 token 推出的操作者（旧版本写入的行为空）。
+	ActorClientID   int64  `json:"actor_client_id,omitempty"`
+	ActorUserID     int64  `json:"actor_user_id,omitempty"`
+	ActorClientName string `json:"actor_client_name,omitempty"`
 }
 
 // SetHistoryRetain 设置每条目保留的历史版本数；<=0 关闭历史留存
 func (s *pgStore) SetHistoryRetain(n int) { s.historyRetain = n }
 
+// SetHistoryPrune 控制是否在 push 事务内裁剪历史。默认 true（兼容旧行为）；
+// 设为 false 后由 admin cron 执行 `senv-server admin history-prune --retain N`，
+// 使 serve 角色对 entries_history 只需 INSERT+SELECT（历史不可被服务进程改写）。
+func (s *pgStore) SetHistoryPrune(prune bool) { s.historyPrune = prune }
+
 // recordHistoryPreimages 在推送应用变更前，把受影响条目的当前值写入历史。
-// 单条 INSERT..SELECT：条目不存在时插入 0 行，天然跳过新条目。
-func recordHistoryPreimages(ctx context.Context, tx pgx.Tx, vaultID int64, entries []Entry) error {
+// 仅当前像与新值不同（密文或删除标记变化）才写：相同密文重推、tombstone 重推
+// 不消耗历史版本。单条 INSERT..SELECT：条目不存在时插入 0 行，天然跳过新条目。
+func recordHistoryPreimages(ctx context.Context, tx pgx.Tx, vaultID int64, entries []Entry, userID, clientID int64) error {
 	for _, e := range entries {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO entries_history (vault_id, kind, grp, key, ciphertext, revision, created_at, deleted)
-			 SELECT vault_id, kind, grp, key, ciphertext, revision, updated_at, deleted
+			`INSERT INTO entries_history
+			   (vault_id, kind, grp, key, ciphertext, revision, created_at, deleted,
+			    replaced_at, actor_client_id, actor_user_id)
+			 SELECT vault_id, kind, grp, key, ciphertext, revision, updated_at, deleted,
+			        now(), $5, $6
 			 FROM entries
-			 WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4`,
-			vaultID, e.Kind, e.Grp, e.Key); err != nil {
+			 WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4
+			   AND (ciphertext IS DISTINCT FROM $7 OR deleted IS DISTINCT FROM $8)`,
+			vaultID, e.Kind, e.Grp, e.Key, clientID, userID, e.Ciphertext, e.Deleted); err != nil {
 			return err
 		}
 	}
@@ -61,6 +77,26 @@ func pruneHistory(ctx context.Context, tx pgx.Tx, vaultID int64, retain int) err
 	return err
 }
 
+// PruneAllHistory 由 admin 侧清理：把所有 vault 的条目历史裁剪到最近 retain 版。
+// 供 `--history-prune-mode admin` 部署配合 cron 使用；返回删除行数。
+func (s *pgStore) PruneAllHistory(ctx context.Context, retain int) (int64, error) {
+	if retain <= 0 {
+		return 0, validationErrorf("history retain 必须大于 0")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM entries_history WHERE id IN (
+		   SELECT id FROM (
+		     SELECT id, ROW_NUMBER() OVER (
+		       PARTITION BY vault_id, kind, grp, key ORDER BY revision DESC, id DESC) AS rn
+		     FROM entries_history
+		   ) ranked WHERE ranked.rn > $1
+		 )`, retain)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // HistoryFilter 过滤历史查询；零值字段表示不过滤
 type HistoryFilter struct {
 	Kind  string
@@ -70,7 +106,7 @@ type HistoryFilter struct {
 }
 
 // ListHistory 查询条目历史。指定 key（或 grp+kind）时按该条目 revision 新到旧
-// 返回；否则返回 vault 级按写入时间新到旧的最近变更。只能查自己的 vault。
+// 返回；否则返回 vault 级按变更时间（replaced_at）新到旧的最近变更。只能查自己的 vault。
 func (s *pgStore) ListHistory(ctx context.Context, userID int64, vault string, f HistoryFilter) ([]HistoryVersion, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, err
@@ -86,12 +122,12 @@ func (s *pgStore) ListHistory(ctx context.Context, userID int64, vault string, f
 		f.Limit = 1000
 	}
 
-	where := `WHERE vault_id = $1`
+	where := `WHERE h.vault_id = $1`
 	args := []any{vaultID}
 	next := 2
 	addFilter := func(column, value string) {
 		args = append(args, value)
-		where += ` AND ` + column + ` = $` + itoa(next)
+		where += ` AND h.` + column + ` = $` + itoa(next)
 		next++
 	}
 	if f.Kind != "" {
@@ -103,15 +139,19 @@ func (s *pgStore) ListHistory(ctx context.Context, userID int64, vault string, f
 	if f.Key != "" {
 		addFilter("key", f.Key)
 	}
-	order := `ORDER BY created_at DESC, id DESC`
+	order := `ORDER BY COALESCE(h.replaced_at, h.created_at) DESC, h.id DESC`
 	if f.Key != "" {
-		order = `ORDER BY revision DESC, id DESC`
+		order = `ORDER BY h.revision DESC, h.id DESC`
 	}
 	args = append(args, f.Limit)
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT kind, grp, key, ciphertext, revision, created_at, deleted
-		 FROM entries_history `+where+` `+order+` LIMIT $`+itoa(next), args...)
+		`SELECT h.kind, h.grp, h.key, h.ciphertext, h.revision, h.created_at, h.deleted,
+		        COALESCE(h.replaced_at, h.created_at),
+		        COALESCE(h.actor_client_id, 0), COALESCE(h.actor_user_id, 0),
+		        COALESCE(c.name, '')
+		 FROM entries_history h
+		 LEFT JOIN clients c ON c.id = h.actor_client_id `+where+` `+order+` LIMIT $`+itoa(next), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +160,8 @@ func (s *pgStore) ListHistory(ctx context.Context, userID int64, vault string, f
 	history := []HistoryVersion{}
 	for rows.Next() {
 		var h HistoryVersion
-		if err := rows.Scan(&h.Kind, &h.Grp, &h.Key, &h.Ciphertext, &h.Revision, &h.CreatedAt, &h.Deleted); err != nil {
+		if err := rows.Scan(&h.Kind, &h.Grp, &h.Key, &h.Ciphertext, &h.Revision, &h.CreatedAt,
+			&h.Deleted, &h.ReplacedAt, &h.ActorClientID, &h.ActorUserID, &h.ActorClientName); err != nil {
 			return nil, err
 		}
 		history = append(history, h)

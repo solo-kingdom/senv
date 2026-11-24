@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +15,20 @@ import (
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/syncschema"
 )
+
+// defaultPushBatchSize 是单次 push 请求携带的条目上限；服务端 MaxBatchEntries 为 1000。
+// 条目总数过千（rekey、批量导入、台账记录增长）时必须分批，否则整批被拒。
+const defaultPushBatchSize = 500
+
+// pushBatchSize 返回本次推送的批大小；SENV_PUSH_BATCH 可覆盖（1..1000，非法值回退默认）。
+func pushBatchSize() int {
+	if v := strings.TrimSpace(os.Getenv("SENV_PUSH_BATCH")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			return n
+		}
+	}
+	return defaultPushBatchSize
+}
 
 // ServerProvider 是 server provider：本地缓存（复用 storage.Manager 文件格式）为工作副本，
 // senv-server 为远端。同步 = 增量 pull 落盘 + 收集 dirty 条目乐观锁批量 push。
@@ -79,6 +96,65 @@ var ErrHistoryUnsupported = errors.New("当前 server 不支持条目历史查�
 // historyAPI 由支持历史查询的 server client 实现；独立窄接口使旧测试 fake 无感
 type historyAPI interface {
 	History(ctx context.Context, vault string, f HistoryFilter) ([]HistoryVersion, error)
+	MetadataHistory(ctx context.Context, vault string, limit int) ([]MetadataVersion, error)
+}
+
+// MetadataVersion 是 server 端保留的一份 vault metadata 历史（不透明 blob）
+type MetadataVersion struct {
+	Blob       []byte    `json:"blob"`
+	ReplacedAt time.Time `json:"replaced_at"`
+}
+
+// MetadataHistory 查询 vault metadata 的历史版本（只读）
+func (p *ServerProvider) MetadataHistory(ctx context.Context, limit int) ([]MetadataVersion, error) {
+	api, ok := p.api.(historyAPI)
+	if !ok {
+		return nil, ErrHistoryUnsupported
+	}
+	return api.MetadataHistory(ctx, p.vault, limit)
+}
+
+// RestoreMetadata 把一份历史 metadata 恢复为当前值：先备份本地当前文件 → 写回历史
+// blob → 带远端当前 hash 推送（不绕过乐观锁）。推送失败时回滚本地文件。
+// metadata 决定 vault 能否解锁，恢复前必须由调用方向用户确认。
+func (p *ServerProvider) RestoreMetadata(ctx context.Context, blob []byte) error {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	remote, err := p.api.GetMetadata(ctx, p.vault)
+	base := ""
+	switch {
+	case err == nil:
+		base = hashBytes(remote)
+	case errors.Is(err, ErrVaultNotFound):
+	default:
+		return err
+	}
+
+	local, err := p.cache.readMetadata()
+	if err != nil {
+		return err
+	}
+	if err := p.cache.writeMetadata(blob); err != nil {
+		return err
+	}
+	if err := p.api.PutMetadataIfMatch(ctx, p.vault, blob, base); err != nil {
+		if local != nil {
+			if rbErr := p.cache.writeMetadata(local); rbErr != nil {
+				return fmt.Errorf("%w（本地 metadata 回滚失败: %v）", err, rbErr)
+			}
+		}
+		return err
+	}
+	st, err := p.cache.loadState()
+	if err != nil {
+		return err
+	}
+	st.MetadataHash = hashBytes(blob)
+	return p.cache.saveStateOpts(st, stateWriteOptions{writerPath: "restoreMetadata"})
 }
 
 // History 查询条目历史（只读，不改本地缓存与同步状态）
@@ -613,11 +689,23 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 	}
 	// removed 收集本次推送的删除标记（合法消失的快照），供防退化护栏放行。
 	removed := make(map[string]bool)
-	if len(dirty) > 0 {
+	// 分批推送：服务端单批上限 1000，条目总数过千时一次性推送会被整批拒绝。
+	// 先按标识排序保证批次可复现；每批成功后立即持久化同步状态，中途失败不丢已推进度。
+	sort.Slice(dirty, func(i, j int) bool {
+		ki, kj := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key), entryID(dirty[j].Kind, dirty[j].Grp, dirty[j].Key)
+		return ki < kj
+	})
+	batch := pushBatchSize()
+	for len(dirty) > 0 {
+		n := batch
+		if n > len(dirty) {
+			n = len(dirty)
+		}
+		chunk, rest := dirty[:n], dirty[n:]
 		for attempt := 0; ; attempt++ {
-			pushed, latest, err := p.api.Push(ctx, p.vault, dirty)
+			pushed, latest, err := p.api.Push(ctx, p.vault, chunk)
 			if err == nil {
-				res.Pushed = len(pushed)
+				res.Pushed += len(pushed)
 				res.LatestRevision = latest
 				for _, e := range pushed {
 					id := entryID(e.Kind, e.Grp, e.Key)
@@ -629,6 +717,12 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 					}
 				}
 				st.LastSyncedRevision = latest
+				if err := p.cache.saveStateOpts(st, stateWriteOptions{
+					writerPath:     "pushLocked",
+					removedEntries: removed,
+				}); err != nil {
+					return nil, err
+				}
 				break
 			}
 			var conflictErr *ConflictError
@@ -636,20 +730,28 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 				return nil, err
 			}
 			// 409 先做假冲突自愈：快照缺失导致的新增误判 + 两端密文一致 → 收养远端 revision。
-			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, dirty, conflictErr.Conflicts)
+			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, chunk, conflictErr.Conflicts)
 			if healErr != nil {
 				// 自愈所需的 Pull(0) 失败：不落盘、不误报内容冲突，返回原始网络错误。
 				return nil, healErr
 			}
 			res.Healed += healed
 			if len(remaining) > 0 {
-				return nil, p.buildConflictError(ctx, remaining, metadataConflict, retry, remoteCandidates, localMeta, remoteMetaBlob)
+				// 真实冲突：停止后续批次；已推批次的状态已持久化，未推条目保留 dirty。
+				if saveErr := p.cache.saveStateOpts(st, stateWriteOptions{
+					writerPath:     "pushLocked",
+					removedEntries: removed,
+				}); saveErr != nil {
+					return nil, saveErr
+				}
+				return nil, p.buildConflictError(ctx, remaining, metadataConflict, append(retry, rest...), remoteCandidates, localMeta, remoteMetaBlob)
 			}
-			dirty = retry
-			if len(dirty) == 0 {
-				break // 全部为假冲突并已收养，无需再次推送
+			chunk = retry
+			if len(chunk) == 0 {
+				break // 本批全部为假冲突并已收养，无需再次推送
 			}
 		}
+		dirty = rest
 	}
 
 	if metadataConflict {
@@ -659,7 +761,9 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 		}
 	}
 	if metadataDirty {
-		if err := p.api.PutMetadata(ctx, p.vault, localMeta); err != nil {
+		// 带快照哈希做乐观锁：期间其它设备改过 metadata → 409，不静默覆盖。
+		// 首次上传（快照为空）没有 base，服务端按既有语义接受。
+		if err := p.api.PutMetadataIfMatch(ctx, p.vault, localMeta, st.MetadataHash); err != nil {
 			return nil, err
 		}
 		st.MetadataHash = hashBytes(localMeta)

@@ -83,6 +83,10 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 	if err != nil {
 		return tui.Managers{}, nil, err
 	}
+	ledgerMgr, err := getLedgerManager()
+	if err != nil {
+		return tui.Managers{}, nil, err
+	}
 	mcpHome, err := agentHomeDir()
 	if err != nil {
 		return tui.Managers{}, nil, err
@@ -114,6 +118,7 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 		LLMHome:       llmHome,
 		LLMCatalog:    catalogCachePath(),
 		Skill:         skillMgr,
+		Ledger:        ledgerMgr,
 		SkillHome:     mcpHome,
 		MCP:           mcpMgr,
 		MCPHome:       mcpHome,

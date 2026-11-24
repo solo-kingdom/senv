@@ -14,6 +14,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	mcpserver "github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/search"
@@ -90,6 +91,7 @@ type managers struct {
 	llmPointer string
 	llmHome    string
 	mcpServer  *mcpserver.Manager
+	ledger     *ledger.Manager
 	autoPull   func()
 }
 
@@ -200,6 +202,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			llmPointer: filepath.Join(configPath, "agent-pointers.json"),
 			llmHome:    home,
 			mcpServer:  mcpserver.NewManagerWithKey(store, key),
+			ledger:     ledger.NewManager(store, key),
 		}
 		release := func() {
 			session.ZeroKey(key)
@@ -210,6 +213,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			requestManagers.ssh = nil
 			requestManagers.llm = nil
 			requestManagers.mcpServer = nil
+			requestManagers.ledger = nil
 		}
 		return requestManagers, release, nil
 	}
@@ -290,7 +294,7 @@ type configNameInput struct {
 
 type searchInput struct {
 	Query string `json:"query" jsonschema_description:"required search query (identifiers and descriptions only; never matches values)"`
-	Kind  string `json:"kind,omitempty" jsonschema_description:"optional comma-separated kinds: env,text,backup,config,ssh,llm,mcp"`
+	Kind  string `json:"kind,omitempty" jsonschema_description:"optional comma-separated kinds: env,text,backup,config,ssh,llm,mcp,ledger"`
 	Limit int    `json:"limit,omitempty" jsonschema_description:"max hits (default 20)"`
 }
 
@@ -745,6 +749,7 @@ func (m *managers) search(_ context.Context, _ *mcp.CallToolRequest, in searchIn
 		SSH:    m.ssh,
 		LLM:    m.llm,
 		MCP:    m.mcpServer,
+		Ledger: m.ledger,
 	}
 	res, err := search.Run(search.Gather(src), in.Query, kinds, limit)
 	if err != nil {
@@ -789,7 +794,11 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_provider_list", Description: "List saved LLM provider profiles (read-only; credential references only, no secrets)."}, guardMCPTool("llm_provider_list", authorize, autoPull, (*managers).llmProviderList))
 	mcp.AddTool(s, &mcp.Tool{Name: "llm_agent_status", Description: "Show each coding agent's current provider/model pointer (read-only, local state)."}, guardMCPTool("llm_agent_status", authorize, autoPull, (*managers).llmAgentStatus))
 	mcp.AddTool(s, &mcp.Tool{Name: "mcp_server_list", Description: "List stored MCP server profiles (read-only; alias/transport/description only, no env values)."}, guardMCPTool("mcp_server_list", authorize, autoPull, (*managers).mcpServerList))
-	mcp.AddTool(s, &mcp.Tool{Name: "senv_search", Description: "Fuzzy-search vault metadata across env/text/backup/config/ssh/llm/mcp. Returns identifiers and descriptions only — never values."}, guardMCPTool("senv_search", authorize, autoPull, (*managers).search))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_search", Description: "Fuzzy-search vault metadata across env/text/backup/config/ssh/llm/mcp/ledger. Returns identifiers and descriptions only — never values."}, guardMCPTool("senv_search", authorize, autoPull, (*managers).search))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_list", Description: "List ledger entity heads (type/id/description/tags/updated; no field values), optionally filtered by group or type."}, guardMCPTool("senv_ledger_list", authorize, autoPull, (*managers).ledgerList))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_get", Description: "Get one ledger entity head (fields + status) plus its most recent records."}, guardMCPTool("senv_ledger_get", authorize, autoPull, (*managers).ledgerGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_append", Description: "Append an immutable ledger record (op/note/correction). Records are never overwritten; fix a mistake with a correction."}, guardMCPTool("senv_ledger_append", authorize, autoPull, (*managers).ledgerAppend))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_update", Description: "Update a ledger entity head: set/replace one field (empty value deletes it) or write the latest status. No record is deleted."}, guardMCPTool("senv_ledger_update", authorize, autoPull, (*managers).ledgerUpdate))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -821,6 +830,10 @@ func toolCatalogue() []toolDef {
 		{"llm_agent_status", "Show each coding agent's current provider/model pointer (read-only)."},
 		{"mcp_server_list", "List stored MCP server profiles (read-only; no env values)."},
 		{"senv_search", "Fuzzy-search vault metadata (identifiers/descriptions only; never values)."},
+		{"senv_ledger_list", "List ledger entity heads (no field values), optionally by group or type."},
+		{"senv_ledger_get", "Get one ledger entity head plus its most recent records."},
+		{"senv_ledger_append", "Append an immutable ledger record (op/note/correction); never overwrites."},
+		{"senv_ledger_update", "Update a ledger head: one field (empty deletes) or latest status. No delete."},
 	}
 }
 

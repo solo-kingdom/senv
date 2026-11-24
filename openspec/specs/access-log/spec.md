@@ -4,7 +4,7 @@
 server 将每个 API 请求的认证与处理结果落库为安全事件流水，供服务器管理员追溯访问尝试、登录成功/失败、屏蔽拦截、限速与同步行为。
 ## Requirements
 ### Requirement: 每请求安全事件落库
-server SHALL 将每个受保护 API 请求（健康检查除外）记录为一条安全事件：时间、来源 IP、方法与路径、可解析时的 client 与 user 标识、结果（OK / AUTH-FAILED / BLOCKED / RATE-LIMITED）；AUTH-FAILED SHALL 附失败原因。记录 MUST NOT 包含 token、口令或任何密文内容。
+server SHALL 将每个受保护 API 请求（健康检查除外）记录为一条安全事件：时间、来源 IP、方法与路径、可解析时的 client 与 user 标识、结果（OK / AUTH-FAILED / BLOCKED / RATE-LIMITED / REJECTED / ERROR），以及 push 请求的规模（条目数与其中 tombstone 数，非 push 记 0）；AUTH-FAILED SHALL 附失败原因，REJECTED 与 ERROR 也 SHALL 带可读原因。**被拒绝的写入类请求（400 / 409 / 413 / 415 / 422）MUST 记为 REJECTED，5xx MUST 记为 ERROR**，不得混记为 OK。记录 MUST NOT 包含 token、口令或任何密文内容。
 
 #### Scenario: 正确凭证访问
 - **WHEN** 持有效凭证的请求处理成功
@@ -22,6 +22,14 @@ server SHALL 将每个受保护 API 请求（健康检查除外）记录为一�
 - **WHEN** 同一来源失败超限被返回 429
 - **THEN** 记录一条 RATE-LIMITED 事件
 
+#### Scenario: 乐观锁冲突被记录
+- **WHEN** push 因远端 revision 已更新返回 409
+- **THEN** 记录一条 REJECTED 事件，reason 说明冲突，且带本次推送的条目数与删除数
+
+#### Scenario: 服务端错误被记录
+- **WHEN** 请求处理返回 5xx
+- **THEN** 记录一条 ERROR 事件
+
 ### Requirement: 日志记录不阻断服务
 安全事件写入 SHALL 为 best-effort：写入失败时请求照常处理，仅记服务端错误日志。
 
@@ -30,11 +38,15 @@ server SHALL 将每个受保护 API 请求（健康检查除外）记录为一�
 - **THEN** 该请求的 API 响应不受影响
 
 ### Requirement: 管理员查询与清理
-系统 SHALL 提供仅限服务器管理员的 CLI 查询（按用户、client、起止日期、结果与条数过滤，输出含日期时间）与按日期清理命令；安全事件 MUST NOT 可经 client API 查询。
+系统 SHALL 提供仅限服务器管理员的 CLI 查询（按用户、client、来源 IP、起止日期、结果与条数过滤，输出含日期时间、推送规模）与按日期清理命令；安全事件 MUST NOT 可经 client API 查询。
 
 #### Scenario: 按日期与结果查询
 - **WHEN** 管理员查询某日期之后的 AUTH-FAILED 事件
 - **THEN** 输出匹配事件列表，每条含日期时间、来源 IP、身份与原因
+
+#### Scenario: 按来源 IP 查询
+- **WHEN** 管理员执行 `admin logs --ip <地址>`
+- **THEN** 仅返回该来源 IP 的事件，可用来看某出口的全部行为
 
 #### Scenario: 清理旧事件
 - **WHEN** 管理员执行按日期清理

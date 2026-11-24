@@ -18,6 +18,20 @@ serve 与 admin CLI 不要共用同一个数据库角色，否则拿到 serve DS
 0 3 * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv'   /usr/local/bin/senv-server-bin admin logs-prune --before $(date -d '90 days ago' +%F)
 ```
 
+### 条目历史：保留、归因与裁剪位置
+
+- `--history-retain N`（默认 3，0 关闭）：每条目保留最近 N 个**不同**密文版本。相同密文重推、tombstone 重推不写前像、不消耗版本（防「只持 token 即可清历史」）。
+- 历史行记录 `replaced_at`（变更时刻）与操作者（push 事务内由 token 推出的 client / user id）；`senv history` 每行显示「变更时间 + 操作者」。
+- `--history-prune-mode push|admin`：默认 `push`（推送事务内裁剪，serve 角色因此需要 `entries_history` 的 DELETE）。设为 `admin` 后 serve 不再裁剪，改由 cron 执行（推荐生产；历史对 serve 成为纯追加表）：
+
+```bash
+# 每小时把条目历史裁到每条目 10 版（admin 角色 DSN）
+0 * * * * SENV_SERVER_DSN='postgres://senv_admin:****@db/senv' /usr/local/bin/senv-server-bin admin history-prune --retain 10
+```
+
+- 采用 `admin` 时，可把 serve 角色对 `entries_history` 收紧为 `SELECT, INSERT`（见 `sql/roles.sql` 注释中的语句）。
+- **vault metadata 也有历史**：每次覆盖前保存上一版（同样保留 N 版，N 取 `--history-retain`）；内容未变不写前像。写入支持 `base_hash` 乐观锁（客户端推送会带；不一致返回 409，不静默覆盖）。查看与恢复：`senv history --metadata`、`senv history --metadata --restore <序号>`（1 = 最近一版；恢复先备份本地文件，推送失败自动回滚本地）。
+
 ### admin 操作审计
 
 `admin create-user / revoke-token / create-registration / block-client / unblock-client` 成功后各写一条 `outcome=ADMIN` 事件（reason 记操作类型与目标）。查询：
@@ -35,7 +49,11 @@ serve 支持通用 webhook（不内置任何第三方 provider，自行接 n8n/�
 # 或环境变量 SENV_SERVER_ALERT_WEBHOOK
 ```
 
-触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问。payload 为 JSON，只含时间/IP/client/user 名等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+触发场景：同一来源连续 `AUTH-FAILED` 超阈值、`client_blocked`、新 client 注册成功、client 换 IP 首次访问、**单次推送删除 ≥ `--alert-mass-delete-threshold` 条（默认 50，0 关闭）**。payload 为 JSON，只含时间/IP/client/user 名与本次删除条数等元数据。网关侧建议加 secret 头校验防伪造。未配置时告警完全关闭、零开销。
+
+### 破坏性写防护
+
+`--max-tombstones-per-push N`（默认 0 = 不限制，生产建议 200）：单批推送的 tombstone 数超过 N 时整批拒绝（400，reason 指明上限）。它防的是「合法但已失陷的 client 一次抹掉大量条目」；建议先只开 `mass_delete` 告警观察一段时间，再启用硬上限。注意它按**批**计：客户端已按 ≤500 条/批分批，因此这里的 N 是单批口径。
 
 **HTTP 200 不等于送达**：飞书自定义机器人这类网关拒收时（缺群关键词、限流）返回 `200` + `{"code":19024,"msg":"Key Words Not Found"}`。serve 会读取响应体的 `code`/`errcode`/`error_code` 判定成败——非零即失败并重试，重试耗尽后日志带状态码与响应体片段。响应体不是 JSON 或没有这些字段时按成功处理（普通网关语义）。
 
@@ -100,7 +118,29 @@ server 本身跑明文 HTTP，TLS 由反向代理终结（回环或内网监听�
 
 ### 元数据泄露边界
 
-零知识架构保证 server 与 DB 持有者看不到条目内容，但以下元数据对「拿到数据库的人」可见：vault 名、条目数量、revision 变化频率、访问时间与来源 IP（access_log）。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+零知识架构保证 server 与 DB 持有者看不到条目内容，但拿到数据库的人可见下列字段。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+
+**`entries` 表（每个同步条目一行）**——`ciphertext` 为客户端密文，其余都是明文元数据：
+
+| 字段 | 可见内容 |
+| --- | --- |
+| `kind` / `grp` / `key` | 条目身份：类型、分组、键名（如 `env` / `prod` / `API_KEY`） |
+| `revision` | 单调递增版本号；变化频率可推断同步活跃度 |
+| `deleted` | 是否为 tombstone（删除） |
+| `updated_at` | 最近推送时间 |
+
+`kind` 的取值见 `internal/syncschema/schema.go`（当前 15 种：env / text / backup / config / llm_provider / mcp_server / ssh_host / ssh_keypair / skill 各及其 `_meta`/`_index` 变体、以及台账 `ledger` / `ledger_log` / `ledger_meta`）。其中有两个 kind 是**明文 JSON 而非密文**：
+
+- `config_index`：配置名、target path 等（条目本体 kind=`config` 仍加密）
+- `skill_index`：skill id 与 description（条目本体 kind=`skill` 仍加密）
+
+**`vaults` / `vault_metadata`**：vault 名、整体 `seq` 与 `updated_at`；metadata blob 本身加密。
+
+**`entries_history`**（前像，`--history-retain` 控制保留数）：同上的 kind/grp/key/revision/deleted，另加 `replaced_at`（被替换时刻）与 `actor_client_id` / `actor_user_id`（由 token 推出的操作者设备与用户）——这是服务端唯一能回答「谁在何时改了哪个条目」的地方。
+
+**`access_log`**（`--logs-retain-days` 控制保留，默认 90 天）：时间、来源 IP、method、path、user_id、client_id、outcome、reason；推送请求另记 `n_entries` / `n_deleted`（本批提交/删除条数）。不含 token、口令或密文。
+
+来源 IP 的准确性依赖反向代理透传真实来源（见「caddy 层配置」）；缺 `header_up X-Real-IP` 时可能记录到代理网桥地址或被伪造头污染。
 
 
 senv-server 是零知识密文托管服务端：独立二进制，与 `senv` CLI 同仓（`senv-server/` main 包），
@@ -171,12 +211,12 @@ senv sync
 vault 名规则：仅限可移植路径段字符（禁止 `/` `\` `:`、`.`/`..` 等），最长 128 字节；
 server 侧会拒绝非法 vault 名（400）。默认值 `main` 天然合规。
 
-地址scheme：客户端默认只接受 `https://` 的 server 地址；可信内网要用明文 http 时，
-显式设置环境变量 `SENV_ALLOW_INSECURE_HTTP=1`。豁免生效后，只有链路可能出内网的地址
-（公网域名 / 公网 IP）才在构造 provider 时向 stderr 打警告；目标是内网/本机地址时不再告警——
+地址scheme：客户端默认只接受 `https://` 的 server 地址。明文 http 按主机分流：目标是内网/本机
+地址时直接放行、不需要任何豁免；目标是公网地址时仍须显式设置环境变量
+`SENV_ALLOW_INSECURE_HTTP=1`，且豁免生效后会在构造 provider 时向 stderr 打警告。内网/本机地址
 包括私网网段、回环、链路本地、IPv6 ULA、CGNAT（100.64.0.0/10）的字面量 IP，以及
 `localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名。判定只做字面量，不做 DNS 解析
-（域名解析到私网 IP 的情况仍按公网地址告警）。
+（域名解析到私网 IP 的情况仍按公网地址处理）。
 
 ## 自动同步行为
 
@@ -378,6 +418,24 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
   可用 caddy 的 `rate_limit` 插件对 `/v1/` 路径限速
 - 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简；
   server 自身的系统日志保留 90 天，由 `--logs-retain-days` 控制）
+- **部署后检查项**：senv 站点块内每个指向 `senv-server` 的 `reverse_proxy` 都要有
+  `header_up X-Real-IP {remote_host}`——`handle @allowed`、`handle @wg` 等分来源块
+  各写各的，漏掉一个就有一条入口丢真实 IP。改动 Caddyfile 后逐项确认：
+
+  ```bash
+  # 每个反向代理块都要带该行：列出 senv 站点块内 reverse_proxy 与其后紧跟的 header_up
+  docker exec tcbj-caddy grep -nE 'reverse_proxy senv-server|header_up X-Real-IP' \
+      /etc/caddy/Caddyfile   # 期望二者成对出现（每个 reverse_proxy 都有一条 header_up）
+  docker exec tcbj-caddy caddy validate --config /etc/caddy/Caddyfile
+  docker exec tcbj-caddy caddy reload --config /etc/caddy/Caddyfile
+  # 从 wg3 与办公室各发一次无 token 请求（期望 401），再核对 admin logs 的来源 IP
+  curl -s -o /dev/null -w '%{http_code}\n' https://senv.wii.pub/healthz
+  senv-server admin logs --limit 5   # ip 列应为真实出口/隧道地址，非 caddy 网桥
+  ```
+
+  改 Caddyfile 必须就地写保 inode（单文件挂载时 `mv` 会让容器读到旧 inode，
+  见本仓 `deploy/tcbj/caddy` 的踩坑记录），且以上线版为基线（仓库副本曾漂移：
+  先 `ssh tcbj 'cat <线上 Caddyfile>'` 回写仓库再改）。
 
 ### 6. 客户端升级顺序
 

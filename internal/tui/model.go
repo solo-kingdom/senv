@@ -10,6 +10,7 @@ import (
 	"github.com/wii/senv/internal/backup"
 	"github.com/wii/senv/internal/config"
 	"github.com/wii/senv/internal/env"
+	"github.com/wii/senv/internal/ledger"
 	"github.com/wii/senv/internal/llm"
 	"github.com/wii/senv/internal/mcp"
 	"github.com/wii/senv/internal/skill"
@@ -39,7 +40,9 @@ type Managers struct {
 	SkillHome string
 	// SkillProject 是 project scope 的 base；空时回退 os.Getwd()。
 	SkillProject string
-	MCP *mcp.Manager
+	MCP          *mcp.Manager
+	// Ledger 为 nil 时不注册 Ledger Tab。
+	Ledger *ledger.Manager
 	// MCPLedger 是本机导出台账路径；空时按用户默认位置解析。
 	MCPLedger string
 	// MCPHome 是 Coding Agent 配置根目录（通常为用户 HOME）；空时导出器
@@ -181,6 +184,9 @@ func New(mgr Managers) Model {
 	}
 	if mgr.MCP != nil {
 		m.tabs = append(m.tabs, newMCPTab(mgr))
+	}
+	if mgr.Ledger != nil {
+		m.tabs = append(m.tabs, newLedgerTab(mgr))
 	}
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
@@ -535,7 +541,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func isLoadBroadcastMsg(msg tea.Msg) bool {
 	switch msg.(type) {
 	case envLoadedMsg, textLoadedMsg, backupLoadedMsg, configLoadedMsg, sshLoadedMsg,
-		aiLoadedMsg, mcpLoadedMsg, auditLoadedMsg, historyLoadedMsg:
+		aiLoadedMsg, mcpLoadedMsg, ledgerLoadedMsg, auditLoadedMsg, historyLoadedMsg:
 		return true
 	}
 	return false

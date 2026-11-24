@@ -67,6 +67,10 @@ func TestAllMCPToolsGuarded(t *testing.T) {
 	assertMCPToolDenied(t, "ssh_host_get", (*managers).sshHostGet, configNameInput{Name: "web"})
 	assertMCPToolDenied(t, "mcp_server_list", (*managers).mcpServerList, struct{}{})
 	assertMCPToolDenied(t, "senv_search", (*managers).search, searchInput{Query: "x"})
+	assertMCPToolDenied(t, "senv_ledger_list", (*managers).ledgerList, ledgerListInput{})
+	assertMCPToolDenied(t, "senv_ledger_get", (*managers).ledgerGet, ledgerGetInput{Entity: "device.x"})
+	assertMCPToolDenied(t, "senv_ledger_append", (*managers).ledgerAppend, ledgerAppendInput{Entity: "device.x", Summary: "x"})
+	assertMCPToolDenied(t, "senv_ledger_update", (*managers).ledgerUpdate, ledgerUpdateInput{Entity: "device.x", Status: "ok"})
 }
 
 func TestMCPRevocationNoSideEffects(t *testing.T) {

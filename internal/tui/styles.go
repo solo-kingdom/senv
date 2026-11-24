@@ -185,6 +185,7 @@ func rebuildStyles() {
 		typeSSH:    lipgloss.NewStyle().Foreground(colorMagenta),
 		typeLLM:    lipgloss.NewStyle().Foreground(colorOk),
 		typeMCP:    lipgloss.NewStyle().Foreground(colorWarn),
+		typeLedger: lipgloss.NewStyle().Foreground(colorCyan),
 	}
 
 	emptyStateStyle = lipgloss.NewStyle().

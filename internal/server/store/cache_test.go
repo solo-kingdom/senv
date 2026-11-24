@@ -28,6 +28,7 @@ type fakeInner struct {
 	pushLatest int64
 
 	retainN int
+	prune   bool
 
 	touchMu    sync.Mutex
 	touchCalls int
@@ -44,7 +45,7 @@ func (f *fakeInner) PullEntries(_ context.Context, _ int64, _ string, _ int64) (
 	return f.entries, f.pullLatest, nil
 }
 
-func (f *fakeInner) PushEntries(_ context.Context, _ int64, _ string, _ []Entry) ([]Entry, int64, error) {
+func (f *fakeInner) PushEntries(_ context.Context, _ int64, _ int64, _ string, _ []Entry) ([]Entry, int64, error) {
 	return nil, f.pushLatest, nil
 }
 
@@ -53,6 +54,12 @@ func (f *fakeInner) RevokeToken(_ context.Context, _ string) error { return nil 
 func (f *fakeInner) SetClientStatus(_ context.Context, _ int64, _, _ string) error { return nil }
 
 func (f *fakeInner) SetHistoryRetain(n int) { f.retainN = n }
+
+func (f *fakeInner) SetHistoryPrune(prune bool) { f.prune = prune }
+
+func (f *fakeInner) SetMaxTombstonesPerPush(n int) {}
+
+func (f *fakeInner) PruneAllHistory(_ context.Context, _ int) (int64, error) { return 0, nil }
 
 func (f *fakeInner) TouchClient(_ context.Context, clientID int64) {
 	f.touchMu.Lock()
@@ -202,7 +209,7 @@ func TestCachePullShortcutAndPushRefresh(t *testing.T) {
 	}
 	// push 推进 seq：缓存即时更新，pull 立即可用新快捷判定
 	inner.pushLatest = 6
-	if _, _, err = c.PushEntries(ctx, 1, "main", nil); err != nil {
+	if _, _, err = c.PushEntries(ctx, 1, 0, "main", nil); err != nil {
 		t.Fatal(err)
 	}
 	entries, latest, err = c.PullEntries(ctx, 1, "main", 6)
@@ -266,7 +273,7 @@ func TestCacheConcurrentAccess(t *testing.T) {
 			for j := 0; j < 50; j++ {
 				_, _ = c.AuthenticateWithClient(ctx, "tok")
 				_, _, _ = c.PullEntries(ctx, 1, "main", 2)
-				_, _, _ = c.PushEntries(ctx, 1, "main", nil)
+				_, _, _ = c.PushEntries(ctx, 1, 0, "main", nil)
 			}
 		}()
 	}

@@ -27,10 +27,11 @@ type RekeyResult struct {
 	KeyPairFiles   int
 	ProviderFiles  int
 	MCPServerFiles int
+	LedgerFiles    int
 }
 
 func (r *RekeyResult) Total() int {
-	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles
+	return r.EnvFiles + r.TextFiles + r.BackupFiles + r.SkillFiles + r.ConfigFiles + r.HostFiles + r.KeyPairFiles + r.ProviderFiles + r.MCPServerFiles + r.LedgerFiles
 }
 
 type rekeyEntryKind uint8
@@ -45,6 +46,7 @@ const (
 	rekeyEntryProvider
 	rekeyEntryMCPServer
 	rekeyEntrySkill
+	rekeyEntryLedger
 )
 
 type rekeyEntry struct {
@@ -400,6 +402,8 @@ func (m *Manager) rekeyPreflight(oldKey []byte) ([]rekeyEntry, *RekeyResult, []b
 			result.ProviderFiles++
 		case rekeyEntryMCPServer:
 			result.MCPServerFiles++
+		case rekeyEntryLedger:
+			result.LedgerFiles++
 		}
 		return nil
 	})
@@ -460,6 +464,32 @@ func classifyRekeyEntry(segments []string, expectedConfigs map[string]bool) (rek
 			}
 		}
 		return rekeyEntryText, nil
+	case len(segments) == 3 && segments[0] == LedgerDirName:
+		if err := securefs.ValidateSegment(segments[1]); err != nil {
+			return 0, fmt.Errorf("invalid ledger group: %w", err)
+		}
+		if segments[2] != EnvMetaFileName {
+			key := strings.TrimSuffix(segments[2], LedgerFileSuffix)
+			if key == segments[2] {
+				return 0, fmt.Errorf("invalid ledger entry identity %q", strings.Join(segments, "/"))
+			}
+			if err := securefs.ValidateSegment(key); err != nil {
+				return 0, fmt.Errorf("invalid ledger key: %w", err)
+			}
+		}
+		return rekeyEntryLedger, nil
+	case len(segments) == 3 && segments[0] == LedgerLogDirName:
+		if err := securefs.ValidateSegment(segments[1]); err != nil {
+			return 0, fmt.Errorf("invalid ledger log group: %w", err)
+		}
+		key := strings.TrimSuffix(segments[2], LedgerFileSuffix)
+		if key == segments[2] {
+			return 0, fmt.Errorf("invalid ledger log identity %q", strings.Join(segments, "/"))
+		}
+		if err := securefs.ValidateSegment(key); err != nil {
+			return 0, fmt.Errorf("invalid ledger log key: %w", err)
+		}
+		return rekeyEntryLedger, nil
 	case len(segments) == 3 && segments[0] == BackupDirName:
 		if err := securefs.ValidateSegment(segments[1]); err != nil {
 			return 0, fmt.Errorf("invalid backup group: %w", err)

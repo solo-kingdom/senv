@@ -59,7 +59,7 @@ func TestMetadataRoundtrip(t *testing.T) {
 
 	// 写入即建 vault；读取原样返回 blob
 	blob := []byte("opaque-encrypted-metadata")
-	if err := st.PutMetadata(ctx, userID, "main", blob); err != nil {
+	if err := st.PutMetadata(ctx, userID, "main", blob, ""); err != nil {
 		t.Fatalf("PutMetadata: %v", err)
 	}
 	got, err := st.GetMetadata(ctx, userID, "main")
@@ -71,7 +71,7 @@ func TestMetadataRoundtrip(t *testing.T) {
 	}
 
 	// 覆盖写
-	if err := st.PutMetadata(ctx, userID, "main", []byte("v2")); err != nil {
+	if err := st.PutMetadata(ctx, userID, "main", []byte("v2"), ""); err != nil {
 		t.Fatalf("PutMetadata v2: %v", err)
 	}
 	got, _ = st.GetMetadata(ctx, userID, "main")
@@ -95,7 +95,7 @@ func TestPushPullAndConflict(t *testing.T) {
 		{Kind: "env", Grp: "default", Key: "A", Ciphertext: []byte("ca"), BaseRevision: 0},
 		{Kind: "env", Grp: "default", Key: "B", Ciphertext: []byte("cb"), BaseRevision: 0},
 	}
-	pushed, latest, err := st.PushEntries(ctx, userID, "main", entries)
+	pushed, latest, err := st.PushEntries(ctx, userID, 0, "main", entries)
 	if err != nil {
 		t.Fatalf("PushEntries: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestPushPullAndConflict(t *testing.T) {
 	}
 
 	// 更新：以正确 base_revision 推送
-	_, latest, err = st.PushEntries(ctx, userID, "main", []Entry{
+	_, latest, err = st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: "env", Grp: "default", Key: "A", Ciphertext: []byte("ca2"), BaseRevision: 1},
 	})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestPushPullAndConflict(t *testing.T) {
 	}
 
 	// 冲突整批拒绝：A 的 base 落后 + 新条目 C，整批不得写入任何内容
-	_, _, err = st.PushEntries(ctx, userID, "main", []Entry{
+	_, _, err = st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: "env", Grp: "default", Key: "A", Ciphertext: []byte("stale"), BaseRevision: 1},
 		{Kind: "env", Grp: "default", Key: "C", Ciphertext: []byte("cc"), BaseRevision: 0},
 	})
@@ -171,11 +171,11 @@ func TestDeleteAdvancesRevision(t *testing.T) {
 	ctx := context.Background()
 	userID := newUser(t, st, "dave")
 
-	st.PushEntries(ctx, userID, "main", []Entry{
+	st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: "text", Grp: "g", Key: "k", Ciphertext: []byte("c"), BaseRevision: 0},
 	})
 	// 删除也推进 revision，且之后以旧 since 拉取能观察到删除标记
-	_, latest, err := st.PushEntries(ctx, userID, "main", []Entry{
+	_, latest, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: "text", Grp: "g", Key: "k", BaseRevision: 1, Deleted: true},
 	})
 	if err != nil {
@@ -199,8 +199,8 @@ func TestVaultIsolation(t *testing.T) {
 	alice := newUser(t, st, "alice2")
 	bob := newUser(t, st, "bob2")
 
-	st.PutMetadata(ctx, alice, "main", []byte("alice-meta"))
-	st.PushEntries(ctx, alice, "main", []Entry{
+	st.PutMetadata(ctx, alice, "main", []byte("alice-meta"), "")
+	st.PushEntries(ctx, alice, 0, "main", []Entry{
 		{Kind: "env", Grp: "default", Key: "SECRET", Ciphertext: []byte("x"), BaseRevision: 0},
 	})
 
@@ -220,7 +220,7 @@ func TestPushLimits(t *testing.T) {
 
 	// 单条超过 512KB 上限 → 拒绝并指明超限条目
 	big := make([]byte, MaxEntryCiphertext+1)
-	_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+	_, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: "config", Grp: "", Key: "huge", Ciphertext: big, BaseRevision: 0},
 	})
 	if err == nil {
@@ -228,7 +228,7 @@ func TestPushLimits(t *testing.T) {
 	}
 
 	// 空批次拒绝
-	if _, _, err := st.PushEntries(ctx, userID, "main", nil); err == nil {
+	if _, _, err := st.PushEntries(ctx, userID, 0, "main", nil); err == nil {
 		t.Error("empty batch should be rejected")
 	}
 }

@@ -29,7 +29,7 @@ func historyFixture(t *testing.T) (store.Store, *Server, string) {
 		t.Fatalf("RegisterClient: %v", err)
 	}
 	push := func(base int64, val string) {
-		if _, _, err := st.PushEntries(ctx, userID, "main", []store.Entry{
+		if _, _, err := st.PushEntries(ctx, userID, 0, "main", []store.Entry{
 			{Kind: "env", Grp: "deploy", Key: "KEY", BaseRevision: base, Ciphertext: []byte(val)},
 		}); err != nil {
 			t.Fatalf("push: %v", err)

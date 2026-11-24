@@ -21,7 +21,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 
 ## agent 的两条访问路径
 
-1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 26 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，以及元数据检索 `senv_search`。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
+1. **MCP（优先）**：若宿主 agent 已配置 senv MCP server，直接调用 `senv` 前缀工具。当前共 30 个：env/text/backup/group/config 各一组，另有只读 `ssh_host_list/get`、`llm_provider_list`、`llm_agent_status`、`mcp_server_list`，元数据检索 `senv_search`，以及台账 `senv_ledger_list/get/append/update`（无删除）。完整清单与描述以 `senv mcp list-tools` 为准。MCP server 无法提示密码；读写前确认用户已启动 session。每次工具调用都会写本机审计事件 `op_mcp_tool`（target 为工具名，不含值，`senv audit` 可见）；text 工具对保留组 `llm-keys` 一律拒绝读写（含 `{{text:llm-keys/...}}` 引用解析）——LLM API key 只能经 CLI/TUI 管理。`senv_backup_list` 不含正文；`senv_backup_get` 无 decode。`senv_group_add`/`senv_group_list` 接受 `kind=backup` / `group=backup`。
 2. **CLI 兜底/管理面**：直接执行 `senv ...`。CLI 覆盖 MCP 不暴露的敏感管理操作，例如 keypair 导入/export/设默认、LLM Provider 写入与 coding agent 切换。查找条目优先 `senv search`（与 `senv_search` 同语义）。
 
 给 agent 安装 MCP 接入：`senv mcp install <claude-code|claude-desktop|cursor|codex|zcode|kimi|pi|omp|omo|dsh>`（`omp` 别名 `oh-my-pi`、`omo` 别名 `oh-my-openagent`，别名只在查找时接受）。先 `--print` 检查配置；只有用户明确要求时再落盘。`--all` 安装全部，`--scope project` 部分支持项目级配置。安装后需重启宿主 agent 生效。依赖外部扩展才能读取配置的目标（pi）会在输出里列出前置依赖，并在写盘前自动尝试安装；安装失败/找不到安装器只提示，不阻断写盘。
@@ -84,7 +84,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 - **text set 输入优先级**：`--file` > stdin 管道 > 参数 > 编辑器。agent 写入文本块用 `--file` 或管道，避免触发编辑器。
 - **text import/export**：`senv text import <key|group:key> --file <path>` 把文件内容加密入库（upsert：已存在 key 直接覆盖并刷新 `updated_at`，无确认提示；源文件保持不动；`--file` 必填，缺失即报错，不回落 stdin/编辑器）。`senv text export <key|group:key> --path <path>` 把明文值原子落盘，固定 0600（覆盖既有宽松文件会收紧；目标或父目录为符号链接时拒绝；内容逐字节原样导出、**不经引用解析**——要解码导出用 `text get -d -o`）；成功只打印路径、不回显明文；导出是读取面，不新增审计事件。export 写出明文文件，执行前先向用户确认。
 - **backup**：独立 kind（`backups/{group}/{key}.enc`），不与 text 混用。上限 `MaxBackupSize`（512KB，只计 value 明文，超限拒绝不截断）。`senv backup set/get/list/delete/import/export` 与 `backup group list/add/delete`；`backup get` **无** `-d/--decode/--loose`；`backup list` 只显示 key、大小、时间与说明，不含正文。set 输入优先级与 text 相同（`--file` > stdin > 参数 > 编辑器）；import/export 语义与 text 对齐（`--file`/`--path` 必填、upsert 无确认、0600、拒符号链接、成功只打印路径）。backup 无 activate/deactivate，也不参与引用。
-- **元数据搜索（优先于全量 list）**：`senv search <query>` / MCP `senv_search` 跨 env/text/backup/config/ssh/llm/mcp 做模糊检索（大小写不敏感 substring，多 token AND）。只匹配标识与 description 等非秘密字段，**结果永不含 value**；空 query 拒绝；默认 `--limit 20`，可 `--kind env,text`、`--json`。命中后再按需 `get` 单条取值。TUI `S` 与此字段表对齐（空输入仍可浏览 inventory）。
+- **元数据搜索（优先于全量 list）**：`senv search <query>` / MCP `senv_search` 跨 env/text/backup/config/ssh/llm/mcp/ledger 做模糊检索（大小写不敏感 substring，多 token AND；ledger 只命中实体头，不含记录正文）。只匹配标识与 description 等非秘密字段，**结果永不含 value**；空 query 拒绝；默认 `--limit 20`，可 `--kind env,text`、`--json`。命中后再按需 `get` 单条取值。TUI `S` 与此字段表对齐（空输入仍可浏览 inventory）。
 - **输出默认含明文值（最小暴露的前提）**：`env list` 会输出 `key=value`（值超过 50 字符截断，有说明时另起一行展示），MCP `senv_env_list` 返回 `group → key → {value, description}`。定位条目优先用 `senv search` / `senv_search`，不要为找键去拉全量 `senv_env_list`。`text list` / `backup list` 只显示 key、大小、更新时间（有说明则附上）。取密钥三条硬规则：
   1. **只要键名/元数据时不碰值**：用 `senv search <query>`（或 MCP `senv_search`）；列组用 `senv env group list`。**永不把 `env list` / `senv_env_list` 的原始输出送进会话**；text/backup 的 `list` 本身不含值，可直接看。
   2. **取值留在变量内、同一命令消费完，不回显**：`TOKEN="$(senv env get g:KEY)" && curl -H "Authorization: Bearer $TOKEN" …`。需要判断格式时只打印派生信息（`${#TOKEN}` 长度、字段名、掩码后前缀），且掩码必须同时覆盖两种值块形态——URI 内嵌凭据（`scheme://user:pass@host`）与多行块「一行一个字段」（`password: xxx`），两种形态都要在掩码命令里，例如：
@@ -172,7 +172,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 - **存量软链不自动迁移**：agent-data、transit 等现有「仓内目录 + 手工软链」的私有 skill 不会自动入库；要纳入需用户明确决定后手工 `skill add`，并先自行处理原软链（否则 apply 会 `skip-conflict`）。
 - **体积上限**：目录打包后明文 ≤ **1 MiB**；`skill` kind 密文单条上限 **1.5 MiB**（server 按 kind 判断；其它 kind 仍是 512 KiB）。超限报错点名上限，不截断。
 - **server provider 发布顺序**：`skill`/`skill_index` 在同步白名单里，白名单编进 senv-server 二进制。**必须先升级 senv-server 镜像，再让任何 client `skill add` / `senv sync` push**，否则旧 server 拒绝未知 kind，整批 push 失败（对齐 backup 的发布顺序，见 `docs/senv-server.md`）。git provider 无此约束。
-- **批量与请求体**：一次 `senv sync` push 是一个请求，server 请求体上限默认 64 MB。满额 skill（约 1.5 MiB）一次攒到约 40 条以上可能触达上限（413）；大批量入库请分几次 `skill add` + `senv sync`，client 目前不自动分批。
+- **批量与请求体**：客户端按 **≤500 条/批自动分批**推送（`SENV_PUSH_BATCH` 可调 1..1000，非法值回退默认），服务端单批上限 1000；每批成功后立即持久化同步状态，批内出现真实冲突会**停止后续批次**并保留未推条目（下次 `senv sync` 续推）。请求体上限 64 MB 仍按批生效；满额 skill（约 1.5 MiB）单批约 40 条可能触达该上限（413），大批量入库仍建议分几次 `skill add` + `senv sync`。
 - 其它：`skill` 写操作进本机审计（`op_skill`，只记标识不记内容）；`senv passwd`（rekey）、`doctor` 与孤儿数据检测都覆盖 `skills/`。可用 `skill unapply` 撤回带 `.senv-owned` 的托管目录（不删 vault）；TUI Skill Tab（Providers 之后）支持入库/详情/删除 vault、按 scope 查看状态、apply/unapply（计划页确认）。仍不做 skill 的 MCP 工具面与 kiro 根。
 
 ## server 模式
@@ -181,9 +181,9 @@ git provider 之外，vault 可托管在 senv-server 上：
 
 - 接入（注册流程）：服务端 admin 签发一次性注册码 `senv-server admin create-registration <user> [--expires 30m] [--dsn ...]`（默认 30 分钟；明文码只打印一次，库中只存 SHA-256）→ 客户端 `senv server register --address <url> --code <code> --name <设备名> [--vault main]`。设备名 1–128 字符、不含控制字符；同用户同名 client 报冲突且**注册码不被消费**（换名重试即可）；无效/过期/已用码统一报「注册码无效或已过期」并计入来源 IP 限速（防枚举），注册成功返回一次性明文 token（同样只存哈希）。或全新机器直接 `senv init --server <url>`（token 默认取 `SENV_SERVER_TOKEN`）。vault 密码永不上传。
 - token 存储：server token 存 `<configPath>/server-token.json`（0600，机器本地），**不在 settings.json**——settings.json 会被 git provider 同步，token 绝不能进 git 远端；`.gitignore`（覆盖 `server-token.json`、`mcp-exports.json`）自动生成，`git add` 亦有排除路径规格兜底。旧版 settings 内嵌 token 在下次读取时自动迁移。
-- 地址 scheme：默认只接受 `https://`；内网明文 http 需 `SENV_ALLOW_INSECURE_HTTP=1` 显式豁免。豁免生效后，只有链路可能出内网的地址（公网域名 / 公网 IP）才向 stderr 告警；内网/本机地址不告警——私网网段、回环、链路本地、IPv6 ULA、CGNAT（100.64.0.0/10）字面量 IP，以及 `localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名。判定只做字面量、不做 DNS 解析，所以域名解析到私网 IP 时仍按公网地址告警。
+- 地址 scheme：默认只接受 `https://`。明文 http 按主机分流——内网/本机地址直接放行、无需任何豁免；公网地址仍须 `SENV_ALLOW_INSECURE_HTTP=1` 显式豁免，且豁免生效时向 stderr 告警。内网/本机地址指私网网段、回环、链路本地、IPv6 ULA、CGNAT（100.64.0.0/10）字面量 IP，以及 `localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名；判定只做字面量、不做 DNS 解析，所以域名解析到私网 IP 时仍按公网地址处理。
 - 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖 env/text/backup/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）、私有 skill（`skills/<group>/<id>.enc` + `skill_index.json`，见「私有 Agent Skill」）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用，含 `senv backup get`；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）；backup 冲突对齐 text（可解密对比，合并上限 512KB）。**含 `backup`/`backup_meta`/`skill`/`skill_index` 的 client 必须等 senv-server 镜像先升级**（白名单在 server 二进制里；发布顺序见 `docs/senv-server.md`，优先 iship 构建），否则整批 push 会被旧 server 拒绝。
-- 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，`--restore <revision>` 恢复（会产生新 revision）。仅 server 模式支持；git 模式用 `git log`。
+- 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，每行显示**变更时间 + 服务端认定的操作者（client）**；`--restore <revision>` 恢复（会产生新 revision）。`senv history --metadata` 查看 vault metadata 的历史（覆盖写前像），`--restore <序号>` 恢复（1=最近一版；先备份本地并带乐观锁推送）。仅 server 模式支持；git 模式用 `git log`。历史裁剪位置由 serve `--history-prune-mode push|admin` 决定（默认 push；admin 模式由 cron 跑 `senv-server admin history-prune --retain N`）。
 - 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
 - senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：
   - `admin create-user <name>`：建用户并签发一次性明文 token（只打印一次，库存 SHA-256）。
@@ -191,10 +191,22 @@ git provider 之外，vault 可托管在 senv-server 上：
   - `admin revoke-token <token>`：按明文吊销单个 token（不可逆，不影响同用户其他 token）。
   - `admin list-clients [--user <name>]`：列出已注册设备（缺省全部用户）。
   - `admin block-client` / `unblock-client --client <名> [--user <user>]`：屏蔽/解封设备——屏蔽是其名下 token 立即失效的**可逆**状态，数据归属 user 不受影响；区别于按凭证的不可逆吊销。
-  - `admin logs [--user u] [--client c] [--since d] [--until d] [--outcome OK|AUTH-FAILED|BLOCKED|RATE-LIMITED|ADMIN] [--limit n]`：查访问日志（outcome 含 `ADMIN`——admin 子命令操作审计：create-user / revoke-token / create-registration / block-client / unblock-client 成功后各写一条，reason 记操作类型与目标）；`admin logs-prune --before <YYYY-MM-DD>` 清理旧日志（需高权限角色，见 `senv-server/sql/roles.sql` 双角色模板：serve 角色对 access_log 仅 INSERT+SELECT，不可 UPDATE/DELETE，自动清理 `--logs-retain-days` 应设 0 改由 cron 跑 logs-prune）。
+  - `admin logs [--user u] [--client c] [--ip addr] [--since d] [--until d] [--outcome OK|AUTH-FAILED|BLOCKED|RATE-LIMITED|REJECTED|ERROR|ADMIN] [--limit n]`：查访问日志（含推送规模 `n_entries`/`n_deleted`；outcome 含 `ADMIN`——admin 子命令操作审计：create-user / revoke-token / create-registration / block-client / unblock-client 成功后各写一条，reason 记操作类型与目标）；`admin logs-prune --before <YYYY-MM-DD>` 清理旧日志（需高权限角色，见 `senv-server/sql/roles.sql` 双角色模板：serve 角色对 access_log 仅 INSERT+SELECT，不可 UPDATE/DELETE，自动清理 `--logs-retain-days` 应设 0 改由 cron 跑 logs-prune）。
   - `serve` / `migrate`：启动服务（启动前校验 schema 版本）与应用迁移；flags 与构建发布流程见 `docs/senv-server.md`。
-  - `serve` 告警 flags：`--alert-webhook URL`（默认取 `SENV_SERVER_ALERT_WEBHOOK`，空则告警关闭、零开销）——连续 `AUTH-FAILED` 超 `--alert-auth-fail-threshold`（默认 10）、client 被屏蔽、新 client 注册成功、client 换 IP 首次访问时向 webhook POST JSON（只含元数据，异步 goroutine 投递 + 去抖 `--alert-debounce` 默认 5m，失败丢弃记日志）。
+  - `serve` 告警 flags：`--alert-webhook URL`（默认取 `SENV_SERVER_ALERT_WEBHOOK`，空则告警关闭、零开销）——连续 `AUTH-FAILED` 超 `--alert-auth-fail-threshold`（默认 10）、client 被屏蔽、新 client 注册成功、client 换 IP 首次访问、**单次推送删除 ≥ `--alert-mass-delete-threshold`（默认 50，0 关闭）** 时向 webhook POST JSON（只含元数据，异步 goroutine 投递 + 去抖 `--alert-debounce` 默认 5m，失败丢弃记日志）。另有 `--max-tombstones-per-push N`（默认 0 不限制，生产建议 200）：单批删除数超过 N 时整批拒绝。
   - `serve` `--alert-body-template`（env `SENV_SERVER_ALERT_BODY_TEMPLATE`）：把告警 body 渲染成 provider 专有格式（飞书机器人需 `{"msg_type":"text","content":{"text":"…"}}` 且文本含群关键词）。变量 `{{.alert}}` `{{.time}}` `{{.ip}}` `{{.user_id}}` `{{.client_id}}` `{{.user}}` `{{.client}}` `{{.reason}}` `{{.count}}`；不配置则投默认扁平 JSON。注意 **HTTP 200 ≠ 送达**：飞书一类网关拒收时返回 200 + `{"code":19024,…}`，server 会读响应 envelope 里的 `code`/`errcode`/`error_code` 判失败并重试，最终丢弃的日志带状态码与响应体片段。
+
+## 台账（`senv ledger`）
+
+台账是「实体 + 只追加操作记录」的配置源，随 vault 同步（server / git 两种通道都支持）。
+
+- **结构**：实体头（kind `ledger`）保存 `description`、`tags`、有序字段与最近 2 条状态；操作记录（kind `ledger_log`）不可变，一条记录一个同步条目，因此**多台设备/多个 agent 并发追加不会冲突**。组说明用 kind `ledger_meta`。
+- **键**：实体键 `<type>.<id>`（type 为小写 kebab-case 的开放枚举：device / infra / service / agent / container…，id 用别名、禁 `@`）；记录键 `<实体键>@<UTC 时间戳>-<4hex>`，按前缀枚举实体记录、按字典序即时间序。
+- **命令**：`senv ledger create <type>.<id> --description …`、`list [--type] [--json]`、`get`、`log`、`timeline [--type]`、`append <组:实体键> --summary … [--body|--body-file] [--kind op|note|correction] [--agent] [--at YYYY-MM-DD]`、`edit --field 名称=值`（空值删字段）、`set-status --text … [--level]`、`delete-record`（确认后删，同步为 tombstone）。
+- **回滚语义**：记录没有更新命令——写错就追加 `--kind correction`；删除是显式动作，最后版本留在条目历史（`senv history ledger_log:…`）。实体头修改走既有冲突检测。
+- **MCP 面**：`senv_ledger_list` / `senv_ledger_get` / `senv_ledger_append` / `senv_ledger_update`（只读 + 追加 + 单字段/状态更新；**刻意无删除**，失控 agent 的最大破坏半径只是多写几条可更正记录）。`senv_search --kind ledger` 只命中实体头（type/id/description/tags），不含记录正文。
+- **TUI Ledger Tab**：左栏分组侧栏（All + 各组），右栏实体列表；`enter` 详情（字段/状态/时间线），`a` 追加记录（summary + 可选 body 走 $EDITOR），`e` 改单字段（空值删字段），`s` 写最近状态，`/` 过滤。写入与 CLI 同语义并记 `op_ledger` 审计。
+- **限制**：台账内不放密钥值（只写指纹/引用）；`import`/`export` 属迁移变更（`senv ledger import/export`），当前未提供。
 
 ## 常用命令速查
 

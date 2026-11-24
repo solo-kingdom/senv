@@ -121,6 +121,49 @@ func TestValidateServerAddressHTTPExemption(t *testing.T) {
 	}
 }
 
+func TestValidateServerAddressInternalHTTPWithoutExemption(t *testing.T) {
+	// 内网/本机地址的链路不出内网，无需任何豁免即放行，也不告警。
+	t.Setenv(allowInsecureHTTPEnv, "")
+	tests := []string{
+		"http://senv.lan",
+		"http://10.0.0.5:8080",
+		"http://192.168.1.10",
+		"http://100.64.0.7:8080",
+		"http://127.0.0.1:8080",
+		"http://[::1]:8080",
+		"http://[fd00::1]:8080",
+		"http://localhost:8080",
+	}
+	for _, address := range tests {
+		t.Run(address, func(t *testing.T) {
+			var err error
+			out := captureStderr(t, func() { err = ValidateServerAddress(address) })
+			if err != nil {
+				t.Fatalf("ValidateServerAddress(%q) without exemption: %v", address, err)
+			}
+			if strings.Contains(out, "明文 http") {
+				t.Fatalf("internal http must not warn, stderr=%q", out)
+			}
+		})
+	}
+}
+
+func TestValidateServerAddressPublicHTTPStillRequiresExemption(t *testing.T) {
+	// 内网放行不能被扩大成"http 全部放行"：公网地址不带豁免仍必须拒绝。
+	t.Setenv(allowInsecureHTTPEnv, "")
+	for _, address := range []string{"http://senv.example.com", "http://8.8.8.8:8080"} {
+		t.Run(address, func(t *testing.T) {
+			err := ValidateServerAddress(address)
+			if err == nil {
+				t.Fatalf("public http without exemption must be rejected")
+			}
+			if !strings.Contains(err.Error(), allowInsecureHTTPEnv) {
+				t.Errorf("error must mention %s, got: %v", allowInsecureHTTPEnv, err)
+			}
+		})
+	}
+}
+
 func TestIsInternalHost(t *testing.T) {
 	tests := []struct {
 		host string

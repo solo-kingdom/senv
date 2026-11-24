@@ -210,6 +210,23 @@ var keymapConsistencyContract = []struct {
 			"g", "G", "pgup", "pgdown", "/"},
 	},
 	{
+		name: "ledger/groups",
+		new:  func() Tab { return newLedgerTab(Managers{}) },
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "/", "ctrl+r"},
+		absent: []string{"enter", "a", "e", "s"},
+	},
+	{
+		name: "ledger/heads",
+		new: func() Tab {
+			t := newLedgerTab(Managers{})
+			t.focusLeft = false
+			return t
+		},
+		want: []string{"up", "down", "left", "right", "g", "G",
+			"pgup", "pgdown", "enter", "a", "e", "s", "esc", "/", "ctrl+r"},
+	},
+	{
 		name: "mcp/import-report",
 		new: func() Tab {
 			t := newMCPTab(Managers{})

@@ -51,21 +51,21 @@ func TestPushSkillEntryLimitsThroughStore(t *testing.T) {
 	userID := newUser(t, st, "skill-limits")
 
 	big := make([]byte, MaxEntryCiphertext+1024)
-	if _, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+	if _, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: syncschema.KindSkill, Grp: "default", Key: "big", Ciphertext: big},
 		{Kind: syncschema.KindSkillIndex, Ciphertext: []byte(`{"skills":{}}`)},
 	}); err != nil {
 		t.Fatalf("skill above 512KiB should be accepted: %v", err)
 	}
 
-	_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+	_, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: syncschema.KindBackup, Grp: "default", Key: "big", Ciphertext: big},
 	})
 	var verr *ValidationError
 	if !errors.As(err, &verr) {
 		t.Fatalf("oversized backup error = %v, want ValidationError", err)
 	}
-	_, _, err = st.PushEntries(ctx, userID, "main", []Entry{
+	_, _, err = st.PushEntries(ctx, userID, 0, "main", []Entry{
 		{Kind: syncschema.KindSkill, Grp: "default", Key: "huge", Ciphertext: make([]byte, MaxSkillCiphertext+1)},
 	})
 	if !errors.As(err, &verr) {

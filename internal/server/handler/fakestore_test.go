@@ -172,7 +172,7 @@ func (f *fakeStore) GetMetadata(_ context.Context, userID int64, vault string) (
 	return blob, nil
 }
 
-func (f *fakeStore) PutMetadata(_ context.Context, userID int64, vault string, blob []byte) error {
+func (f *fakeStore) PutMetadata(_ context.Context, userID int64, vault string, blob []byte, baseHash string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := fakeVaultKey{userID, vault}
@@ -181,9 +181,31 @@ func (f *fakeStore) PutMetadata(_ context.Context, userID int64, vault string, b
 		f.nextVaultID++
 		id = f.nextVaultID
 		f.vaults[key] = id
+	} else if baseHash != "" && metadataTestHash(f.metadata[id]) != baseHash {
+		return &store.MetadataConflictError{}
 	}
 	f.metadata[id] = append([]byte(nil), blob...)
 	return nil
+}
+
+// getMetadata 返回 fake 存储里的当前 metadata（测试用）
+func (f *fakeStore) getMetadata(userID int64, vault string) []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.vaults[fakeVaultKey{userID, vault}]
+	if !ok {
+		return nil
+	}
+	return append([]byte(nil), f.metadata[id]...)
+}
+
+func (f *fakeStore) GetMetadataHistory(_ context.Context, userID int64, vault string, _ int) ([]store.MetadataVersion, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.vaults[fakeVaultKey{userID, vault}]; !ok {
+		return nil, store.ErrNotFound
+	}
+	return nil, nil
 }
 
 func (f *fakeStore) vaultID(userID int64, vault string, create bool) (int64, error) {
@@ -200,7 +222,7 @@ func (f *fakeStore) vaultID(userID int64, vault string, create bool) (int64, err
 	return id, nil
 }
 
-func (f *fakeStore) PushEntries(_ context.Context, userID int64, vault string, entries []store.Entry) ([]store.Entry, int64, error) {
+func (f *fakeStore) PushEntries(_ context.Context, userID, clientID int64, vault string, entries []store.Entry) ([]store.Entry, int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, err := f.vaultID(userID, vault, true)
@@ -339,6 +361,14 @@ func (f *fakeStore) SetHistoryRetain(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retain = n
+}
+
+func (f *fakeStore) SetHistoryPrune(prune bool) {}
+
+func (f *fakeStore) SetMaxTombstonesPerPush(n int) {}
+
+func (f *fakeStore) PruneAllHistory(_ context.Context, _ int) (int64, error) {
+	return 0, errors.New("fakeStore: not implemented")
 }
 
 func (f *fakeStore) ListHistory(_ context.Context, userID int64, vault string, _ store.HistoryFilter) ([]store.HistoryVersion, error) {

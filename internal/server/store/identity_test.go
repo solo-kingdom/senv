@@ -17,7 +17,7 @@ func TestPushEntrySSHAssetKinds(t *testing.T) {
 	t.Run("accepts ssh host and keypair entries", func(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "ssh-kinds-accept")
-		seeded, latest, err := st.PushEntries(ctx, userID, "main", []Entry{
+		seeded, latest, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindSSHHost, Key: "web-prod", Ciphertext: []byte("host-blob")},
 			{Kind: syncschema.KindSSHKeypair, Key: "deploy-key", Ciphertext: []byte("keypair-blob")},
 		})
@@ -43,7 +43,7 @@ func TestPushEntrySSHAssetKinds(t *testing.T) {
 	t.Run("rejects invalid ssh identity with whole batch", func(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "ssh-kinds-reject")
-		_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+		_, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindSSHHost, Key: "valid-host", Ciphertext: []byte("ok")},
 			{Kind: syncschema.KindSSHKeypair, Grp: "group", Key: "deploy-key", Ciphertext: []byte("invalid")},
 		})
@@ -63,7 +63,7 @@ func TestPushEntryBackupKinds(t *testing.T) {
 	t.Run("accepts backup and backup_meta entries", func(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "backup-kinds-accept")
-		seeded, latest, err := st.PushEntries(ctx, userID, "main", []Entry{
+		seeded, latest, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindBackup, Grp: "notes", Key: "DUMP", Ciphertext: []byte("dump-blob")},
 			{Kind: syncschema.KindBackupMeta, Grp: "notes", Ciphertext: []byte("meta-blob")},
 		})
@@ -89,7 +89,7 @@ func TestPushEntryBackupKinds(t *testing.T) {
 	t.Run("rejects invalid backup identity with whole batch", func(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "backup-kinds-reject")
-		_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+		_, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindBackup, Grp: "notes", Key: "DUMP", Ciphertext: []byte("ok")},
 			{Kind: syncschema.KindBackupMeta, Grp: "notes", Key: "DUMP", Ciphertext: []byte("invalid")},
 		})
@@ -110,7 +110,7 @@ func TestPushEntryIdentity(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "identity-new-vault")
 		attack := "../escaped"
-		_, _, err := st.PushEntries(ctx, userID, "main", []Entry{
+		_, _, err := st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindEnv, Grp: "default", Key: "VALID", Ciphertext: []byte("valid")},
 			{Kind: syncschema.KindConfig, Key: attack, Ciphertext: []byte("invalid")},
 		})
@@ -129,14 +129,14 @@ func TestPushEntryIdentity(t *testing.T) {
 	t.Run("invalid mixed batch preserves existing revision and entries", func(t *testing.T) {
 		st := newStore(t)
 		userID := newUser(t, st, "identity-existing-vault")
-		seed, latest, err := st.PushEntries(ctx, userID, "main", []Entry{{
+		seed, latest, err := st.PushEntries(ctx, userID, 0, "main", []Entry{{
 			Kind: syncschema.KindEnv, Grp: "default", Key: "BASE", Ciphertext: []byte("old"),
 		}})
 		if err != nil || latest != 1 || seed[0].Revision != 1 {
 			t.Fatalf("seed PushEntries = latest %d, entries %+v, err %v", latest, seed, err)
 		}
 
-		_, _, err = st.PushEntries(ctx, userID, "main", []Entry{
+		_, _, err = st.PushEntries(ctx, userID, 0, "main", []Entry{
 			{Kind: syncschema.KindEnv, Grp: "default", Key: "NEW", Ciphertext: []byte("new")},
 			{Kind: "unknown_kind", Ciphertext: []byte("invalid")},
 		})

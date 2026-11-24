@@ -165,3 +165,30 @@ func TestAlertClientRegistered(t *testing.T) {
 		t.Errorf("registered payload 缺 client id: %+v", got[0])
 	}
 }
+
+// 单次推送删除条数达到阈值 → mass_delete 告警，count 为删除条数。
+func TestAlertMassDelete(t *testing.T) {
+	rec := &alertRecorder{}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+
+	st := newFakeStore()
+	_, token := st.addClientToken("alice", "laptop", store.ClientStatusActive)
+	s := New(st, Options{AlertWebhook: srv.URL, AlertMassDeleteThreshold: 2})
+
+	body := strings.NewReader(`{"entries":[
+		{"kind":"env","grp":"g","key":"A","deleted":true},
+		{"kind":"env","grp":"g","key":"B","deleted":true},
+		{"kind":"env","grp":"g","key":"C","deleted":true}]}`)
+	req := httptest.NewRequest("POST", "/v1/vaults/main/entries", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	s.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := waitForAlerts(t, rec, "mass_delete", 1)
+	if got[0].Count != 3 {
+		t.Errorf("mass_delete count = %d, want 3", got[0].Count)
+	}
+	if got[0].ClientID == 0 {
+		t.Errorf("mass_delete payload 缺 client id: %+v", got[0])
+	}
+}

@@ -298,14 +298,14 @@ var hostCmd = &cobra.Command{
 }
 
 var (
-	hostAddHostname    string
-	hostAddUser        string
-	hostAddPort        int
-	hostAddProxyJump   string
-	hostAddKeypair     string
-	hostAddKeyFile     string
-	hostAddKeypairName string
-	hostAddGroup       string
+	hostAddHostname     string
+	hostAddUser         string
+	hostAddPort         int
+	hostAddProxyJump    string
+	hostAddKeypair      string
+	hostAddKeyFile      string
+	hostAddKeypairName  string
+	hostAddGroup        string
 	hostAddTags         []string
 	hostAddAttrs        []string
 	hostAddDescription  string

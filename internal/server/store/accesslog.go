@@ -16,6 +16,11 @@ const (
 	AccessOutcomeAuthFailed  = "AUTH-FAILED"
 	AccessOutcomeBlocked     = "BLOCKED"
 	AccessOutcomeRateLimited = "RATE-LIMITED"
+	// AccessOutcomeRejected 标记被拒绝的请求（400/409/413 等非认证类 4xx），
+	// 例如乐观锁冲突、body 超限；旧实现把这些一律记成 OK，导致推送失败不可见。
+	AccessOutcomeRejected = "REJECTED"
+	// AccessOutcomeError 标记服务端错误（5xx）。
+	AccessOutcomeError = "ERROR"
 	// AccessOutcomeAdmin 标记 admin CLI 操作审计事件（create-user / revoke /
 	// create-registration / block / unblock），与请求事件同表存储
 	AccessOutcomeAdmin = "ADMIN"
@@ -40,6 +45,10 @@ type AccessEvent struct {
 	UserID   int64     `json:"user_id"`   // 0 = 未知
 	Outcome  string    `json:"outcome"`
 	Reason   string    `json:"reason,omitempty"`
+	// NEntries/NDeleted 是 push 请求的规模（条目数 / 其中 tombstone 数）；
+	// 非 push 请求为 0。破坏性动作因此可从日志直接读出。
+	NEntries int `json:"n_entries,omitempty"`
+	NDeleted int `json:"n_deleted,omitempty"`
 }
 
 // AccessEventRow 是带名称的查询结果行（client/user 以名称展示便于管理员阅读）
@@ -73,13 +82,14 @@ func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 	e.Reason = truncateUTF8(e.Reason, MaxAccessLogReasonBytes)
 	if e.Outcome != AccessOutcomeOK && e.Outcome != AccessOutcomeAuthFailed &&
 		e.Outcome != AccessOutcomeBlocked && e.Outcome != AccessOutcomeRateLimited &&
+		e.Outcome != AccessOutcomeRejected && e.Outcome != AccessOutcomeError &&
 		e.Outcome != AccessOutcomeAdmin {
 		return validationErrorf("未知的访问结果 %q", e.Outcome)
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO access_log (ts, ip, method, path, client_id, user_id, outcome, reason)
-		 VALUES ($1, $2, $3, $4, NULLIF($5, 0), NULLIF($6, 0), $7, NULLIF($8, ''))`,
-		e.Time, e.IP, e.Method, e.Path, e.ClientID, e.UserID, e.Outcome, e.Reason)
+		`INSERT INTO access_log (ts, ip, method, path, client_id, user_id, outcome, reason, n_entries, n_deleted)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, 0), NULLIF($6, 0), $7, NULLIF($8, ''), $9, $10)`,
+		e.Time, e.IP, e.Method, e.Path, e.ClientID, e.UserID, e.Outcome, e.Reason, e.NEntries, e.NDeleted)
 	return err
 }
 
@@ -87,6 +97,7 @@ func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 type AccessLogFilter struct {
 	User    *int64
 	Client  *int64
+	IP      string
 	Since   *time.Time
 	Until   *time.Time
 	Outcome string
@@ -117,6 +128,9 @@ func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Acce
 	if f.Outcome != "" {
 		addCond("l.outcome", f.Outcome)
 	}
+	if f.IP != "" {
+		addCond("l.ip", f.IP)
+	}
 	if f.Since != nil {
 		args = append(args, *f.Since)
 		where += fmt.Sprintf(" AND l.ts >= $%d", len(args))
@@ -129,7 +143,8 @@ func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Acce
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT l.ts, l.ip, l.method, l.path, COALESCE(l.client_id, 0), COALESCE(l.user_id, 0),
-		        l.outcome, COALESCE(l.reason, ''), COALESCE(c.name, ''), COALESCE(u.name, '')
+		        l.outcome, COALESCE(l.reason, ''), l.n_entries, l.n_deleted,
+		        COALESCE(c.name, ''), COALESCE(u.name, '')
 		 FROM access_log l
 		 LEFT JOIN clients c ON c.id = l.client_id
 		 LEFT JOIN users u ON u.id = l.user_id
@@ -143,7 +158,7 @@ func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Acce
 	for rows.Next() {
 		var e AccessEventRow
 		if err := rows.Scan(&e.Time, &e.IP, &e.Method, &e.Path, &e.ClientID, &e.UserID,
-			&e.Outcome, &e.Reason, &e.ClientName, &e.UserName); err != nil {
+			&e.Outcome, &e.Reason, &e.NEntries, &e.NDeleted, &e.ClientName, &e.UserName); err != nil {
 			return nil, err
 		}
 		events = append(events, e)
