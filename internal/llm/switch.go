@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -131,6 +132,10 @@ type AgentAdapter struct {
 	CredentialEnvBaseURL bool
 	// Protocol 决定档案接入地址写进该 agent 配置时的形态。
 	Protocol ProtocolFamily
+	// ResolveProtocol 可选：为原生支持多协议族的 agent（如 ocr 同时支持
+	// openai / openai-responses / anthropic）按档案声明形态解析目标协议族。
+	// nil 时使用静态 Protocol 字段，保持既有单协议族 agent 零变化。
+	ResolveProtocol func(entry *storage.LLMProviderEntry, declared APIShape) ProtocolFamily
 	// ProjectsBackgroundModel 为 true 时，SwitchManager 解析后台模型
 	// （ADR-0029：显式指定 > 档案声明 > 默认模型）并经 SwitchRequest 传入；
 	// 目前仅 claude-code 消费。
@@ -258,6 +263,7 @@ func SupportedAgents() []AgentAdapter {
 		omoAdapter(),
 		ompAdapter(),
 		opencodeAdapter(),
+		ocrAdapter(),
 	}
 }
 
@@ -1161,6 +1167,82 @@ func opencodeAdapter() AgentAdapter {
 	}
 }
 
+// ocrProtocol 返回 open-code-review custom_providers.<id>.protocol 取值：
+// 显式声明 anthropic -> "anthropic"，openai-responses -> "openai-responses"，
+// 其余（未声明 / openai-chat）-> "openai"。
+func ocrProtocol(declaredShape string) string {
+	switch declaredShape {
+	case storage.LLMAPIShapeAnthropic:
+		return "anthropic"
+	case storage.LLMAPIShapeOpenAIResponses:
+		return "openai-responses"
+	default:
+		return "openai"
+	}
+}
+
+// ocrAdapter：~/.opencodereview/config.json（alibaba/open-code-review / ocr）——
+// 顶层 provider/model + custom_providers.<senv id>（url/protocol/model/models +
+// api_key_cmd 或 api_key）。自定义 provider 的 api_key 不展开 $VAR 且无 env 回退，
+// 非 Windows 下借原生 api_key_cmd ("printenv <VAR>") 实现 ADR-0031 默认不落明文；
+// Windows 无 printenv，CredentialEnvRef 置 nil 使 auto 回落 inline。
+func ocrAdapter() AgentAdapter {
+	adapter := AgentAdapter{
+		ID:       "ocr",
+		Name:     "Open Code Review",
+		Aliases:  []string{"open-code-review"},
+		Protocol: ProtocolOpenAICompatible,
+		ResolveProtocol: func(_ *storage.LLMProviderEntry, declared APIShape) ProtocolFamily {
+			if declared == APIShapeAnthropic {
+				return ProtocolAnthropic
+			}
+			return ProtocolOpenAICompatible
+		},
+		ConfigPath: func(home string) string {
+			return filepath.Join(home, ".opencodereview", "config.json")
+		},
+		ConfigPaths: func(home string) []string {
+			return []string{filepath.Join(home, ".opencodereview", "config.json")}
+		},
+		Apply: func(req SwitchRequest) error {
+			if req.CredentialMode == CredentialEnvVar {
+				envName, ok := strings.CutPrefix(req.Credential, "printenv ")
+				if !ok || !validEnvVarName(envName) {
+					return fmt.Errorf(
+						"ocr api_key_cmd must reference a valid environment variable name, got %q",
+						redactEnvVarNameForError(req.Credential))
+				}
+			}
+			return applyJSONMerge(req.ConfigPath, func(root map[string]any) error {
+				id := senvProviderID(req.ProviderAlias)
+				customProviders := ensureSubMap(root, "custom_providers")
+				if prior := req.PriorProvider; prior != "" && prior != req.ProviderAlias {
+					delete(customProviders, senvProviderID(prior))
+				}
+				entry := map[string]any{
+					"url":      req.BaseURL,
+					"protocol": ocrProtocol(req.APIShape),
+					"model":    req.DefaultModel,
+					"models":   append([]string(nil), req.Models...),
+				}
+				if req.CredentialMode == CredentialEnvVar {
+					entry["api_key_cmd"] = req.Credential
+				} else {
+					entry["api_key"] = req.Credential
+				}
+				customProviders[id] = entry
+				root["provider"] = id
+				root["model"] = req.DefaultModel
+				return nil
+			}, req.tx)
+		},
+	}
+	if runtime.GOOS != "windows" {
+		adapter.CredentialEnvRef = func(name string) string { return "printenv " + name }
+	}
+	return adapter
+}
+
 // ---------------------------------------------------------------------------
 // 适配器共用的投影与清理原语
 // ---------------------------------------------------------------------------
@@ -1386,12 +1468,16 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	if err != nil {
 		return nil, err
 	}
-	if !familyHasExplicitShapeURL(entry, adapter.Protocol) && shape != "" {
+	targetProtocol := adapter.Protocol
+	if adapter.ResolveProtocol != nil {
+		targetProtocol = adapter.ResolveProtocol(entry, shape)
+	}
+	if !familyHasExplicitShapeURL(entry, targetProtocol) && shape != "" {
 		family, ok := shape.Protocol()
-		if !ok || family != adapter.Protocol {
+		if !ok || family != targetProtocol {
 			return nil, fmt.Errorf(
 				"provider %q declares api_shape %s, which is incompatible with agent %s (%s); change the provider api_shape, add a shape URL for the agent's family via --shape-url <api_shape>=<url>, or switch to a different provider",
-				providerAlias, shape, adapter.Name, DescribeProtocol(adapter.Protocol))
+				providerAlias, shape, adapter.Name, DescribeProtocol(targetProtocol))
 		}
 	}
 	// codex 上游已移除 chat 线协议（openai/codex#7782），只讲 Responses：声明
@@ -1460,7 +1546,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	// 存量档案无需迁移；来源随输出可见。
 	var explicitURL, explicitField string
 	switch {
-	case adapter.Protocol == ProtocolAnthropic:
+	case targetProtocol == ProtocolAnthropic:
 		explicitURL, explicitField = entry.AnthropicBaseURL, "anthropic_base_url"
 	case agentPrefersChatWire(agentID, shape):
 		explicitURL, explicitField = entry.ChatBaseURL, "chat_base_url"
@@ -1471,7 +1557,7 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	if explicitURL != "" {
 		baseURL, baseURLSource = explicitURL, explicitField
 	} else {
-		baseURL, baseURLSource = baseURLForFamily(entry.BaseURL, adapter.Protocol), baseURLSourceInferred
+		baseURL, baseURLSource = baseURLForFamily(entry.BaseURL, targetProtocol), baseURLSourceInferred
 	}
 
 	// env 模式的环境变量名落地（ADR-0024/0031）。地址解析先行，claude-code
