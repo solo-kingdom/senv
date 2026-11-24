@@ -8,7 +8,11 @@ import (
 )
 
 // DefaultMaxDepth is the default maximum recursion depth for reference resolution
-const DefaultMaxDepth = 10
+const (
+	DefaultMaxDepth       = 10
+	DefaultMaxExpansions  = 256
+	DefaultMaxOutputBytes = 1 << 20
+)
 
 // refRegex matches {{env:...}} or {{text:...}} patterns
 var refRegex = regexp.MustCompile(`\{\{(env|text):([^}]+)\}\}`)
@@ -24,9 +28,16 @@ type ValueGetter interface {
 
 // ResolveOptions controls how references are resolved
 type ResolveOptions struct {
-	Loose        bool   // If true, unresolved references are kept as-is instead of causing errors
-	MaxDepth     int    // Maximum recursion depth (0 = use DefaultMaxDepth)
-	CurrentGroup string // Current group for implicit group resolution
+	Loose          bool   // If true, unresolved references are kept as-is instead of causing errors
+	MaxDepth       int    // Maximum recursion depth (0 = use DefaultMaxDepth)
+	MaxExpansions  int    // Maximum total reference expansions across all branches (0 = DefaultMaxExpansions)
+	MaxOutputBytes int    // Maximum resolved output size in bytes (0 = DefaultMaxOutputBytes)
+	CurrentGroup   string // Current group for implicit group resolution
+}
+
+type resolveState struct {
+	expansions int
+	warnings   []string
 }
 
 // ResolveResult contains the resolved value and any warnings
@@ -55,18 +66,31 @@ func (e *UnresolvedRefError) Error() string {
 	return fmt.Sprintf("unresolved reference {{%s}}: %s", e.Ref, e.Cause)
 }
 
-// Resolve recursively resolves all references in a value
-func Resolve(value string, getter ValueGetter, opts ResolveOptions) (string, error) {
+func normalizeResolveOptions(opts ResolveOptions) ResolveOptions {
 	if opts.MaxDepth == 0 {
 		opts.MaxDepth = DefaultMaxDepth
 	}
+	if opts.MaxExpansions == 0 {
+		opts.MaxExpansions = DefaultMaxExpansions
+	}
+	if opts.MaxOutputBytes == 0 {
+		opts.MaxOutputBytes = DefaultMaxOutputBytes
+	}
+	return opts
+}
 
+// Resolve recursively resolves all references in a value
+func Resolve(value string, getter ValueGetter, opts ResolveOptions) (string, error) {
+	opts = normalizeResolveOptions(opts)
 	visited := make(map[string]bool)
-	warnings := []string{}
+	state := &resolveState{}
 
-	result, err := resolveRecursive(value, getter, opts, visited, 0, &warnings)
+	result, err := resolveRecursive(value, getter, opts, visited, 0, state)
 	if err != nil {
 		return "", err
+	}
+	if len(result) > opts.MaxOutputBytes {
+		return "", fmt.Errorf("resolved output exceeds maximum size (%d bytes)", opts.MaxOutputBytes)
 	}
 
 	return result, nil
@@ -79,11 +103,14 @@ func resolveRecursive(
 	opts ResolveOptions,
 	visited map[string]bool,
 	depth int,
-	warnings *[]string,
+	state *resolveState,
 ) (string, error) {
 	// Check max depth
 	if depth >= opts.MaxDepth {
 		return "", fmt.Errorf("maximum reference depth exceeded (%d)", opts.MaxDepth)
+	}
+	if len(value) > opts.MaxOutputBytes {
+		return "", fmt.Errorf("resolved output exceeds maximum size (%d bytes)", opts.MaxOutputBytes)
 	}
 
 	// First handle escaped references: \{{...}} → {{...}}
@@ -134,7 +161,7 @@ func resolveRecursive(
 		if err != nil {
 			if opts.Loose {
 				// In loose mode, keep the reference as-is and add warning
-				*warnings = append(*warnings, fmt.Sprintf("warning: unresolved reference %s: %v", fullMatch, err))
+				state.warnings = append(state.warnings, fmt.Sprintf("warning: unresolved reference %s: %v", fullMatch, err))
 				continue
 			}
 			return "", &UnresolvedRefError{
@@ -143,11 +170,16 @@ func resolveRecursive(
 			}
 		}
 
+		state.expansions++
+		if state.expansions > opts.MaxExpansions {
+			return "", fmt.Errorf("maximum reference expansions exceeded (%d)", opts.MaxExpansions)
+		}
+
 		// Mark as visited
 		visited[refKey] = true
 
 		// Recursively resolve the retrieved value
-		resolved, err = resolveRecursive(resolved, getter, opts, visited, depth+1, warnings)
+		resolved, err = resolveRecursive(resolved, getter, opts, visited, depth+1, state)
 		if err != nil {
 			return "", err
 		}
@@ -157,10 +189,17 @@ func resolveRecursive(
 
 		// Replace in result
 		result = result[:match[0]] + resolved + result[match[1]:]
+		if len(result) > opts.MaxOutputBytes {
+			return "", fmt.Errorf("resolved output exceeds maximum size (%d bytes)", opts.MaxOutputBytes)
+		}
 	}
 
 	// Restore escaped patterns
-	return restoreEscaped(result, escaped), nil
+	out := restoreEscaped(result, escaped)
+	if len(out) > opts.MaxOutputBytes {
+		return "", fmt.Errorf("resolved output exceeds maximum size (%d bytes)", opts.MaxOutputBytes)
+	}
+	return out, nil
 }
 
 // parseRefPath parses "key" or "group:key" format
@@ -225,19 +264,19 @@ func FormatRefChain(chain []string) string {
 
 // ResolveWithWarnings resolves references and returns both the result and any warnings
 func ResolveWithWarnings(value string, getter ValueGetter, opts ResolveOptions) (string, []string, error) {
-	if opts.MaxDepth == 0 {
-		opts.MaxDepth = DefaultMaxDepth
-	}
-
+	opts = normalizeResolveOptions(opts)
 	visited := make(map[string]bool)
-	warnings := []string{}
+	state := &resolveState{}
 
-	result, err := resolveRecursive(value, getter, opts, visited, 0, &warnings)
+	result, err := resolveRecursive(value, getter, opts, visited, 0, state)
 	if err != nil {
-		return "", warnings, err
+		return "", state.warnings, err
+	}
+	if len(result) > opts.MaxOutputBytes {
+		return "", state.warnings, fmt.Errorf("resolved output exceeds maximum size (%d bytes)", opts.MaxOutputBytes)
 	}
 
-	return result, warnings, nil
+	return result, state.warnings, nil
 }
 
 // PrintWarnings prints warnings to stderr

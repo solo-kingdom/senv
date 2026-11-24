@@ -28,7 +28,10 @@ const (
 	// 宁可丢告警不可拖慢请求路径
 	alertChanBuffer = 256
 	// alertRespPeekBytes 投递结果判定时读取的响应体上限（只为看业务错误码）
-	alertRespPeekBytes = 512
+	alertRespPeekBytes  = 512
+	alertDeliverWorkers = 4
+	alertDeliverQueue   = 64
+	maxAlertMapEntries  = 4096
 )
 
 // alertDetector 从安全事件流检测异常模式并投递 webhook
@@ -44,7 +47,8 @@ type alertDetector struct {
 	// 网关）；nil = 直接 POST alertPayload JSON
 	bodyTmpl *template.Template
 
-	ch chan store.AccessEvent
+	ch        chan store.AccessEvent
+	deliverCh chan alertPayload
 
 	mu         sync.Mutex
 	failCounts map[string]int       // ip -> 连续 AUTH-FAILED 计数
@@ -68,12 +72,21 @@ func newAlertDetector(st store.Store, webhook string, threshold, massDeleteThres
 		massDeleteThreshold: massDeleteThreshold,
 		debounce:            debounce,
 		ch:                  make(chan store.AccessEvent, alertChanBuffer),
+		deliverCh:           make(chan alertPayload, alertDeliverQueue),
 		failCounts:          map[string]int{},
 		lastIP:              map[int64]string{},
 		lastSent:            map[string]time.Time{},
 	}
 	if bodyTemplate != "" {
-		tpl, err := template.New("alert-body").Option("missingkey=error").Parse(bodyTemplate)
+		tpl, err := template.New("alert-body").Funcs(template.FuncMap{
+			"json": func(v any) (string, error) {
+				b, err := json.Marshal(v)
+				if err != nil {
+					return "", err
+				}
+				return string(b), nil
+			},
+		}).Option("missingkey=error").Parse(bodyTemplate)
 		if err != nil {
 			slog.Error("alert body template invalid, falling back to default JSON payload", "err", err)
 			return d
@@ -92,9 +105,21 @@ func (d *alertDetector) push(e store.AccessEvent) {
 	}
 }
 
-// run 消费事件流并检测；进程退出即终止，在途告警丢弃（best-effort 语义）
+// run 消费事件流并检测；同时运行固定数量的异步投递 worker。
 func (d *alertDetector) run(ctx context.Context) {
 	d.loadLastIPs(ctx)
+	for i := 0; i < alertDeliverWorkers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case p := <-d.deliverCh:
+					d.deliver(ctx, p)
+				}
+			}
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -144,6 +169,9 @@ func (d *alertDetector) handle(ctx context.Context, e store.AccessEvent) {
 	switch {
 	case e.Outcome == store.AccessOutcomeAuthFailed:
 		d.mu.Lock()
+		if _, exists := d.failCounts[e.IP]; !exists && len(d.failCounts) >= maxAlertMapEntries {
+			d.failCounts = map[string]int{}
+		}
 		d.failCounts[e.IP]++
 		n := d.failCounts[e.IP]
 		d.mu.Unlock()
@@ -191,11 +219,16 @@ func (d *alertDetector) handle(ctx context.Context, e store.AccessEvent) {
 	if !d.debounced(alertType, key) {
 		return
 	}
-	go d.deliver(ctx, alertPayload{
+	payload := alertPayload{
 		Alert: alertType, Time: time.Now(), IP: e.IP,
 		UserID: e.UserID, ClientID: e.ClientID,
 		Reason: e.Reason, Count: count,
-	})
+	}
+	select {
+	case d.deliverCh <- payload:
+	default:
+		slog.Warn("alert delivery queue full, dropping alert", "alert", alertType, "ip", e.IP)
+	}
 }
 
 func clientKey(id int64) string { return fmt.Sprintf("client:%d", id) }
@@ -209,11 +242,21 @@ func (d *alertDetector) debounced(alertType, key string) bool {
 	if t, ok := d.lastSent[k]; ok && now.Sub(t) < d.debounce {
 		return false
 	}
+	if _, exists := d.lastSent[k]; !exists && len(d.lastSent) >= maxAlertMapEntries {
+		for existingKey, ts := range d.lastSent {
+			if now.Sub(ts) >= d.debounce {
+				delete(d.lastSent, existingKey)
+			}
+		}
+		if len(d.lastSent) >= maxAlertMapEntries {
+			d.lastSent = map[string]time.Time{}
+		}
+	}
 	d.lastSent[k] = now
 	return true
 }
 
-// renderBody 生成请求体：有模板按模板渲染，否则保持原 JSON 载荷行为
+// renderBody 生成请求体：有模板按模板渲染并校验合法 JSON，否则保持原 JSON 载荷行为
 func (d *alertDetector) renderBody(p alertPayload) ([]byte, error) {
 	if d.bodyTmpl == nil {
 		return json.Marshal(p)
@@ -222,13 +265,22 @@ func (d *alertDetector) renderBody(p alertPayload) ([]byte, error) {
 	if err := d.bodyTmpl.Execute(&buf, alertTemplateData(p)); err != nil {
 		return nil, err
 	}
+	if !json.Valid(buf.Bytes()) {
+		return nil, fmt.Errorf("rendered alert body is not valid JSON")
+	}
 	return buf.Bytes(), nil
 }
 
-// alertTemplateData 把 payload 摊成模板取用的 map（键 = JSON 字段名），并补齐
-// 全部已知键：omitempty 会丢掉空字段，而 text/template 取缺失键渲染成
-// `<no value>`，会把脏字段写进通知正文。键不存在于本表 = 模板拼错，
-// missingkey=error 直接报渲染失败（宁可显式失败，不要静默降级）。
+func escapeJSONStringContent(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil || len(b) < 2 {
+		return ""
+	}
+	return string(b[1 : len(b)-1])
+}
+
+// alertTemplateData 把 payload 摊成模板取用的 map（键 = JSON 字段名），对所有字符串
+// 字段做 JSON 字符串内部转义，防止用户/路径/设备名破坏自定义 JSON 模板结构。
 func alertTemplateData(p alertPayload) map[string]any {
 	out := map[string]any{
 		"alert": "", "time": "", "ip": "",
@@ -240,6 +292,11 @@ func alertTemplateData(p alertPayload) map[string]any {
 		return out
 	}
 	_ = json.Unmarshal(raw, &out)
+	for k, v := range out {
+		if s, ok := v.(string); ok {
+			out[k] = escapeJSONStringContent(s)
+		}
+	}
 	return out
 }
 

@@ -6,9 +6,22 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wii/senv/internal/server/store"
 )
+
+func sanitizeLogField(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == '\ufffd' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 // accessRecorder 记录响应状态码（WriteHeader 可能不被显式调用 → 200）
 type accessRecorder struct {
@@ -61,13 +74,13 @@ func outcomeFromStatus(status int) string {
 // 失败仅记服务端错误日志，不影响响应
 func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder) {
 	event := store.AccessEvent{
-		IP:       s.resolveRemoteIP(r),
-		Method:   r.Method,
-		Path:     r.URL.Path,
+		IP:       sanitizeLogField(s.resolveRemoteIP(r)),
+		Method:   sanitizeLogField(r.Method),
+		Path:     sanitizeLogField(r.URL.Path),
 		ClientID: info.clientID,
 		UserID:   info.userID,
 		Outcome:  outcomeFromStatus(rec.status),
-		Reason:   info.reason,
+		Reason:   sanitizeLogField(info.reason),
 		NEntries: info.nEntries,
 		NDeleted: info.nDeleted,
 	}

@@ -246,7 +246,7 @@ func openReadFallback(rootFD int, segments []string) (int, error) {
 		return -1, err
 	}
 	defer unix.Close(parent)
-	fd, err := unix.Openat(parent, segments[len(segments)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(parent, segments[len(segments)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, syscallPathError("open", displayPath(segments), err)
 	}

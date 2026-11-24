@@ -219,10 +219,11 @@ func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
 	if s == nil {
 		return false, fmt.Errorf("config edit session is nil")
 	}
-	if err := validateConfigName(s.Name); err != nil {
-		return false, err
-	}
 	if !m.mutationLocked {
+		defer os.Remove(s.TmpPath)
+		if err := validateConfigName(s.Name); err != nil {
+			return false, err
+		}
 		var changed bool
 		err := m.mutate(func(locked *Manager) error {
 			var err error
@@ -232,6 +233,9 @@ func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
 		return changed, err
 	}
 	defer os.Remove(s.TmpPath)
+	if err := validateConfigName(s.Name); err != nil {
+		return false, err
+	}
 
 	editedContent, err := os.ReadFile(s.TmpPath)
 	if err != nil {

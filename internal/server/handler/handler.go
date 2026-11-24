@@ -338,7 +338,11 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 
 // decodeBody 限制请求体大小并解码 JSON
 func (s *Server) decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
+	return s.decodeBodyLimit(w, r, v, s.maxBody)
+}
+
+func (s *Server) decodeBodyLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil {
 		var maxErr *http.MaxBytesError

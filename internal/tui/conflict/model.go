@@ -120,6 +120,10 @@ type editorFinishedMsg struct{ err error }
 
 func (m Model) updateKey(key string) (tea.Model, tea.Cmd) {
 	if key == "ctrl+c" {
+		if m.editorSession != nil {
+			_ = m.editorSession.Close()
+			m.editorSession = nil
+		}
 		m.quit = true
 		return m, tea.Quit
 	}

@@ -40,6 +40,21 @@ type ConsistencyReport struct {
 	QuarantinedConfigNames []string
 }
 
+// TotalOK returns the total number of decryptable data files across all vault kinds.
+func (r *ConsistencyReport) TotalOK() int {
+	return r.EnvFiles.OK +
+		r.TextFiles.OK +
+		r.BackupFiles.OK +
+		r.SkillFiles.OK +
+		r.ConfigFiles.OK +
+		r.HostFiles.OK +
+		r.KeyPairFiles.OK +
+		r.ProviderFiles.OK +
+		r.MCPServerFiles.OK +
+		r.LedgerFiles.OK +
+		r.TreeFiles.OK
+}
+
 // AllOK reports whether the key decrypts the metadata and every data file.
 func (r *ConsistencyReport) AllOK() bool {
 	return r.MetadataKeyOK &&
