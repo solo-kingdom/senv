@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -35,7 +36,7 @@ func RegisterInclude() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	existing, err := os.ReadFile(path)
+	existing, _, err := exportfile.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if err := storage.WriteSensitiveFile(path, []byte(IncludeLine+"\n"), 0o700, 0o600); err != nil {
 			return false, fmt.Errorf("create ssh config: %w", err)
@@ -62,7 +63,7 @@ func UnregisterInclude() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	existing, err := os.ReadFile(path)
+	existing, _, err := exportfile.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -98,38 +99,20 @@ func hasExactLine(data []byte, want string) bool {
 	return false
 }
 
-// writeSSHConfigAtomic 备份后原子写回 ~/.ssh/config，保持原文件权限。
+// writeSSHConfigAtomic 备份后原子写回 ~/.ssh/config，不跟随软链并保持原文件权限。
 func writeSSHConfigAtomic(path string, data []byte) error {
 	perm := os.FileMode(0o600)
-	if info, err := os.Stat(path); err == nil {
-		perm = info.Mode().Perm()
-	}
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		if err := os.WriteFile(path+".senv-bak", existing, perm); err != nil {
-			return fmt.Errorf("backup ssh config: %w", err)
+	if existing, mode, err := exportfile.ReadFile(path); err == nil {
+		perm = mode.Perm()
+		if len(existing) > 0 {
+			if err := exportfile.WriteFile(path+".senv-bak", existing, 0o600); err != nil {
+				return fmt.Errorf("backup ssh config: %w", err)
+			}
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect ssh config: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".senv-ssh-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+	if err := exportfile.WriteFile(path, data, perm); err != nil {
 		return fmt.Errorf("replace ssh config: %w", err)
 	}
 	return nil

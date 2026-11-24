@@ -130,8 +130,8 @@ func TestExportJSONCreatesMergesAndIsIdempotent(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
 	}
-	if _, err := os.Stat(cfgPath + agentcfg.BackupSuffix); err != nil {
-		t.Fatalf("expected backup file: %v", err)
+	if _, err := os.Stat(cfgPath + agentcfg.BackupSuffix); !os.IsNotExist(err) {
+		t.Fatalf("expected no lingering backup file after sensitive export, stat err=%v", err)
 	}
 
 	// The ledger records the fingerprint but never the plaintext value.

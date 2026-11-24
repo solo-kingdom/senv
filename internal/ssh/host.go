@@ -124,6 +124,40 @@ func (m *Manager) validateAndSave(host *storage.HostEntry) error {
 	return m.storage.SaveHost(host.Alias, host, m.password)
 }
 
+func validateSSHToken(field, val string, rejectWildcards bool) error {
+	if strings.HasPrefix(val, "-") {
+		return fmt.Errorf("%s %q must not start with '-'", field, val)
+	}
+	bad := " \t\r\n\f\v\"'#"
+	if rejectWildcards {
+		bad += "*?!"
+	}
+	if strings.ContainsAny(val, bad) {
+		return fmt.Errorf("%s %q contains forbidden whitespace or OpenSSH metacharacters", field, val)
+	}
+	for _, r := range val {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s %q must not contain control characters", field, val)
+		}
+	}
+	return nil
+}
+
+func quoteSSHPath(p string) (string, error) {
+	if strings.ContainsAny(p, "\r\n\x00\"") {
+		return "", fmt.Errorf("invalid SSH identity path %q: contains forbidden characters", p)
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("invalid SSH identity path %q: contains control characters", p)
+		}
+	}
+	if strings.ContainsAny(p, " \t") {
+		return `"` + p + `"`, nil
+	}
+	return p, nil
+}
+
 func validateHost(host *storage.HostEntry) error {
 	if host == nil {
 		return fmt.Errorf("host entry is nil")
@@ -131,14 +165,24 @@ func validateHost(host *storage.HostEntry) error {
 	if err := storage.ValidateName(host.Alias); err != nil {
 		return fmt.Errorf("invalid host alias %q: %w", host.Alias, err)
 	}
+	if err := validateSSHToken("host alias", host.Alias, true); err != nil {
+		return err
+	}
 	if strings.TrimSpace(host.Hostname) == "" {
 		return fmt.Errorf("host %q: hostname is required", host.Alias)
 	}
-	if strings.ContainsAny(host.Hostname, "\r\n\x00") {
-		return fmt.Errorf("host %q: hostname must not contain line separators or NUL", host.Alias)
+	if err := validateSSHToken("hostname", host.Hostname, false); err != nil {
+		return fmt.Errorf("host %q: %w", host.Alias, err)
 	}
-	if strings.ContainsAny(host.User, "\r\n\x00") {
-		return fmt.Errorf("host %q: user must not contain line separators or NUL", host.Alias)
+	if host.User != "" {
+		if err := validateSSHToken("user", host.User, false); err != nil {
+			return fmt.Errorf("host %q: %w", host.Alias, err)
+		}
+	}
+	if host.ProxyJump != "" {
+		if err := validateSSHToken("proxyJump", host.ProxyJump, false); err != nil {
+			return fmt.Errorf("host %q: %w", host.Alias, err)
+		}
 	}
 	if err := validateGroup(host.Group); err != nil {
 		return fmt.Errorf("host %q: %w", host.Alias, err)
@@ -174,7 +218,9 @@ func renderHost(b *strings.Builder, host *storage.HostEntry, identityPath string
 		fmt.Fprintf(b, "  ProxyJump %s\n", host.ProxyJump)
 	}
 	if identityPath != "" {
-		fmt.Fprintf(b, "  IdentityFile %s\n", identityPath)
+		if quoted, err := quoteSSHPath(identityPath); err == nil {
+			fmt.Fprintf(b, "  IdentityFile %s\n", quoted)
+		}
 	}
 	keys := make([]string, 0, len(host.Extra))
 	for key := range host.Extra {

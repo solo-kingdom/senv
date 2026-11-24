@@ -74,17 +74,29 @@ func (m *Manager) Render(filter RenderFilter) (*RenderResult, error) {
 	ungroupedPlaceholder := false
 	for _, list := range blocks {
 		for _, host := range list {
+			if err := validateHost(host); err != nil {
+				return nil, err
+			}
 			if host.IdentityKey == "" {
 				continue
 			}
 			entry, err := m.loadKeyPair(host.IdentityKey)
 			switch {
 			case err == nil:
+				if err := validateGroup(entry.Group); err != nil {
+					return nil, fmt.Errorf("keypair %q: %w", entry.Name, err)
+				}
+				if err := storage.ValidateName(entry.Name); err != nil {
+					return nil, fmt.Errorf("invalid keypair name %q: %w", entry.Name, err)
+				}
 				res.Referenced[entry.Name] = entry
 				referencedGroups[entry.Group] = true
 				path, pathErr := MaterializePath(entry.Group, entry.Name)
 				if pathErr != nil {
 					return nil, pathErr
+				}
+				if _, qErr := quoteSSHPath(path); qErr != nil {
+					return nil, qErr
 				}
 				identityPaths[host.Alias] = path
 			case errors.Is(err, os.ErrNotExist):
@@ -96,6 +108,9 @@ func (m *Manager) Render(filter RenderFilter) (*RenderResult, error) {
 				path, pathErr := MaterializePath("", host.IdentityKey)
 				if pathErr != nil {
 					return nil, pathErr
+				}
+				if _, qErr := quoteSSHPath(path); qErr != nil {
+					return nil, qErr
 				}
 				identityPaths[host.Alias] = path
 			default:

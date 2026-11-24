@@ -279,7 +279,7 @@ func TestMCPTwoPanesStatusAndFocus(t *testing.T) {
 	}
 }
 
-func TestMCPDetailShowsFullEnv(t *testing.T) {
+func TestMCPDetailMasksByDefaultAndRevealsOnToggle(t *testing.T) {
 	tab, _, _ := newMCPTestTab(t)
 	addMCPProfile(t, tab, "github", "npx", map[string]string{
 		"GITHUB_TOKEN": mcpSecret,
@@ -288,10 +288,20 @@ func TestMCPDetailShowsFullEnv(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab = out.(*mcpTab)
-	view := tab.View()
+	masked := tab.View()
+	if strings.Contains(masked, mcpSecret) || strings.Contains(masked, "{{env:secrets:GH_TOKEN}}") {
+		t.Fatalf("detail must mask env values by default:\n%s", masked)
+	}
+	if !strings.Contains(masked, "GITHUB_TOKEN=********") {
+		t.Fatalf("detail missing masked env key:\n%s", masked)
+	}
+
+	out, _ = tab.Update(runeKey("v"))
+	tab = out.(*mcpTab)
+	revealed := tab.View()
 	for _, want := range []string{"github", "npx", "GITHUB_TOKEN=" + mcpSecret, "REF={{env:secrets:GH_TOKEN}}"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("detail missing %q:\n%s", want, view)
+		if !strings.Contains(revealed, want) {
+			t.Fatalf("revealed detail missing %q:\n%s", want, revealed)
 		}
 	}
 }
@@ -750,6 +760,15 @@ func TestMCPDetailRemoteShowsFullFields(t *testing.T) {
 	tab = loadMCPTab(t, tab)
 	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab = out.(*mcpTab)
+	masked := tab.View()
+	if strings.Contains(masked, "Bearer "+mcpSecret) || strings.Contains(masked, "X-Api-Key: k1") {
+		t.Fatalf("remote detail must mask headers by default:\n%s", masked)
+	}
+	if !strings.Contains(masked, "Authorization: ********") || !strings.Contains(masked, "X-Api-Key: ********") {
+		t.Fatalf("remote detail missing masked headers:\n%s", masked)
+	}
+	out, _ = tab.Update(runeKey("v"))
+	tab = out.(*mcpTab)
 	view := tab.View()
 	for _, want := range []string{
 		"web",
@@ -758,7 +777,7 @@ func TestMCPDetailRemoteShowsFullFields(t *testing.T) {
 		"X-Api-Key: k1",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("remote detail missing %q:\n%s", want, view)
+			t.Fatalf("remote detail missing %q after reveal:\n%s", want, view)
 		}
 	}
 }

@@ -1,12 +1,14 @@
 package mcp
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/wii/senv/internal/agentcfg"
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -400,12 +402,18 @@ func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server,
 		if err != nil {
 			return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q url: %w", entry.Alias, err)
 		}
+		if err := validateResolvedURL(resolved); err != nil {
+			return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q url: %w", entry.Alias, err)
+		}
 		server.URL = resolved
 		if len(entry.Headers) > 0 {
 			server.Headers = make(map[string]string, len(entry.Headers))
 			for key, raw := range entry.Headers {
 				resolved, err := resolveOne(fmt.Sprintf("header %s", key), raw)
 				if err != nil {
+					return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q header %s: %w", entry.Alias, key, err)
+				}
+				if err := validateNoControlChars(resolved); err != nil {
 					return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q header %s: %w", entry.Alias, key, err)
 				}
 				server.Headers[key] = resolved
@@ -422,10 +430,35 @@ func (e *Exporter) resolveEntry(entry *storage.MCPServerEntry) (agentcfg.Server,
 			if err != nil {
 				return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q env %s: %w", entry.Alias, key, err)
 			}
+			if strings.ContainsRune(resolved, 0) {
+				return agentcfg.Server{}, nil, fmt.Errorf("MCP server %q env %s: value must not contain NUL bytes", entry.Alias, key)
+			}
 			server.Env[key] = resolved
 		}
 	}
 	return server, warnings, nil
+}
+
+func validateResolvedURL(u string) error {
+	lower := strings.ToLower(u)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		return fmt.Errorf("resolved url must be an http(s) address")
+	}
+	for _, r := range u {
+		if r <= 0x20 || r == 0x7f {
+			return fmt.Errorf("resolved url must not contain spaces or control characters")
+		}
+	}
+	return nil
+}
+
+func validateNoControlChars(v string) error {
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("resolved value must not contain control characters")
+		}
+	}
+	return nil
 }
 
 // agentFile is one agent config file held in memory: JSON roots stay generic
@@ -458,8 +491,8 @@ func loadAgentFile(target agentcfg.Target, path string) (*agentFile, error) {
 		file.cordis = cordis
 		return file, nil
 	default:
-		data, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
+		data, _, err := exportfile.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		file.tomlSrc = string(data)
@@ -467,14 +500,13 @@ func loadAgentFile(target agentcfg.Target, path string) (*agentFile, error) {
 	}
 }
 
-// writeAgentFile persists one composed config. The DSH target creates its home
-// directory 0700 first (DSH's own convention); every other target keeps the
-// historical 0755.
+// writeAgentFile persists one composed config containing resolved secrets
+// without following symlinks and cleans up any backup once the write lands.
 func writeAgentFile(target agentcfg.Target, path string, data []byte) error {
 	if target.Format == agentcfg.FormatCordisPatch {
-		return agentcfg.WriteCordisPatch(path, data)
+		return agentcfg.WriteCordisPatchSensitive(path, data)
 	}
-	return agentcfg.WriteWithBackup(path, data)
+	return agentcfg.WriteSensitive(path, data, 0o755)
 }
 
 // entry reads a server back in this target's comparable form: the file's

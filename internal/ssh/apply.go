@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wii/senv/internal/exportfile"
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -69,7 +71,7 @@ func (m *Manager) Apply(filter RenderFilter) (*ApplyResult, error) {
 	}
 
 	if full {
-		pruned, err := pruneGhostFragments(gdir, fragmentNameSet(rr))
+		pruned, err := pruneGhostFragments(fragmentNameSet(rr))
 		if err != nil {
 			res.Errors = append(res.Errors, err.Error())
 		}
@@ -97,7 +99,7 @@ func (m *Manager) Apply(filter RenderFilter) (*ApplyResult, error) {
 }
 
 // Unexport 是导出的撤回（ADR-0023 D7）：摘除 ~/.ssh/config 的 senv 注册
-// 行并删除 groups/ 目录；vault 档案与 keys/ 下落盘私钥原样保留。
+// 行并安全删除 groups/ 目录（不跟随软链）；vault 档案与 keys/ 下落盘私钥原样保留。
 func (m *Manager) Unexport() (unregistered bool, groupsRemoved bool, err error) {
 	var errs []string
 	changed, regErr := UnregisterInclude()
@@ -106,15 +108,18 @@ func (m *Manager) Unexport() (unregistered bool, groupsRemoved bool, err error) 
 	} else {
 		unregistered = changed
 	}
-	gdir, dirErr := groupsDir()
+	senvDir, dirErr := SenvDir()
 	if dirErr != nil {
 		errs = append(errs, dirErr.Error())
-	} else if _, statErr := os.Stat(gdir); statErr == nil {
-		if rmErr := os.RemoveAll(gdir); rmErr != nil {
-			errs = append(errs, fmt.Sprintf("remove group fragments: %v", rmErr))
-		} else {
+	} else if senvRoot, openErr := securefs.OpenRoot(senvDir); openErr == nil {
+		defer senvRoot.Close()
+		if rmErr := senvRoot.RemoveTree(groupsDirName); rmErr == nil {
 			groupsRemoved = true
+		} else if !errors.Is(rmErr, os.ErrNotExist) {
+			errs = append(errs, fmt.Sprintf("remove group fragments: %v", rmErr))
 		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		errs = append(errs, fmt.Sprintf("open senv ssh root: %v", openErr))
 	}
 	if len(errs) > 0 {
 		return unregistered, groupsRemoved, fmt.Errorf("unexport: %s", strings.Join(errs, "; "))
@@ -131,18 +136,26 @@ func UnexportState() (registered bool, fragments int, err error) {
 	if err != nil {
 		return false, 0, err
 	}
-	data, err := os.ReadFile(path)
+	data, _, err := exportfile.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, 0, fmt.Errorf("read ssh config: %w", err)
 	}
 	if err == nil {
 		registered = hasExactLine(data, IncludeLine)
 	}
-	gdir, err := groupsDir()
+	senvDir, err := SenvDir()
 	if err != nil {
 		return registered, 0, err
 	}
-	entries, err := os.ReadDir(gdir)
+	senvRoot, err := securefs.OpenRoot(senvDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return registered, 0, nil
+	}
+	if err != nil {
+		return registered, 0, fmt.Errorf("open senv ssh root: %w", err)
+	}
+	defer senvRoot.Close()
+	entries, err := senvRoot.ReadDir(groupsDirName)
 	if errors.Is(err, os.ErrNotExist) {
 		return registered, 0, nil
 	}
@@ -150,7 +163,7 @@ func UnexportState() (registered bool, fragments int, err error) {
 		return registered, 0, fmt.Errorf("list group fragments: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+		if entry.IsDir || !strings.HasSuffix(entry.Name, ".conf") {
 			continue
 		}
 		fragments++
@@ -160,27 +173,39 @@ func UnexportState() (registered bool, fragments int, err error) {
 
 // pruneGhostFragments 删除 groups/ 下不属于当前渲染结果的 .conf 文件
 // （组已在 vault 中改名/删空）。调用方限定：仅全量导出。
-func pruneGhostFragments(gdir string, live map[string]bool) ([]string, error) {
-	entries, err := os.ReadDir(gdir)
+func pruneGhostFragments(live map[string]bool) ([]string, error) {
+	senvDir, err := SenvDir()
+	if err != nil {
+		return nil, err
+	}
+	senvRoot, err := securefs.OpenRoot(senvDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open senv ssh root: %w", err)
+	}
+	defer senvRoot.Close()
+	entries, err := senvRoot.ReadDir(groupsDirName)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("list group fragments: %w", err)
 	}
+	gdir := filepath.Join(senvDir, groupsDirName)
 	var pruned []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+		if entry.IsDir || !strings.HasSuffix(entry.Name, ".conf") {
 			continue
 		}
-		if live[entry.Name()] || entry.Name() == defaultFragmentFile {
+		if live[entry.Name] || entry.Name == defaultFragmentFile {
 			continue
 		}
-		path := filepath.Join(gdir, entry.Name())
-		if err := os.Remove(path); err != nil {
-			return pruned, fmt.Errorf("prune stale fragment %s: %w", path, err)
+		if err := senvRoot.Remove(groupsDirName, entry.Name); err != nil {
+			return pruned, fmt.Errorf("prune stale fragment %s: %w", filepath.Join(gdir, entry.Name), err)
 		}
-		pruned = append(pruned, path)
+		pruned = append(pruned, filepath.Join(gdir, entry.Name))
 	}
 	return pruned, nil
 }
@@ -211,6 +236,10 @@ func materializeReferenced(rr *RenderResult, res *ApplyResult) {
 		}
 		pub := resolvedPublicKey(entry)
 		if _, statErr := os.Lstat(target); statErr == nil {
+			if err := verifyAndTightenMaterializedKey(entry.Group, entry.Name); err != nil {
+				res.Errors = append(res.Errors, err.Error())
+				continue
+			}
 			res.KeysSkipped = append(res.KeysSkipped, name)
 			if err := ensurePublicKeyFile(target, pub); err != nil {
 				res.Errors = append(res.Errors, err.Error())

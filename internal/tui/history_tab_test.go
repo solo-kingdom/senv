@@ -131,11 +131,18 @@ func TestHistoryTabDecryptFailureShownNotFatal(t *testing.T) {
 	var tab Tab = newHistoryTab(src)
 	tab.SetSize(80, 20)
 	tab.(*historyTab).visited = true // 模拟用户已激活（延迟加载语义）
-	tab, cmd := tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
-	_ = cmd
+	tab, _ = tab.Update(drainCmd(t, tab.Init()).(historyLoadedMsg))
+	// 列表默认不解密，只显示遮蔽占位。
+	if view := tab.View(); !strings.Contains(view, "******** (enter to inspect)") {
+		t.Fatalf("list should show masked placeholder, got %q", view)
+	}
+	// 进入 entry 并打开 detail，按 v 按需解密时错误应安全展示。
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab, _ = tab.Update(runeKey("v"))
 	view := tab.View()
-	if !strings.Contains(view, "<decrypt err>") {
-		t.Errorf("decrypt failure should be shown inline, got %q", view)
+	if !strings.Contains(view, "cannot decrypt this version") {
+		t.Errorf("decrypt failure should be shown in detail overlay, got %q", view)
 	}
 }
 
@@ -244,14 +251,19 @@ func TestHistoryTabDetailOpensScrollableOverlay(t *testing.T) {
 		t.Fatalf("entry pane size = %dx%d, want 78x19", w, h)
 	}
 
-	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail 弹层
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // entry → detail 弹层（默认遮蔽）
 	ht := tab.(*historyTab)
 	if ht.detail == nil {
 		t.Fatal("enter should open the detail overlay")
 	}
 	out = tab.View()
+	if strings.Contains(out, "line-01") || !strings.Contains(out, "******** (masked") {
+		t.Fatalf("detail overlay must be masked by default: %q", clipRunesT(out, 120))
+	}
+	tab, _ = tab.Update(runeKey("v")) // 按 v 展开全文
+	out = tab.View()
 	if !strings.Contains(out, "line-01") {
-		t.Fatalf("detail overlay should show the value head: %q", clipRunesT(out, 80))
+		t.Fatalf("detail overlay should show the value head after reveal: %q", clipRunesT(out, 80))
 	}
 	// 弹层占用与面板完全相同的位置（78×17 内容区 → 78×19 面板槽）。
 	if w, h := lipgloss.Width(out), lipgloss.Height(out); w != 78 || h != 19 {
@@ -291,8 +303,8 @@ func TestHistoryTabDetailOpensScrollableOverlay(t *testing.T) {
 	}
 }
 
-// TestHistoryTabRowsFillPaneWidth 校验列表行按面板实际宽度分配列宽：宽终端
-// 下预览不再钉死在 30 rune（此前整行只用到约一半宽度就把数据截断）。
+// TestHistoryTabRowsFillPaneWidth 校验列表行按面板实际宽度分配列宽，且默认
+// 遮蔽列表不会泄露密文明文（也不在列表阶段调用 DecryptHistory）。
 func TestHistoryTabRowsFillPaneWidth(t *testing.T) {
 	long := strings.Repeat("A", 120)
 	var tab Tab = newHistoryTab(&fakeHistorySource{rows: sampleHistoryRows(), value: long})
@@ -301,23 +313,44 @@ func TestHistoryTabRowsFillPaneWidth(t *testing.T) {
 	tab, _ = tab.Update(drainCmd(t, tab.Init()))
 
 	out := tab.View()
-	// 预览列宽随面板放大：30 rune 之外的内容必须可见。
-	if !strings.Contains(out, strings.Repeat("A", 60)) {
-		t.Fatalf("preview should use the widened column: %q", clipRunesT(out, 200))
+	if strings.Contains(out, "AAAA") {
+		t.Fatalf("list view leaked plaintext without reveal: %q", clipRunesT(out, 200))
 	}
 	// 整行铺满面板内容宽（面板 158 列含 2 列边框，行内容 156 列）。
 	row := ""
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "AAA") {
+		if strings.Contains(line, "******** (enter to inspect)") {
 			row = line
 			break
 		}
 	}
 	if row == "" {
-		t.Fatal("data row not found in view")
+		t.Fatal("masked data row not found in view")
 	}
 	if w := lipgloss.Width(row); w < 150 {
 		t.Fatalf("row width = %d, want ~156 (fills the pane)", w)
+	}
+}
+
+func TestHistoryTabNeverRevealsSSHPrivateKey(t *testing.T) {
+	src := &fakeHistorySource{
+		rows: []provider.HistoryVersion{
+			{Kind: "ssh_keypair", Grp: "", Key: "id_ed25519", Ciphertext: []byte("ct"), Revision: 1, CreatedAt: time.Now()},
+		},
+		value: "-----BEGIN OPENSSH PRIVATE KEY-----\nSECRET\n-----END OPENSSH PRIVATE KEY-----",
+	}
+	var tab Tab = newHistoryTab(src)
+	tab.SetSize(90, 20)
+	tab.(*historyTab).visited = true
+	tab, _ = tab.Update(drainCmd(t, tab.Init()))
+	if strings.Contains(tab.View(), "OPENSSH PRIVATE KEY") {
+		t.Fatal("list view leaked SSH private key")
+	}
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab, _ = tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab, _ = tab.Update(runeKey("v"))
+	if strings.Contains(tab.View(), "OPENSSH PRIVATE KEY") || strings.Contains(tab.View(), "SECRET") {
+		t.Fatalf("detail overlay leaked SSH private key after reveal:\n%s", tab.View())
 	}
 }
 

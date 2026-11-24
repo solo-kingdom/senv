@@ -4,13 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/wii/senv/internal/exportfile"
+	"github.com/wii/senv/internal/securefs"
 )
 
 // BackupSuffix is appended to a config file before senv overwrites it. It is
@@ -85,9 +87,9 @@ func ServerPath(target Target, home, scope string) string {
 // preserved verbatim. A missing file yields an empty root.
 func ReadJSONRoot(path string) (map[string]any, error) {
 	root := map[string]any{}
-	existing, err := os.ReadFile(path)
+	existing, _, err := exportfile.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return root, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -303,6 +305,57 @@ func EncodeJSON(root map[string]any) ([]byte, error) {
 // TOML configs
 // ---------------------------------------------------------------------------
 
+// formatTOMLString encodes s as a TOML v1.0 basic string, escaping all control
+// characters so untrusted args/headers/env values cannot break out of a string
+// literal or inject new TOML keys.
+func formatTOMLString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// formatTOMLKey emits a bare key when safe ([A-Za-z0-9_-]+) and quotes
+// everything else as a TOML basic string.
+func formatTOMLKey(k string) string {
+	if k == "" {
+		return `""`
+	}
+	for _, r := range k {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return formatTOMLString(k)
+		}
+	}
+	return k
+}
+
 // RenderTOMLServerBlock renders the TOML block for one server, matching Codex's
 // [mcp_servers.<name>] convention. stdio entries keep the historical
 // command/args/env shape; remote entries render the documented url/transport
@@ -311,12 +364,14 @@ func EncodeJSON(root map[string]any) ([]byte, error) {
 // repeated renders of the same profile stay byte-identical.
 func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool, headersKey string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[%s.%s]\n", table, name)
+	tKey := formatTOMLKey(table)
+	nKey := formatTOMLKey(name)
+	fmt.Fprintf(&b, "[%s.%s]\n", tKey, nKey)
 	if srv.URL != "" {
 		if typeKey && srv.Transport != "" && srv.Transport != "stdio" {
-			fmt.Fprintf(&b, "transport = %q\n", srv.Transport)
+			fmt.Fprintf(&b, "transport = %s\n", formatTOMLString(srv.Transport))
 		}
-		fmt.Fprintf(&b, "url = %q\n", srv.URL)
+		fmt.Fprintf(&b, "url = %s\n", formatTOMLString(srv.URL))
 		if headersKey != "" && len(srv.Headers) > 0 {
 			keys := make([]string, 0, len(srv.Headers))
 			for key := range srv.Headers {
@@ -325,28 +380,45 @@ func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool, headers
 			sort.Strings(keys)
 			pairs := make([]string, 0, len(keys))
 			for _, key := range keys {
-				pairs = append(pairs, fmt.Sprintf("%s = %q", key, srv.Headers[key]))
+				pairs = append(pairs, fmt.Sprintf("%s = %s", formatTOMLKey(key), formatTOMLString(srv.Headers[key])))
 			}
-			fmt.Fprintf(&b, "%s = { %s }\n", headersKey, strings.Join(pairs, ", "))
+			fmt.Fprintf(&b, "%s = { %s }\n", formatTOMLKey(headersKey), strings.Join(pairs, ", "))
 		}
 		return b.String()
 	}
-	fmt.Fprintf(&b, "command = %q\n", srv.Command)
+	fmt.Fprintf(&b, "command = %s\n", formatTOMLString(srv.Command))
 	if len(srv.Args) > 0 {
-		fmt.Fprintf(&b, "args = [\"%s\"]\n", strings.Join(srv.Args, "\", \""))
+		args := make([]string, len(srv.Args))
+		for i, arg := range srv.Args {
+			args[i] = formatTOMLString(arg)
+		}
+		fmt.Fprintf(&b, "args = [%s]\n", strings.Join(args, ", "))
 	}
 	if len(srv.Env) > 0 {
-		fmt.Fprintf(&b, "[%s.%s.env]\n", table, name)
+		fmt.Fprintf(&b, "[%s.%s.env]\n", tKey, nKey)
 		keys := make([]string, 0, len(srv.Env))
 		for key := range srv.Env {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(&b, "%s = %q\n", key, srv.Env[key])
+			fmt.Fprintf(&b, "%s = %s\n", formatTOMLKey(key), formatTOMLString(srv.Env[key]))
 		}
 	}
 	return b.String()
+}
+
+func tomlBlockMatchers(table, name string) (headers, subPrefixes []string) {
+	tKey := formatTOMLKey(table)
+	nKey := formatTOMLKey(name)
+	headers = []string{fmt.Sprintf("[%s.%s]", tKey, nKey)}
+	subPrefixes = []string{fmt.Sprintf("[%s.%s.", tKey, nKey)}
+	rawHeader := fmt.Sprintf("[%s.%s]", table, name)
+	if rawHeader != headers[0] {
+		headers = append(headers, rawHeader)
+		subPrefixes = append(subPrefixes, fmt.Sprintf("[%s.%s.", table, name))
+	}
+	return headers, subPrefixes
 }
 
 // UpsertTOMLServer replaces the [<table>.<name>] table (and its nested
@@ -355,9 +427,12 @@ func RenderTOMLServerBlock(table, name string, srv Server, typeKey bool, headers
 // it splits on top-level table headers ([...] at column 0) and treats any
 // [<table>.<name>...] header as part of the block.
 func UpsertTOMLServer(src, table, name, newBlock string) (string, error) {
-	tableHeader := fmt.Sprintf("[%s.%s]", table, name)
-	subtablePrefix := fmt.Sprintf("[%s.%s.", table, name)
-	out, replaced := replaceTOMLBlock(src, tableHeader, subtablePrefix, &newBlock)
+	var check map[string]any
+	if err := toml.Unmarshal([]byte(newBlock), &check); err != nil {
+		return "", fmt.Errorf("invalid rendered TOML block for %s.%s: %w", table, name, err)
+	}
+	headers, subPrefixes := tomlBlockMatchers(table, name)
+	out, replaced := replaceTOMLBlock(src, headers, subPrefixes, &newBlock)
 	result := strings.Join(out, "\n")
 	if !replaced {
 		if result != "" && !strings.HasSuffix(result, "\n\n") {
@@ -375,24 +450,36 @@ func UpsertTOMLServer(src, table, name, newBlock string) (string, error) {
 // RemoveTOMLServer drops the [<table>.<name>] table and its subtables,
 // reporting whether anything was removed. The rest of the file is untouched.
 func RemoveTOMLServer(src, table, name string) (string, bool) {
-	tableHeader := fmt.Sprintf("[%s.%s]", table, name)
-	subtablePrefix := fmt.Sprintf("[%s.%s.", table, name)
-	out, removed := replaceTOMLBlock(src, tableHeader, subtablePrefix, nil)
+	headers, subPrefixes := tomlBlockMatchers(table, name)
+	out, removed := replaceTOMLBlock(src, headers, subPrefixes, nil)
 	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n", removed
 }
 
 // replaceTOMLBlock drops every line of the matching table (and subtables) and
 // splices replacement in its place when one is given.
-func replaceTOMLBlock(src, tableHeader, subtablePrefix string, replacement *string) ([]string, bool) {
+func replaceTOMLBlock(src string, tableHeaders, subtablePrefixes []string, replacement *string) ([]string, bool) {
 	lines := strings.Split(src, "\n")
 	out := make([]string, 0, len(lines))
 	inBlock := false
 	replaced := false
+	matchesHeader := func(trimmed string) bool {
+		for _, h := range tableHeaders {
+			if trimmed == h {
+				return true
+			}
+		}
+		for _, p := range subtablePrefixes {
+			if strings.HasPrefix(trimmed, p) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		isHeader := strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[")
 		if isHeader {
-			if trimmed == tableHeader || strings.HasPrefix(trimmed, subtablePrefix) {
+			if matchesHeader(trimmed) {
 				inBlock = true
 				if !replaced && replacement != nil {
 					out = append(out, strings.TrimRight(*replacement, "\n"))
@@ -450,32 +537,52 @@ func TOMLServers(src, table string) (map[string]any, error) {
 // Shared file I/O
 // ---------------------------------------------------------------------------
 
-// WriteWithBackup writes data to path, creating parent dirs as needed and
-// backing up any existing file to path+BackupSuffix first.
+// WriteWithBackup writes data to path without following symlinks, creating
+// missing parent dirs privately and backing up any existing file to
+// path+BackupSuffix (0600).
 func WriteWithBackup(path string, data []byte) error {
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+	return writeAtomicConfig(path, data, 0o755, true)
+}
+
+// WriteSensitive atomically writes plaintext-credential configs (0600) without
+// following symlinks and removes any temporary or pre-existing .bak copy once
+// the new file is in place so resolved secrets never linger in backup files.
+func WriteSensitive(path string, data []byte, dirPerm os.FileMode) error {
+	return writeAtomicConfig(path, data, dirPerm, false)
+}
+
+func writeAtomicConfig(path string, data []byte, dirPerm os.FileMode, keepBackup bool) error {
+	resolved, err := exportfile.ResolvePath(path)
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(resolved.Root)
+	if err != nil {
+		return fmt.Errorf("open config root: %w", err)
+	}
+	defer root.Close()
+
+	if len(resolved.ParentSegments) > 0 {
+		if err := root.EnsurePrivateParents(resolved.ParentSegments, dirPerm); err != nil {
 			return fmt.Errorf("create config dir: %w", err)
 		}
 	}
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		if err := os.WriteFile(path+BackupSuffix, existing, 0o600); err != nil {
+
+	backupSegments := append(append([]string(nil), resolved.ParentSegments...), resolved.Base+BackupSuffix)
+	existing, err := root.Read(resolved.Segments...)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read existing config: %w", err)
+	}
+	if err == nil && len(existing) > 0 {
+		if err := root.AtomicWrite(backupSegments, existing, 0o600); err != nil {
 			return fmt.Errorf("write backup: %w", err)
 		}
-		// A pre-existing world-readable backup keeps its mode through
-		// os.WriteFile; tighten it for the same reason as the main file.
-		if err := os.Chmod(path+BackupSuffix, 0o600); err != nil {
-			return fmt.Errorf("tighten backup permissions: %w", err)
-		}
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := root.AtomicWrite(resolved.Segments, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
-	// os.WriteFile's perm only applies to a newly created file; an existing
-	// world-readable config must be tightened too or the plaintext-on-export
-	// contract (0600) would silently not hold.
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("tighten config permissions: %w", err)
+	if !keepBackup {
+		_ = root.Remove(backupSegments...)
 	}
 	return nil
 }

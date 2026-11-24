@@ -100,7 +100,8 @@ selected coding agents. Always shows a plan first: the plan names every entry
 that would be written in clear text, and writes happen only after confirmation.
 
 Entries senv did not write (or that changed after an export) are left alone
-unless --force is given. Files are backed up to <file>.bak before a write.
+unless --force is given. Existing configs are backed up only during atomic
+replacement and removed immediately once the export succeeds.
 
 Examples:
   senv mcp export --all --dry-run          # show the plan, write nothing

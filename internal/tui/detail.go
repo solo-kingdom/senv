@@ -15,6 +15,7 @@ import (
 type detailOverlay struct {
 	title         string
 	lines         []string
+	hint          string
 	top           int
 	width, height int
 }
@@ -24,6 +25,15 @@ type detailCloseMsg struct{}
 
 func newDetailOverlay(title string, lines []string) *detailOverlay {
 	return &detailOverlay{title: title, lines: lines}
+}
+
+func (d *detailOverlay) setHint(hint string) { d.hint = hint }
+
+func (d *detailOverlay) setLines(lines []string) {
+	d.lines = lines
+	if max := d.maxTop(); d.top > max {
+		d.top = max
+	}
 }
 
 func (d *detailOverlay) SetSize(w, h int) { d.width, d.height = w, h }
@@ -131,9 +141,13 @@ func (d *detailOverlay) View() string {
 		// lipgloss v1 的 Width 不含边框：留 2 列给边框，整框宽度 = d.width。
 		box = box.Width(d.width - 2)
 	}
+	hint := d.hint
+	if hint == "" {
+		hint = "↑↓/PgUp/PgDn scroll · esc close"
+	}
 	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.NewStyle().Bold(true).Render(title), "",
 		strings.Join(body, "\n"), "",
-		statusBarStyle.Render("↑↓/PgUp/PgDn scroll · esc close")))
+		statusBarStyle.Render(hint)))
 	return clipLines(out, maxInt(d.height+2, 2))
 }

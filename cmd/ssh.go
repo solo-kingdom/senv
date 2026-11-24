@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/wii/senv/internal/exportfile"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
@@ -562,7 +563,7 @@ runs, ssh resolves the exported aliases directly — no manual wiring.
 			}
 			if hostExportOut == "-" {
 				fmt.Print(b.String())
-			} else if err := storage.WriteSensitiveFile(hostExportOut, []byte(b.String()), 0o700, 0o600); err != nil {
+			} else if err := exportfile.WriteFile(hostExportOut, []byte(b.String()), 0o600); err != nil {
 				auditOp(session.AuditOpSSHHost, "host:export", false, detail+" --output 失败")
 				return err
 			}
