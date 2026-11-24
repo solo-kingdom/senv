@@ -94,7 +94,11 @@ func (m *Manager) Add(opts AddOptions) (*storage.SkillEntry, error) {
 }
 
 func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntry, error) {
-	index, err := m.storage.LoadSkillIndex()
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, err
+	}
+	index, err := m.storage.LoadSkillIndexWithKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load skill index: %w", err)
 	}
@@ -110,10 +114,6 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 		}
 	}
 
-	key, err := m.cryptoKey()
-	if err != nil {
-		return nil, err
-	}
 	if err := m.storage.SaveSkillWithKey(group, opts.ID, archive, key); err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 		entry.CreatedAt = existing.CreatedAt
 	}
 	index.Skills[opts.ID] = entry
-	if err := m.storage.SaveSkillIndex(index); err != nil {
+	if err := m.storage.SaveSkillIndexWithKey(index, key); err != nil {
 		return nil, fmt.Errorf("failed to save skill index: %w", err)
 	}
 	// 索引已指向新位置后再清理旧分组里的密文；失败只留下可被 doctor 看到的孤儿文件。
@@ -150,7 +150,11 @@ func (m *Manager) List(group string) ([]storage.SkillEntry, error) {
 			return nil, err
 		}
 	}
-	index, err := m.storage.LoadSkillIndex()
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, err
+	}
+	index, err := m.storage.LoadSkillIndexWithKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load skill index: %w", err)
 	}
@@ -170,7 +174,11 @@ func (m *Manager) Get(id string) (*storage.SkillEntry, error) {
 	if err := storage.ValidateSkillID(id); err != nil {
 		return nil, err
 	}
-	index, err := m.storage.LoadSkillIndex()
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, err
+	}
+	index, err := m.storage.LoadSkillIndexWithKey(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load skill index: %w", err)
 	}
@@ -230,7 +238,11 @@ func (m *Manager) Remove(id string) error {
 		return err
 	}
 	return m.mutate(func(locked *Manager) error {
-		index, err := locked.storage.LoadSkillIndex()
+		key, err := locked.cryptoKey()
+		if err != nil {
+			return err
+		}
+		index, err := locked.storage.LoadSkillIndexWithKey(key)
 		if err != nil {
 			return fmt.Errorf("failed to load skill index: %w", err)
 		}
@@ -239,7 +251,7 @@ func (m *Manager) Remove(id string) error {
 			return fmt.Errorf("skill %q not found", id)
 		}
 		delete(index.Skills, id)
-		if err := locked.storage.SaveSkillIndex(index); err != nil {
+		if err := locked.storage.SaveSkillIndexWithKey(index, key); err != nil {
 			return fmt.Errorf("failed to save skill index: %w", err)
 		}
 		return locked.storage.DeleteSkill(entry.NormalizedGroup(), id)

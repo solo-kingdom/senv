@@ -708,7 +708,11 @@ func (m *Manager) RenameKey(group, oldKey, newKey string) error {
 	if _, err := m.loadBackupFile(group, newKey); err == nil {
 		return fmt.Errorf("backup block %s already exists in group %s", newKey, group)
 	}
-	return m.storage.RenameBackupFile(group, oldKey, newKey)
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	return m.storage.RenameBackupFileWithKey(group, oldKey, newKey, cryptoKey)
 }
 
 // RenameGroup renames a backup group directory; every block inside keeps its
@@ -746,19 +750,5 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 	if err != nil {
 		return err
 	}
-	meta, err := m.storage.LoadBackupGroupMetaWithKey(oldName, cryptoKey)
-	if err != nil {
-		return err
-	}
-	if err := m.storage.RenameBackupGroup(oldName, newName); err != nil {
-		return err
-	}
-	if meta != nil {
-		meta.Name = newName
-		if err := m.storage.SaveBackupGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
-			_ = m.storage.RenameBackupGroup(newName, oldName)
-			return fmt.Errorf("failed to rewrite group metadata: %w", err)
-		}
-	}
-	return nil
+	return m.storage.RenameBackupGroupWithKey(oldName, newName, cryptoKey)
 }

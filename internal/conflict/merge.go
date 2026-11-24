@@ -26,12 +26,17 @@ var removeAll = os.RemoveAll
 // MergeSession owns a one-shot private editor buffer. Closing it removes the
 // whole directory so editor swap/backup files are not left behind.
 type MergeSession struct {
-	Kind       string
-	Dir        string
-	Path       string
-	LocalData  []byte
-	RemoteData []byte
-	editor     string
+	Kind           string
+	Grp            string
+	Key            string
+	KeyEpoch       int
+	RemoteKeyEpoch int
+	EncryptIndex   bool
+	Dir            string
+	Path           string
+	LocalData      []byte
+	RemoteData     []byte
+	editor         string
 }
 
 func editorCommandName() string {
@@ -46,8 +51,8 @@ func editorCommandName() string {
 	return "vim"
 }
 
-func mergePlaintext(kind string, side provider.ConflictSide, key []byte) ([]byte, error) {
-	decoded, err := decodeSide(kind, side, key)
+func mergePlaintext(detail provider.ConflictDetail, side provider.ConflictSide, key []byte, keyEpoch int) ([]byte, error) {
+	decoded, err := decodeSide(detail, side, key, keyEpoch)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +60,11 @@ func mergePlaintext(kind string, side provider.ConflictSide, key []byte) ([]byte
 }
 
 func PrepareMergeEditor(detail provider.ConflictDetail, key []byte) (*MergeSession, error) {
+	return PrepareMergeEditorWithAuth(detail, Auth{Key: key, RemoteKeyCompatible: true})
+}
+
+func PrepareMergeEditorWithAuth(detail provider.ConflictDetail, auth Auth) (*MergeSession, error) {
+	key := auth.Key
 	if detail.Local.Deleted || detail.Remote.Deleted {
 		return nil, fmt.Errorf("deleted conflicts cannot be editor-merged")
 	}
@@ -67,11 +77,11 @@ func PrepareMergeEditor(detail provider.ConflictDetail, key []byte) (*MergeSessi
 		return nil, fmt.Errorf("manual merge requires a vault key")
 	}
 
-	localPlain, err := mergePlaintext(detail.Kind, detail.Local, key)
+	localPlain, err := mergePlaintext(detail, detail.Local, key, auth.KeyEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt local conflict: %w", err)
 	}
-	remotePlain, err := mergePlaintext(detail.Kind, detail.Remote, key)
+	remotePlain, err := mergePlaintext(detail, detail.Remote, key, auth.RemoteKeyEpoch)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt remote conflict: %w", err)
 	}
@@ -101,7 +111,10 @@ func PrepareMergeEditor(detail provider.ConflictDetail, key []byte) (*MergeSessi
 		return nil, fmt.Errorf("write merge buffer: %w", err)
 	}
 	return &MergeSession{
-		Kind: detail.Kind, Dir: dir, Path: path,
+		Kind: detail.Kind, Grp: detail.Grp, Key: detail.Key,
+		KeyEpoch: auth.KeyEpoch, RemoteKeyEpoch: auth.RemoteKeyEpoch,
+		EncryptIndex: detail.Kind == provider.KindConfigIndex && (auth.KeyEpoch > 0 || crypto.IsV2Ciphertext(string(detail.Local.Ciphertext)) || crypto.IsV2Ciphertext(string(detail.Remote.Ciphertext))),
+		Dir:          dir, Path: path,
 		LocalData: detail.Local.Ciphertext, RemoteData: detail.Remote.Ciphertext,
 		editor: editorCommandName(),
 	}, nil
@@ -182,8 +195,8 @@ func ValidateMergedBuffer(kind string, data []byte) error {
 	return nil
 }
 
-func decryptEntry(kind string, ciphertext []byte, key []byte) ([]byte, error) {
-	return crypto.Decrypt(key, string(ciphertext))
+func (s *MergeSession) decryptSide(ciphertext []byte, key []byte, keyEpoch int) ([]byte, error) {
+	return decryptWithEpochFallback(key, string(ciphertext), s.Kind, s.Grp, s.Key, keyEpoch)
 }
 
 func (s *MergeSession) Finish(key []byte) ([]byte, error) {
@@ -200,10 +213,10 @@ func (s *MergeSession) Finish(key []byte) ([]byte, error) {
 	switch s.Kind {
 	case provider.KindEnv:
 		var local, remote storage.EnvVarEntry
-		if localBlob, err := decryptEntry(s.Kind, s.LocalData, key); err == nil {
+		if localBlob, err := s.decryptSide(s.LocalData, key, s.KeyEpoch); err == nil {
 			_ = storage.FromJSON(localBlob, &local)
 		}
-		if remoteBlob, err := decryptEntry(s.Kind, s.RemoteData, key); err == nil {
+		if remoteBlob, err := s.decryptSide(s.RemoteData, key, s.RemoteKeyEpoch); err == nil {
 			_ = storage.FromJSON(remoteBlob, &remote)
 		}
 		entry := local
@@ -217,10 +230,10 @@ func (s *MergeSession) Finish(key []byte) ([]byte, error) {
 		}
 	case provider.KindText, provider.KindBackup:
 		var local, remote storage.TextEntry
-		if localBlob, err := decryptEntry(s.Kind, s.LocalData, key); err == nil {
+		if localBlob, err := s.decryptSide(s.LocalData, key, s.KeyEpoch); err == nil {
 			_ = storage.FromJSON(localBlob, &local)
 		}
-		if remoteBlob, err := decryptEntry(s.Kind, s.RemoteData, key); err == nil {
+		if remoteBlob, err := s.decryptSide(s.RemoteData, key, s.RemoteKeyEpoch); err == nil {
 			_ = storage.FromJSON(remoteBlob, &remote)
 		}
 		entry := local
@@ -242,11 +255,14 @@ func (s *MergeSession) Finish(key []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		return plaintext, nil
+		if !s.EncryptIndex {
+			return plaintext, nil
+		}
 	default:
 		plaintext = data
 	}
-	ciphertext, err := crypto.Encrypt(key, plaintext)
+	aad := crypto.BuildEntryAAD(s.Kind, s.Grp, s.Key, s.KeyEpoch)
+	ciphertext, err := crypto.EncryptWithAAD(key, plaintext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt merged conflict: %w", err)
 	}

@@ -261,4 +261,16 @@ func TestV2EnvelopeAADBindingAndV1Compat(t *testing.T) {
 	if err != nil || string(gotV1) != "legacy-secret" {
 		t.Fatalf("DecryptWithAAD v1 fallback = (%q, %v)", gotV1, err)
 	}
+
+	// requireV2=true 必须拒绝 v1 密文，但仍接受合法 v2 + 正确 AAD
+	if _, err := DecryptWithAADStrict(key, ctV1, aadA, true); err != ErrV1CiphertextRejected {
+		t.Fatalf("DecryptWithAADStrict v1 err = %v, want ErrV1CiphertextRejected", err)
+	}
+	gotStrict, err := DecryptWithAADStrict(key, ctV2, aadA, true)
+	if err != nil || string(gotStrict) != "private-key-material" {
+		t.Fatalf("DecryptWithAADStrict v2 = (%q, %v)", gotStrict, err)
+	}
+	if _, err := DecryptWithAADStrict(key, ctV2, aadB, true); err != ErrDecryptionFailed {
+		t.Fatalf("DecryptWithAADStrict wrong AAD err = %v, want ErrDecryptionFailed", err)
+	}
 }

@@ -98,6 +98,37 @@ func (m *Manager) loadConfigFile(name string) ([]byte, error) {
 	return m.storage.LoadConfigFile(name, m.password)
 }
 
+func (m *Manager) cryptoKey() ([]byte, error) {
+	if m.key != nil {
+		return m.key, nil
+	}
+	return m.storage.DeriveKeyFromPassword(m.password)
+}
+
+func (m *Manager) loadConfigIndex() (*storage.ConfigIndex, error) {
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, err
+	}
+	return m.storage.LoadConfigIndexWithKey(key)
+}
+
+func (m *Manager) loadConfigIndexWithQuarantine() (*storage.ConfigIndex, []storage.ConfigQuarantine, error) {
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	return m.storage.LoadConfigIndexWithQuarantineAndKey(key)
+}
+
+func (m *Manager) saveConfigIndex(index *storage.ConfigIndex) error {
+	key, err := m.cryptoKey()
+	if err != nil {
+		return err
+	}
+	return m.storage.SaveConfigIndexWithKey(index, key)
+}
+
 // saveConfigFile saves a configuration file using key or password
 func (m *Manager) saveConfigFile(name string, content []byte) error {
 	if m.key != nil {
@@ -127,7 +158,7 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string, grou
 		})
 	}
 	// Check if config already exists
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -159,7 +190,7 @@ func (m *Manager) Create(name string, sourcePath string, targetPath string, grou
 		UpdatedAt:     now,
 	}
 
-	if err := m.storage.SaveConfigIndex(configIndex); err != nil {
+	if err := m.saveConfigIndex(configIndex); err != nil {
 		return fmt.Errorf("failed to save config index: %w", err)
 	}
 
@@ -183,7 +214,7 @@ func (m *Manager) PrepareEdit(name string) (*ConfigEditSession, error) {
 	if err := validateConfigName(name); err != nil {
 		return nil, err
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -251,11 +282,11 @@ func (m *Manager) FinishEdit(s *ConfigEditSession) (bool, error) {
 	}
 
 	// Update index UpdatedAt.
-	if configIndex, err := m.storage.LoadConfigIndex(); err == nil {
+	if configIndex, err := m.loadConfigIndex(); err == nil {
 		if cfg, ok := configIndex.Configs[s.Name]; ok {
 			cfg.UpdatedAt = time.Now()
 			configIndex.Configs[s.Name] = cfg
-			_ = m.storage.SaveConfigIndex(configIndex)
+			_ = m.saveConfigIndex(configIndex)
 		}
 	}
 
@@ -309,7 +340,7 @@ func (m *Manager) Content(name string) ([]byte, error) {
 	if err := validateConfigName(name); err != nil {
 		return nil, err
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -331,7 +362,7 @@ func (m *Manager) ExportWithMode(name string, targetPath string, mode fs.FileMod
 		return err
 	}
 	// Check if config exists
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -386,7 +417,7 @@ func (m *Manager) Delete(name string) error {
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error { return locked.Delete(name) })
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -397,7 +428,7 @@ func (m *Manager) Delete(name string) error {
 		return fmt.Errorf("failed to delete encrypted file: %w", err)
 	}
 	delete(configIndex.Configs, name)
-	if err := m.storage.SaveConfigIndex(configIndex); err != nil {
+	if err := m.saveConfigIndex(configIndex); err != nil {
 		return fmt.Errorf("failed to save config index: %w", err)
 	}
 	return nil
@@ -412,7 +443,7 @@ func (m *Manager) List(groupFilter string) ([]ConfigInfo, error) {
 			return nil, err
 		}
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -440,7 +471,7 @@ func (m *Manager) listWithWarnings(groupFilter string) ([]ConfigInfo, []Quaranti
 			return nil, nil, err
 		}
 	}
-	configIndex, quarantined, err := m.storage.LoadConfigIndexWithQuarantine()
+	configIndex, quarantined, err := m.loadConfigIndexWithQuarantine()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -468,7 +499,7 @@ func listConfigInfos(configIndex *storage.ConfigIndex, groupFilter string) []Con
 // Groups returns the sorted list of distinct group names. It fails closed when
 // the index contains quarantined legacy entries.
 func (m *Manager) Groups() ([]string, error) {
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -478,7 +509,7 @@ func (m *Manager) Groups() ([]string, error) {
 // GroupsWithWarnings returns sorted distinct group names from valid index
 // entries plus quarantine warnings for skipped legacy entries.
 func (m *Manager) GroupsWithWarnings() ([]string, []QuarantineWarning, error) {
-	configIndex, quarantined, err := m.storage.LoadConfigIndexWithQuarantine()
+	configIndex, quarantined, err := m.loadConfigIndexWithQuarantine()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -517,7 +548,7 @@ func (m *Manager) SetMeta(name string, group string, description string) error {
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error { return locked.SetMeta(name, group, description) })
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -529,7 +560,7 @@ func (m *Manager) SetMeta(name string, group string, description string) error {
 	cfg.Description = description
 	cfg.UpdatedAt = time.Now()
 	configIndex.Configs[name] = cfg
-	return m.storage.SaveConfigIndex(configIndex)
+	return m.saveConfigIndex(configIndex)
 }
 
 // Get retrieves information about a specific config
@@ -537,7 +568,7 @@ func (m *Manager) Get(name string) (*ConfigInfo, error) {
 	if err := validateConfigName(name); err != nil {
 		return nil, err
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config index: %w", err)
 	}
@@ -643,5 +674,9 @@ func (m *Manager) Rename(oldName, newName string) error {
 	if !m.mutationLocked {
 		return m.mutate(func(locked *Manager) error { return locked.Rename(oldName, newName) })
 	}
-	return m.storage.RenameConfigFile(oldName, newName)
+	key, err := m.cryptoKey()
+	if err != nil {
+		return err
+	}
+	return m.storage.RenameConfigFileWithKey(oldName, newName, key)
 }

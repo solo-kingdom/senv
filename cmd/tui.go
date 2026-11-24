@@ -177,8 +177,9 @@ func tuiSnapshotCache() *tui.SnapshotCache {
 // tuiHistorySource 把 server provider 与已认证 key 适配为 TUI 的 History
 // 数据源（server 模式才注入；git 模式返回 nil，TUI 不注册该 Tab）。
 type tuiHistorySource struct {
-	sp  *provider.ServerProvider
-	key []byte
+	sp       *provider.ServerProvider
+	key      []byte
+	keyEpoch int
 }
 
 func (s *tuiHistorySource) History(ctx context.Context, f provider.HistoryFilter) ([]provider.HistoryVersion, error) {
@@ -186,7 +187,7 @@ func (s *tuiHistorySource) History(ctx context.Context, f provider.HistoryFilter
 }
 
 func (s *tuiHistorySource) DecryptHistory(v provider.HistoryVersion) (string, error) {
-	plaintext, err := decryptHistoryValue(v, s.key)
+	plaintext, err := decryptHistoryValueWithEpoch(v, s.key, s.keyEpoch)
 	if err != nil {
 		return "", err
 	}
@@ -321,7 +322,11 @@ func buildTUIHistorySource() tui.HistorySource {
 	if err != nil {
 		return nil
 	}
-	return &tuiHistorySource{sp: sp, key: key}
+	keyEpoch := 0
+	if md, mdErr := auth.storage.LoadMetadata(); mdErr == nil && md != nil {
+		keyEpoch = md.KeyEpoch
+	}
+	return &tuiHistorySource{sp: sp, key: key, keyEpoch: keyEpoch}
 }
 
 func init() {

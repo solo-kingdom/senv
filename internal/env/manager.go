@@ -667,7 +667,11 @@ func (m *Manager) RenameKey(group, oldKey, newKey string) error {
 	if _, ok := envGroup.Variables[newKey]; ok {
 		return fmt.Errorf("variable %s already exists in group %s", newKey, group)
 	}
-	return m.storage.RenameEnvVar(group, oldKey, newKey)
+	cryptoKey, err := m.resolveCryptoKey()
+	if err != nil {
+		return err
+	}
+	return m.storage.RenameEnvVarWithKey(group, oldKey, newKey, cryptoKey)
 }
 
 // RenameGroup renames a non-default group. Its variables and activation state
@@ -711,23 +715,16 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 	}
 
 	// Loading first migrates a legacy single-blob group into the per-variable
-	// format, so the directory rename below moves every variable.
-	envGroup, err := m.loadEnvGroup(oldName)
-	if err != nil {
+	// format, so the directory rename below moves and re-encrypts every variable.
+	if _, err := m.loadEnvGroup(oldName); err != nil {
 		return fmt.Errorf("failed to load group %s: %w", oldName, err)
-	}
-	if err := m.storage.RenameEnvGroupDir(oldName, newName); err != nil {
-		return err
 	}
 	cryptoKey, err := m.resolveCryptoKey()
 	if err != nil {
-		_ = m.storage.RenameEnvGroupDir(newName, oldName)
 		return err
 	}
-	meta := &storage.EnvGroupMeta{Name: newName, Description: envGroup.Description, CreatedAt: envGroup.CreatedAt}
-	if err := m.storage.SaveEnvGroupMetaWithKey(newName, meta, cryptoKey); err != nil {
-		_ = m.storage.RenameEnvGroupDir(newName, oldName)
-		return fmt.Errorf("failed to rewrite group metadata: %w", err)
+	if err := m.storage.RenameEnvGroupWithKey(oldName, newName, cryptoKey); err != nil {
+		return err
 	}
 
 	// Preserve the activation state across the rename.
@@ -746,8 +743,7 @@ func (m *Manager) RenameGroup(oldName, newName string) error {
 		settings.UpdatedAt = time.Now().Format(time.RFC3339)
 		if err := m.storage.SaveSettings(settings); err != nil {
 			// Roll the metadata and directory back so activation names stay valid.
-			_ = m.storage.SaveEnvGroupMetaWithKey(newName, &storage.EnvGroupMeta{Name: oldName, CreatedAt: envGroup.CreatedAt}, cryptoKey)
-			_ = m.storage.RenameEnvGroupDir(newName, oldName)
+			_ = m.storage.RenameEnvGroupWithKey(newName, oldName, cryptoKey)
 			return fmt.Errorf("failed to update active groups: %w", err)
 		}
 	}

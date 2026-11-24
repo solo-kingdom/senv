@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // FileProbes summarises decryptability of a category of encrypted files.
@@ -34,6 +35,10 @@ type ConsistencyReport struct {
 	MCPServerFiles FileProbes
 	LedgerFiles    FileProbes
 	TreeFiles      FileProbes
+	IndexFiles     FileProbes
+	LegacyV1Count  int
+	KeyEpoch       int
+	RequireV2      bool
 	// QuarantinedConfigNames lists legacy config entries whose identities are
 	// structurally consistent but non-portable. They are skipped (not probed,
 	// not counted) and surfaced separately as repair guidance.
@@ -52,7 +57,8 @@ func (r *ConsistencyReport) TotalOK() int {
 		r.ProviderFiles.OK +
 		r.MCPServerFiles.OK +
 		r.LedgerFiles.OK +
-		r.TreeFiles.OK
+		r.TreeFiles.OK +
+		r.IndexFiles.OK
 }
 
 // AllOK reports whether the key decrypts the metadata and every data file.
@@ -68,7 +74,8 @@ func (r *ConsistencyReport) AllOK() bool {
 		r.ProviderFiles.OK == r.ProviderFiles.Total &&
 		r.MCPServerFiles.OK == r.MCPServerFiles.Total &&
 		r.LedgerFiles.OK == r.LedgerFiles.Total &&
-		r.TreeFiles.OK == r.TreeFiles.Total
+		r.TreeFiles.OK == r.TreeFiles.Total &&
+		r.IndexFiles.OK == r.IndexFiles.Total
 }
 
 // CheckConsistency probes whether the given key can decrypt the metadata
@@ -90,13 +97,32 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
-	report.MetadataKeyOK = canDecrypt(key, md.PasswordKey)
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load vault policy: %w", err)
+	}
+	report.KeyEpoch = policy.KeyEpoch
+	report.RequireV2 = policy.RequireV2
+	report.MetadataKeyOK, _ = probeEntry(key, metadataVerifierAADKind, "", "", md.PasswordKey, vaultCryptoPolicy{KeyEpoch: md.KeyEpoch})
 
 	dataRoot, err := m.openDataRoot()
 	if err != nil {
 		return nil, err
 	}
 	defer dataRoot.Close()
+
+	recordProbe := func(probes *FileProbes, kind, grp, entryKey, rel, ct string) {
+		probes.Total++
+		ok, isV1 := probeEntry(key, kind, grp, entryKey, ct, policy)
+		if ok {
+			probes.OK++
+			if isV1 {
+				report.LegacyV1Count++
+			}
+		} else {
+			probes.Failed = append(probes.Failed, rel)
+		}
+	}
 
 	envGroups, err := m.ListEnvGroups()
 	if err != nil {
@@ -114,12 +140,11 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 				if err != nil {
 					return nil, err
 				}
-				report.EnvFiles.Total++
-				if canDecrypt(key, string(ciphertext)) {
-					report.EnvFiles.OK++
-				} else {
-					report.EnvFiles.Failed = append(report.EnvFiles.Failed, rel)
+				entryKind, entryKey := syncschema.KindEnv, strings.TrimSuffix(file.Name, EnvVarSuffix)
+				if file.Name == EnvMetaFileName {
+					entryKind, entryKey = syncschema.KindEnvMeta, ""
 				}
+				recordProbe(&report.EnvFiles, entryKind, group, entryKey, rel, string(ciphertext))
 			}
 			continue
 		}
@@ -131,12 +156,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		if err != nil {
 			return nil, err
 		}
-		report.EnvFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.EnvFiles.OK++
-		} else {
-			report.EnvFiles.Failed = append(report.EnvFiles.Failed, name)
-		}
+		recordProbe(&report.EnvFiles, legacyEnvAADKind, group, "", name, string(ciphertext))
 	}
 
 	textGroups, err := m.ListTextGroups()
@@ -154,12 +174,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			if err != nil {
 				return nil, err
 			}
-			report.TextFiles.Total++
-			if canDecrypt(key, string(ciphertext)) {
-				report.TextFiles.OK++
-			} else {
-				report.TextFiles.Failed = append(report.TextFiles.Failed, rel)
-			}
+			recordProbe(&report.TextFiles, syncschema.KindText, group, name, rel, string(ciphertext))
 		}
 	}
 
@@ -178,12 +193,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			if err != nil {
 				return nil, err
 			}
-			report.LedgerFiles.Total++
-			if canDecrypt(key, string(ciphertext)) {
-				report.LedgerFiles.OK++
-			} else {
-				report.LedgerFiles.Failed = append(report.LedgerFiles.Failed, rel)
-			}
+			recordProbe(&report.LedgerFiles, syncschema.KindLedger, group, name, rel, string(ciphertext))
 		}
 	}
 
@@ -206,12 +216,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			if err != nil {
 				return nil, err
 			}
-			report.TreeFiles.Total++
-			if canDecrypt(key, string(ciphertext)) {
-				report.TreeFiles.OK++
-			} else {
-				report.TreeFiles.Failed = append(report.TreeFiles.Failed, rel)
-			}
+			recordProbe(&report.TreeFiles, syncschema.KindTree, group, p, rel, string(ciphertext))
 		}
 	}
 	logGroups, err := m.ListLedgerGroups(LedgerLogDirName)
@@ -229,12 +234,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			if err != nil {
 				return nil, err
 			}
-			report.LedgerFiles.Total++
-			if canDecrypt(key, string(ciphertext)) {
-				report.LedgerFiles.OK++
-			} else {
-				report.LedgerFiles.Failed = append(report.LedgerFiles.Failed, rel)
-			}
+			recordProbe(&report.LedgerFiles, syncschema.KindLedgerLog, group, name, rel, string(ciphertext))
 		}
 	}
 
@@ -253,12 +253,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			if err != nil {
 				return nil, err
 			}
-			report.BackupFiles.Total++
-			if canDecrypt(key, string(ciphertext)) {
-				report.BackupFiles.OK++
-			} else {
-				report.BackupFiles.Failed = append(report.BackupFiles.Failed, rel)
-			}
+			recordProbe(&report.BackupFiles, syncschema.KindBackup, group, name, rel, string(ciphertext))
 		}
 	}
 
@@ -272,35 +267,58 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 		if err != nil {
 			return nil, err
 		}
-		report.SkillFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.SkillFiles.OK++
-		} else {
-			report.SkillFiles.Failed = append(report.SkillFiles.Failed, rel)
-		}
+		recordProbe(&report.SkillFiles, syncschema.KindSkill, ref.Group, ref.ID, rel, string(ciphertext))
 	}
 
-	index, quarantined, err := m.LoadConfigIndexWithQuarantine()
+	configRoot, err := m.openConfigRoot()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config index: %w", err)
+		return nil, err
 	}
-	for _, q := range quarantined {
-		report.QuarantinedConfigNames = append(report.QuarantinedConfigNames, q.Name)
-	}
-	for name, config := range index.Configs {
-		fileName := config.EncryptedFile
-		if fileName == "" {
-			fileName = name + ConfigFileSuffix
-		}
-		ciphertext, err := dataRoot.Read(fileName)
-		if err != nil {
-			return nil, err
-		}
-		report.ConfigFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.ConfigFiles.OK++
+	defer configRoot.Close()
+
+	if cfgIndexRaw, err := configRoot.Read(ConfigIndexFile); err == nil {
+		report.IndexFiles.Total++
+		if _, parseErr := ParseConfigIndexDataStrict(cfgIndexRaw, key, policy.KeyEpoch, policy.RequireV2); parseErr != nil {
+			report.IndexFiles.Failed = append(report.IndexFiles.Failed, ConfigIndexFile)
 		} else {
-			report.ConfigFiles.Failed = append(report.ConfigFiles.Failed, fileName)
+			report.IndexFiles.OK++
+			if !crypto.IsV2Ciphertext(string(cfgIndexRaw)) {
+				report.LegacyV1Count++
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	if skillIndexRaw, err := dataRoot.Read(SkillIndexFile); err == nil {
+		report.IndexFiles.Total++
+		if _, parseErr := ParseSkillIndexDataStrict(skillIndexRaw, key, policy.KeyEpoch, policy.RequireV2); parseErr != nil {
+			report.IndexFiles.Failed = append(report.IndexFiles.Failed, SkillIndexFile)
+		} else {
+			report.IndexFiles.OK++
+			if !crypto.IsV2Ciphertext(string(skillIndexRaw)) {
+				report.LegacyV1Count++
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	index, quarantined, idxErr := m.LoadConfigIndexWithQuarantineAndKey(key)
+	if idxErr == nil {
+		for _, q := range quarantined {
+			report.QuarantinedConfigNames = append(report.QuarantinedConfigNames, q.Name)
+		}
+		for name, config := range index.Configs {
+			fileName := config.EncryptedFile
+			if fileName == "" {
+				fileName = name + ConfigFileSuffix
+			}
+			ciphertext, err := dataRoot.Read(fileName)
+			if err != nil {
+				return nil, err
+			}
+			recordProbe(&report.ConfigFiles, syncschema.KindConfig, "", name, fileName, string(ciphertext))
 		}
 	}
 
@@ -314,12 +332,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			return nil, err
 		}
 		rel := filepath.Join(HostDirName, name+ConfigFileSuffix)
-		report.HostFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.HostFiles.OK++
-		} else {
-			report.HostFiles.Failed = append(report.HostFiles.Failed, rel)
-		}
+		recordProbe(&report.HostFiles, syncschema.KindSSHHost, "", name, rel, string(ciphertext))
 	}
 
 	keyPairNames, err := m.ListKeyPairs()
@@ -332,12 +345,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			return nil, err
 		}
 		rel := filepath.Join(KeypairDirName, name+ConfigFileSuffix)
-		report.KeyPairFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.KeyPairFiles.OK++
-		} else {
-			report.KeyPairFiles.Failed = append(report.KeyPairFiles.Failed, rel)
-		}
+		recordProbe(&report.KeyPairFiles, syncschema.KindSSHKeypair, "", name, rel, string(ciphertext))
 	}
 
 	providerNames, err := m.ListLLMProviders()
@@ -350,12 +358,7 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			return nil, err
 		}
 		rel := filepath.Join(LLMProviderDirName, name+ConfigFileSuffix)
-		report.ProviderFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.ProviderFiles.OK++
-		} else {
-			report.ProviderFiles.Failed = append(report.ProviderFiles.Failed, rel)
-		}
+		recordProbe(&report.ProviderFiles, syncschema.KindLLMProvider, "", name, rel, string(ciphertext))
 	}
 
 	mcpServerNames, err := m.ListMCPServers()
@@ -368,26 +371,22 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 			return nil, err
 		}
 		rel := filepath.Join(MCPServerDirName, name+ConfigFileSuffix)
-		report.MCPServerFiles.Total++
-		if canDecrypt(key, string(ciphertext)) {
-			report.MCPServerFiles.OK++
-		} else {
-			report.MCPServerFiles.Failed = append(report.MCPServerFiles.Failed, rel)
-		}
+		recordProbe(&report.MCPServerFiles, syncschema.KindMCPServer, "", name, rel, string(ciphertext))
 	}
 
 	return report, nil
 }
 
-// canDecrypt reports whether key decrypts the base64 ciphertext. A wrong-length
-// key is treated as "cannot decrypt" rather than erroring, so callers can pass
-// arbitrary key material safely.
-func canDecrypt(key []byte, ciphertextBase64 string) bool {
+// probeEntry reports whether key decrypts ciphertext under the vault policy
+// and whether the ciphertext used the legacy v1 format.
+func probeEntry(key []byte, kind, grp, entryKey, ciphertextBase64 string, policy vaultCryptoPolicy) (ok bool, isLegacyV1 bool) {
 	if len(key) != crypto.KeySize {
-		return false
+		return false, false
 	}
-	_, err := crypto.Decrypt(key, ciphertextBase64)
-	return err == nil
+	if _, err := decryptWithPolicy(key, kind, grp, entryKey, ciphertextBase64, policy); err != nil {
+		return false, false
+	}
+	return true, !crypto.IsV2Ciphertext(ciphertextBase64)
 }
 
 // HasOrphanedData reports whether the data directory already contains encrypted

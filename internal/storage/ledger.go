@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/syncschema"
 )
 
 // 台账（ledger）存储：实体头 ledgers/<grp>/<key>.enc、不可变记录
@@ -24,6 +24,13 @@ func validateLedgerIdentity(group, key string) error {
 		return err
 	}
 	return nil
+}
+
+func ledgerAADKindForDir(dir string) string {
+	if dir == LedgerLogDirName {
+		return syncschema.KindLedgerLog
+	}
+	return syncschema.KindLedger
 }
 
 // SaveLedgerJSON 把 payload 序列化加密后写入 dir/<group>/<key>.enc（需在
@@ -44,7 +51,7 @@ func (m *Manager) SaveLedgerJSON(dir, group, key string, payload any, cryptoKey 
 	if err != nil {
 		return fmt.Errorf("failed to serialize ledger payload: %w", err)
 	}
-	encrypted, err := crypto.Encrypt(cryptoKey, data)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, ledgerAADKindForDir(dir), group, key, data)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt ledger payload: %w", err)
 	}
@@ -77,7 +84,7 @@ func (m *Manager) LoadLedgerJSON(dir, group, key string, out any, cryptoKey []by
 		if err != nil {
 			return struct{}{}, fmt.Errorf("ledger %q not found in group %q: %w", key, group, err)
 		}
-		decrypted, err := crypto.Decrypt(cryptoKey, string(encrypted))
+		decrypted, err := locked.decryptEntryLocked(cryptoKey, ledgerAADKindForDir(dir), group, key, string(encrypted))
 		if err != nil {
 			return struct{}{}, fmt.Errorf("failed to decrypt ledger payload: %w", err)
 		}

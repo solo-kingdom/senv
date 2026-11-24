@@ -165,7 +165,7 @@ func TestEditorFinishProducesMergedDecision(t *testing.T) {
 	if _, err := os.Stat(session.Dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("editor directory survived: %v", err)
 	}
-	plaintext, err := crypto.Decrypt(key, string(m.items[0].MergedData))
+	plaintext, err := crypto.DecryptWithAAD(key, string(m.items[0].MergedData), crypto.BuildEntryAAD("env", "default", "API", 0))
 	if err != nil {
 		t.Fatal(err)
 	}

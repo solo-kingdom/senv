@@ -70,7 +70,7 @@ func TestMergeSessionBufferPermissionsAndEnvFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	plaintext, err := crypto.Decrypt(key, string(ciphertext))
+	plaintext, err := crypto.DecryptWithAAD(key, string(ciphertext), crypto.BuildEntryAAD(provider.KindEnv, "default", "API", 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestMergeSessionTextConfigAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, _ := crypto.Decrypt(key, string(textCipher))
+	plain, _ := crypto.DecryptWithAAD(key, string(textCipher), crypto.BuildEntryAAD(provider.KindText, "g", "T", 0))
 	var decodedText storage.TextEntry
 	_ = storage.FromJSON(plain, &decodedText)
 	if decodedText.Value != "merged text" || decodedText.Size != len("merged text") || !decodedText.CreatedAt.Equal(created) {
@@ -138,7 +138,7 @@ func TestMergeSessionTextConfigAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, _ = crypto.Decrypt(key, string(backupCipher))
+	plain, _ = crypto.DecryptWithAAD(key, string(backupCipher), crypto.BuildEntryAAD(provider.KindBackup, "notes", "DUMP", 0))
 	var decodedBackup storage.BackupEntry
 	_ = storage.FromJSON(plain, &decodedBackup)
 	if decodedBackup.Value != "merged dump" || decodedBackup.Size != len("merged dump") || !decodedBackup.CreatedAt.Equal(created) {
@@ -163,7 +163,7 @@ func TestMergeSessionTextConfigAndIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plain, _ := crypto.Decrypt(key, string(configCipher)); string(plain) != "merged-conf" {
+	if plain, _ := crypto.DecryptWithAAD(key, string(configCipher), crypto.BuildEntryAAD(provider.KindConfig, "", "app", 0)); string(plain) != "merged-conf" {
 		t.Fatalf("config merge = %q", plain)
 	}
 	_ = configSession.Close()
@@ -267,5 +267,72 @@ func TestMergeSessionEditorAndCleanupFailure(t *testing.T) {
 	t.Cleanup(func() { removeAll = originalRemove })
 	if err := session.Close(); err == nil || !strings.Contains(err.Error(), "cleanup denied") {
 		t.Fatalf("cleanup failure = %v, want explicit error", err)
+	}
+}
+
+func TestEncryptedConfigIndexRenderAndMerge(t *testing.T) {
+	key := mergeKey()
+	localIdx := storage.NewConfigIndex()
+	localIdx.Configs["app"] = storage.ConfigFile{Name: "app", Group: "default", TargetPath: "/tmp/a"}
+	remoteIdx := storage.NewConfigIndex()
+	remoteIdx.Configs["app"] = storage.ConfigFile{Name: "app", Group: "work", TargetPath: "/tmp/b"}
+	localRaw, _ := storage.ToJSON(localIdx)
+	remoteRaw, _ := storage.ToJSON(remoteIdx)
+	aad := crypto.BuildEntryAAD(provider.KindConfigIndex, "", "", 1)
+	localCT, err := crypto.EncryptWithAAD(key, localRaw, aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteCT, err := crypto.EncryptWithAAD(key, remoteRaw, aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail := provider.ConflictDetail{
+		Kind:   provider.KindConfigIndex,
+		Local:  provider.ConflictSide{Revision: 1, Ciphertext: []byte(localCT), Size: len(localCT)},
+		Remote: provider.ConflictSide{Revision: 2, Ciphertext: []byte(remoteCT), Size: len(remoteCT)},
+	}
+	// Without key, diff must fail closed without leaking plaintext.
+	lockedView := RenderDetail(detail, Auth{}, false)
+	if !strings.Contains(lockedView, "encrypted or unavailable") {
+		t.Fatalf("locked config_index render = %q", lockedView)
+	}
+	// With key + epoch, semantic diff is rendered.
+	auth := Auth{Key: key, KeyEpoch: 1, RemoteKeyEpoch: 1, RemoteKeyCompatible: true}
+	unlockedView := RenderDetail(detail, auth, false)
+	if !strings.Contains(unlockedView, "app group: local=default remote=work") {
+		t.Fatalf("unlocked config_index render = %q", unlockedView)
+	}
+
+	session, err := PrepareMergeEditorWithAuth(detail, auth)
+	if err != nil {
+		t.Fatalf("PrepareMergeEditorWithAuth: %v", err)
+	}
+	defer session.Close()
+
+	mergedIdx := storage.NewConfigIndex()
+	mergedIdx.Configs["app"] = storage.ConfigFile{Name: "app", Group: "prod", TargetPath: "/tmp/merged"}
+	mergedRaw, _ := storage.ToJSON(mergedIdx)
+	if err := os.WriteFile(session.Path, mergedRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mergedCT, err := session.Finish(key)
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if !crypto.IsV2Ciphertext(string(mergedCT)) {
+		t.Fatalf("expected v2 encrypted config_index output, got %q", mergedCT)
+	}
+	plain, err := crypto.DecryptWithAAD(key, string(mergedCT), aad)
+	if err != nil {
+		t.Fatalf("DecryptWithAAD merged config_index: %v", err)
+	}
+	var decoded storage.ConfigIndex
+	if err := storage.FromJSON(plain, &decoded); err != nil || decoded.Configs["app"].Group != "prod" {
+		t.Fatalf("decoded merged config_index = %+v err=%v", decoded, err)
+	}
+	if _, err := crypto.DecryptWithAAD(key, string(mergedCT), crypto.BuildEntryAAD(provider.KindConfig, "", "app", 1)); err == nil {
+		t.Fatal("wrong AAD decrypted merged config_index")
 	}
 }

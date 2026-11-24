@@ -297,14 +297,14 @@ func TestRekeyReEncryptsSkills(t *testing.T) {
 	now := time.Now()
 	index := NewSkillIndex()
 	index.Skills["demo"] = SkillEntry{ID: "demo", Group: "work", CreatedAt: now, UpdatedAt: now}
-	if err := mgr.SaveSkillIndex(index); err != nil {
+	if err := mgr.SaveSkillIndexWithKey(index, oldKey); err != nil {
 		t.Fatal(err)
 	}
 	indexBefore, _ := os.ReadFile(filepath.Join(mgr.GetDataPath(), SkillIndexFile))
 
 	newSalt, _ := crypto.GenerateSalt()
 	newKey := crypto.DeriveKeyWithIterations("new-password", newSalt, crypto.DefaultIterations)
-	newPasswordKey, _ := crypto.Encrypt(newKey, []byte(crypto.HashPassword("new-password")))
+	newPasswordKey, _ := crypto.EncryptWithAAD(newKey, []byte(crypto.HashPassword("new-password")), metadataVerifierAAD(2))
 	result, err := mgr.Rekey(oldKey, newKey, base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
 	if err != nil {
 		t.Fatalf("Rekey: %v", err)
@@ -320,8 +320,15 @@ func TestRekeyReEncryptsSkills(t *testing.T) {
 		t.Fatalf("new key load: %v %q", err, got)
 	}
 	indexAfter, _ := os.ReadFile(filepath.Join(mgr.GetDataPath(), SkillIndexFile))
-	if !bytes.Equal(indexBefore, indexAfter) {
-		t.Fatal("plaintext skill index must be left untouched by rekey")
+	if !crypto.IsV2Ciphertext(string(indexAfter)) || bytes.Equal(indexBefore, indexAfter) {
+		t.Fatal("skill index must be re-encrypted with v2 envelope on rekey")
+	}
+	if _, err := mgr.LoadSkillIndexWithKey(oldKey); err == nil {
+		t.Fatal("old key must not decrypt skill index after rekey")
+	}
+	loadedIdx, err := mgr.LoadSkillIndexWithKey(newKey)
+	if err != nil || len(loadedIdx.Skills) != 1 {
+		t.Fatalf("LoadSkillIndexWithKey(newKey): err=%v idx=%+v", err, loadedIdx)
 	}
 	report, err := mgr.CheckConsistency(newKey)
 	if err != nil || !report.AllOK() {

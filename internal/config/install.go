@@ -69,7 +69,7 @@ func (m *Manager) resolveScope(scope Scope) ([]string, *storage.ConfigIndex, err
 		}
 		scope.Group = group
 	}
-	configIndex, err := m.storage.LoadConfigIndex()
+	configIndex, err := m.loadConfigIndex()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load config index: %w", err)
 	}

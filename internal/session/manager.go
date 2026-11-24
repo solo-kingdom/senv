@@ -90,7 +90,7 @@ func (m *Manager) StartSession(password string, timeout *SessionTimeout) error {
 		key := deriveKeyWithIterations(password, salt, iterations)
 		defer ZeroKey(key)
 
-		passwordHash, err := crypto.Decrypt(key, metadata.PasswordKey)
+		passwordHash, err := crypto.DecryptWithAAD(key, metadata.PasswordKey, crypto.BuildEntryAAD("metadata_verifier", "", "", metadata.KeyEpoch))
 		if err != nil || crypto.HashPassword(password) != string(passwordHash) {
 			return errInvalidSessionPassword
 		}

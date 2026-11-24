@@ -23,9 +23,10 @@ const (
 )
 
 var (
-	ErrInvalidKey        = errors.New("invalid key size")
-	ErrInvalidCiphertext = errors.New("invalid ciphertext")
-	ErrDecryptionFailed  = errors.New("decryption failed")
+	ErrInvalidKey           = errors.New("invalid key size")
+	ErrInvalidCiphertext    = errors.New("invalid ciphertext")
+	ErrDecryptionFailed     = errors.New("decryption failed")
+	ErrV1CiphertextRejected = errors.New("legacy v1 ciphertext rejected by require_v2 policy")
 )
 
 // Encrypt encrypts plaintext using AES-256-GCM (v1 format, nil AAD).
@@ -88,8 +89,18 @@ func Decrypt(key []byte, ciphertextBase64 string) ([]byte, error) {
 // DecryptWithAAD decrypts both v2 AAD-bound envelopes (verifying aad) and
 // legacy v1 ciphertexts (backward read compatibility).
 func DecryptWithAAD(key []byte, encoded string, aad []byte) ([]byte, error) {
+	return DecryptWithAADStrict(key, encoded, aad, false)
+}
+
+// DecryptWithAADStrict decrypts a v2 AAD-bound envelope (verifying aad) and,
+// when requireV2 is false, falls back to legacy v1 decryption. When requireV2
+// is true, v1 ciphertexts are rejected with ErrV1CiphertextRejected.
+func DecryptWithAADStrict(key []byte, encoded string, aad []byte, requireV2 bool) ([]byte, error) {
 	if strings.HasPrefix(encoded, V2Prefix) {
 		return openGCM(key, strings.TrimPrefix(encoded, V2Prefix), aad)
+	}
+	if requireV2 {
+		return nil, ErrV1CiphertextRejected
 	}
 	return openGCM(key, encoded, nil)
 }

@@ -109,15 +109,26 @@ func printDoctorReport(out io.Writer, r *storage.ConsistencyReport) {
 		return "NOT OK"
 	}
 	fmt.Fprintf(out, "metadata <-> key:     %s\n", status(r.MetadataKeyOK))
+	if r.KeyEpoch > 0 {
+		fmt.Fprintf(out, "envelope:             v2 (key_epoch=%d, require_v2=%v)\n", r.KeyEpoch, r.RequireV2)
+	} else {
+		fmt.Fprintf(out, "envelope:             legacy (key_epoch=0, require_v2=%v)\n", r.RequireV2)
+	}
 	printFileProbes(out, "env files", r.EnvFiles)
 	printFileProbes(out, "text files", r.TextFiles)
 	printFileProbes(out, "ledgers", r.LedgerFiles)
 	printFileProbes(out, "trees", r.TreeFiles)
 	printFileProbes(out, "skills", r.SkillFiles)
 	printFileProbes(out, "config files", r.ConfigFiles)
+	if r.IndexFiles.Total > 0 {
+		printFileProbes(out, "index files", r.IndexFiles)
+	}
 	printFileProbes(out, "hosts", r.HostFiles)
 	printFileProbes(out, "keypairs", r.KeyPairFiles)
 	printFileProbes(out, "mcp servers", r.MCPServerFiles)
+	if r.LegacyV1Count > 0 {
+		fmt.Fprintf(out, "legacy v1 entries:    %d (run 'senv migrate to-v2' to upgrade)\n", r.LegacyV1Count)
+	}
 	printQuarantinedConfigs(out, r.QuarantinedConfigNames)
 }
 

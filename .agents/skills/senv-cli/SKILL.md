@@ -184,7 +184,7 @@ git provider 之外，vault 可托管在 senv-server 上：
 - 地址 scheme：默认只接受 `https://`。明文 http 按主机分流——内网/本机地址直接放行、无需任何豁免；公网地址仍须 `SENV_ALLOW_INSECURE_HTTP=1` 显式豁免，且豁免生效时向 stderr 告警。内网/本机地址指私网网段、回环、链路本地、IPv6 ULA、CGNAT（100.64.0.0/10）字面量 IP，以及 `localhost`、`.lan`、`.local`、`.internal`、`.home.arpa` 域名；判定只做字面量、不做 DNS 解析，所以域名解析到私网 IP 时仍按公网地址处理。
 - 同步：`senv sync`（server provider 为增量 pull + 按条目乐观锁 push）。同步通道覆盖 env/text/backup/config、LLM Provider 档案（`llm_providers/<alias>.enc`）、MCP Server 档案（`mcp_servers/<alias>.enc`）与 SSH 资产档案（`hosts/<alias>.enc`、`keypairs/<name>.enc`，KeyPair 档案含私钥本体）、私有 skill（`skills/<group>/<id>.enc` + `skill_index.json`，见「私有 Agent Skill」）——新机器首次同步即拉到全部档案，凭 vault 口令即可取用，含 `senv backup get`；Coding Agent 切换指针、MCP 导出台账与本机默认密钥对是本机状态，不同步；`~/.ssh/senv/` 下已落盘文件与 `~/.ssh/config` 的 senv 注册行也是本机状态，不同步——新机器首次同步后跑一次 `senv host export`（应用模式）即自动重建组片段、落盘缺失私钥并完成注册（默认钥需在该机再 `keypair set-default`）。冲突时默认不改任何一侧，用 `--accept-remote`（以远端为准）或 `--force-push`（以本地为准）解决；`--no-interactive` 禁用交互式解决器。配置源档案（llm_provider/mcp_server/ssh_host/ssh_keypair）冲突时报告额外给出本地/远端 alias+revision 对照，提醒双端人工修改需核对；SSH 档案冲突只渲染元数据，不解码展示内容（防私钥泄露）；backup 冲突对齐 text（可解密对比，合并上限 512KB）。**含 `backup`/`backup_meta`/`skill`/`skill_index` 的 client 必须等 senv-server 镜像先升级**（白名单在 server 二进制里；发布顺序见 `docs/senv-server.md`，优先 iship 构建），否则整批 push 会被旧 server 拒绝。
 - 历史与恢复：`senv history [kind:group:key]`（如 `senv history env:prod:API_KEY`）查看 server 保留的密文历史，每行显示**变更时间 + 服务端认定的操作者（client）**；默认遮蔽敏感值，仅单条目查询可加 `--reveal` 展开明文（`ssh_keypair` 永不输出私钥）；`--restore <revision>` 恢复（会产生新 revision）。`senv history --metadata` 查看 vault metadata 的历史（覆盖写前像），`--restore <序号>` 恢复（1=最近一版；先备份本地并带乐观锁推送）。仅 server 模式支持；git 模式用 `git log`。历史裁剪位置由 serve `--history-prune-mode push|admin` 决定（默认 push；admin 模式由 cron 跑 `senv-server admin history-prune --retain N`）。
-- 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移。
+- 迁移：`senv migrate to-server` / `from-server` 在本地 git vault 与 server vault 间迁移；`senv migrate to-v2 [--require-v2|--no-require-v2|--force]` 将历史 v1 密文与明文索引升级到带 AAD 绑定和 `key_epoch` 的 v2 信封格式，可选开启 `vault.require_v2` 严格防降级（拒绝 v1 密文与明文 `config_index`/`skill_index`）。新初始化的 vault 默认启用 v2（`key_epoch=1`）并加密存储 `config_index.json` 与 `skill_index.json`。
 - senv-server 管理面（独立二进制，不经 cobra、不在 `senv --help`；`--dsn` 缺省取环境变量 `SENV_SERVER_DSN`，任何能连到 PG 的主机都可执行）：
   - `admin create-user <name>`：建用户并签发一次性明文 token（只打印一次，库存 SHA-256）。
   - `admin create-registration <user> [--expires 30m]`：签发一次性注册码（默认 30 分钟）。
@@ -245,7 +245,8 @@ senv env group list | add | activate | deactivate
 senv git sync                            # commit + pull --rebase + push 数据目录
 senv push -m "msg"                       # 等价 git add+commit+push；--only 只 push
 senv sync                                # 按 settings 走 git 或 server provider
-senv doctor                              # metadata 与数据文件密钥一致性诊断（git pull 后可跑）
+senv doctor                              # metadata、信封版本（key_epoch/require_v2）与数据/索引文件密钥一致性诊断
+senv migrate to-v2 [--require-v2]        # 升级历史 v1 vault 到 v2 AAD 信封并加密索引，可选开启防降级
 senv audit --since 2026-09-01            # 本机审计日志（只记元数据不记值）
 senv keypair list                        # 只看 SSH keypair 元数据/指纹
 senv host list                           # 只看 SSH host 连接元数据

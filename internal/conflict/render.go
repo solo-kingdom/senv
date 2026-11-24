@@ -18,15 +18,29 @@ import (
 // for remote metadata. A nil Key means plaintext rendering is unavailable.
 type Auth struct {
 	Key                 []byte
+	KeyEpoch            int
+	RemoteKeyEpoch      int
 	RemoteKeyCompatible bool
 }
 
 func NewAuth(key []byte, remoteMetadata []byte) Auth {
-	compatible := true
-	if len(remoteMetadata) > 0 {
-		compatible = MetadataKeyCompatible(remoteMetadata, key)
+	return NewAuthWithLocalMetadata(key, nil, remoteMetadata)
+}
+
+func NewAuthWithLocalMetadata(key []byte, localMetadata []byte, remoteMetadata []byte) Auth {
+	auth := Auth{Key: key, RemoteKeyCompatible: true}
+	if len(localMetadata) > 0 {
+		if md, err := storage.ParseMetadata(localMetadata); err == nil {
+			auth.KeyEpoch = md.KeyEpoch
+		}
 	}
-	return Auth{Key: key, RemoteKeyCompatible: compatible}
+	if len(remoteMetadata) > 0 {
+		if md, err := storage.ParseMetadata(remoteMetadata); err == nil {
+			auth.RemoteKeyEpoch = md.KeyEpoch
+		}
+		auth.RemoteKeyCompatible = MetadataKeyCompatible(remoteMetadata, key)
+	}
+	return auth
 }
 
 func MetadataKeyCompatible(metadata []byte, key []byte) bool {
@@ -37,7 +51,7 @@ func MetadataKeyCompatible(metadata []byte, key []byte) bool {
 	if err != nil {
 		return false
 	}
-	_, err = crypto.Decrypt(key, md.PasswordKey)
+	_, err = crypto.DecryptWithAAD(key, md.PasswordKey, crypto.BuildEntryAAD("metadata_verifier", "", "", md.KeyEpoch))
 	return err == nil
 }
 
@@ -47,7 +61,8 @@ type decodedSide struct {
 	Size      int
 }
 
-func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSide, error) {
+func decodeSide(detail provider.ConflictDetail, side provider.ConflictSide, key []byte, keyEpoch int) (decodedSide, error) {
+	kind := detail.Kind
 	if side.Deleted {
 		return decodedSide{}, nil
 	}
@@ -60,20 +75,40 @@ func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSid
 		return decodedSide{Size: side.Size}, nil
 	}
 	if kind == provider.KindSkillIndex {
-		// skill 索引与 config_index 一样是明文 JSON。
+		if crypto.IsV2Ciphertext(string(side.Ciphertext)) {
+			if len(key) == 0 {
+				return decodedSide{}, fmt.Errorf("vault key unavailable")
+			}
+			plain, err := decryptWithEpochFallback(key, string(side.Ciphertext), kind, "", "", keyEpoch)
+			if err != nil {
+				return decodedSide{}, err
+			}
+			return decodedSide{Plaintext: plain, Size: len(plain)}, nil
+		}
 		return decodedSide{Plaintext: side.Ciphertext, Size: len(side.Ciphertext)}, nil
 	}
 	if kind == provider.KindConfigIndex {
+		payload := side.Ciphertext
+		if crypto.IsV2Ciphertext(string(side.Ciphertext)) {
+			if len(key) == 0 {
+				return decodedSide{}, fmt.Errorf("vault key unavailable")
+			}
+			plain, err := decryptWithEpochFallback(key, string(side.Ciphertext), kind, "", "", keyEpoch)
+			if err != nil {
+				return decodedSide{}, err
+			}
+			payload = plain
+		}
 		var index storage.ConfigIndex
-		if err := storage.FromJSON(side.Ciphertext, &index); err != nil {
+		if err := storage.FromJSON(payload, &index); err != nil {
 			return decodedSide{}, err
 		}
-		return decodedSide{Plaintext: side.Ciphertext, Size: len(side.Ciphertext)}, nil
+		return decodedSide{Plaintext: payload, Size: len(payload)}, nil
 	}
 	if len(key) == 0 {
 		return decodedSide{}, fmt.Errorf("vault key unavailable")
 	}
-	plaintext, err := crypto.Decrypt(key, string(side.Ciphertext))
+	plaintext, err := decryptWithEpochFallback(key, string(side.Ciphertext), kind, detail.Grp, detail.Key, keyEpoch)
 	if err != nil {
 		return decodedSide{}, err
 	}
@@ -135,14 +170,27 @@ func contentPreview(value []byte) string {
 	return string(value)
 }
 
+func decryptWithEpochFallback(key []byte, encoded, kind, grp, entryKey string, keyEpoch int) ([]byte, error) {
+	if !crypto.IsV2Ciphertext(encoded) {
+		return crypto.Decrypt(key, encoded)
+	}
+	aad := crypto.BuildEntryAAD(kind, grp, entryKey, keyEpoch)
+	if plain, err := crypto.DecryptWithAAD(key, encoded, aad); err == nil {
+		return plain, nil
+	}
+	for e := keyEpoch - 1; e >= 0; e-- {
+		if plain, err := crypto.DecryptWithAAD(key, encoded, crypto.BuildEntryAAD(kind, grp, entryKey, e)); err == nil {
+			return plain, nil
+		}
+	}
+	return nil, crypto.ErrDecryptionFailed
+}
+
 func sideKey(kind string, side provider.ConflictSide, auth Auth, remote bool) []byte {
 	if len(side.Ciphertext) == 0 || side.Deleted {
 		return nil
 	}
 	if remote && !auth.RemoteKeyCompatible {
-		return nil
-	}
-	if kind == provider.KindConfigIndex || kind == provider.KindSkillIndex {
 		return nil
 	}
 	return auth.Key
@@ -191,9 +239,9 @@ func renderSide(label, kind string, side provider.ConflictSide, decoded decodedS
 // and config plaintext require reveal=true; env is additionally masked unless
 // explicitly revealed.
 func RenderDetail(detail provider.ConflictDetail, auth Auth, reveal bool) string {
-	local, localErr := decodeSide(detail.Kind, detail.Local, auth.Key)
+	local, localErr := decodeSide(detail, detail.Local, auth.Key, auth.KeyEpoch)
 	remoteKey := sideKey(detail.Kind, detail.Remote, auth, true)
-	remote, remoteErr := decodeSide(detail.Kind, detail.Remote, remoteKey)
+	remote, remoteErr := decodeSide(detail, detail.Remote, remoteKey, auth.RemoteKeyEpoch)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s/%s/%s\n", detail.Kind, detail.Grp, detail.Key)
@@ -203,7 +251,11 @@ func RenderDetail(detail provider.ConflictDetail, auth Auth, reveal bool) string
 		b.WriteString("  warning: remote metadata uses a different vault key\n")
 	}
 	if detail.Kind == provider.KindConfigIndex {
-		b.WriteString(RenderConfigIndexDiff(detail.Local.Ciphertext, detail.Remote.Ciphertext))
+		if localErr == nil && remoteErr == nil {
+			b.WriteString(RenderConfigIndexDiff(local.Plaintext, remote.Plaintext))
+		} else {
+			b.WriteString("  config index: encrypted or unavailable; unlock vault to view diff\n")
+		}
 	}
 	return b.String()
 }

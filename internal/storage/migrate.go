@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/wii/senv/internal/crypto"
 )
 
 // MigrateEnvGroupIfNeeded checks for an old-format env_<group>.json.enc file
@@ -40,7 +38,7 @@ func (m *Manager) MigrateEnvGroupIfNeeded(group string, key []byte) (bool, error
 	if err != nil {
 		return false, err
 	}
-	decrypted, err := crypto.Decrypt(key, string(data))
+	decrypted, err := m.decryptEntryLocked(key, legacyEnvAADKind, group, "", string(data))
 	if err != nil {
 		return false, fmt.Errorf("decrypt old env group %q: %w", group, err)
 	}

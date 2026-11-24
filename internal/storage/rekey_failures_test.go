@@ -26,12 +26,12 @@ func setupRekeyVault(t *testing.T) (*Manager, []byte) {
 	if err := manager.SaveConfigFileWithKey("app", []byte("config-secret"), oldKey); err != nil {
 		t.Fatal(err)
 	}
-	index, err := manager.LoadConfigIndex()
+	index, err := manager.LoadConfigIndexWithKey(oldKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	index.Configs["app"] = ConfigFile{Name: "app", EncryptedFile: "app.enc", Group: ConfigDefaultGroup}
-	if err := manager.SaveConfigIndex(index); err != nil {
+	if err := manager.SaveConfigIndexWithKey(index, oldKey); err != nil {
 		t.Fatal(err)
 	}
 	return manager, oldKey

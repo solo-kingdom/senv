@@ -240,7 +240,7 @@ func (m Model) updateDetailKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startEditor(index int) (tea.Model, tea.Cmd) {
-	session, err := renderconflict.PrepareMergeEditor(m.items[index].Detail, m.auth.Key)
+	session, err := renderconflict.PrepareMergeEditorWithAuth(m.items[index].Detail, m.auth)
 	if err != nil {
 		m.message = err.Error()
 		return m, nil

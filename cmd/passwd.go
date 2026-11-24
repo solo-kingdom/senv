@@ -63,7 +63,7 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	oldKey := deriveKeyWithIterations(currentPassword, oldSalt, oldIterations)
 	defer session.ZeroKey(oldKey)
 
-	storedHash, err := crypto.Decrypt(oldKey, md.PasswordKey)
+	storedHash, err := crypto.DecryptWithAAD(oldKey, md.PasswordKey, crypto.BuildEntryAAD("metadata_verifier", "", "", md.KeyEpoch))
 	if err != nil || crypto.HashPassword(currentPassword) != string(storedHash) {
 		return errInvalidPassword
 	}
@@ -97,8 +97,9 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	}
 	newKey := deriveKeyWithIterations(newPassword, newSalt, newIterations)
 	defer session.ZeroKey(newKey)
+	newEpoch := md.KeyEpoch + 1
 	passwordHash := crypto.HashPassword(newPassword)
-	newPasswordKey, err := crypto.Encrypt(newKey, []byte(passwordHash))
+	newPasswordKey, err := crypto.EncryptWithAAD(newKey, []byte(passwordHash), crypto.BuildEntryAAD("metadata_verifier", "", "", newEpoch))
 	if err != nil {
 		return fmt.Errorf("failed to create password verifier: %w", err)
 	}
@@ -121,8 +122,8 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	sm.ClearSession()
 	clearAuthMemo()
 
-	fmt.Printf("✓ Password changed. Re-encrypted %d file(s). KDF iterations: %d.\n",
-		result.Total(), newIterations)
+	fmt.Printf("✓ Password changed. Re-encrypted %d file(s). KDF iterations: %d, key_epoch: %d.\n",
+		result.Total(), newIterations, newEpoch)
 	fmt.Println("  Note: senv binaries older than this version cannot unlock this vault anymore.")
 	fmt.Println("  Run 'senv session start' to cache the new key.")
 	pushBlockingAfterCriticalWrite(cmd)

@@ -30,11 +30,11 @@ func TestRekeyPreflightSkipsMachineLocalArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, _, _, err := manager.rekeyPreflight(oldKey)
+	pre, err := manager.rekeyPreflight(oldKey, vaultCryptoPolicy{KeyEpoch: 1})
 	if err != nil {
 		t.Fatalf("rekeyPreflight with machine-local artifact: %v", err)
 	}
-	for _, entry := range entries {
+	for _, entry := range pre.entries {
 		if len(entry.identity) == 1 && entry.identity[0] == "tui-snapshot.enc" {
 			t.Fatal("machine-local artifact was enumerated for rekey")
 		}
@@ -59,7 +59,7 @@ func TestRekeyPreflightStillRejectsUnindexedCiphertext(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(manager.dataPath, "rogue.enc"), []byte("ciphertext"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := manager.rekeyPreflight(oldKey); err == nil {
+	if _, err := manager.rekeyPreflight(oldKey, vaultCryptoPolicy{KeyEpoch: 1}); err == nil {
 		t.Fatal("rekeyPreflight must fail closed on unindexed ciphertext")
 	} else if !strings.Contains(err.Error(), "unindexed") {
 		t.Fatalf("unexpected error: %v", err)
@@ -98,23 +98,23 @@ func TestRekeyPreflightEnumeratesAndDecryptsCompleteVault(t *testing.T) {
 	if err := manager.SaveConfigFileWithKey("app", []byte("config"), oldKey); err != nil {
 		t.Fatal(err)
 	}
-	index, err := manager.LoadConfigIndex()
+	index, err := manager.LoadConfigIndexWithKey(oldKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	index.Configs["app"] = ConfigFile{Name: "app", EncryptedFile: "app.enc", Group: ConfigDefaultGroup}
-	if err := manager.SaveConfigIndex(index); err != nil {
+	if err := manager.SaveConfigIndexWithKey(index, oldKey); err != nil {
 		t.Fatal(err)
 	}
-	entries, result, metadata, err := manager.rekeyPreflight(oldKey)
+	pre, err := manager.rekeyPreflight(oldKey, vaultCryptoPolicy{KeyEpoch: 1})
 	if err != nil {
 		t.Fatalf("rekeyPreflight: %v", err)
 	}
-	if len(metadata) == 0 || len(entries) != result.Total() {
-		t.Fatalf("entries=%d result=%+v metadata=%d", len(entries), result, len(metadata))
+	if len(pre.oldMetadata) == 0 || len(pre.entries) != pre.result.Total() {
+		t.Fatalf("entries=%d result=%+v metadata=%d", len(pre.entries), pre.result, len(pre.oldMetadata))
 	}
-	if result.EnvFiles != 2 || result.TextFiles != 3 || result.ConfigFiles != 1 {
-		t.Fatalf("unexpected preflight counts: %+v", result)
+	if pre.result.EnvFiles != 2 || pre.result.TextFiles != 3 || pre.result.ConfigFiles != 1 {
+		t.Fatalf("unexpected preflight counts: %+v", pre.result)
 	}
 }
 

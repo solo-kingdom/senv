@@ -138,7 +138,7 @@ func (c *SnapshotCache) load() (*snapshotCachePayload, bool) {
 	if err != nil {
 		return nil, false
 	}
-	plain, err := crypto.Decrypt(c.key, string(blob))
+	plain, err := crypto.DecryptWithAAD(c.key, string(blob), crypto.BuildEntryAAD("tui_snapshot", "", "", 0))
 	if err != nil {
 		return nil, false
 	}
@@ -180,7 +180,7 @@ func (c *SnapshotCache) write(mgr Managers) bool {
 	if err != nil {
 		return false
 	}
-	blob, err := crypto.Encrypt(c.key, plain)
+	blob, err := crypto.EncryptWithAAD(c.key, plain, crypto.BuildEntryAAD("tui_snapshot", "", "", 0))
 	if err != nil {
 		return false
 	}
