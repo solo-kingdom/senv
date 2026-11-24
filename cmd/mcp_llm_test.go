@@ -188,6 +188,9 @@ func TestMCPLLMAgentStatusTwoStates(t *testing.T) {
 	if p := byAgent["opencode"]; p != nil {
 		t.Fatalf("opencode status = %+v", p)
 	}
+	if p, ok := byAgent["ocr"]; !ok || p != nil {
+		t.Fatalf("ocr status = %+v (present=%v), want present with nil pointer", p, ok)
+	}
 	for _, id := range []string{"cursor", "zcode"} {
 		if _, ok := byAgent[id]; ok {
 			t.Fatalf("%s must not appear in agent status: %+v", id, payload.Agents)

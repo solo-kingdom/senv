@@ -613,3 +613,67 @@ func TestAISwitchCredentialModeFlag(t *testing.T) {
 		}
 	})
 }
+
+func TestAISwitchOCR(t *testing.T) {
+	t.Run("alias normalizes to ocr and writes api_key_cmd", func(t *testing.T) {
+		newAuditTestProject(t)
+		addAIProviderForSwitchTest(t, "main")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		setAISwitchCredentialModeFlag(t, "")
+
+		stdout, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"open-code-review", "main"})
+		if err != nil {
+			t.Fatalf("switch: %v", err)
+		}
+		if !strings.Contains(stdout, "凭据环境变量：") {
+			t.Fatalf("stdout = %q, want credential env line", stdout)
+		}
+		cfgPath := filepath.Join(home, ".opencodereview", "config.json")
+		raw, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatalf("read config.json: %v", err)
+		}
+		if strings.Contains(string(raw), "sk-secret-value") {
+			t.Fatalf("auto mode must not write plaintext:\n%s", raw)
+		}
+		if !strings.Contains(string(raw), `"api_key_cmd": "printenv `) {
+			t.Fatalf("config missing api_key_cmd:\n%s", raw)
+		}
+
+		pointer, err := llm.LoadPointers(agentPointerPath())
+		if err != nil {
+			t.Fatalf("load pointers: %v", err)
+		}
+		if _, ok := pointer.Agents["ocr"]; !ok {
+			t.Fatalf("pointer must be keyed by canonical id ocr, got %+v", pointer.Agents)
+		}
+
+		statusOut, _, err := runAISwitchCmd(t, aiStatusCmd, nil)
+		if err != nil {
+			t.Fatalf("ai status: %v", err)
+		}
+		if !strings.Contains(statusOut, "ocr") || !strings.Contains(statusOut, "main / m1") {
+			t.Fatalf("ai status missing ocr pointer:\n%s", statusOut)
+		}
+	})
+
+	t.Run("inline writes api_key plaintext", func(t *testing.T) {
+		newAuditTestProject(t)
+		addAIProviderForSwitchTest(t, "main")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		setAISwitchCredentialModeFlag(t, "inline")
+
+		if _, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"ocr", "main"}); err != nil {
+			t.Fatalf("switch: %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(home, ".opencodereview", "config.json"))
+		if err != nil {
+			t.Fatalf("read config.json: %v", err)
+		}
+		if !strings.Contains(string(raw), `"api_key": "sk-secret-value"`) {
+			t.Fatalf("inline mode must write api_key plaintext:\n%s", raw)
+		}
+	})
+}
