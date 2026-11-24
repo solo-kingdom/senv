@@ -118,7 +118,29 @@ server 本身跑明文 HTTP，TLS 由反向代理终结（回环或内网监听�
 
 ### 元数据泄露边界
 
-零知识架构保证 server 与 DB 持有者看不到条目内容，但以下元数据对「拿到数据库的人」可见：vault 名、**条目身份（kind / group / key）**、条目数量、revision 变化频率、访问时间与来源 IP（access_log）；另外 `config_index` 与 `skill_index` 两个同步条目以明文 JSON 存储（含配置名、target path、skill id 与 description）。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+零知识架构保证 server 与 DB 持有者看不到条目内容，但拿到数据库的人可见下列字段。内容机密性不受影响；若连这些模式都不愿暴露，需要另一量级的工程（条目填充、固定频率同步），当前不做。
+
+**`entries` 表（每个同步条目一行）**——`ciphertext` 为客户端密文，其余都是明文元数据：
+
+| 字段 | 可见内容 |
+| --- | --- |
+| `kind` / `grp` / `key` | 条目身份：类型、分组、键名（如 `env` / `prod` / `API_KEY`） |
+| `revision` | 单调递增版本号；变化频率可推断同步活跃度 |
+| `deleted` | 是否为 tombstone（删除） |
+| `updated_at` | 最近推送时间 |
+
+`kind` 的取值见 `internal/syncschema/schema.go`（当前 15 种：env / text / backup / config / llm_provider / mcp_server / ssh_host / ssh_keypair / skill 各及其 `_meta`/`_index` 变体、以及台账 `ledger` / `ledger_log` / `ledger_meta`）。其中有两个 kind 是**明文 JSON 而非密文**：
+
+- `config_index`：配置名、target path 等（条目本体 kind=`config` 仍加密）
+- `skill_index`：skill id 与 description（条目本体 kind=`skill` 仍加密）
+
+**`vaults` / `vault_metadata`**：vault 名、整体 `seq` 与 `updated_at`；metadata blob 本身加密。
+
+**`entries_history`**（前像，`--history-retain` 控制保留数）：同上的 kind/grp/key/revision/deleted，另加 `replaced_at`（被替换时刻）与 `actor_client_id` / `actor_user_id`（由 token 推出的操作者设备与用户）——这是服务端唯一能回答「谁在何时改了哪个条目」的地方。
+
+**`access_log`**（`--logs-retain-days` 控制保留，默认 90 天）：时间、来源 IP、method、path、user_id、client_id、outcome、reason；推送请求另记 `n_entries` / `n_deleted`（本批提交/删除条数）。不含 token、口令或密文。
+
+来源 IP 的准确性依赖反向代理透传真实来源（见「caddy 层配置」）；缺 `header_up X-Real-IP` 时可能记录到代理网桥地址或被伪造头污染。
 
 
 senv-server 是零知识密文托管服务端：独立二进制，与 `senv` CLI 同仓（`senv-server/` main 包），
@@ -396,6 +418,24 @@ chmod -R go-rwx ~/.config/senv ~/.local/share/senv
   可用 caddy 的 `rate_limit` 插件对 `/v1/` 路径限速
 - 访问日志：如需排障/溯源，可在 caddy 开 access log（server 本身保持精简；
   server 自身的系统日志保留 90 天，由 `--logs-retain-days` 控制）
+- **部署后检查项**：senv 站点块内每个指向 `senv-server` 的 `reverse_proxy` 都要有
+  `header_up X-Real-IP {remote_host}`——`handle @allowed`、`handle @wg` 等分来源块
+  各写各的，漏掉一个就有一条入口丢真实 IP。改动 Caddyfile 后逐项确认：
+
+  ```bash
+  # 每个反向代理块都要带该行：列出 senv 站点块内 reverse_proxy 与其后紧跟的 header_up
+  docker exec tcbj-caddy grep -nE 'reverse_proxy senv-server|header_up X-Real-IP' \
+      /etc/caddy/Caddyfile   # 期望二者成对出现（每个 reverse_proxy 都有一条 header_up）
+  docker exec tcbj-caddy caddy validate --config /etc/caddy/Caddyfile
+  docker exec tcbj-caddy caddy reload --config /etc/caddy/Caddyfile
+  # 从 wg3 与办公室各发一次无 token 请求（期望 401），再核对 admin logs 的来源 IP
+  curl -s -o /dev/null -w '%{http_code}\n' https://senv.wii.pub/healthz
+  senv-server admin logs --limit 5   # ip 列应为真实出口/隧道地址，非 caddy 网桥
+  ```
+
+  改 Caddyfile 必须就地写保 inode（单文件挂载时 `mv` 会让容器读到旧 inode，
+  见本仓 `deploy/tcbj/caddy` 的踩坑记录），且以上线版为基线（仓库副本曾漂移：
+  先 `ssh tcbj 'cat <线上 Caddyfile>'` 回写仓库再改）。
 
 ### 6. 客户端升级顺序
 
