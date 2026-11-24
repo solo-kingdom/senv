@@ -53,7 +53,7 @@ Query is required. Results are capped by --limit (default 20).`,
 
 func init() {
 	rootCmd.AddCommand(searchCmd)
-	searchCmd.Flags().StringSliceVar(&searchKinds, "kind", nil, "restrict kinds (env,text,backup,config,ssh,llm,mcp,ledger; repeatable or comma-separated)")
+	searchCmd.Flags().StringSliceVar(&searchKinds, "kind", nil, "restrict kinds (env,text,backup,config,ssh,llm,mcp,ledger,tree; repeatable or comma-separated)")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", search.DefaultLimit, "max hits to return")
 	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "emit JSON (metadata only)")
 	addRefreshFlag(searchCmd)

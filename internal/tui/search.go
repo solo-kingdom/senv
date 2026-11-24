@@ -21,6 +21,7 @@ const (
 	typeLLM    = "LLM"
 	typeMCP    = "MCP"
 	typeLedger = "Ledger"
+	typeTree   = "Tree"
 )
 
 // searchTab is the global cross-type search overlay. It gathers all keys/names
@@ -114,6 +115,7 @@ func (s *searchTab) gather() tea.Cmd {
 			LLM:    mgr.LLM,
 			MCP:    mgr.MCP,
 			Ledger: mgr.Ledger,
+			Tree:   mgr.Tree,
 		})
 		all := make([]searchResult, 0, len(items))
 		for _, it := range items {
@@ -160,6 +162,8 @@ func kindToResultType(k search.Kind) string {
 		return typeMCP
 	case search.KindLedger:
 		return typeLedger
+	case search.KindTree:
+		return typeTree
 	default:
 		return string(k)
 	}

@@ -90,10 +90,25 @@ func decodeSide(kind string, side provider.ConflictSide, key []byte) (decodedSid
 			out.UpdatedAt = entry.UpdatedAt
 			out.Size = entry.Size
 		}
-	case provider.KindEnvMeta, provider.KindTextMeta, provider.KindBackupMeta:
+	case provider.KindEnvMeta, provider.KindTextMeta, provider.KindBackupMeta, provider.KindTreeMeta:
 		var meta storage.EnvGroupMeta
 		if err := storage.FromJSON(plaintext, &meta); err == nil {
 			out.Plaintext = []byte(meta.Name)
+		}
+	case provider.KindTree:
+		var entry struct {
+			Encoding  string    `json:"encoding"`
+			Content   string    `json:"content"`
+			UpdatedAt time.Time `json:"updated_at"`
+		}
+		if err := storage.FromJSON(plaintext, &entry); err == nil {
+			out.UpdatedAt = entry.UpdatedAt
+			if entry.Encoding == "base64" {
+				out.Plaintext = []byte(fmt.Sprintf("<binary base64 (%d bytes)>", len(entry.Content)))
+			} else {
+				out.Plaintext = []byte(entry.Content)
+				out.Size = len(entry.Content)
+			}
 		}
 	}
 	return out, nil
