@@ -71,6 +71,9 @@ func TestAllMCPToolsGuarded(t *testing.T) {
 	assertMCPToolDenied(t, "senv_ledger_get", (*managers).ledgerGet, ledgerGetInput{Entity: "device.x"})
 	assertMCPToolDenied(t, "senv_ledger_append", (*managers).ledgerAppend, ledgerAppendInput{Entity: "device.x", Summary: "x"})
 	assertMCPToolDenied(t, "senv_ledger_update", (*managers).ledgerUpdate, ledgerUpdateInput{Entity: "device.x", Status: "ok"})
+	assertMCPToolDenied(t, "senv_tree_ls", (*managers).treeLs, treeLsInput{Group: "deploy"})
+	assertMCPToolDenied(t, "senv_tree_get", (*managers).treeGet, treeGetInput{Group: "deploy", Path: "a/b"})
+	assertMCPToolDenied(t, "senv_tree_set", (*managers).treeSet, treeSetInput{Group: "deploy", Path: "a/b", Content: "x"})
 }
 
 func TestMCPRevocationNoSideEffects(t *testing.T) {

@@ -113,6 +113,10 @@ _Avoid_: 日志（指记录时）、流水、本机台账（指 `mcp-exports.jso
 机器本地的 MCP 导出状态文件（`mcp-exports.json`），只用于判断哪些条目由 senv 写入；不进 vault、不同步。旧文档里的「本机台账」即此意。
 _Avoid_: 台账（指配置源时）
 
+**路径树（Tree）**:
+加密的多级文件树配置源：一个文件一条加密条目（kind `tree`），按 `<组>:<相对路径>` 寻址，保留可执行位；组说明用 kind `tree_meta`。不建共享索引，列表靠递归扫描。与 Skill 的区别：Skill 是整包 tar 且根下必须有 `SKILL.md`，路径树按文件增量同步，可单文件改写与回滚。
+_Avoid_: 目录、文件夹（指 Group 或路径前缀时）
+
 ### 日志与历史
 
 **操作审计（Operation Audit）**:

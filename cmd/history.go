@@ -176,6 +176,19 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 	case "skill":
 		// skill 正文是 tar 归档，只显示大小，不展开内容。
 		return fmt.Sprintf("<skill 归档，%d 字节>", len(plaintext))
+	case "tree":
+		var entry struct {
+			Mode     uint32 `json:"mode"`
+			Encoding string `json:"encoding"`
+			Content  string `json:"content"`
+		}
+		if err := json.Unmarshal(plaintext, &entry); err != nil {
+			return contentPreviewString(plaintext)
+		}
+		if entry.Encoding == "base64" {
+			return fmt.Sprintf("<二进制文件，mode %04o，%d 字符 base64>", entry.Mode, len(entry.Content))
+		}
+		return entry.Content
 	case "env_meta", "text_meta", "backup_meta":
 		var meta storage.EnvGroupMeta
 		if err := json.Unmarshal(plaintext, &meta); err == nil {

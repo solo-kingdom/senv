@@ -38,6 +38,8 @@ const (
 	KindLedger      = syncschema.KindLedger
 	KindLedgerLog   = syncschema.KindLedgerLog
 	KindLedgerMeta  = syncschema.KindLedgerMeta
+	KindTree        = syncschema.KindTree
+	KindTreeMeta    = syncschema.KindTreeMeta
 )
 
 const syncStateFileName = ".senv-sync-state.json"
@@ -168,6 +170,15 @@ func (c *localCache) entryLocation(kind, grp, key string) (cacheLocation, error)
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.LedgerLogDirName, grp, key + storage.LedgerFileSuffix}}, nil
 	case KindLedgerMeta:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.LedgerDirName, grp, storage.EnvMetaFileName}}, nil
+	case KindTree:
+		parts := strings.Split(key, "/")
+		segs := make([]string, 0, 2+len(parts))
+		segs = append(segs, storage.TreeDirName, grp)
+		segs = append(segs, parts[:len(parts)-1]...)
+		segs = append(segs, parts[len(parts)-1]+storage.TreeFileSuffix)
+		return cacheLocation{root: cacheDataRoot, segments: segs}, nil
+	case KindTreeMeta:
+		return cacheLocation{root: cacheDataRoot, segments: []string{storage.TreeDirName, grp, storage.EnvMetaFileName}}, nil
 	case KindSkillIndex:
 		return cacheLocation{root: cacheDataRoot, segments: []string{storage.SkillIndexFile}}, nil
 	case KindConfig:
@@ -359,6 +370,60 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 		return nil, nil, reads, err
 	}
 	if err := collectLedgerDir(storage.LedgerLogDirName, KindLedgerLog, ""); err != nil {
+		return nil, nil, reads, err
+	}
+
+	if treeGroups, err := dataRoot.ReadDir(storage.TreeDirName); err == nil {
+		for _, group := range treeGroups {
+			if !group.IsDir {
+				return nil, nil, reads, fmt.Errorf("invalid tree cache entry type")
+			}
+			var walkTree func(segs []string, prefix string) error
+			walkTree = func(segs []string, prefix string) error {
+				entries, err := dataRoot.ReadDir(segs...)
+				if err != nil {
+					return err
+				}
+				for _, entry := range entries {
+					if entry.IsDir {
+						nextSegs := append(append([]string(nil), segs...), entry.Name)
+						nextPrefix := entry.Name
+						if prefix != "" {
+							nextPrefix = prefix + "/" + entry.Name
+						}
+						if err := walkTree(nextSegs, nextPrefix); err != nil {
+							return err
+						}
+						continue
+					}
+					ident := fileIdent{size: entry.Size, sec: entry.ModSec, nsec: entry.ModNsec}
+					if prefix == "" && entry.Name == storage.EnvMetaFileName {
+						if err := add(KindTreeMeta, group.Name, "", ident, dataRoot, append(append([]string(nil), segs...), entry.Name)...); err != nil {
+							return err
+						}
+						continue
+					}
+					if strings.HasSuffix(entry.Name, storage.TreeFileSuffix) {
+						name := strings.TrimSuffix(entry.Name, storage.TreeFileSuffix)
+						if name == "" {
+							continue
+						}
+						rel := name
+						if prefix != "" {
+							rel = prefix + "/" + name
+						}
+						if err := add(KindTree, group.Name, rel, ident, dataRoot, append(append([]string(nil), segs...), entry.Name)...); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}
+			if err := walkTree([]string{storage.TreeDirName, group.Name}, ""); err != nil {
+				return nil, nil, reads, err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, nil, reads, err
 	}
 

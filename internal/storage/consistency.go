@@ -33,6 +33,7 @@ type ConsistencyReport struct {
 	ProviderFiles  FileProbes
 	MCPServerFiles FileProbes
 	LedgerFiles    FileProbes
+	TreeFiles      FileProbes
 	// QuarantinedConfigNames lists legacy config entries whose identities are
 	// structurally consistent but non-portable. They are skipped (not probed,
 	// not counted) and surfaced separately as repair guidance.
@@ -51,7 +52,8 @@ func (r *ConsistencyReport) AllOK() bool {
 		r.KeyPairFiles.OK == r.KeyPairFiles.Total &&
 		r.ProviderFiles.OK == r.ProviderFiles.Total &&
 		r.MCPServerFiles.OK == r.MCPServerFiles.Total &&
-		r.LedgerFiles.OK == r.LedgerFiles.Total
+		r.LedgerFiles.OK == r.LedgerFiles.Total &&
+		r.TreeFiles.OK == r.TreeFiles.Total
 }
 
 // CheckConsistency probes whether the given key can decrypt the metadata
@@ -166,6 +168,34 @@ func (m *Manager) CheckConsistency(key []byte) (*ConsistencyReport, error) {
 				report.LedgerFiles.OK++
 			} else {
 				report.LedgerFiles.Failed = append(report.LedgerFiles.Failed, rel)
+			}
+		}
+	}
+
+	treeGroups, err := m.ListTreeGroups()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tree groups: %w", err)
+	}
+	for _, group := range treeGroups {
+		paths, err := m.ListTreePaths(group)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tree group %q: %w", group, err)
+		}
+		for _, p := range paths {
+			_, fileSegs, err := treeFileSegments(group, p)
+			if err != nil {
+				return nil, err
+			}
+			rel := filepath.Join(fileSegs...)
+			ciphertext, err := dataRoot.Read(fileSegs...)
+			if err != nil {
+				return nil, err
+			}
+			report.TreeFiles.Total++
+			if canDecrypt(key, string(ciphertext)) {
+				report.TreeFiles.OK++
+			} else {
+				report.TreeFiles.Failed = append(report.TreeFiles.Failed, rel)
 			}
 		}
 	}

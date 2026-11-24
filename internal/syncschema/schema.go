@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/wii/senv/internal/securefs"
 )
@@ -29,6 +30,8 @@ const (
 	KindLedger      = "ledger"
 	KindLedgerLog   = "ledger_log"
 	KindLedgerMeta  = "ledger_meta"
+	KindTree        = "tree"
+	KindTreeMeta    = "tree_meta"
 )
 
 // ErrInvalidIdentity allows callers to classify malformed remote identities
@@ -57,6 +60,35 @@ func (e *ValidationError) Error() string {
 
 func (e *ValidationError) Unwrap() error { return ErrInvalidIdentity }
 
+const (
+	MaxTreePathBytes = 512
+	MaxTreePathDepth = 16
+)
+
+// ValidateRelativePath validates a portable POSIX relative file path (no leading/trailing slash,
+// no empty/dot segments, no backslashes or colons, bounded depth and length).
+func ValidateRelativePath(rel string) error {
+	if rel == "" || len(rel) > MaxTreePathBytes {
+		return fmt.Errorf("relative path length must be 1..%d bytes", MaxTreePathBytes)
+	}
+	if strings.HasPrefix(rel, "/") || strings.HasSuffix(rel, "/") {
+		return fmt.Errorf("relative path must not start or end with '/'")
+	}
+	if strings.ContainsAny(rel, "\\:\x00") {
+		return fmt.Errorf("relative path contains forbidden character")
+	}
+	segs := strings.Split(rel, "/")
+	if len(segs) > MaxTreePathDepth {
+		return fmt.Errorf("relative path depth exceeds %d", MaxTreePathDepth)
+	}
+	for _, seg := range segs {
+		if err := securefs.ValidateSegment(seg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ValidateIdentity enforces the exact grp/key matrix for every supported kind.
 func ValidateIdentity(kind, grp, key string) error {
 	switch kind {
@@ -83,7 +115,17 @@ func ValidateIdentity(kind, grp, key string) error {
 		if err := securefs.ValidateSegment(key); err != nil {
 			return invalid("invalid key")
 		}
-	case KindEnvMeta, KindTextMeta, KindBackupMeta, KindLedgerMeta:
+	case KindTree:
+		if grp == "" || key == "" {
+			return invalid("kind requires grp and key")
+		}
+		if err := securefs.ValidateSegment(grp); err != nil {
+			return invalid("invalid grp")
+		}
+		if err := ValidateRelativePath(key); err != nil {
+			return invalid("invalid path")
+		}
+	case KindEnvMeta, KindTextMeta, KindBackupMeta, KindLedgerMeta, KindTreeMeta:
 		if grp == "" || key != "" {
 			return invalid("group meta requires grp and empty key")
 		}

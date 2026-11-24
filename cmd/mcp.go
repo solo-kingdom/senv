@@ -22,6 +22,7 @@ import (
 	"github.com/wii/senv/internal/ssh"
 	"github.com/wii/senv/internal/storage"
 	"github.com/wii/senv/internal/text"
+	"github.com/wii/senv/internal/tree"
 )
 
 // mcpCmd is the parent for all MCP-related subcommands: senv's own MCP server
@@ -92,6 +93,7 @@ type managers struct {
 	llmHome    string
 	mcpServer  *mcpserver.Manager
 	ledger     *ledger.Manager
+	tree       *tree.Manager
 	autoPull   func()
 }
 
@@ -203,6 +205,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			llmHome:    home,
 			mcpServer:  mcpserver.NewManagerWithKey(store, key),
 			ledger:     ledger.NewManager(store, key),
+			tree:       tree.NewManager(store, key),
 		}
 		release := func() {
 			session.ZeroKey(key)
@@ -214,6 +217,7 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 			requestManagers.llm = nil
 			requestManagers.mcpServer = nil
 			requestManagers.ledger = nil
+			requestManagers.tree = nil
 		}
 		return requestManagers, release, nil
 	}
@@ -750,6 +754,7 @@ func (m *managers) search(_ context.Context, _ *mcp.CallToolRequest, in searchIn
 		LLM:    m.llm,
 		MCP:    m.mcpServer,
 		Ledger: m.ledger,
+		Tree:   m.tree,
 	}
 	res, err := search.Run(search.Gather(src), in.Query, kinds, limit)
 	if err != nil {
@@ -799,6 +804,9 @@ func registerMCPTools(s *mcp.Server, authorize mcpRequestAuthorizer, autoPull fu
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_get", Description: "Get one ledger entity head (fields + status) plus its most recent records."}, guardMCPTool("senv_ledger_get", authorize, autoPull, (*managers).ledgerGet))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_append", Description: "Append an immutable ledger record (op/note/correction). Records are never overwritten; fix a mistake with a correction."}, guardMCPTool("senv_ledger_append", authorize, autoPull, (*managers).ledgerAppend))
 	mcp.AddTool(s, &mcp.Tool{Name: "senv_ledger_update", Description: "Update a ledger entity head: set/replace one field (empty value deletes it) or write the latest status. No record is deleted."}, guardMCPTool("senv_ledger_update", authorize, autoPull, (*managers).ledgerUpdate))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_tree_ls", Description: "List files in an encrypted path tree group (path/mode/size/sha256; no content), optionally under a prefix."}, guardMCPTool("senv_tree_ls", authorize, autoPull, (*managers).treeLs))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_tree_get", Description: "Read one text file from an encrypted path tree (binary files are refused)."}, guardMCPTool("senv_tree_get", authorize, autoPull, (*managers).treeGet))
+	mcp.AddTool(s, &mcp.Tool{Name: "senv_tree_set", Description: "Write one text file into an encrypted path tree. Refuses .env/*.key/*.pem paths. No delete/pull/push via MCP."}, guardMCPTool("senv_tree_set", authorize, autoPull, (*managers).treeSet))
 }
 
 // toolCatalogue mirrors registerMCPTools for offline listing (list-tools).
@@ -834,6 +842,9 @@ func toolCatalogue() []toolDef {
 		{"senv_ledger_get", "Get one ledger entity head plus its most recent records."},
 		{"senv_ledger_append", "Append an immutable ledger record (op/note/correction); never overwrites."},
 		{"senv_ledger_update", "Update a ledger head: one field (empty deletes) or latest status. No delete."},
+		{"senv_tree_ls", "List files in an encrypted path tree group (no content), optionally under a prefix."},
+		{"senv_tree_get", "Read one text file from an encrypted path tree."},
+		{"senv_tree_set", "Write one text file into an encrypted path tree (refuses secret-like paths)."},
 	}
 }
 
