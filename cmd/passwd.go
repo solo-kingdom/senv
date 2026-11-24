@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/wii/senv/internal/crypto"
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/session"
 	"github.com/wii/senv/internal/storage"
 )
@@ -34,14 +37,35 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 	configPath := getConfigPath()
 	dataPath := getDataPath()
 
-	auth, err := resolveAuth(configPath, dataPath, authPrompt)
+	// 先校验初始化与 metadata/KDF 合法性（在任何口令输入和 PBKDF2 之前 fail-fast），
+	// 且更改主口令始终要求重新输入并校验当前主口令，不得仅凭缓存会话改密。
+	store := storage.NewManager(configPath, dataPath)
+	if !store.IsInitialized() {
+		return errNotInitialized
+	}
+	md, err := store.LoadMetadata()
+	if err != nil {
+		return fmt.Errorf("failed to load metadata: %w", err)
+	}
+	oldSalt, err := base64.StdEncoding.DecodeString(md.Salt)
+	if err != nil {
+		return fmt.Errorf("failed to decode salt: %w", err)
+	}
+	oldIterations, err := md.ValidatedKDFIterations()
 	if err != nil {
 		return err
 	}
 
-	oldKey, err := resolveKeyForAuth(auth)
+	currentPassword, err := authPrompt("Senv - Enter current password: ")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read password: %w", err)
+	}
+	oldKey := deriveKeyWithIterations(currentPassword, oldSalt, oldIterations)
+	defer session.ZeroKey(oldKey)
+
+	storedHash, err := crypto.Decrypt(oldKey, md.PasswordKey)
+	if err != nil || crypto.HashPassword(currentPassword) != string(storedHash) {
+		return errInvalidPassword
 	}
 
 	newPassword, err := authPrompt("Senv - Enter new password: ")
@@ -72,16 +96,25 @@ func runPasswd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	newKey := deriveKeyWithIterations(newPassword, newSalt, newIterations)
+	defer session.ZeroKey(newKey)
 	passwordHash := crypto.HashPassword(newPassword)
 	newPasswordKey, err := crypto.Encrypt(newKey, []byte(passwordHash))
 	if err != nil {
 		return fmt.Errorf("failed to create password verifier: %w", err)
 	}
 
-	result, err := auth.storage.Rekey(oldKey, newKey,
+	result, err := store.Rekey(oldKey, newKey,
 		base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, newIterations)
 	if err != nil {
 		return fmt.Errorf("password change failed: %w", err)
+	}
+
+	// 删除旧主密钥加密的本地 TUI 快照缓存，避免旧口令泄露后仍可解出旧快照。
+	if root, rerr := securefs.OpenRoot(dataPath); rerr == nil {
+		if rmErr := root.Remove("tui-snapshot.enc"); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove stale tui-snapshot.enc: %v\n", rmErr)
+		}
+		_ = root.Close()
 	}
 
 	sm := session.NewManager(configPath, dataPath)

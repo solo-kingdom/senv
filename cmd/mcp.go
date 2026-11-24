@@ -97,59 +97,84 @@ type managers struct {
 	autoPull   func()
 }
 
-// mcpTextManager 在 MCP 暴露面包裹 text.Manager：值读写（Get/Set/Delete）
-// 一律拒绝保留组 llm-keys——该组存放 LLM API key 明文凭据，
-// llm_provider_list 的白名单视图刻意不暴露它们，senv_text_get 或
-// {{text:llm-keys/...}} 引用解析不得成为绕过面（CLI/TUI 仍可全权访问）。
-// 元数据（List/ListGroups）保持可用，暴露面与 llm_provider_list 的
-// credential_ref 一致。
+// mcpTextManager 在 MCP 暴露面包裹 text.Manager：不嵌入 *text.Manager，仅暴露
+// 经审计的显式方法，并对保留组 llm-keys 做大小写不敏感拦截（防 macOS 等大小写
+// 不敏感文件系统通过 LLM-KEYS 绕过）。不仅拦截值读写（Get/Set/Delete），同时
+// 拦截 List 与 ListGroups 过滤，避免向 MCP 暴露 API key 键名与精确字节长度。
 type mcpTextManager struct {
-	*text.Manager
+	inner *text.Manager
+}
+
+// isReservedLLMKeysGroup 判断分组名是否命中保留组 llm-keys（大小写不敏感）。
+func isReservedLLMKeysGroup(group string) bool {
+	return strings.EqualFold(strings.TrimSpace(group), llm.LLMKeysGroup)
 }
 
 // errLLMKeysReserved 是 MCP 侧访问 llm-keys 保留组的统一脱敏错误
 var errLLMKeysReserved = fmt.Errorf("text group %q is reserved for LLM credentials and not accessible via MCP; manage it with the senv CLI", llm.LLMKeysGroup)
 
 func (m mcpTextManager) Get(group, key string) (string, error) {
-	if group == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(group) {
 		return "", errLLMKeysReserved
 	}
-	return m.Manager.Get(group, key)
+	return m.inner.Get(group, key)
 }
 
 func (m mcpTextManager) Set(group, key, value string) error {
-	if group == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(group) {
 		return errLLMKeysReserved
 	}
-	return m.Manager.Set(group, key, value)
+	return m.inner.Set(group, key, value)
 }
 
 func (m mcpTextManager) SetWithDescription(group, key, value string, description *string) error {
-	if group == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(group) {
 		return errLLMKeysReserved
 	}
-	return m.Manager.SetWithDescription(group, key, value, description)
+	return m.inner.SetWithDescription(group, key, value, description)
 }
 
 func (m mcpTextManager) AddGroup(name, description string) error {
-	if name == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(name) {
 		return errLLMKeysReserved
 	}
-	return m.Manager.AddGroup(name, description)
+	return m.inner.AddGroup(name, description)
 }
 
 func (m mcpTextManager) GetWithMeta(group, key string) (string, string, error) {
-	if group == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(group) {
 		return "", "", errLLMKeysReserved
 	}
-	return m.Manager.GetWithMeta(group, key)
+	return m.inner.GetWithMeta(group, key)
 }
 
 func (m mcpTextManager) Delete(group, key string) error {
-	if group == llm.LLMKeysGroup {
+	if isReservedLLMKeysGroup(group) {
 		return errLLMKeysReserved
 	}
-	return m.Manager.Delete(group, key)
+	return m.inner.Delete(group, key)
+}
+
+func (m mcpTextManager) List(group string) ([]text.TextInfo, error) {
+	if isReservedLLMKeysGroup(group) {
+		return nil, errLLMKeysReserved
+	}
+	return m.inner.List(group)
+}
+
+func (m mcpTextManager) ListGroups() ([]text.GroupInfo, error) {
+	groups, err := m.inner.ListGroups()
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]text.GroupInfo, 0, len(groups))
+	for _, g := range groups {
+		if isReservedLLMKeysGroup(g.Name) {
+			continue
+		}
+		filtered = append(filtered, g)
+	}
+	return filtered, nil
 }
 
 type mcpRequestAuthorizer func() (*managers, func(), error)
@@ -192,11 +217,12 @@ func newMCPRequestAuthorizer(configPath, dataPath string, authorization *session
 		// 读取不经 vault，但工具统一走 guard 鉴权）。
 		home, err := agentHomeDir()
 		if err != nil {
+			session.ZeroKey(key)
 			return nil, nil, err
 		}
 		requestManagers := &managers{
 			env:        env.NewManagerWithKey(store, key),
-			text:       mcpTextManager{text.NewManagerWithKey(store, key)},
+			text:       mcpTextManager{inner: text.NewManagerWithKey(store, key)},
 			backup:     backup.NewManagerWithKey(store, key),
 			config:     config.NewManagerWithKey(store, key),
 			ssh:        ssh.NewManagerWithKey(store, key),
@@ -747,7 +773,7 @@ func (m *managers) search(_ context.Context, _ *mcp.CallToolRequest, in searchIn
 	}
 	src := search.Sources{
 		Env:    m.env,
-		Text:   m.text.Manager,
+		Text:   m.text.inner,
 		Backup: m.backup,
 		Config: m.config,
 		SSH:    m.ssh,

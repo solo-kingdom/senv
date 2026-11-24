@@ -934,6 +934,32 @@ func (m *Manager) LoadConfigIndex() (*ConfigIndex, error) {
 	return index, nil
 }
 
+// ErrEncryptedIndexRequiresKey is returned when an encrypted v2 index is
+// read without a vault key.
+var ErrEncryptedIndexRequiresKey = errors.New("index is encrypted; unlock vault to read")
+
+// ParseConfigIndexData decodes a config index from either legacy plaintext JSON
+// or a v2 AAD-encrypted envelope (Phase 1 read compatibility).
+func ParseConfigIndexData(data, key []byte, keyEpoch int) (*ConfigIndex, error) {
+	payload := data
+	if crypto.IsV2Ciphertext(string(data)) {
+		if len(key) == 0 {
+			return nil, ErrEncryptedIndexRequiresKey
+		}
+		aad := crypto.BuildEntryAAD("config_index", "", "", keyEpoch)
+		plain, err := crypto.DecryptWithAAD(key, string(data), aad)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt config index: %w", err)
+		}
+		payload = plain
+	}
+	var configIndex ConfigIndex
+	if err := FromJSON(payload, &configIndex); err != nil {
+		return nil, err
+	}
+	return &configIndex, nil
+}
+
 // LoadConfigIndexWithQuarantine loads the config file index and separates
 // structurally consistent legacy entries whose identities are non-portable
 // (for example a ":" in the name) into the quarantine slice. Read-only
@@ -962,11 +988,11 @@ func (m *Manager) LoadConfigIndexWithQuarantine() (*ConfigIndex, []ConfigQuarant
 			return result{}, err
 		}
 
-		var configIndex ConfigIndex
-		if err := FromJSON(data, &configIndex); err != nil {
+		configIndex, err := ParseConfigIndexData(data, nil, 0)
+		if err != nil {
 			return result{}, err
 		}
-		index, quarantined, err := normalizeConfigIndexWithQuarantine(&configIndex)
+		index, quarantined, err := normalizeConfigIndexWithQuarantine(configIndex)
 		if err != nil {
 			return result{}, err
 		}

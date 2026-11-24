@@ -157,23 +157,29 @@ Examples:
 		sessionManager := session.NewManager(configPath, dataPath)
 		defer sessionManager.Close()
 
-		// A valid session can be extended from the cached key: no password.
+		// A valid session can be extended from the cached key without a password,
+		// unless the requested explicit timeout escalates the session (e.g.
+		// duration -> restart or exceeding session.max_lifetime), in which case
+		// we fall through and require master-password re-authentication.
 		if sessionManager.HasValidSession() {
 			existing, _ := sessionManager.LoadCache()
-			timeout, err = timeoutForRenewal(existing, timeoutStr, configPath, dataPath)
+			renewTimeout, err := timeoutForRenewal(existing, timeoutStr, configPath, dataPath)
 			if err != nil {
 				return err
 			}
-			if timeout == nil {
+			if renewTimeout == nil {
 				return fmt.Errorf("session cache is disabled in configuration")
 			}
-			if err := runSessionSave(func() error {
-				return sessionManager.RenewSession(timeout)
-			}); err != nil {
+			err = runSessionSave(func() error {
+				return sessionManager.RenewSession(renewTimeout)
+			})
+			if err == nil {
+				printSessionStarted(renewTimeout, true)
+				return nil
+			}
+			if !errors.Is(err, session.ErrSessionEscalationRequiresPassword) {
 				return err
 			}
-			printSessionStarted(timeout, true)
-			return nil
 		}
 
 		// Prompt for password

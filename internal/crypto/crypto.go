@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -15,6 +17,9 @@ const (
 	KeySize = 32
 	// NonceSize is the size of the GCM nonce in bytes
 	NonceSize = 12
+	// V2Prefix marks versioned AES-256-GCM envelopes bound with AAD.
+	// ":" is outside the standard base64 alphabet, so v2 never collides with v1.
+	V2Prefix = "senv:v2:"
 )
 
 var (
@@ -23,8 +28,33 @@ var (
 	ErrDecryptionFailed  = errors.New("decryption failed")
 )
 
-// Encrypt encrypts plaintext using AES-256-GCM
+// Encrypt encrypts plaintext using AES-256-GCM (v1 format, nil AAD).
 func Encrypt(key []byte, plaintext []byte) (string, error) {
+	return sealGCM(key, plaintext, nil)
+}
+
+// EncryptWithAAD encrypts plaintext using the v2 envelope format and binds
+// additional authenticated data (AAD) so ciphertext cannot be transplanted
+// across entry identities or key epochs.
+func EncryptWithAAD(key []byte, plaintext []byte, aad []byte) (string, error) {
+	encoded, err := sealGCM(key, plaintext, aad)
+	if err != nil {
+		return "", err
+	}
+	return V2Prefix + encoded, nil
+}
+
+// IsV2Ciphertext reports whether encoded uses the v2 AAD-bound envelope.
+func IsV2Ciphertext(encoded string) bool {
+	return strings.HasPrefix(encoded, V2Prefix)
+}
+
+// BuildEntryAAD builds the deterministic AAD byte sequence for a vault entry.
+func BuildEntryAAD(kind, grp, key string, keyEpoch int) []byte {
+	return []byte("senv-v2\x00" + kind + "\x00" + grp + "\x00" + key + "\x00" + strconv.Itoa(keyEpoch))
+}
+
+func sealGCM(key []byte, plaintext []byte, aad []byte) (string, error) {
 	if len(key) != KeySize {
 		return "", ErrInvalidKey
 	}
@@ -45,13 +75,26 @@ func Encrypt(key []byte, plaintext []byte) (string, error) {
 	}
 
 	// Seal appends the ciphertext to the nonce
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, aad)
 
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// Decrypt decrypts ciphertext using AES-256-GCM
+// Decrypt decrypts v1 ciphertext using AES-256-GCM.
 func Decrypt(key []byte, ciphertextBase64 string) ([]byte, error) {
+	return openGCM(key, ciphertextBase64, nil)
+}
+
+// DecryptWithAAD decrypts both v2 AAD-bound envelopes (verifying aad) and
+// legacy v1 ciphertexts (backward read compatibility).
+func DecryptWithAAD(key []byte, encoded string, aad []byte) ([]byte, error) {
+	if strings.HasPrefix(encoded, V2Prefix) {
+		return openGCM(key, strings.TrimPrefix(encoded, V2Prefix), aad)
+	}
+	return openGCM(key, encoded, nil)
+}
+
+func openGCM(key []byte, ciphertextBase64 string, aad []byte) ([]byte, error) {
 	if len(key) != KeySize {
 		return nil, ErrInvalidKey
 	}
@@ -78,7 +121,7 @@ func Decrypt(key []byte, ciphertextBase64 string) ([]byte, error) {
 	nonce := ciphertext[:NonceSize]
 	ciphertext = ciphertext[NonceSize:]
 
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, ErrDecryptionFailed
 	}

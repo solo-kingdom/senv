@@ -98,10 +98,13 @@ func remoteIP(r *http.Request) string {
 // resolveRemoteIP 解析请求来源的客户端 IP，是限速与访问日志共用的唯一取值点。
 //
 // 仅当 TrustProxyHeaders 开启且直连对端是 loopback 或私网地址（同机反代，
-// 或 docker 网桥/内网反代拓扑）时，才依次采信 X-Real-IP 与 X-Forwarded-For
-// 最左值，且必须解析为合法 IP；其余情况一律使用连接对端——公网直连的客户端
-// 伪造代理头无法绕过限速或污染审计 IP。开启后同一私网内的其他主机也被视为
-// 可信代理（可借伪造头获得独立限速窗口），仅当私网对端全部可信时才应开启。
+// 或 docker 网桥/内网反代拓扑）时，才采信代理头；其余情况一律使用连接对端。
+// 优先级：
+//  1. X-Real-IP（须为合法 IP；需由反代强制覆写，避免透传客户端伪造值）
+//  2. X-Forwarded-For 自右向左跳过可信代理（loopback/私网）取最右公网 IP；
+//     若链路全为合法私网/回环地址（纯内网反代拓扑），取最右合法 IP（直连反代的
+//     真实对端）；最右项本身非法则 fail-safe 回落连接对端，防止攻击者在最左段
+//     伪造任意 IP 绕过限速或污染审计日志。
 func (s *Server) resolveRemoteIP(r *http.Request) string {
 	host := remoteIP(r)
 	if !s.trustProxyHeaders {
@@ -116,12 +119,43 @@ func (s *Server) resolveRemoteIP(r *http.Request) string {
 			return ip.String()
 		}
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		first = strings.TrimSpace(first)
-		if ip := net.ParseIP(first); ip != nil {
+	if ip := extractForwardedClientIP(r.Header.Values("X-Forwarded-For")); ip != "" {
+		return ip
+	}
+	return host
+}
+
+// extractForwardedClientIP 从所有 X-Forwarded-For 头中自右向左解析真实客户端 IP。
+// 反代总是把收到的对端追加到最右端，因此最左端由不可信客户端控制，绝不能直接采信。
+func extractForwardedClientIP(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, raw := range values {
+		for _, seg := range strings.Split(raw, ",") {
+			if seg = strings.TrimSpace(seg); seg != "" {
+				parts = append(parts, seg)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	rightmostValid := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(parts[i])
+		if ip == nil {
+			// 最右端本身非法说明代理链未附合法来源，直接放弃；若此前已经
+			// 穿过若干合法私网代理跳，停止解析并返回最右合法私网对端。
+			return rightmostValid
+		}
+		if rightmostValid == "" {
+			rightmostValid = ip.String()
+		}
+		if !(ip.IsLoopback() || ip.IsPrivate()) {
 			return ip.String()
 		}
 	}
-	return host
+	return rightmostValid
 }

@@ -53,6 +53,7 @@ type syncState struct {
 	LastSyncedRevision int64                     `json:"last_synced_revision"`
 	LastPullAt         int64                     `json:"last_pull_at,omitempty"`
 	MetadataHash       string                    `json:"metadata_hash"`
+	MinKDFIterations   int                       `json:"min_kdf_iterations,omitempty"`
 	VaultBinding       *vaultBinding             `json:"vault_binding,omitempty"`
 	WrittenBy          *stateWriterInfo          `json:"written_by,omitempty"`
 	Entries            map[string]syncEntryState `json:"entries"`
@@ -826,6 +827,9 @@ func validateNoStateRegression(existing, next *syncState, opts stateWriteOptions
 	if existing.MetadataHash != "" && next.MetadataHash == "" && !opts.allowEmptyMetadata {
 		return &StateRegressionError{MetadataCleared: true}
 	}
+	if existing.MinKDFIterations > 0 && next.MinKDFIterations > 0 && next.MinKDFIterations < existing.MinKDFIterations {
+		return fmt.Errorf("同步状态防降级校验拒绝写入：min_kdf_iterations 不得从 %d 降至 %d", existing.MinKDFIterations, next.MinKDFIterations)
+	}
 	return nil
 }
 
@@ -840,8 +844,19 @@ func (c *localCache) applyRemoteOpts(entries []Entry, metadata []byte, updateMet
 		return err
 	}
 	if updateMetadata {
-		if _, err := storage.ParseMetadata(metadata); err != nil {
+		md, err := storage.ParseMetadata(metadata)
+		if err != nil {
 			return fmt.Errorf("invalid synced metadata: %w", err)
+		}
+		iter, err := md.ValidatedKDFIterations()
+		if err != nil {
+			return fmt.Errorf("invalid synced metadata KDF: %w", err)
+		}
+		if state.MinKDFIterations > 0 && iter < state.MinKDFIterations {
+			return fmt.Errorf("远端 metadata 试图将 KDF 迭代次数从 %d 降级至 %d，已拒绝", state.MinKDFIterations, iter)
+		}
+		if iter > state.MinKDFIterations {
+			state.MinKDFIterations = iter
 		}
 	}
 	encodedState, err := c.encodeStateChecked(state, opts)

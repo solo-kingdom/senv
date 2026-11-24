@@ -63,15 +63,16 @@ func (s *pgStore) GetMetadataHistory(ctx context.Context, userID int64, vault st
 	return out, rows.Err()
 }
 
-// recordMetadataPreimage 在覆盖前把当前 blob 写入历史，并按 historyRetain 裁剪。
+// recordMetadataPreimage 在覆盖前把当前 blob 写入历史；仅当 prune 开启且
+// retain > 0 时在同一事务内裁剪，与条目历史的 --history-prune-mode 语义一致。
 // 同一事务内调用；内容未变化时调用方不写前像。
-func recordMetadataPreimage(ctx context.Context, tx pgx.Tx, vaultID int64, retain int) error {
+func recordMetadataPreimage(ctx context.Context, tx pgx.Tx, vaultID int64, retain int, prune bool) error {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO vault_metadata_history (vault_id, blob, replaced_at)
 		 SELECT vault_id, blob, now() FROM vault_metadata WHERE vault_id = $1`, vaultID); err != nil {
 		return err
 	}
-	if retain > 0 {
+	if prune && retain > 0 {
 		if _, err := tx.Exec(ctx,
 			`DELETE FROM vault_metadata_history WHERE id IN (
 			   SELECT id FROM (

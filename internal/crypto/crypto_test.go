@@ -220,3 +220,45 @@ func BenchmarkDeriveKey(b *testing.B) {
 		DeriveKey(password, salt)
 	}
 }
+
+func TestV2EnvelopeAADBindingAndV1Compat(t *testing.T) {
+	key := make([]byte, KeySize)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	aadA := BuildEntryAAD("ssh_keypair", "", "web-key", 1)
+	aadB := BuildEntryAAD("config", "", "web-key", 1)
+	aadEpoch2 := BuildEntryAAD("ssh_keypair", "", "web-key", 2)
+
+	ctV2, err := EncryptWithAAD(key, []byte("private-key-material"), aadA)
+	if err != nil {
+		t.Fatalf("EncryptWithAAD: %v", err)
+	}
+	if !IsV2Ciphertext(ctV2) {
+		t.Fatalf("expected v2 prefix, got %q", ctV2)
+	}
+	got, err := DecryptWithAAD(key, ctV2, aadA)
+	if err != nil || string(got) != "private-key-material" {
+		t.Fatalf("DecryptWithAAD same AAD = (%q, %v)", got, err)
+	}
+	// 跨类型/跨路径/跨 epoch 调包必须验签失败
+	if _, err := DecryptWithAAD(key, ctV2, aadB); err != ErrDecryptionFailed {
+		t.Fatalf("cross-kind transplant err = %v, want ErrDecryptionFailed", err)
+	}
+	if _, err := DecryptWithAAD(key, ctV2, aadEpoch2); err != ErrDecryptionFailed {
+		t.Fatalf("cross-epoch replay err = %v, want ErrDecryptionFailed", err)
+	}
+
+	// v1 无前缀密文仍可由 DecryptWithAAD 向下兼容解密
+	ctV1, err := Encrypt(key, []byte("legacy-secret"))
+	if err != nil {
+		t.Fatalf("Encrypt v1: %v", err)
+	}
+	if IsV2Ciphertext(ctV1) {
+		t.Fatalf("v1 ciphertext unexpectedly matched v2 prefix: %q", ctV1)
+	}
+	gotV1, err := DecryptWithAAD(key, ctV1, aadA)
+	if err != nil || string(gotV1) != "legacy-secret" {
+		t.Fatalf("DecryptWithAAD v1 fallback = (%q, %v)", gotV1, err)
+	}
+}

@@ -81,7 +81,8 @@ func (p *ServerProvider) AutoPull(ctx context.Context, throttle time.Duration, r
 	}
 	pullCtx, cancel := context.WithTimeout(ctx, autoSyncBudget)
 	defer cancel()
-	res, err := p.pull(pullCtx)
+	// 后台 autoPull 禁止静默替换本地 Salt/PasswordKey，需显式 senv sync 确认。
+	res, err := p.pullWithOpts(pullCtx, false)
 	if err != nil {
 		return nil, AutoSyncRan, err
 	}

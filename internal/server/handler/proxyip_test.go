@@ -73,11 +73,39 @@ func TestResolveRemoteIP(t *testing.T) {
 			want:       "203.0.113.7",
 		},
 		{
-			name:       "X-Real-IP 非法时回落 X-Forwarded-For 最左值",
+			name:       "X-Real-IP 非法时回落 X-Forwarded-For 跳过私网代理取最右公网 IP",
 			trustProxy: true,
 			remoteAddr: loopback,
 			headers:    map[string]string{"X-Real-IP": "not-an-ip", "X-Forwarded-For": "203.0.113.9, 10.0.0.1"},
 			want:       "203.0.113.9",
+		},
+		{
+			name:       "客户端伪造 X-Forwarded-For 最左值时采信反代追加的最右公网 IP",
+			trustProxy: true,
+			remoteAddr: "172.18.0.2:45678",
+			headers:    map[string]string{"X-Forwarded-For": "9.9.9.9, 203.0.113.5"},
+			want:       "203.0.113.5",
+		},
+		{
+			name:       "多层私网反代链下忽略客户端伪造最左值",
+			trustProxy: true,
+			remoteAddr: "172.18.0.2:45678",
+			headers:    map[string]string{"X-Forwarded-For": "9.9.9.9, 203.0.113.9, 10.0.0.1"},
+			want:       "203.0.113.9",
+		},
+		{
+			name:       "纯内网客户端伪造 X-Forwarded-For 最左值时取最右合法私网对端",
+			trustProxy: true,
+			remoteAddr: "172.18.0.2:45678",
+			headers:    map[string]string{"X-Forwarded-For": "10.0.1.99, 10.0.1.50"},
+			want:       "10.0.1.50",
+		},
+		{
+			name:       "X-Forwarded-For 最右项非法时 fail-safe 回落连接对端",
+			trustProxy: true,
+			remoteAddr: loopback,
+			headers:    map[string]string{"X-Forwarded-For": "203.0.113.9, not-an-ip"},
+			want:       "127.0.0.1",
 		},
 		{
 			name:       "X-Real-IP 优先于 X-Forwarded-For",
@@ -111,6 +139,16 @@ func TestResolveRemoteIP(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("多行 X-Forwarded-For 头自右向左取值", func(t *testing.T) {
+		srv := newIPTestServer(true)
+		req := requestWith("172.18.0.2:45678", nil)
+		req.Header.Add("X-Forwarded-For", "9.9.9.9")
+		req.Header.Add("X-Forwarded-For", "203.0.113.8")
+		if got := srv.resolveRemoteIP(req); got != "203.0.113.8" {
+			t.Errorf("resolveRemoteIP = %q, want 203.0.113.8", got)
+		}
+	})
 }
 
 // 信任开启后，经同机代理进来的不同真实客户端各有独立限速窗口，

@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,5 +206,37 @@ func TestTouchClientThrottled(t *testing.T) {
 	}
 	if clients[0].LastSeenAt == nil {
 		t.Errorf("last_seen_at should be set after TouchClient")
+	}
+}
+
+func TestRegisterClientConcurrentReuseBlocked(t *testing.T) {
+	s := NewSQL(testdb.New(t))
+	ctx := context.Background()
+	userID, _ := newTestUser(t, s, "race-alice")
+
+	code, err := s.CreateRegistrationCode(ctx, userID, time.Hour)
+	if err != nil {
+		t.Fatalf("CreateRegistrationCode: %v", err)
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	var succeeded atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			if _, _, err := s.RegisterClient(ctx, code, fmt.Sprintf("dev-%d", idx)); err == nil {
+				succeeded.Add(1)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := succeeded.Load(); got != 1 {
+		t.Fatalf("concurrent RegisterClient succeeded %d times for one single-use code, want 1", got)
 	}
 }

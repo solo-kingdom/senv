@@ -75,7 +75,8 @@ func (s *pgStore) RegisterClient(ctx context.Context, code, name string) (string
 	var userID int64
 	err = tx.QueryRow(ctx,
 		`SELECT user_id FROM registration_codes
-		 WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+		 WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
+		 FOR UPDATE`,
 		hashToken(code)).Scan(&userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -96,9 +97,14 @@ func (s *pgStore) RegisterClient(ctx context.Context, code, name string) (string
 		return "", nil, ErrNameConflict
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE registration_codes SET used_at = now() WHERE code_hash = $1`, hashToken(code)); err != nil {
+	tag, err := tx.Exec(ctx,
+		`UPDATE registration_codes SET used_at = now()
+		 WHERE code_hash = $1 AND used_at IS NULL`, hashToken(code))
+	if err != nil {
 		return "", nil, err
+	}
+	if tag.RowsAffected() != 1 {
+		return "", nil, ErrNotFound
 	}
 
 	token, err := GenerateToken()
@@ -116,7 +122,7 @@ func (s *pgStore) RegisterClient(ctx context.Context, code, name string) (string
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO tokens (user_id, client_id, token_hash) VALUES ($1, $2, $3)`,
-		userID, client.ID, hashToken(token)); err != nil {
+		userID, client.ID, s.hashTokenPeppered(token)); err != nil {
 		return "", nil, fmt.Errorf("签发 token 失败: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

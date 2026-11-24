@@ -86,6 +86,11 @@ func gatherText(m *text.Manager) []Item {
 	}
 	var out []Item
 	for _, g := range groups {
+		// llm-keys 存放 LLM API key 明文凭据，不进入通用检索，避免解密或暴露
+		// 凭据键名与精确字节长度（provider 本身已由 gatherLLM 索引）。
+		if strings.EqualFold(g.Name, llm.LLMKeysGroup) {
+			continue
+		}
 		infos, err := m.List(g.Name)
 		if err != nil {
 			continue
