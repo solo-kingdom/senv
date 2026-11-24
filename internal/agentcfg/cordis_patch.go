@@ -2,6 +2,7 @@ package agentcfg
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wii/senv/internal/exportfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -170,9 +172,9 @@ type CordisPatchFile struct {
 // fail closed instead of clobbering hand-written content.
 func ReadCordisPatch(path string) (*CordisPatchFile, error) {
 	file := &CordisPatchFile{entries: map[string]cordisEntry{}, aliases: map[string]string{}}
-	data, err := os.ReadFile(path)
+	data, _, err := exportfile.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return file, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -723,14 +725,13 @@ func checkCordisConflicts(rows []map[string]any, managed map[string]cordisEntry)
 }
 
 // WriteCordisPatch writes a composed patch through the shared backup writer,
-// creating the DSH home with 0700 first. DSH itself creates ~/.dsh as a private
-// directory; the generic writer's 0755 would leave a Harness home that senv
-// created ahead of DSH open to traversal by other local users.
+// creating missing DSH home dirs with 0700 and following no symlinks.
 func WriteCordisPatch(path string, data []byte) error {
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("create DSH home: %w", err)
-		}
-	}
-	return WriteWithBackup(path, data)
+	return writeAtomicConfig(path, data, 0o700, true)
+}
+
+// WriteCordisPatchSensitive writes a composed patch containing resolved
+// credentials without leaving a persistent .bak file on disk.
+func WriteCordisPatchSensitive(path string, data []byte) error {
+	return writeAtomicConfig(path, data, 0o700, false)
 }

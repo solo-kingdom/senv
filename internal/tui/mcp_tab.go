@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -19,7 +20,7 @@ import (
 )
 
 // mcpTab 浏览 MCP Server 档案与各 Coding Agent 的导出状态，并在 Tab 内完成
-// 档案增删改与导出/撤回。列表/详情/计划不渲染 env 字面量；$EDITOR 是唯一解密面。
+// 档案增删改与导出/撤回。列表与详情默认遮蔽 env/headers 值（详情按 v 按需展开）。
 type mcpTab struct {
 	mgr           Managers
 	width, height int
@@ -31,13 +32,15 @@ type mcpTab struct {
 	agents  []agentcfg.Target
 	status  []mcpAgentStatus
 
-	serverIndex int
-	agentIndex  int
-	focusLeft   bool
-	filterBox   Filter // `/` 过滤左栏主列表（alias/command 标识）
-	sel         List   // 仅承载档案多选集（alias 为稳定标识）
-	pendingJump string
-	detail      *detailOverlay
+	serverIndex    int
+	agentIndex     int
+	focusLeft      bool
+	filterBox      Filter // `/` 过滤左栏主列表（alias/command 标识）
+	sel            List   // 仅承载档案多选集（alias 为稳定标识）
+	pendingJump    string
+	detail         *detailOverlay
+	detailEntry    *storage.MCPServerEntry
+	detailRevealed bool
 
 	// scope 是导出/撤回的目标范围（user/project），零值即 user；会话内
 	// 有效、不持久化，与 CLI 每次调用默认 user 一致。
@@ -132,7 +135,7 @@ func (t *mcpTab) Title() string { return "MCP" }
 
 func (t *mcpTab) Bindings() []KeyAction {
 	if t.detail != nil {
-		return detailBindings()
+		return append([]KeyAction{{[]string{"v"}, "reveal/mask", grpItem, false}}, detailBindings()...)
 	}
 	if t.form != nil {
 		return formBindings(KeyAction{[]string{"e"}, "edit multiline", grpForm, false})
@@ -430,9 +433,16 @@ func (t *mcpTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, tea.Batch(okToast(toast), cmd)
 	case detailCloseMsg:
 		t.detail = nil
+		t.detailEntry = nil
+		t.detailRevealed = false
 		return t, nil
 	case tea.KeyMsg:
 		if t.detail != nil {
+			if msg.String() == "v" && t.detailEntry != nil {
+				t.detailRevealed = !t.detailRevealed
+				t.detail.setLines(mcpDetailLines(t.detailEntry, t.detailRevealed))
+				return t, nil
+			}
 			var cmd tea.Cmd
 			t.detail, cmd = t.detail.Update(msg)
 			return t, cmd
@@ -732,17 +742,33 @@ func (t *mcpTab) openDetail() tea.Cmd {
 	if err != nil {
 		return func() tea.Msg { return errMsg{err: err} }
 	}
-	t.detail = newDetailOverlay("MCP "+entry.Alias, mcpDetailLines(entry))
+	t.detailEntry = entry
+	t.detailRevealed = false
+	t.detail = newDetailOverlay("MCP "+entry.Alias, mcpDetailLines(entry, false))
+	t.detail.setHint("v reveal/mask · ↑↓/PgUp/PgDn scroll · esc close")
 	t.detail.SetSize(t.width, t.height)
 	return nil
 }
 
-func mcpDetailLines(entry *storage.MCPServerEntry) []string {
+func maskMCPURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = url.User("***")
+	return u.String()
+}
+
+func mcpDetailLines(entry *storage.MCPServerEntry, revealed bool) []string {
 	if entry.URL != "" {
+		urlShown := entry.URL
+		if !revealed {
+			urlShown = maskMCPURL(entry.URL)
+		}
 		lines := []string{
 			"alias:       " + entry.Alias,
 			"transport:   " + entry.Transport,
-			"url:         " + entry.URL,
+			"url:         " + urlShown,
 			"description: " + orDash(entry.Description),
 			"headers:",
 		}
@@ -755,7 +781,11 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 			lines = append(lines, "  (none)")
 		} else {
 			for _, key := range keys {
-				lines = append(lines, "  "+key+": "+entry.Headers[key])
+				val := "********"
+				if revealed {
+					val = entry.Headers[key]
+				}
+				lines = append(lines, "  "+key+": "+val)
 			}
 		}
 		return lines
@@ -784,7 +814,11 @@ func mcpDetailLines(entry *storage.MCPServerEntry) []string {
 		lines = append(lines, "  (none)")
 	} else {
 		for _, key := range keys {
-			lines = append(lines, "  "+key+"="+entry.Env[key])
+			val := "********"
+			if revealed {
+				val = entry.Env[key]
+			}
+			lines = append(lines, "  "+key+"="+val)
 		}
 	}
 	return lines

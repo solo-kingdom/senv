@@ -190,7 +190,7 @@ func (s *tuiHistorySource) DecryptHistory(v provider.HistoryVersion) (string, er
 	if err != nil {
 		return "", err
 	}
-	return renderDecryptedHistory(v.Kind, plaintext), nil
+	return renderRevealedHistory(v.Kind, plaintext), nil
 }
 
 func (s *tuiHistorySource) Restore(ctx context.Context, v provider.HistoryVersion) error {

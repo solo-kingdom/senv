@@ -24,6 +24,7 @@ var (
 	historyRestore   int64
 	historyAssumeYes bool
 	historyMetadata  bool
+	historyReveal    bool
 )
 
 var historyCmd = &cobra.Command{
@@ -31,8 +32,9 @@ var historyCmd = &cobra.Command{
 	Short: "查看配置条目的历史版本（server 模式）",
 	Long: `查看 server 端为条目保留的最近密文历史（默认 3 版，由 server 端 --history-retain 配置）。
 
-  senv history                        列出 vault 级最近历史变更（含日期时间）
-  senv history env:deploy:API_KEY     查看单条目版本列表（本地解密，新到旧）
+  senv history                        列出 vault 级最近历史变更（默认遮蔽敏感值）
+  senv history env:deploy:API_KEY     查看单条目版本列表（默认遮蔽敏感值）
+  senv history env:deploy:API_KEY --reveal      查看单条目明文内容（SSH 私钥永不输出）
   senv history env:deploy:API_KEY --restore 5   恢复到 revision 5（交互确认）
 
 恢复 = 把历史值写回本地并走既有推送流程，会产生新 revision；
@@ -46,6 +48,7 @@ func init() {
 	historyCmd.Flags().Int64Var(&historyRestore, "restore", 0, "恢复到指定 revision（条目）或序号（--metadata，1=最近一版）")
 	historyCmd.Flags().BoolVar(&historyAssumeYes, "yes", false, "恢复时跳过确认")
 	historyCmd.Flags().BoolVar(&historyMetadata, "metadata", false, "查看 vault metadata 的历史版本（覆盖写前像）")
+	historyCmd.Flags().BoolVar(&historyReveal, "reveal", false, "仅单条目查询可用：展开显示非私钥历史明文")
 	rootCmd.AddCommand(historyCmd)
 }
 
@@ -81,6 +84,9 @@ func runHistory(cmd *cobra.Command, args []string) error {
 		}
 		filter = provider.HistoryFilter{Kind: kind, Grp: grp, Key: key, Limit: historyLimit}
 	} else {
+		if historyReveal {
+			return fmt.Errorf("--reveal 仅适用于单条目查询（需传入 kind:group:key 参数）")
+		}
 		filter = provider.HistoryFilter{Limit: historyLimit}
 	}
 
@@ -105,6 +111,7 @@ func runHistory(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer session.ZeroKey(key)
 
 	if historyRestore != 0 {
 		if len(args) == 0 {
@@ -121,7 +128,7 @@ func runHistory(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("%-20s %-12s %-8s %-6d %s\n",
 			when.Local().Format("2006-01-02 15:04:05"),
-			historyActor(h), h.Kind, h.Revision, historyDisplay(h, key))
+			historyActor(h), h.Kind, h.Revision, historyDisplay(h, key, historyReveal))
 	}
 	return nil
 }
@@ -146,8 +153,8 @@ func parseEntryAddress(s string) (kind, grp, key string, ok bool) {
 	return parts[0], parts[1], parts[2], true
 }
 
-// historyDisplay 解密并渲染历史版本内容；解密失败明确提示而非中断
-func historyDisplay(h provider.HistoryVersion, key []byte) string {
+// historyDisplay 解密并渲染历史版本内容；默认遮蔽敏感值，仅单条目 --reveal 展开非私钥明文。
+func historyDisplay(h provider.HistoryVersion, key []byte, reveal bool) string {
 	if h.Deleted {
 		return "(墓碑记录，无可恢复内容)"
 	}
@@ -155,12 +162,48 @@ func historyDisplay(h provider.HistoryVersion, key []byte) string {
 	if err != nil {
 		return fmt.Sprintf("<无法解密该版本: %v>", err)
 	}
-	return renderDecryptedHistory(h.Kind, plaintext)
+	if reveal {
+		return renderRevealedHistory(h.Kind, plaintext)
+	}
+	return renderMaskedHistory(h.Kind, plaintext)
 }
 
-// renderDecryptedHistory 按条目类型渲染已解密的历史内容
-func renderDecryptedHistory(kind string, plaintext []byte) string {
+func renderMaskedHistory(kind string, plaintext []byte) string {
 	switch kind {
+	case "ssh_keypair":
+		return renderSSHKeypairSummary(plaintext)
+	case "skill":
+		return fmt.Sprintf("<skill 归档，%d 字节>", len(plaintext))
+	case "env_meta", "text_meta", "backup_meta", "ledger_meta", "tree_meta":
+		var meta storage.EnvGroupMeta
+		if err := json.Unmarshal(plaintext, &meta); err == nil {
+			return meta.Name
+		}
+	}
+	return fmt.Sprintf("********（%d 字节，单条目加 --reveal 查看明文）", len(plaintext))
+}
+
+func renderSSHKeypairSummary(plaintext []byte) string {
+	var kp storage.KeyPairEntry
+	if err := json.Unmarshal(plaintext, &kp); err == nil {
+		fp := kp.Fingerprint
+		if fp == "" {
+			fp = "-"
+		}
+		grp := kp.Group
+		if grp == "" {
+			grp = "_ungrouped"
+		}
+		return fmt.Sprintf("<ssh_keypair · 私钥已隐藏 · group=%s fingerprint=%s>", grp, fp)
+	}
+	return "<ssh_keypair · 私钥已隐藏>"
+}
+
+// renderRevealedHistory 按条目类型渲染已解密的历史内容（ssh_keypair 永不输出私钥）。
+func renderRevealedHistory(kind string, plaintext []byte) string {
+	switch kind {
+	case "ssh_keypair":
+		return renderSSHKeypairSummary(plaintext)
 	case "env":
 		var entry storage.EnvVarEntry
 		if err := json.Unmarshal(plaintext, &entry); err == nil {
@@ -189,7 +232,7 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 			return fmt.Sprintf("<二进制文件，mode %04o，%d 字符 base64>", entry.Mode, len(entry.Content))
 		}
 		return entry.Content
-	case "env_meta", "text_meta", "backup_meta":
+	case "env_meta", "text_meta", "backup_meta", "ledger_meta", "tree_meta":
 		var meta storage.EnvGroupMeta
 		if err := json.Unmarshal(plaintext, &meta); err == nil {
 			return meta.Name
@@ -198,6 +241,11 @@ func renderDecryptedHistory(kind string, plaintext []byte) string {
 	default:
 		return contentPreviewString(plaintext)
 	}
+}
+
+// renderDecryptedHistory 保留供 TUI 按需展开与现有测试调用。
+func renderDecryptedHistory(kind string, plaintext []byte) string {
+	return renderRevealedHistory(kind, plaintext)
 }
 
 // decryptHistoryValue 按条目类型解密：config_index 同步条目本身是明文 JSON
@@ -291,7 +339,7 @@ func restoreHistoryVersion(sp *provider.ServerProvider, history []provider.Histo
 	fmt.Printf("将恢复 %s:%s:%s 到 revision %d（%s）：\n%s\n",
 		chosen.Kind, chosen.Grp, chosen.Key, chosen.Revision,
 		chosen.CreatedAt.Local().Format("2006-01-02 15:04:05"),
-		historyDisplay(*chosen, key))
+		historyDisplay(*chosen, key, historyReveal))
 	if !historyAssumeYes {
 		fmt.Print("确认恢复？[y/N] ")
 		reader := bufio.NewReader(os.Stdin)

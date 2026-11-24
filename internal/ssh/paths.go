@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/wii/senv/internal/storage"
 )
 
 // 分组目录布局（ADR-0023）：~/.ssh/senv/ 下 groups/ 放组片段、keys/ 放落盘
@@ -55,6 +57,9 @@ func keysDir() (string, error) {
 
 // FragmentPath 返回某组的组片段路径：~/.ssh/senv/groups/<groupDir>.conf。
 func FragmentPath(group string) (string, error) {
+	if err := validateGroup(group); err != nil {
+		return "", err
+	}
 	dir, err := groupsDir()
 	if err != nil {
 		return "", err
@@ -66,6 +71,12 @@ func FragmentPath(group string) (string, error) {
 // 布局）：~/.ssh/senv/keys/<keypair 分组>/<名>，未分组入 _ungrouped。
 // 公钥伴生文件是同一路径加 .pub 后缀。
 func MaterializePath(group, name string) (string, error) {
+	if err := validateGroup(group); err != nil {
+		return "", err
+	}
+	if err := storage.ValidateName(name); err != nil {
+		return "", fmt.Errorf("invalid keypair name %q: %w", name, err)
+	}
 	dir, err := keysDir()
 	if err != nil {
 		return "", err

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -48,16 +49,26 @@ func resolvedPublicKey(entry *storage.KeyPairEntry) string {
 	return strings.TrimSpace(entry.PublicKey)
 }
 
-func publicKeyFileBytes(publicKey string) []byte {
-	return []byte(strings.TrimSpace(publicKey) + "\n")
+func publicKeyFileBytes(publicKey string) ([]byte, error) {
+	trimmed := strings.TrimSpace(publicKey)
+	for _, r := range trimmed {
+		if r == '\r' || r == '\n' || r == 0 || r < 0x20 || r == 0x7f {
+			return nil, fmt.Errorf("public key must be a single line without control characters")
+		}
+	}
+	return []byte(trimmed + "\n"), nil
 }
 
 func writePublicKeyFile(privatePath, publicKey string) error {
 	if strings.TrimSpace(publicKey) == "" {
 		return nil
 	}
+	data, err := publicKeyFileBytes(publicKey)
+	if err != nil {
+		return fmt.Errorf("validate public key for %q: %w", privatePath, err)
+	}
 	pubPath := publicCompanionPath(privatePath)
-	if err := storage.WriteSensitiveFile(pubPath, publicKeyFileBytes(publicKey), 0o700, publicKeyFilePerm); err != nil {
+	if err := storage.WriteSensitiveFile(pubPath, data, 0o700, publicKeyFilePerm); err != nil {
 		return fmt.Errorf("write public key %q: %w", pubPath, err)
 	}
 	return nil
@@ -73,6 +84,31 @@ func writeMaterializedPair(target, name, privateKey, publicKey string) error {
 		return fmt.Errorf("materialize keypair %q: %w", name, err)
 	}
 	return writePublicKeyFile(target, publicKey)
+}
+
+// verifyAndTightenMaterializedKey ensures an existing materialized private key
+// is a regular file without symlinks along the path, tightening loose modes to 0600.
+func verifyAndTightenMaterializedKey(group, name string) error {
+	senvDir, err := SenvDir()
+	if err != nil {
+		return err
+	}
+	senvRoot, err := securefs.OpenRoot(senvDir)
+	if err != nil {
+		return fmt.Errorf("open senv ssh root: %w", err)
+	}
+	defer senvRoot.Close()
+	segs := []string{keysDirName, groupDir(group), name}
+	data, mode, err := senvRoot.ReadWithMode(segs...)
+	if err != nil {
+		return fmt.Errorf("inspect materialized key %q: %w", name, err)
+	}
+	if mode.Perm()&0o077 != 0 {
+		if err := senvRoot.AtomicWrite(segs, data, 0o600); err != nil {
+			return fmt.Errorf("tighten materialized key %q permissions: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // ensurePublicKeyFile writes a missing sibling .pub without touching an

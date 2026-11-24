@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/wii/senv/internal/securefs"
 )
 
 // OwnedMarker 是 senv 在 apply 出的 skill 根目录下写入的空文件。
@@ -212,9 +214,97 @@ func (a *Applier) rootDir(root string) string {
 	return filepath.Join(a.Base, filepath.FromSlash(root))
 }
 
+func validateSkillTargetID(id string) error {
+	if id == "" || id == "." || id == ".." {
+		return fmt.Errorf("invalid skill id %q", id)
+	}
+	if err := securefs.ValidateSegment(id); err != nil {
+		return fmt.Errorf("invalid skill id %q: %w", id, err)
+	}
+	return nil
+}
+
+func rootSegments(root string) ([]string, error) {
+	cleaned := strings.Trim(filepath.ToSlash(root), "/")
+	if cleaned == "" {
+		return nil, fmt.Errorf("skill root is empty")
+	}
+	parts := strings.Split(cleaned, "/")
+	for _, seg := range parts {
+		if err := securefs.ValidateSegment(seg); err != nil {
+			return nil, fmt.Errorf("invalid skill root %q: %w", root, err)
+		}
+	}
+	return parts, nil
+}
+
+// inspectParentAndTarget validates Base, root intermediate directories (without
+// enumerating sibling skills), and returns target path segments relative to Base.
+func (a *Applier) inspectParentAndTarget(root, id string) (targetSegs []string, baseRoot *securefs.Root, parentExists bool, conflictReason string) {
+	if err := validateSkillTargetID(id); err != nil {
+		return nil, nil, false, err.Error()
+	}
+	rootSegs, err := rootSegments(root)
+	if err != nil {
+		return nil, nil, false, err.Error()
+	}
+	targetSegs = append(append([]string(nil), rootSegs...), id)
+
+	baseRoot, err = securefs.OpenRoot(a.Base)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return targetSegs, nil, false, ""
+		}
+		if errors.Is(err, securefs.ErrSymlink) {
+			return targetSegs, nil, false, "base directory is a symbolic link (not managed by senv)"
+		}
+		return targetSegs, nil, false, fmt.Sprintf("cannot inspect base directory: %v", err)
+	}
+
+	cur := a.Base
+	for _, seg := range rootSegs {
+		cur = filepath.Join(cur, seg)
+		fi, statErr := os.Lstat(cur)
+		switch {
+		case errors.Is(statErr, fs.ErrNotExist):
+			return targetSegs, baseRoot, false, ""
+		case statErr != nil:
+			_ = baseRoot.Close()
+			return targetSegs, nil, false, fmt.Sprintf("cannot inspect parent directory: %v", statErr)
+		case fi.Mode()&fs.ModeSymlink != 0:
+			_ = baseRoot.Close()
+			return targetSegs, nil, false, "parent directory is a symbolic link (not managed by senv)"
+		case !fi.IsDir():
+			_ = baseRoot.Close()
+			return targetSegs, nil, false, "parent path exists and is not a directory"
+		}
+	}
+	return targetSegs, baseRoot, true, ""
+}
+
+func hasOwnedMarkerInRoot(baseRoot *securefs.Root, targetSegs []string) bool {
+	if baseRoot == nil {
+		return false
+	}
+	mode, err := baseRoot.Mode(append(append([]string(nil), targetSegs...), OwnedMarker)...)
+	return err == nil && mode.IsRegular()
+}
+
 func (a *Applier) planRoot(ex *expanded, root string) PlanItem {
 	target := filepath.Join(a.rootDir(root), ex.id)
 	item := PlanItem{ID: ex.id, Root: root, Target: target}
+	targetSegs, baseRoot, parentExists, conflict := a.inspectParentAndTarget(root, ex.id)
+	if baseRoot != nil {
+		defer baseRoot.Close()
+	}
+	if conflict != "" {
+		item.Action, item.Reason = ActionSkipConflict, conflict
+		return item
+	}
+	if !parentExists {
+		item.Action, item.Reason = ActionCreate, "not present"
+		return item
+	}
 	fi, err := os.Lstat(target)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -225,7 +315,7 @@ func (a *Applier) planRoot(ex *expanded, root string) PlanItem {
 		item.Action, item.Reason = ActionSkipConflict, "target is a symbolic link (not managed by senv)"
 	case !fi.IsDir():
 		item.Action, item.Reason = ActionSkipConflict, "target exists and is not a directory"
-	case !hasOwnedMarker(target):
+	case !hasOwnedMarkerInRoot(baseRoot, targetSegs):
 		item.Action, item.Reason = ActionSkipConflict, "target directory has no "+OwnedMarker+" (not managed by senv)"
 	default:
 		same, err := treeMatches(target, ex.tree)
@@ -239,11 +329,6 @@ func (a *Applier) planRoot(ex *expanded, root string) PlanItem {
 		}
 	}
 	return item
-}
-
-func hasOwnedMarker(dir string) bool {
-	fi, err := os.Lstat(filepath.Join(dir, OwnedMarker))
-	return err == nil && fi.Mode().IsRegular()
 }
 
 // treeMatches 比较磁盘目录与归档树。比较时排除根下的 .senv-owned；
@@ -348,7 +433,19 @@ func (a *Applier) install(ex *expanded, item PlanItem) (backup string, err error
 		return "", fmt.Errorf("write %s: %w", OwnedMarker, err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(item.Target), 0o755); err != nil {
+	rootSegs, err := rootSegments(item.Root)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(a.Base, 0o755); err != nil {
+		return "", fmt.Errorf("create base directory: %w", err)
+	}
+	baseRoot, err := securefs.OpenRoot(a.Base)
+	if err != nil {
+		return "", fmt.Errorf("open base directory: %w", err)
+	}
+	defer baseRoot.Close()
+	if err := baseRoot.EnsurePrivateParents(rootSegs, 0o755); err != nil {
 		return "", fmt.Errorf("create skills root: %w", err)
 	}
 	if item.Action == ActionBackupOverwrite {
@@ -387,8 +484,12 @@ func (a *Applier) backupPath(id string) (string, error) {
 			name = fmt.Sprintf("%s-%d", name, i)
 		}
 		path := filepath.Join(dir, name)
-		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		_, statErr := os.Lstat(path)
+		if errors.Is(statErr, fs.ErrNotExist) {
 			return path, nil
+		}
+		if statErr != nil {
+			return "", fmt.Errorf("inspect backup path %s: %w", path, statErr)
 		}
 	}
 }
@@ -406,6 +507,18 @@ func (a *Applier) UnapplyPlan(id string) []PlanItem {
 func (a *Applier) unapplyRoot(id, root string) PlanItem {
 	target := filepath.Join(a.rootDir(root), id)
 	item := PlanItem{ID: id, Root: root, Target: target}
+	targetSegs, baseRoot, parentExists, conflict := a.inspectParentAndTarget(root, id)
+	if baseRoot != nil {
+		defer baseRoot.Close()
+	}
+	if conflict != "" {
+		item.Action, item.Reason = ActionSkipConflict, conflict
+		return item
+	}
+	if !parentExists {
+		item.Action, item.Reason = ActionSkip, "not present"
+		return item
+	}
 	fi, err := os.Lstat(target)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -416,7 +529,7 @@ func (a *Applier) unapplyRoot(id, root string) PlanItem {
 		item.Action, item.Reason = ActionSkipConflict, "target is a symbolic link (not managed by senv)"
 	case !fi.IsDir():
 		item.Action, item.Reason = ActionSkipConflict, "target exists and is not a directory"
-	case !hasOwnedMarker(target):
+	case !hasOwnedMarkerInRoot(baseRoot, targetSegs):
 		item.Action, item.Reason = ActionSkipConflict, "target directory has no "+OwnedMarker+" (not managed by senv)"
 	default:
 		item.Action, item.Reason = ActionRemove, "senv-managed directory will be removed"
@@ -431,13 +544,30 @@ func (a *Applier) Unapply(id string) []Result {
 	for _, item := range items {
 		res := Result{PlanItem: item}
 		if item.Action == ActionRemove {
-			if err := os.RemoveAll(item.Target); err != nil {
+			if err := a.removeManagedTree(item.Root, item.ID); err != nil {
 				res.Err = fmt.Errorf("remove %s: %w", item.Target, err)
 			}
 		}
 		results = append(results, res)
 	}
 	return results
+}
+
+func (a *Applier) removeManagedTree(root, id string) error {
+	targetSegs, baseRoot, parentExists, conflict := a.inspectParentAndTarget(root, id)
+	if baseRoot != nil {
+		defer baseRoot.Close()
+	}
+	if conflict != "" {
+		return errors.New(conflict)
+	}
+	if !parentExists || baseRoot == nil {
+		return nil
+	}
+	if !hasOwnedMarkerInRoot(baseRoot, targetSegs) {
+		return fmt.Errorf("target directory has no %s (not managed by senv)", OwnedMarker)
+	}
+	return baseRoot.RemoveTree(targetSegs...)
 }
 
 // extractTree 把（已校验的）归档展开到不存在的 dest。只取权限位的 Perm 部分

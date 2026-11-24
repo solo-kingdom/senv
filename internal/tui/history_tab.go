@@ -35,10 +35,11 @@ type historyTab struct {
 	entryID string // entry 模式的条目标识（kind:grp:key），空 = recent 模式
 	flash   string
 	mode    historyMode
-	// detail 是滚动详情弹层（共享组件）：选中版本解密后的全文在这里看。
-	// 打开时接管全部按键与渲染——早期实现把正文当附加行追加在列表下方，
-	// 会被面板底边裁掉且不能滚动，长值（私钥、长 token）尾部不可读。
-	detail *detailOverlay
+	// detail 是滚动详情弹层（共享组件）：默认遮蔽敏感值，按 v 按需解密展开
+	// （ssh_keypair 私钥永不在历史视图展示）。
+	detail         *detailOverlay
+	detailRow      *provider.HistoryVersion
+	detailRevealed bool
 }
 
 type historyMode int
@@ -73,7 +74,7 @@ func (t *historyTab) Title() string { return "History" }
 
 func (t *historyTab) Bindings() []KeyAction {
 	if t.detail != nil {
-		return detailBindings()
+		return append([]KeyAction{{[]string{"v"}, "reveal/mask", grpItem, false}}, detailBindings()...)
 	}
 	switch t.mode {
 	case historyModeEntry:
@@ -180,11 +181,18 @@ func (t *historyTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 
 	case detailCloseMsg:
 		t.detail = nil
+		t.detailRow = nil
+		t.detailRevealed = false
 		return t, nil
 	}
 
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if t.detail != nil {
+			if key.String() == "v" && t.detailRow != nil && t.detailRow.Kind != "ssh_keypair" {
+				t.detailRevealed = !t.detailRevealed
+				t.detail.setLines(t.detailLines(*t.detailRow, t.detailRevealed))
+				return t, nil
+			}
 			var cmd tea.Cmd
 			t.detail, cmd = t.detail.Update(msg)
 			return t, cmd
@@ -400,13 +408,10 @@ func (t *historyTab) previewOf(row provider.HistoryVersion) string {
 	if row.Deleted {
 		return "(deleted)"
 	}
-	text, err := t.source.DecryptHistory(row)
-	if err != nil {
-		return "<decrypt err>"
+	if row.Kind == "ssh_keypair" {
+		return "<ssh_keypair · private key hidden>"
 	}
-	// Sanitize: collapse whitespace, strip control chars, replace newlines.
-	// This prevents JSON/binary/multiline values from destroying the layout.
-	return sanitizePreview(text)
+	return "******** (enter to inspect)"
 }
 
 // sanitizePreview collapses a potentially multi-line value into a single-line
@@ -452,21 +457,35 @@ func sanitizePreview(s string) string {
 	return out
 }
 
-// openDetail 打开滚动详情弹层，渲染选中版本的解密全文（不截断，超长可滚动）。
+// openDetail 打开滚动详情弹层，默认遮蔽敏感正文，按 v 按需解密展开。
 func (t *historyTab) openDetail() {
 	row := t.current()
 	if row == nil {
 		return
 	}
+	cp := *row
+	t.detailRow = &cp
+	t.detailRevealed = false
 	title := fmt.Sprintf("%s · revision %d · %s",
 		entryLabelOf(*row), row.Revision, historyTimeOf(*row))
-	t.detail = newDetailOverlay(title, t.detailLines(*row))
+	t.detail = newDetailOverlay(title, t.detailLines(*row, false))
+	t.detail.setHint("v reveal/mask · ↑↓/PgUp/PgDn scroll · esc close")
 	t.detail.SetSize(t.width, t.height)
 }
 
-// detailLines 把选中版本解密成弹层正文行。已删除条目仍可解出最后一份密文
-// （server 保留删除前的版本），因此不在这里拦截。
-func (t *historyTab) detailLines(row provider.HistoryVersion) []string {
+// detailLines 根据 revealed 决定返回遮蔽占位还是按需解密全文（ssh_keypair 永不输出私钥）。
+func (t *historyTab) detailLines(row provider.HistoryVersion, revealed bool) []string {
+	if row.Deleted {
+		if !revealed {
+			return []string{"(deleted tombstone · press v to inspect last value)"}
+		}
+	}
+	if row.Kind == "ssh_keypair" {
+		return []string{"<ssh_keypair · private key is never revealed in history>"}
+	}
+	if !revealed {
+		return []string{"******** (masked · press v to reveal)"}
+	}
 	text, err := t.source.DecryptHistory(row)
 	if err != nil {
 		return []string{fmt.Sprintf("cannot decrypt this version: %v", err)}

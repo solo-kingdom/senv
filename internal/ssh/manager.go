@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/wii/senv/internal/perflog"
+	"github.com/wii/senv/internal/securefs"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -62,14 +63,39 @@ func (m *Manager) mutate(fn func(*Manager) error) error {
 
 func validateExtra(extra map[string]string) error {
 	for key, value := range extra {
-		if key == "" || strings.ContainsAny(key, " \t\r\n\f\v") {
-			return fmt.Errorf("invalid SSH attribute key %q: key must be non-empty and contain no whitespace", key)
+		if !isValidSSHExtraKey(key) {
+			return fmt.Errorf("invalid SSH attribute key %q: must be an ASCII directive name", key)
 		}
-		if strings.ContainsAny(value, "\r\n\x00") {
-			return fmt.Errorf("invalid SSH attribute %q: value must not contain line separators or NUL", key)
+		if strings.EqualFold(key, "Host") || strings.EqualFold(key, "Match") || strings.EqualFold(key, "Include") {
+			return fmt.Errorf("invalid SSH attribute key %q: directive is not allowed in extra", key)
+		}
+		for _, r := range value {
+			if r == '\r' || r == '\n' || r == 0 || (r < 0x20 && r != '\t') || r == 0x7f {
+				return fmt.Errorf("invalid SSH attribute %q: value must not contain line separators or control characters", key)
+			}
 		}
 	}
 	return nil
+}
+
+func isValidSSHExtraKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if !isAlpha {
+				return false
+			}
+			continue
+		}
+		if !isAlpha && !isDigit && r != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePort(port int) error {
@@ -88,12 +114,26 @@ func validateTags(tags []string) error {
 	return nil
 }
 
-// validateGroup rejects group values that could break the single-line JSON
-// record format or the grouped directory layout (ADR-0023): path separators
-// would escape keys/<组>/ and groups/<组>.conf. Empty (ungrouped) is valid.
+// validateGroup rejects group values that could escape keys/<组>/ and
+// groups/<组>.conf or break OpenSSH / single-line storage invariants.
+// Empty (ungrouped) is valid.
 func validateGroup(group string) error {
+	if group == "" {
+		return nil
+	}
 	if strings.ContainsAny(group, "\r\n\x00/") {
 		return fmt.Errorf("group must not contain line separators, NUL or '/'")
+	}
+	if err := securefs.ValidateSegment(group); err != nil {
+		return fmt.Errorf("invalid group %q: %w", group, err)
+	}
+	if strings.ContainsAny(group, " \t\r\n\f\v*?\"'#") {
+		return fmt.Errorf("invalid group %q: must not contain whitespace, quotes, or wildcard/comment characters", group)
+	}
+	for _, r := range group {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid group %q: must not contain control characters", group)
+		}
 	}
 	return nil
 }
@@ -180,11 +220,29 @@ func derivePublicKey(privateKey []byte) (publicKey, fingerprint, comment string,
 	}
 	publicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
 	fingerprint = ssh.FingerprintSHA256(signer.PublicKey())
-	comment = extractOpenSSHComment(privateKey)
+	comment = sanitizeOpenSSHComment(extractOpenSSHComment(privateKey))
 	if comment != "" {
 		publicKey = publicKey + " " + comment
 	}
 	return publicKey, fingerprint, comment, nil
+}
+
+// sanitizeOpenSSHComment truncates at the first line/NUL boundary and strips
+// any remaining control characters so an imported key comment can never inject
+// extra lines into a materialized .pub / authorized_keys file.
+func sanitizeOpenSSHComment(comment string) string {
+	if idx := strings.IndexAny(comment, "\r\n\x00"); idx >= 0 {
+		comment = comment[:idx]
+	}
+	var b strings.Builder
+	b.Grow(len(comment))
+	for _, r := range comment {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 const openSSHPrivateKeyMagic = "openssh-key-v1\x00"
