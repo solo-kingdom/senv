@@ -16,3 +16,6 @@ SESSION_USAGE.md:generic-api-key:376
 EXAMPLES.md:generic-api-key:63
 EXAMPLES.md:generic-api-key:129
 docs/git-and-interactive.md:generic-api-key:258
+
+# history 测试用 OpenSSH 标记包住占位词，断言列表不回显私钥。行号随测试移动时要改。
+internal/tui/history_tab_test.go:private-key:340
