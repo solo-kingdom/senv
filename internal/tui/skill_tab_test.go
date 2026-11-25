@@ -153,6 +153,101 @@ func TestSkillTabApplyUnapplyPlanAndStatus(t *testing.T) {
 	}
 }
 
+func TestSkillTabGroupSidebar(t *testing.T) {
+	tab, _ := newSkillTestTab(t)
+	if _, err := tab.mgr.Skill.AddGroup(skill.GroupOptions{Name: "empty", Description: "unused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tab.mgr.Skill.Add(skill.AddOptions{ID: "alpha-skill", SourceDir: writeSkillDir(t, "alpha-skill"), Group: "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tab.mgr.Skill.Add(skill.AddOptions{ID: "beta-skill", SourceDir: writeSkillDir(t, "beta-skill"), Group: "tools"}); err != nil {
+		t.Fatal(err)
+	}
+	tab = loadSkillTab(t, tab)
+	if tab.focus != skillPaneGroup || tab.selectedGroupName() != "All" {
+		t.Fatalf("focus=%v group=%s", tab.focus, tab.selectedGroupName())
+	}
+	view := tab.View()
+	for _, want := range []string{"All", "empty", "ops", "tools", "ops/alpha-skill", "tools/beta-skill"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q", want)
+		}
+	}
+	names := make([]string, len(tab.groups))
+	for i, g := range tab.groups {
+		names[i] = g.name
+	}
+	if strings.Join(names, ",") != "All,empty,ops,tools" {
+		t.Fatalf("group order = %v", names)
+	}
+	if tab.groups[1].count != 0 || tab.groups[0].count != 2 {
+		t.Fatalf("counts = %+v", tab.groups)
+	}
+
+	tab = skillKey(t, tab, "down")
+	tab = skillKey(t, tab, "down")
+	if tab.selectedGroupName() != "ops" {
+		t.Fatalf("group = %s", tab.selectedGroupName())
+	}
+	ids := skillIDs(tab)
+	if len(ids) != 1 || ids[0] != "alpha-skill" {
+		t.Fatalf("ops skills = %v", ids)
+	}
+	if strings.Contains(tab.View(), "beta-skill") {
+		t.Fatal("ops pane still shows beta-skill")
+	}
+
+	tab = skillKey(t, tab, "/")
+	tab = skillKey(t, tab, "b")
+	tab = skillKey(t, tab, "e")
+	if got := groupCount(tab, "All"); got != 1 {
+		t.Fatalf("filtered All count = %d", got)
+	}
+	if got := groupCount(tab, "ops"); got != 0 {
+		t.Fatalf("filtered ops count = %d", got)
+	}
+	if got := groupCount(tab, "tools"); got != 1 {
+		t.Fatalf("filtered tools count = %d", got)
+	}
+	if len(skillIDs(tab)) != 0 {
+		t.Fatalf("ops filter should hide alpha, got %v", skillIDs(tab))
+	}
+
+	tab = skillKey(t, tab, "right")
+	if tab.focus != skillPaneList {
+		t.Fatalf("focus after right = %v", tab.focus)
+	}
+	tab = skillKey(t, tab, "right")
+	if tab.focus != skillPaneTarget {
+		t.Fatalf("focus after second right = %v", tab.focus)
+	}
+}
+
+func skillKey(t *testing.T, tab *skillTab, key string) *skillTab {
+	t.Helper()
+	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+	return out.(*skillTab)
+}
+
+func skillIDs(tab *skillTab) []string {
+	entries := tab.visibleEntries()
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	return ids
+}
+
+func groupCount(tab *skillTab, name string) int {
+	for _, g := range tab.groups {
+		if g.name == name {
+			return g.count
+		}
+	}
+	return -1
+}
+
 func TestSkillTabScopeToggle(t *testing.T) {
 	tab, _ := newSkillTestTab(t)
 	tab = loadSkillTab(t, tab)

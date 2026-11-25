@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,7 +16,7 @@ import (
 )
 
 // skillTab 浏览 vault 中的私有 skill，并对 agents/claude 根做 apply / unapply。
-// 交互对齐 MCP Tab：左栏档案、右栏目标状态、计划页确认后再写盘。
+// 三栏：分组侧栏（All + 各组）/ 当前组的 skill / 目标根应用状态。计划页确认后再写盘。
 type skillTab struct {
 	mgr           Managers
 	width, height int
@@ -23,12 +24,15 @@ type skillTab struct {
 	loadErr       string
 	warning       string
 
-	entries []storage.SkillEntry
-	status  []skillTargetStatus
+	entries   []storage.SkillEntry
+	groupMeta []skill.GroupSummary
+	groups    []skillGroupRow
+	status    []skillTargetStatus
 
+	groupIndex  int
 	skillIndex  int
 	targetIndex int
-	focusLeft   bool
+	focus       skillPane
 	filterBox   Filter
 	detail      *detailOverlay
 
@@ -53,6 +57,26 @@ const (
 	skillModePlan
 )
 
+// skillPane 是三栏焦点。零值是分组侧栏，和 Env 打开时停在 All 一致。
+type skillPane int
+
+const (
+	skillPaneGroup skillPane = iota
+	skillPaneList
+	skillPaneTarget
+)
+
+// skillAllLabel 是侧栏顶部的 All 伪组标签。
+const skillAllLabel = "All"
+
+// skillGroupRow 是分组侧栏一行。count 随当前过滤变化。
+type skillGroupRow struct {
+	name        string
+	description string
+	count       int
+	isAll       bool
+}
+
 type skillTargetStatus struct {
 	ID     string // agents / claude
 	Root   string
@@ -63,8 +87,7 @@ type skillTargetStatus struct {
 
 type skillLoadedMsg struct {
 	entries []storage.SkillEntry
-	status  []skillTargetStatus
-	warning string
+	groups  []skill.GroupSummary
 	err     error
 }
 
@@ -75,7 +98,7 @@ type skillReloadMsg struct {
 }
 
 func newSkillTab(mgr Managers) *skillTab {
-	return &skillTab{mgr: mgr, focusLeft: true, scope: "global"}
+	return &skillTab{mgr: mgr, focus: skillPaneGroup, scope: "global"}
 }
 
 func (t *skillTab) Title() string { return "Skill" }
@@ -156,9 +179,13 @@ func (t *skillTab) load() tea.Cmd {
 			st.End(false)
 			return skillLoadedMsg{err: err}
 		}
-		status, warning := t.statusFor(entries)
-		st.With("skills", len(entries)).End(true)
-		return skillLoadedMsg{entries: entries, status: status, warning: warning}
+		groups, err := t.mgr.Skill.ListGroups()
+		if err != nil {
+			st.End(false)
+			return skillLoadedMsg{err: err}
+		}
+		st.With("skills", len(entries), "groups", len(groups)).End(true)
+		return skillLoadedMsg{entries: entries, groups: groups}
 	}
 }
 
@@ -251,18 +278,105 @@ func (t *skillTab) visibleEntries() []storage.SkillEntry {
 	return t.visibleEntriesFrom(t.entries)
 }
 
-func (t *skillTab) visibleEntriesFrom(entries []storage.SkillEntry) []storage.SkillEntry {
+func (t *skillTab) entryMatchesFilter(e storage.SkillEntry) bool {
 	term := strings.ToLower(strings.TrimSpace(t.filterBox.Term()))
 	if term == "" {
-		return entries
+		return true
+	}
+	hay := strings.ToLower(e.ID + " " + e.NormalizedGroup() + " " + e.Description)
+	return strings.Contains(hay, term)
+}
+
+func (t *skillTab) currentGroupRow() (skillGroupRow, bool) {
+	if t.groupIndex < 0 || t.groupIndex >= len(t.groups) {
+		return skillGroupRow{}, false
+	}
+	return t.groups[t.groupIndex], true
+}
+
+func (t *skillTab) selectedGroupName() string {
+	if row, ok := t.currentGroupRow(); ok {
+		return row.name
+	}
+	return skillAllLabel
+}
+
+// rebuildGroups 用已登记分组和条目上的分组名重建侧栏，计数只含当前过滤命中的条目。
+// 已选分组名在重建后保留；第一次打开落在 All。
+func (t *skillTab) rebuildGroups() {
+	selected := t.selectedGroupName()
+	counts := map[string]int{}
+	for _, e := range t.entries {
+		if t.entryMatchesFilter(e) {
+			counts[e.NormalizedGroup()]++
+		}
+	}
+	rows := make([]skillGroupRow, 0, len(t.groupMeta)+1)
+	seen := map[string]bool{}
+	for _, g := range t.groupMeta {
+		name := g.Group.Name
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		rows = append(rows, skillGroupRow{
+			name:        name,
+			description: g.Group.Description,
+			count:       counts[name],
+		})
+	}
+	var extra []string
+	for name := range counts {
+		if !seen[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range extra {
+		rows = append(rows, skillGroupRow{name: name, count: counts[name]})
+	}
+	total := 0
+	for _, row := range rows {
+		total += row.count
+	}
+	t.groups = append([]skillGroupRow{{name: skillAllLabel, isAll: true, count: total}}, rows...)
+	t.groupIndex = 0
+	for i, g := range t.groups {
+		if g.name == selected {
+			t.groupIndex = i
+			break
+		}
+	}
+}
+
+func (t *skillTab) noteFilterChanged() {
+	t.rebuildGroups()
+	t.clampLeft()
+	t.syncStatus()
+}
+
+func (t *skillTab) visibleEntriesFrom(entries []storage.SkillEntry) []storage.SkillEntry {
+	group := ""
+	if row, ok := t.currentGroupRow(); ok && !row.isAll {
+		group = row.name
 	}
 	out := make([]storage.SkillEntry, 0, len(entries))
 	for _, e := range entries {
-		hay := strings.ToLower(e.ID + " " + e.NormalizedGroup() + " " + e.Description)
-		if strings.Contains(hay, term) {
-			out = append(out, e)
+		if group != "" && e.NormalizedGroup() != group {
+			continue
 		}
+		if !t.entryMatchesFilter(e) {
+			continue
+		}
+		out = append(out, e)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		gi, gj := out[i].NormalizedGroup(), out[j].NormalizedGroup()
+		if gi != gj {
+			return gi < gj
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -351,23 +465,20 @@ func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		switch key.String() {
 		case "esc":
 			t.filterBox.Clear()
-			t.clampLeft()
-			t.syncStatus()
+			t.noteFilterChanged()
 			return t, nil
 		case "enter":
 			t.filterBox.Confirm()
-			t.syncStatus()
+			t.noteFilterChanged()
 			return t, nil
 		case "backspace":
 			t.filterBox.Backspace()
-			t.clampLeft()
-			t.syncStatus()
+			t.noteFilterChanged()
 			return t, nil
 		}
 		if isPrintable(key) {
 			t.filterBox.Append(key.String())
-			t.clampLeft()
-			t.syncStatus()
+			t.noteFilterChanged()
 			return t, nil
 		}
 	}
@@ -397,13 +508,16 @@ func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		if msg.err != nil {
 			t.loadErr = msg.err.Error()
 			t.entries = nil
+			t.groupMeta = nil
+			t.groups = nil
 			t.status = nil
 			return t, nil
 		}
 		t.entries = msg.entries
-		t.status = msg.status
-		t.warning = msg.warning
+		t.groupMeta = msg.groups
+		t.rebuildGroups()
 		t.clampLeft()
+		t.syncStatus()
 		t.clampRight()
 		return t, nil
 	case skillReloadMsg:
@@ -423,13 +537,33 @@ func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 		return t, tea.Batch(batch...)
 	case skillJumpMsg:
 		t.filterBox.Clear()
-		for i, e := range t.visibleEntries() {
-			if e.ID == msg.id {
-				t.skillIndex = i
-				t.syncStatus()
+		t.rebuildGroups()
+		var target *storage.SkillEntry
+		for i := range t.entries {
+			if t.entries[i].ID == msg.id {
+				target = &t.entries[i]
 				break
 			}
 		}
+		if target != nil {
+			if row, ok := t.currentGroupRow(); ok && !row.isAll && row.name != target.NormalizedGroup() {
+				for i, g := range t.groups {
+					if g.name == target.NormalizedGroup() {
+						t.groupIndex = i
+						t.skillIndex = 0
+						break
+					}
+				}
+			}
+		}
+		for i, e := range t.visibleEntries() {
+			if e.ID == msg.id {
+				t.skillIndex = i
+				t.focus = skillPaneList
+				break
+			}
+		}
+		t.syncStatus()
 		return t, nil
 	case detailCloseMsg:
 		t.detail = nil
@@ -454,43 +588,27 @@ func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 func (t *skillTab) handleKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 	switch msg.String() {
 	case "left", "h":
-		t.focusLeft = true
+		if t.focus > skillPaneGroup {
+			t.focus--
+		}
 	case "right", "l":
-		t.focusLeft = false
+		if t.focus < skillPaneTarget {
+			t.focus++
+		}
 	case "up", "k":
-		if t.focusLeft {
-			if t.skillIndex > 0 {
-				t.skillIndex--
-				t.syncStatus()
-			}
-		} else if t.targetIndex > 0 {
-			t.targetIndex--
-		}
+		t.moveFocus(-1)
 	case "down", "j":
-		if t.focusLeft {
-			if t.skillIndex+1 < len(t.visibleEntries()) {
-				t.skillIndex++
-				t.syncStatus()
-			}
-		} else if t.targetIndex+1 < len(t.status) {
-			t.targetIndex++
-		}
+		t.moveFocus(1)
+	case "pgup":
+		t.moveFocus(-pageStep(t.height))
+	case "pgdown":
+		t.moveFocus(pageStep(t.height))
 	case "g":
-		if t.focusLeft {
-			t.skillIndex = 0
-			t.syncStatus()
-		} else {
-			t.targetIndex = 0
-		}
+		t.jumpFocus(true)
 	case "G":
-		if t.focusLeft {
-			t.skillIndex = maxInt(len(t.visibleEntries())-1, 0)
-			t.syncStatus()
-		} else {
-			t.targetIndex = maxInt(len(t.status)-1, 0)
-		}
+		t.jumpFocus(false)
 	case "/":
-		if t.focusLeft {
+		if t.focus != skillPaneTarget {
 			t.filterBox.EnterFresh()
 		}
 	case "ctrl+r":
@@ -518,6 +636,62 @@ func (t *skillTab) handleKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t.enterPlan("unapply", true)
 	}
 	return t, nil
+}
+
+func (t *skillTab) moveFocus(delta int) {
+	switch t.focus {
+	case skillPaneGroup:
+		if len(t.groups) == 0 {
+			return
+		}
+		next := clamp(t.groupIndex+delta, 0, len(t.groups)-1)
+		if next == t.groupIndex {
+			return
+		}
+		t.groupIndex = next
+		t.skillIndex = 0
+		t.syncStatus()
+	case skillPaneList:
+		n := len(t.visibleEntries())
+		next := clamp(t.skillIndex+delta, 0, maxInt(n-1, 0))
+		if next == t.skillIndex {
+			return
+		}
+		t.skillIndex = next
+		t.syncStatus()
+	default:
+		n := len(t.status)
+		t.targetIndex = clamp(t.targetIndex+delta, 0, maxInt(n-1, 0))
+	}
+}
+
+func (t *skillTab) jumpFocus(top bool) {
+	switch t.focus {
+	case skillPaneGroup:
+		if len(t.groups) == 0 {
+			return
+		}
+		if top {
+			t.groupIndex = 0
+		} else {
+			t.groupIndex = maxInt(len(t.groups)-1, 0)
+		}
+		t.skillIndex = 0
+		t.syncStatus()
+	case skillPaneList:
+		if top {
+			t.skillIndex = 0
+		} else {
+			t.skillIndex = maxInt(len(t.visibleEntries())-1, 0)
+		}
+		t.syncStatus()
+	default:
+		if top {
+			t.targetIndex = 0
+		} else {
+			t.targetIndex = maxInt(len(t.status)-1, 0)
+		}
+	}
 }
 
 func (t *skillTab) enterAddForm() (Tab, tea.Cmd) {
@@ -808,42 +982,90 @@ func (t *skillTab) renderPlan() string {
 }
 
 func (t *skillTab) renderPanes() string {
-	leftW := t.width * 55 / 100
-	if leftW < 24 {
-		leftW = 24
-	}
-	rightW := t.width - leftW - 1
-	if rightW < 20 {
-		rightW = 20
-		leftW = t.width - rightW - 1
-	}
 	height := maxInt(t.height, 3)
-	leftTitle := fmt.Sprintf("skills (%d)", len(t.visibleEntries()))
+	// applyPane 每个面板在内容宽之外再加 2 列边框，栏间各留 1 列。
+	inner := t.width - 8
+	if inner < 40 {
+		inner = 40
+	}
+	groupW, targetW := 20, 28
+	if groupW+targetW+16 > inner {
+		groupW, targetW = 16, 18
+	}
+	skillW := inner - groupW - targetW
+	group := applyPane(t.renderGroups(groupW, height), groupW, height, t.focus == skillPaneGroup)
+	mid := applyPane(t.renderSkills(skillW, height), skillW, height, t.focus == skillPaneList)
+	right := applyPane(t.renderTargets(targetW, height), targetW, height, t.focus == skillPaneTarget)
+	gap := lipgloss.NewStyle().Width(1).Render(" ")
+	return lipgloss.JoinHorizontal(lipgloss.Top, group, gap, mid, gap, right)
+}
+
+func (t *skillTab) renderGroups(width, height int) string {
+	if !t.loaded {
+		return emptyStateStyle.Render("loading groups…")
+	}
+	rows := make([]SidebarRow, 0, len(t.groups))
+	focused := t.focus == skillPaneGroup
+	for i, g := range t.groups {
+		marker := " "
+		name := g.name
+		if g.isAll {
+			marker = "◯"
+			name = "All"
+		}
+		rows = append(rows, SidebarRow{
+			Marker:   marker,
+			Name:     name,
+			Count:    g.count,
+			Selected: focused && i == t.groupIndex,
+		})
+	}
+	return renderSidebar(rows, t.groupIndex, height, width)
+}
+
+func (t *skillTab) renderSkills(width, height int) string {
+	title := t.skillPaneTitle()
 	if t.filterBox.Active() {
-		leftTitle += "  " + t.filterBox.Prompt()
+		title += "  " + t.filterBox.Prompt()
 	}
-	left := windowedPane(leftTitle, t.skillLines(maxInt(leftW-4, 8)), t.skillIndex, height, leftW)
-	right := windowedPane(fmt.Sprintf("targets · apply status (scope: %s)", t.scopeOrDefault()),
-		t.targetLines(maxInt(rightW-4, 8)), t.targetIndex, height, rightW)
-	if t.focusLeft {
-		left = activePaneStyle.Width(leftW).Height(height).Render(left)
-		right = paneStyle.Width(rightW).Height(height).Render(right)
-	} else {
-		left = paneStyle.Width(leftW).Height(height).Render(left)
-		right = activePaneStyle.Width(rightW).Height(height).Render(right)
+	return windowedPane(title, t.skillLines(maxInt(width-4, 8)), t.skillIndex, height, width)
+}
+
+func (t *skillTab) skillPaneTitle() string {
+	n := len(t.visibleEntries())
+	row, ok := t.currentGroupRow()
+	if !ok || row.isAll {
+		return fmt.Sprintf("All (%d)", n)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", 1), right)
+	title := fmt.Sprintf("%s (%d)", row.name, n)
+	if row.description != "" {
+		title += " — " + row.description
+	}
+	return title
+}
+
+func (t *skillTab) renderTargets(width, height int) string {
+	return windowedPane(fmt.Sprintf("targets · apply status (scope: %s)", t.scopeOrDefault()),
+		t.targetLines(maxInt(width-4, 8)), t.targetIndex, height, width)
 }
 
 func (t *skillTab) skillLines(width int) []string {
 	entries := t.visibleEntries()
+	all := true
+	if row, ok := t.currentGroupRow(); ok {
+		all = row.isAll
+	}
 	lines := make([]string, 0, len(entries))
 	for i, e := range entries {
 		desc := e.Description
 		if desc == "" {
 			desc = "-"
 		}
-		line := fmt.Sprintf("%s · [%s] · %s", e.ID, e.NormalizedGroup(), desc)
+		name := e.ID
+		if all {
+			name = e.NormalizedGroup() + "/" + e.ID
+		}
+		line := fmt.Sprintf("%s · %s", name, desc)
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.skillIndex))
 	}
 	return lines
