@@ -238,18 +238,18 @@ func (m *Manager) List(group, prefix string) ([]Meta, error) {
 			return nil, err
 		}
 	}
-	paths, err := m.store.ListTreePaths(group)
+	files, err := m.store.LoadTreeGroupWithKey(group, m.cryptoKey)
 	if err != nil {
 		return nil, err
 	}
 	var out []Meta
-	for _, p := range paths {
-		if prefix != "" && p != prefix && !strings.HasPrefix(p, prefix+"/") {
+	for _, f := range files {
+		if prefix != "" && f.Path != prefix && !strings.HasPrefix(f.Path, prefix+"/") {
 			continue
 		}
 		var e Entry
-		if err := m.store.LoadTreeJSON(group, p, &e, m.cryptoKey); err != nil {
-			return nil, err
+		if err := storage.FromJSON(f.Plaintext, &e); err != nil {
+			return nil, fmt.Errorf("failed to parse tree payload: %w", err)
 		}
 		raw, err := e.DecodeBytes()
 		if err != nil {
@@ -257,7 +257,7 @@ func (m *Manager) List(group, prefix string) ([]Meta, error) {
 		}
 		out = append(out, Meta{
 			Group:       group,
-			Path:        p,
+			Path:        f.Path,
 			Mode:        e.Mode,
 			Size:        len(raw),
 			SHA256:      e.SHA256,

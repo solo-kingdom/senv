@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,5 +86,68 @@ func TestTreeSetGetListRemoveAndSyncDir(t *testing.T) {
 	}
 	if len(diffs) != 0 {
 		t.Fatalf("expected 0 diffs, got %+v", diffs)
+	}
+}
+
+func TestListMatchesGet(t *testing.T) {
+	tm, _ := setupTreeTest(t)
+	if err := tm.AddGroup("deploy", "trees"); err != nil {
+		t.Fatal(err)
+	}
+	files := []struct {
+		path string
+		raw  []byte
+		mode uint32
+		desc string
+	}{
+		{"notes/readme.txt", []byte("hello\n"), 0o644, "note"},
+		{"bin/blob.dat", []byte{0xff, 0xfe, 0x00, 0x10}, 0o600, "blob"},
+		{"script/run.sh", []byte("#!/bin/sh\necho ok\n"), 0o755, "run"},
+	}
+	for _, f := range files {
+		if _, err := tm.Set("deploy", f.path, f.raw, f.mode, f.desc, false); err != nil {
+			t.Fatalf("set %s: %v", f.path, err)
+		}
+	}
+
+	metas, err := tm.List("deploy", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != len(files) {
+		t.Fatalf("list = %d, want %d", len(metas), len(files))
+	}
+	byPath := map[string]Meta{}
+	for _, mt := range metas {
+		byPath[mt.Path] = mt
+	}
+	for _, f := range files {
+		mt, ok := byPath[f.path]
+		if !ok {
+			t.Fatalf("list missing %s", f.path)
+		}
+		got, err := tm.Get("deploy", f.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := got.DecodeBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(raw, f.raw) {
+			t.Fatalf("%s content changed", f.path)
+		}
+		if mt.Mode != got.Mode || mt.Size != len(raw) || mt.SHA256 != got.SHA256 || mt.Description != got.Description || !mt.UpdatedAt.Equal(got.UpdatedAt) {
+			t.Fatalf("%s meta list=%+v get mode=%o size=%d sha=%s desc=%q updated=%s",
+				f.path, mt, got.Mode, len(raw), got.SHA256, got.Description, got.UpdatedAt)
+		}
+	}
+
+	prefixed, err := tm.List("deploy", "bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixed) != 1 || prefixed[0].Path != "bin/blob.dat" {
+		t.Fatalf("prefix list = %+v", prefixed)
 	}
 }
