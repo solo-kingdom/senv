@@ -1,0 +1,13 @@
+diff --git a/.agents/skills/senv-cli/SKILL.md b/.agents/skills/senv-cli/SKILL.md
+index 0baf8c0..6598551 100644
+--- a/.agents/skills/senv-cli/SKILL.md
++++ b/.agents/skills/senv-cli/SKILL.md
+@@ -9,7 +9,7 @@ metadata:
+ 
+ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config）、私有 Agent Skill（skill），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
+ 
+-> **分发**：本 skill 以本仓库目录为唯一事实源（SSOT），经 `senv skill add senv-cli --source .agents/skills/senv-cli --force --description "<索引说明>"` → `senv sync` → 各机 `senv skill apply senv-cli` 分发；`--force` 会清空 description，必须显式带。vault 包由本目录重建，**不要直接改 vault 或已安装副本**——任何改动先进本仓库。
++> **分发**：本 skill 以本仓库目录为唯一事实源（SSOT），经 `senv skill add senv-cli --source .agents/skills/senv-cli --force --description "<索引说明>"` → `senv sync` → 各机 `senv skill apply senv-cli` 分发；`--force` 未传 `--description` 时保留原说明，显式传入是为了避免空值把说明清空。vault 包由本目录重建，**不要直接改 vault 或已安装副本**——任何改动先进本仓库。
+ >
+ > **定位约定**：文中 `knowledge/experience/...` 相对 **agent-data 仓根**；不在仓根时先 `bash ~/.agents/skills/agent-data/scripts/locate.sh`。
+ 

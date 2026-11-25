@@ -9,7 +9,7 @@ metadata:
 
 senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块（text）、备份块（backup）、配置文件（config）、私有 Agent Skill（skill），按 group 组织，支持 `{{env:group:key}}` / `{{text:group:key}}` 交叉引用（`backup` 不是合法引用 type）。数据目录可用 git 同步（git provider），也可接入 senv-server（server provider，见下文）。
 
-> **分发**：本 skill 以本仓库目录为唯一事实源（SSOT），经 `senv skill add senv-cli --source .agents/skills/senv-cli --force --description "<索引说明>"` → `senv sync` → 各机 `senv skill apply senv-cli` 分发；`--force` 会清空 description，必须显式带。vault 包由本目录重建，**不要直接改 vault 或已安装副本**——任何改动先进本仓库。
+> **分发**：本 skill 以本仓库目录为唯一事实源（SSOT），经 `senv skill add senv-cli --source .agents/skills/senv-cli --force --description "<索引说明>"` → `senv sync` → 各机 `senv skill apply senv-cli` 分发；`--force` 未传 `--description` 时保留原说明，显式传入是为了避免空值把说明清空。vault 包由本目录重建，**不要直接改 vault 或已安装副本**——任何改动先进本仓库。
 >
 > **定位约定**：文中 `knowledge/experience/...` 相对 **agent-data 仓根**；不在仓根时先 `bash ~/.agents/skills/agent-data/scripts/locate.sh`。
 
@@ -60,7 +60,7 @@ senv 是自建 CLI：AES-256-GCM 加密存储环境变量（env）、文本块�
 
 `senv tui` 面向人操作，agent 不要驱动它；用户问「TUI 里怎么改 X」时按下面回答（细节以界内 `?` 键位总览为准）。TUI 界面语言为英文；底栏展开当前场景的操作快捷键（如 `e edit · n new · d delete · / filter · ?`），随焦点栏/表单/确认/向导/过滤切换；导航键与次要动词不进底栏，完整键位按分组列在 `?` 总览里。Search/`?` overlay 打开时底栏改用 overlay 自身键位。
 
-- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略；全部注册时顺序 Env、Text、Providers、Skill、Config、SSH、KeyPair、MCP、History、Audit、Backup、Settings——Audit/Backup/Settings 无数字键，用 `Tab` 到达）；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（与 `senv search` 同字段表：key/name、description、host alias/hostname/group/tags、provider alias、MCP alias/command 等，不匹配值/私钥/凭据/MCP env 值/backup 正文；空输入可浏览全 inventory）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
+- 全局：`Tab`/`Shift+Tab` 循环；`1`–`9` 按注册顺序直达（越界忽略；全部注册时顺序 Env、Text、Providers、Skill、Config、SSH、KeyPair、MCP、Ledger、Tree、History、Audit、Backup、Settings——`1`–`9` 到 Ledger 为止，Tree、History、Audit、Backup、Settings 无数字键，用 `Tab` 到达（History 仅 server 模式注册，缺席时不改变前 9 个 Tab 的数字键））；`Ctrl+R` 刷新当前 Tab；`S` 跨类型搜索（与 `senv search` 同字段表：key/name、description、host alias/hostname/group/tags、provider alias、MCP alias/command 等，不匹配值/私钥/凭据/MCP env 值/backup 正文；空输入可浏览全 inventory）；`?` 键位总览（与实际键位同源，不会漂移）；`esc` 回上一层（清过滤/关弹层/向导回退）；`q` 退出（仍有待推送时先提示一次）。列表 Tab 通用导航：`↑↓/jk`、`←→/hl` 切栏、`g`/`G` 跳顶底、`PgUp/PgDn` 翻页。
 - Env/Text/Backup/Config 均为分组侧栏双栏：侧栏顶部 All 伪组（默认选中，聚合全部条目，行前缀 `group/key`），其下各组带条目计数（随 `/` 过滤更新；Text/Backup 空分组计数 0 也显示）；`←→/hl` 切栏。组操作：`t` 激活/停用（env，default 不可停用）、`r` 重命名、`d` 删除、`+` 新建（env/text/backup，**必填说明**）；All 上无组操作（提示选择具体分组）。条目操作：Env `e` 内联编辑、`n` 新建、`d` 删除、`r` 重命名、`y` 复制、`v` 显隐、`D` 解引用；Text `e` vim、`n`/`d`、`r` 重命名、`i` 导入、`x` 导出；Backup 同 Text 但无 `D`；Config `e` vim、`n` 创建、`r` 重命名、`m` 元信息、`x` 导出、`i`/`u`（`I`/`U` 整组/全部）安装卸载（计划页仅 `esc`/`n` 取消）。确认弹窗统一 `enter`/`y` 确认、`esc`/`n` 取消。
 - 多选：条目栏 `space` 勾选/取消、`a` 全选当前过滤可见集（再按取消）；选择跨过滤持久，面板标题提示「已选 N（M 被过滤）」。批量安全动词（Env/Text/SSH `d`、Text/SSH `x`、Config `i`/`u`、MCP `x`/`u`/`X`/`U`）作用于多选集，走既有确认/计划流；选择集为空回落游标单条；`e`/`r`/`m`/详情需单选；提交后清空选择集。
 - 多字段编辑走统一表单：`tab`/`↑↓` 切字段、`enter` 提交、`esc` 取消（无副作用），校验失败内联报错且保留输入；Env `n` 新建与 Config `n` 创建也走结构化表单（Config 收集名称/源路径/target/分组/描述；Env 的 value 为遮蔽输入，说明可选），创建失败可在表单内修正。重命名是存储层原子操作，内容/权限不变。Env/Text 的 `default` 分组不可改名或删除。Host/KeyPair/AI Provider 表单同样有可选说明。
