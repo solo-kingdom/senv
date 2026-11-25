@@ -176,47 +176,107 @@ func (m *Manager) ListTreePaths(group string) ([]string, error) {
 			return nil, err
 		}
 		defer func() { _ = root.Close() }()
+		return listTreePaths(root, group)
+	})
+}
 
-		var paths []string
-		var walk func(segs []string, prefix string) error
-		walk = func(segs []string, prefix string) error {
-			entries, err := root.ReadDir(segs...)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
-					return nil
-				}
-				return err
-			}
-			for _, e := range entries {
-				if e.IsDir {
-					nextSegs := append(append([]string(nil), segs...), e.Name)
-					nextPrefix := e.Name
-					if prefix != "" {
-						nextPrefix = prefix + "/" + e.Name
-					}
-					if err := walk(nextSegs, nextPrefix); err != nil {
-						return err
-					}
-					continue
-				}
-				if e.Name == EnvMetaFileName || !strings.HasSuffix(e.Name, TreeFileSuffix) {
-					continue
-				}
-				name := strings.TrimSuffix(e.Name, TreeFileSuffix)
-				rel := name
-				if prefix != "" {
-					rel = prefix + "/" + name
-				}
-				paths = append(paths, rel)
-			}
-			return nil
-		}
-		if err := walk([]string{TreeDirName, group}, ""); err != nil {
+// TreeGroupFile is one decrypted tree payload. Plaintext is the entry JSON;
+// file content stays inside that JSON until the caller decodes it.
+type TreeGroupFile struct {
+	Path      string
+	Plaintext []byte
+}
+
+// LoadTreeGroupWithKey decrypts every file in a tree group under one vault
+// read: one lock, one crypto policy, one data root. Listing must not call
+// LoadTreeJSON per path — that re-enters EnsurePrivateDir and fsyncs the
+// config and data directories on every file.
+func (m *Manager) LoadTreeGroupWithKey(group string, cryptoKey []byte) ([]TreeGroupFile, error) {
+	if err := ValidateName(group); err != nil {
+		return nil, fmt.Errorf("invalid tree group %q: %w", group, err)
+	}
+	return withVaultRead(m, func(locked *Manager) ([]TreeGroupFile, error) {
+		return locked.loadTreeGroupWithKey(group, cryptoKey)
+	})
+}
+
+func (m *Manager) loadTreeGroupWithKey(group string, cryptoKey []byte) ([]TreeGroupFile, error) {
+	if err := m.requireCurrentKey(cryptoKey); err != nil {
+		return nil, err
+	}
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return nil, err
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	paths, err := listTreePaths(root, group)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TreeGroupFile, 0, len(paths))
+	for _, p := range paths {
+		_, fileSegs, err := treeFileSegments(group, p)
+		if err != nil {
 			return nil, err
 		}
-		sort.Strings(paths)
-		return paths, nil
-	})
+		encrypted, err := root.Read(fileSegs...)
+		if err != nil {
+			return nil, fmt.Errorf("tree entry %q not found in group %q: %w", p, group, err)
+		}
+		plain, err := decryptWithPolicy(cryptoKey, syncschema.KindTree, group, p, string(encrypted), policy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt tree payload: %w", err)
+		}
+		out = append(out, TreeGroupFile{Path: p, Plaintext: plain})
+	}
+	return out, nil
+}
+
+func listTreePaths(root securefs.TrustedRoot, group string) ([]string, error) {
+	var paths []string
+	var walk func(segs []string, prefix string) error
+	walk = func(segs []string, prefix string) error {
+		entries, err := root.ReadDir(segs...)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir {
+				nextSegs := append(append([]string(nil), segs...), e.Name)
+				nextPrefix := e.Name
+				if prefix != "" {
+					nextPrefix = prefix + "/" + e.Name
+				}
+				if err := walk(nextSegs, nextPrefix); err != nil {
+					return err
+				}
+				continue
+			}
+			if e.Name == EnvMetaFileName || !strings.HasSuffix(e.Name, TreeFileSuffix) {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name, TreeFileSuffix)
+			rel := name
+			if prefix != "" {
+				rel = prefix + "/" + name
+			}
+			paths = append(paths, rel)
+		}
+		return nil
+	}
+	if err := walk([]string{TreeDirName, group}, ""); err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // ListTreeGroups lists all group directories under trees/.
