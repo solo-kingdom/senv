@@ -64,8 +64,8 @@ func TestModelViewExactHeight(t *testing.T) {
 		if !strings.Contains(plain, "senv") {
 			t.Fatalf("top bar missing brand (height %d)\n%s", height, dumpChrome(view))
 		}
-		if !strings.Contains(plain, "Env") || !strings.Contains(plain, "Audit") {
-			t.Fatalf("tab strip missing Env/Audit (height %d)\n%s", height, dumpChrome(view))
+		if !strings.Contains(plain, tabIcon("Env")) || !strings.Contains(plain, "Audit") {
+			t.Fatalf("tab strip missing Env icon or active Audit (height %d)\n%s", height, dumpChrome(view))
 		}
 		if !strings.Contains(view, renderTab("Audit", true)) {
 			t.Fatalf("missing active Audit tab (height %d)\n%s", height, dumpChrome(view))

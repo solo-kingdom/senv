@@ -8,35 +8,14 @@ import (
 	"github.com/wii/senv/internal/llm"
 )
 
-// tabIcon 返回功能菜单项的宽度稳定符号（两种宽度模型一致、且不是
-// Nerd Font 私用区，避免被 sanitizeLine 折成 "?"）。
+// tabIcon 返回当前图标集下对应功能的图标（默认 Nerd Font v3，可在 Settings
+// 中切换 Unicode / ASCII）。所有图标均在 icons.go 中登记并受白名单保护。
 func tabIcon(title string) string {
-	switch title {
-	case "Env":
-		return "◆"
-	case "Text":
-		return "¶"
-	case "Providers":
-		return "◈"
-	case "Config":
-		return "✎"
-	case "SSH":
-		return "⌘"
-	case "KeyPair":
-		return "⋆"
-	case "MCP":
-		return "⬡"
-	case "History":
-		return "↺"
-	case "Audit":
-		return "⚑"
-	case "Backup":
-		return "▣"
-	case "Settings":
-		return "⚙"
-	default:
-		return "•"
+	pack := activeIconPack()
+	if icon, ok := pack.tabs[title]; ok {
+		return icon
 	}
+	return pack.fallback
 }
 
 // tabLabel 是顶栏菜单里显示的「icon + 空格 + 标题」。
@@ -57,6 +36,8 @@ func tabIconColor(title string) lipgloss.TerminalColor {
 		return colorAccent
 	case "Providers":
 		return colorMagenta
+	case "Skill":
+		return colorWarn
 	case "Config":
 		return colorWarn
 	case "SSH":
@@ -65,6 +46,10 @@ func tabIconColor(title string) lipgloss.TerminalColor {
 		return colorMagenta
 	case "MCP":
 		return colorCyan
+	case "Ledger":
+		return colorCyan
+	case "Tree":
+		return colorOk
 	case "History":
 		return colorAccent
 	case "Audit":
@@ -78,47 +63,55 @@ func tabIconColor(title string) lipgloss.TerminalColor {
 	}
 }
 
-// renderTab 画一个顶栏菜单项。图标用各自的颜色铺在 surface 上；激活项
-// 只把标题做成强调色胶囊，避免彩色图标压在强调底上对比度不够。左右
-// 各留 1 列空白，宽度与原先 Padding(0,1)+tabLabel 一致。
+// renderTab 画一个顶栏菜单项。激活项把 icon + 标题整体渲染为一枚完整强调色
+// 胶囊（colorOnAccent on colorAccent），非激活项保留各自彩色图标铺在 surface 上；
+// 两种状态宽度严格一致，切 Tab 时菜单不抖动。
 func renderTab(title string, active bool) string {
 	icon := tabIcon(title)
-	pad := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
-	iconSt := lipgloss.NewStyle().Foreground(tabIconColor(title)).Background(colorSurface)
 	if active {
-		titleSt := lipgloss.NewStyle().
+		pillSt := lipgloss.NewStyle().
 			Foreground(colorOnAccent).
 			Background(colorAccent).
 			Bold(true)
-		return pad + iconSt.Render(icon) + iconSt.Render(" ") + titleSt.Render(title) + pad
+		return pillSt.Render(" " + icon + " " + title + " ")
 	}
+	pad := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
+	iconSt := lipgloss.NewStyle().Foreground(tabIconColor(title)).Background(colorSurface)
 	titleSt := lipgloss.NewStyle().Foreground(colorMuted).Background(colorSurface)
 	return pad + iconSt.Render(icon) + iconSt.Render(" ") + titleSt.Render(title) + pad
 }
 
+// renderTabIconOnly 渲染窄屏紧凑模式下的非激活项：只保留带语义色的图标与
+// 左右 1 列留白（共 3 列，保证 Nerd Font Proportional 图标有右侧呼吸空间）。
+func renderTabIconOnly(title string) string {
+	icon := tabIcon(title)
+	pad := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
+	iconSt := lipgloss.NewStyle().Foreground(tabIconColor(title)).Background(colorSurface)
+	return pad + iconSt.Render(icon) + pad
+}
+
 // renderTabStrip 画顶栏：左侧 brand `senv`，中间带 icon 的功能菜单，
-// 右侧当前 provider 与同步徽标。预算不够时从右侧截断菜单，保留 brand
-// 与右侧徽标，并保证激活项仍可见。
+// 右侧当前 provider 与同步徽标。
+//
+// 宽度适配分三档：
+//  1. 完整模式：全部 Tab 显示「icon + 标题」；
+//  2. 紧凑模式：宽屏放不下全称时，非激活 Tab 折叠为「仅图标」、激活 Tab 显示
+//     完整「icon + 标题」，14 个 Tab 在 ~80 列也能一屏全览；
+//  3. 滑动视口：超窄屏连紧凑模式也放不下时，以激活 Tab 为中心滑动展示相邻
+//     项，左右溢出以 ‹ / › 指示。
 func (m Model) renderTabStrip(width int) string {
 	if width < 1 {
 		return ""
 	}
 	brand := brandStyle.Render("senv")
 	separator := tabSeparatorStyle.Render(" ")
-	tabParts := make([]string, 0, len(m.tabs)*2-1)
-	for i, t := range m.tabs {
-		if i > 0 {
-			tabParts = append(tabParts, separator)
-		}
-		tabParts = append(tabParts, renderTab(t.Title(), i == m.active))
-	}
 
 	var rightParts []string
 	if badge := m.providerBadge(); badge != "" {
 		rightParts = append(rightParts, providerBadgeStyle.Render(badge))
 	}
 	if sync := m.syncBadge(); sync != "" {
-		rightParts = append(rightParts, syncBadgeStyle.Render(sync))
+		rightParts = append(rightParts, syncBadgeStyle.Render(iconSync()+" "+sync))
 	}
 	right := ""
 	if len(rightParts) > 0 {
@@ -143,9 +136,13 @@ func (m Model) renderTabStrip(width int) string {
 		}
 		midBudget = maxInt(budget-leftW-1-rightW-gapKeep, 4)
 	}
-	active := m.tabs[m.active].Title()
-	mid := fitTabStrip(tabParts, active, m.active, midBudget)
-	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, tabSeparatorStyle.Render(" "), mid)
+
+	titles := make([]string, len(m.tabs))
+	for i, t := range m.tabs {
+		titles[i] = t.Title()
+	}
+	mid := fitTabStripTitles(titles, m.active, midBudget, separator)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, separator, mid)
 	gap := budget - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
@@ -154,36 +151,126 @@ func (m Model) renderTabStrip(width int) string {
 	return tabStripStyle.Width(width).Render(row)
 }
 
-// fitTabStrip 把已经渲染好的 tab 片段装进 budget 列。放不下的尾部以 "…"
-// 收尾；若激活 tab 会被截掉，则退化为只渲染激活 tab。
-func fitTabStrip(parts []string, activeTitle string, active, budget int) string {
+// fitTabStripTitles 按三档策略把全部 Tab 装进 budget 列，保证激活 Tab 始终可见。
+func fitTabStripTitles(titles []string, active, budget int, separator string) string {
+	if len(titles) == 0 {
+		return ""
+	}
+	if active < 0 || active >= len(titles) {
+		active = 0
+	}
 	if budget < 4 {
 		budget = 4
 	}
-	var out []string
-	used := 0
-	cut := -1
-	for i, p := range parts {
-		w := lipgloss.Width(p)
-		if used+w > budget {
-			cut = i
+	sepW := lipgloss.Width(separator)
+
+	// 1. 完整模式：全部显示 icon + title
+	fullTabs := make([]string, len(titles))
+	fullTotal := 0
+	for i, title := range titles {
+		fullTabs[i] = renderTab(title, i == active)
+		if i > 0 {
+			fullTotal += sepW
+		}
+		fullTotal += lipgloss.Width(fullTabs[i])
+	}
+	if fullTotal <= budget {
+		return joinWithSep(fullTabs, separator)
+	}
+
+	// 2. 紧凑模式：激活项完整，其余仅图标（14 Tab 约占 ~65 列）
+	compactTabs := make([]string, len(titles))
+	compactTotal := 0
+	for i, title := range titles {
+		if i == active {
+			compactTabs[i] = fullTabs[i]
+		} else {
+			compactTabs[i] = renderTabIconOnly(title)
+		}
+		if i > 0 {
+			compactTotal += sepW
+		}
+		compactTotal += lipgloss.Width(compactTabs[i])
+	}
+	if compactTotal <= budget {
+		return joinWithSep(compactTabs, separator)
+	}
+
+	// 3. 滑动视口：以激活项为锚点，优先保留紧凑图标，向两侧交替扩展。
+	activePart := fullTabs[active]
+	if lipgloss.Width(activePart) > budget {
+		return renderTab(truncateWidth(titles[active], maxInt(budget-4, 1)), true)
+	}
+	leftArrow := mutedStyle().Background(colorSurface).Render(iconOverflowL())
+	rightArrow := mutedStyle().Background(colorSurface).Render(iconOverflowR())
+	arrowW := 2 // arrow + separator
+
+	lo, hi := active, active
+	used := lipgloss.Width(activePart)
+	for lo > 0 || hi < len(titles)-1 {
+		grew := false
+		// 优先向右扩，再向左扩，让激活项保持视觉居中。
+		if hi < len(titles)-1 {
+			nextW := sepW + lipgloss.Width(compactTabs[hi+1])
+			needArrows := 0
+			if lo > 0 {
+				needArrows += arrowW
+			}
+			if hi+1 < len(titles)-1 {
+				needArrows += arrowW
+			}
+			if used+nextW+needArrows <= budget {
+				hi++
+				used += nextW
+				grew = true
+			}
+		}
+		if lo > 0 {
+			prevW := sepW + lipgloss.Width(compactTabs[lo-1])
+			needArrows := 0
+			if lo-1 > 0 {
+				needArrows += arrowW
+			}
+			if hi < len(titles)-1 {
+				needArrows += arrowW
+			}
+			if used+prevW+needArrows <= budget {
+				lo--
+				used += prevW
+				grew = true
+			}
+		}
+		if !grew {
 			break
 		}
-		out = append(out, p)
-		used += w
 	}
-	if cut < 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, out...)
+
+	var out []string
+	if lo > 0 {
+		out = append(out, leftArrow)
 	}
-	// 激活 tab（parts 下标 2*active）被截掉时，退化为只渲染激活 tab。
-	if 2*active >= cut {
-		// budget 至少要留给左右 padding、图标和空格（4 列），其余给标题。
-		return renderTab(truncateWidth(activeTitle, maxInt(budget-4, 1)), true)
+	out = append(out, compactTabs[lo:hi+1]...)
+	if hi < len(titles)-1 {
+		out = append(out, rightArrow)
 	}
-	if used+1 <= budget {
-		out = append(out, mutedStyle().Background(colorSurface).Render("…"))
+	return joinWithSep(out, separator)
+}
+
+func joinWithSep(items []string, sep string) string {
+	if len(items) == 0 {
+		return ""
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
+	if len(items) == 1 {
+		return items[0]
+	}
+	parts := make([]string, 0, len(items)*2-1)
+	for i, it := range items {
+		if i > 0 {
+			parts = append(parts, sep)
+		}
+		parts = append(parts, it)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
 }
 
 func joinSpaced(parts []string) []string {
@@ -237,8 +324,8 @@ func (m Model) providerBadge() string {
 	return latest
 }
 
-// hintBar 把动作列表画成底栏 NAV / ACT 芯片：导航键进 NAV，其余非 NoBar
-// 动作进 ACT，尾部固定 `?`。groupBar 仍保留给单元测试与纯文本消费方。
+// hintBar 把动作列表画成底栏轻量 NAV / ACT 提示条：导航键进 NAV，其余非 NoBar
+// 动作进 ACT，尾部固定 `?`。键名用柔和底色 + 强调色粗体，降低底栏视觉噪音。
 func hintBar(bindings []KeyAction) string {
 	var nav, act []string
 	for _, b := range bindings {
@@ -254,9 +341,9 @@ func hintBar(bindings []KeyAction) string {
 	act = append(act, actionChip(KeyAction{Keys: []string{"?"}, Desc: "help"}))
 	var parts []string
 	if len(nav) > 0 {
-		parts = append(parts, hintGroupStyle.Render("NAV"), strings.Join(nav, " "))
+		parts = append(parts, hintGroupStyle.Render("NAV"), strings.Join(nav, "  "))
 	}
-	parts = append(parts, hintGroupStyle.Render("ACT"), strings.Join(act, " "))
+	parts = append(parts, hintGroupStyle.Render("ACT"), strings.Join(act, "  "))
 	return strings.Join(parts, "  ")
 }
 

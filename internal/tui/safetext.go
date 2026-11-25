@@ -97,7 +97,10 @@ func safeCluster(cluster string, gw int) string {
 		case unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cc, r):
 			return ""
 		case unicode.Is(unicode.Co, r):
-			// 私用区（Nerd Font 图标）：字体常画成 2 列溢出，统一换成 1 列占位。
+			// 私用区：仅放行当前图标集白名单内的 UI Chrome 图标，其余统一换成 1 列占位。
+			if isAllowedIconRune(r) {
+				break
+			}
 			return "?"
 		}
 		if gw <= 0 {
@@ -210,6 +213,12 @@ func plainText(s string) string {
 				b.WriteByte(' ')
 				prevSpace = true
 			}
+			continue
+		}
+		if unicode.Is(unicode.Co, r) {
+			// 不可信记录数据中的私用区字符一律折成 "?"，不享受 UI 图标白名单。
+			b.WriteByte('?')
+			prevSpace = false
 			continue
 		}
 		b.WriteRune(r)

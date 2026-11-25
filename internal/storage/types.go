@@ -41,6 +41,8 @@ type TUISettings struct {
 	// Theme is a TUI theme id such as "tokyo-night", "gruvbox-dark",
 	// or "gruvbox-light". Empty means the TUI default (tokyo-night).
 	Theme string `json:"theme,omitempty"`
+	// Icons is a TUI icon set id: "nerd" (default), "unicode", or "ascii".
+	Icons string `json:"icons,omitempty"`
 }
 
 // ProviderConfig represents the remote sync provider configuration.

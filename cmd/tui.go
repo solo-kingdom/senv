@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -136,6 +137,8 @@ func loadTUIManagers(refresh bool) (tui.Managers, *session.Manager, error) {
 		SnapshotCache: tuiSnapshotCache(),
 		Theme:         loadTUITheme(store),
 		SaveTheme:     func(name string) error { return saveTUITheme(store, name) },
+		Icons:         loadTUIIcons(store),
+		SaveIcons:     func(name string) error { return saveTUIIcons(store, name) },
 	}, auditMgr, nil
 }
 
@@ -155,6 +158,29 @@ func saveTUITheme(store *storage.Manager, name string) error {
 		st = storage.NewSettings()
 	}
 	st.TUI.Theme = name
+	st.UpdatedAt = time.Now().Format(time.RFC3339)
+	return store.SaveSettings(st)
+}
+
+// loadTUIIcons 读取 TUI 图标集：优先环境变量 SENV_TUI_ICONS，其次 settings.json，
+// 缺失或空值回落默认的 Nerd Font。
+func loadTUIIcons(store *storage.Manager) string {
+	if envVal := os.Getenv("SENV_TUI_ICONS"); envVal != "" {
+		return tui.NormalizeIconSet(envVal)
+	}
+	if settings, err := store.LoadSettings(); err == nil && settings.TUI.Icons != "" {
+		return tui.NormalizeIconSet(settings.TUI.Icons)
+	}
+	return tui.IconSetNerd
+}
+
+// saveTUIIcons 把图标集写入 settings.json，并保留其余字段。
+func saveTUIIcons(store *storage.Manager, name string) error {
+	st, err := store.LoadSettings()
+	if err != nil {
+		st = storage.NewSettings()
+	}
+	st.TUI.Icons = tui.NormalizeIconSet(name)
 	st.UpdatedAt = time.Now().Format(time.RFC3339)
 	return store.SaveSettings(st)
 }

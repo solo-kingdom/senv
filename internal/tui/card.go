@@ -66,9 +66,34 @@ func infoCardBlock(title string, body string, width int) string {
 // 圆角卡片，尺寸约定与原先 paneStyle.Width(w).Height(h) 一致：内宽 w、
 // 内高 h，返回块为 (w+2)×(h+2)。仅当首行是 paneTitleStyle 画出的标题
 // 时才抬到边框上，空状态等没有标题的正文保持无标题卡片。
+// 非聚焦面板内的选中行自动降级为柔和的 inactiveSelectedLineStyle，让用户
+// 一眼区分当前焦点在左栏还是右栏。
 func applyPane(content string, width, height int, active bool) string {
 	title, body := splitPaneTitle(content)
+	if !active && body != "" {
+		body = demoteInactiveSelection(body)
+	}
 	return boxWithTitle(title, body, width, height, active)
+}
+
+// demoteInactiveSelection 把失焦面板内由 selectedLineStyle 渲染的高亮前缀
+// 降级为 inactiveSelectedLineStyle，保留文本与宽度不变。
+func demoteInactiveSelection(body string) string {
+	onSample := selectedLineStyle.Render("X")
+	onIdx := strings.Index(onSample, "X")
+	if onIdx <= 0 {
+		return body
+	}
+	onSeq := onSample[:onIdx]
+	if !strings.Contains(body, onSeq) {
+		return body
+	}
+	offSample := inactiveSelectedLineStyle.Render("X")
+	offIdx := strings.Index(offSample, "X")
+	if offIdx <= 0 {
+		return body
+	}
+	return strings.ReplaceAll(body, onSeq, offSample[:offIdx])
 }
 
 // boxWithTitle 画一张标题嵌在上边框的圆角卡。width/height 是边框以内的

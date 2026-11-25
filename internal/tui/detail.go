@@ -136,18 +136,20 @@ func (d *detailOverlay) View() string {
 	for len(body) < page {
 		body = append(body, "")
 	}
-	box := searchOverlayStyle
-	if d.width > 14 {
-		// lipgloss v1 的 Width 不含边框：留 2 列给边框，整框宽度 = d.width。
-		box = box.Width(d.width - 2)
-	}
 	hint := d.hint
 	if hint == "" {
 		hint = "↑↓/PgUp/PgDn scroll · esc close"
 	}
-	out := box.Render(lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Bold(true).Render(title), "",
-		strings.Join(body, "\n"), "",
-		statusBarStyle.Render(hint)))
-	return clipLines(out, maxInt(d.height+2, 2))
+	// 与主面板统一使用 boxWithTitle（标题嵌在上边框），保持精确的
+	// d.width × (d.height+2) 槽位尺寸与 pageSize 滚动窗口。
+	innerW := maxInt(d.width-2, 4)
+	innerH := maxInt(d.height, 2)
+	content := make([]string, 0, innerH)
+	content = append(content, "")
+	content = append(content, body...)
+	for len(content) < innerH-1 {
+		content = append(content, "")
+	}
+	content = append(content, lipgloss.NewStyle().Foreground(colorMuted).Background(colorSurface).Render(hint))
+	return clipLines(boxWithTitle(title, strings.Join(content, "\n"), innerW, innerH, true), maxInt(d.height+2, 2))
 }

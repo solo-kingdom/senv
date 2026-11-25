@@ -1252,7 +1252,7 @@ func (t *envTab) renderItems(width, height int) string {
 		shown = truncateWidth(shown, maxInt(4, inner-2-lipgloss.Width(keyLabel)-1))
 		var line string
 		if i == t.itemIndex {
-			line = selectedLineStyle.Render("▸ "+keyLabel+"=") + renderValue(shown, revealed)
+			line = selectedLineStyle.Render(cursorPrefix(true)+keyLabel+"=") + renderValue(shown, revealed)
 		} else {
 			line = unselectedLineStyle.Render(keyLabel+"=") + renderValue(shown, false)
 		}

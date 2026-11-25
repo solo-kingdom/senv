@@ -28,6 +28,10 @@ type Managers struct {
 	Theme string
 	// SaveTheme 在用户于设置页切换主题时持久化；nil 时只影响本次会话。
 	SaveTheme func(name string) error
+	// Icons 是启动时要应用的 TUI 图标集 id；空值按 nerd 处理。
+	Icons string
+	// SaveIcons 在用户于设置页切换图标集时持久化；nil 时只影响本次会话。
+	SaveIcons func(name string) error
 	Env       *env.Manager
 	Text      *text.Manager
 	Backup    *backup.Manager
@@ -157,10 +161,10 @@ func New(mgr Managers) Model {
 		mgr.snap = newSnapshotRegistry(mgr.Env, mgr.Text, mgr.Backup)
 	}
 	m := Model{mgr: mgr, sync: mgr.Sync}
-	// 先于任何 Tab 构造应用持久化主题：Settings 在 newSettingsTab 时
-	// 读取 currentThemeID。若放在 Tab 创建之后，包 init 留下的 tokyo-night
-	// 会被当成选中项，实际画面却已是保存的主题。
+	// 先于任何 Tab 构造应用持久化主题与图标集：Settings 在 newSettingsTab 时
+	// 读取 currentThemeID / currentIconSetID。
 	applyTheme(mgr.Theme)
+	applyIconSet(mgr.Icons)
 	// 首屏即时（D4）：首个 tab load 之前尝试快照缓存解密并预热 memo；未
 	// 命中（缺失/损坏/指纹不符/开关关闭）静默回退直接解密路径。
 	if c := mgr.SnapshotCache; c != nil {

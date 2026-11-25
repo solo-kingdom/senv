@@ -30,11 +30,11 @@ func stackWithOverlay(innerH int, overlay string, renderBody func(h int) string)
 	return clipLines(out, paneBudget(innerH))
 }
 
-// cursorPrefix reserves two columns on every list row so selected ("▸ ") and
+// cursorPrefix reserves two columns on every list row so selected and
 // unselected ("  ") lines share the same column start.
 func cursorPrefix(selected bool) string {
 	if selected {
-		return "▸ "
+		return iconCursor() + " "
 	}
 	return "  "
 }

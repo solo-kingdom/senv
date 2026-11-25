@@ -2,6 +2,7 @@ package tui
 
 import (
 	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -9,29 +10,26 @@ import (
 
 // 本文件收拢跨 Tab 复用的小工具（tui-ux-list 1.2 自各 Tab 搬入）。
 
-// modalBox 渲染模态弹层：标题 + 正文 + 底部按键提示。
-// modalBox renders a titled modal inside the tab's content area. w/h are the
-// tab's SetSize dimensions: the box border draws outside Width, so Width is
-// w-2; long lines wrap inside the box and clipLines caps the total at h+2
-// (the pane slot's height, borders included) so a modal can never push the
-// frame off-screen.
+// modalBox renders a titled modal inside the tab's content area using the same
+// rounded boxWithTitle chrome as main panes. w/h are the tab's SetSize
+// dimensions: the box border draws outside Width/Height, so inner width is w-2
+// and inner height is h, producing an exact w × (h+2) slot.
 func modalBox(w, h int, title, body, hint string) string {
-	head := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Render("» " + title)
-	parts := []string{head}
+	innerW := maxInt(w-2, 4)
+	innerH := maxInt(h, 2)
+	contentW := maxInt(innerW-2, 1)
+
+	var parts []string
 	if body != "" {
-		parts = append(parts, body)
+		parts = append(parts, lipgloss.NewStyle().Width(contentW).Render(body))
 	}
 	if hint != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(colorMuted).Render(hint))
+		if len(parts) > 0 {
+			parts = append(parts, "")
+		}
+		parts = append(parts, lipgloss.NewStyle().Foreground(colorMuted).Width(contentW).Render(hint))
 	}
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorAccent).
-		Padding(0, 1).
-		Width(maxInt(w-2, 8)).
-		Height(maxInt(h, 2)).
-		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
-	return clipLines(box, maxInt(h+2, 2))
+	return clipLines(boxWithTitle(title, strings.Join(parts, "\n"), innerW, innerH, true), maxInt(h+2, 2))
 }
 
 // isPrintable 报告按键是否为单个可打印字符输入（用于过滤/输入框回显）。

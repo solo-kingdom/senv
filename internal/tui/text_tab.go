@@ -1227,7 +1227,7 @@ func (t *textTab) renderItems(width, height int) string {
 			line = truncateWidth(line+"  "+it.description, inner-2)
 		}
 		if i == t.itemIndex {
-			line = selectedLineStyle.Render("▸ " + line)
+			line = selectedLineStyle.Render(cursorPrefix(true) + line)
 		} else {
 			line = unselectedLineStyle.Render(line)
 		}

@@ -79,7 +79,7 @@ func TestSSHTabShowsSelectedRows(t *testing.T) {
 	tab = next.(*sshTab)
 	view := tab.View()
 	// Host 栏按别名字典序，游标（index 0）落在 db 上；KeyPair 栏已迁出本 Tab。
-	if !strings.Contains(view, "▸ db") {
+	if !strings.Contains(view, cursorPrefix(true)+"db") {
 		t.Fatalf("selected row missing marker:\n%s", view)
 	}
 }

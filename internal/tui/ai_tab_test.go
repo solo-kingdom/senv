@@ -102,7 +102,7 @@ func TestAITabBrowseNoSecretLeak(t *testing.T) {
 	if strings.Contains(view, "sk-tui-secret") {
 		t.Fatal("view leaked credential plaintext")
 	}
-	if !strings.Contains(view, "▸ main") {
+	if !strings.Contains(view, cursorPrefix(true)+"main") {
 		t.Fatalf("selected provider missing marker:\n%s", view)
 	}
 	// Provider details (base_url, credential ref) live in the `enter` overlay so

@@ -48,10 +48,11 @@ var (
 	errorBarStyle       lipgloss.Style
 	warnBarStyle        lipgloss.Style
 	contentStyle        lipgloss.Style
-	paneStyle           lipgloss.Style
-	activePaneStyle     lipgloss.Style
-	selectedLineStyle   lipgloss.Style
-	unselectedLineStyle lipgloss.Style
+	paneStyle                 lipgloss.Style
+	activePaneStyle           lipgloss.Style
+	selectedLineStyle         lipgloss.Style
+	inactiveSelectedLineStyle lipgloss.Style
+	unselectedLineStyle       lipgloss.Style
 	maskedValueStyle    lipgloss.Style
 	searchOverlayStyle  lipgloss.Style
 	typeBadgeStyles     map[string]lipgloss.Style
@@ -96,16 +97,17 @@ func rebuildStyles() {
 		Bold(true)
 
 	chipKeyStyle = lipgloss.NewStyle().
-		Foreground(colorOnAccent).
-		Background(colorAccent).
-		Bold(true).
-		Padding(0, 1)
+		Foreground(colorAccent).
+		Background(colorSurfaceHi).
+		Bold(true)
 
 	chipDescStyle = lipgloss.NewStyle().
-		Foreground(colorMuted)
+		Foreground(colorMuted).
+		Background(colorSurface)
 
 	hintGroupStyle = lipgloss.NewStyle().
-		Foreground(colorAccent).
+		Foreground(colorCyan).
+		Background(colorSurface).
 		Bold(true)
 
 	// paneTitleStyle is the small in-pane heading rendered inside a column
@@ -163,7 +165,11 @@ func rebuildStyles() {
 	selectedLineStyle = lipgloss.NewStyle().
 		Bold(true).
 		Foreground(colorOnAccent).
-		Background(colorCyan)
+		Background(colorAccent)
+
+	inactiveSelectedLineStyle = lipgloss.NewStyle().
+		Foreground(colorFg).
+		Background(colorSurfaceHi)
 
 	unselectedLineStyle = lipgloss.NewStyle().
 		Foreground(colorFg).
