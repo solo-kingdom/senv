@@ -281,3 +281,261 @@ func TestSkillApplyUnknownSkillAndEmptyVault(t *testing.T) {
 		t.Fatalf("empty vault: err=%v out=%q", err, out.String())
 	}
 }
+
+func TestSkillApplyDefaultAndPolicyRouting(t *testing.T) {
+	newAuditTestProject(t)
+	resetSkillFlags(t)
+	resetSkillApplyFlags(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 准备一个本机存在的项目目录 ~/proj-ok，和一个不存在的 ~/proj-missing
+	projOK := filepath.Join(home, "proj-ok")
+	if err := os.MkdirAll(projOK, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 建组：base (default=true, global, agents only)
+	skillGrpDescription = "base global skills"
+	skillGrpDefault = true
+	skillGrpScope = "global"
+	skillGrpTargets = []string{"agents"}
+	if err := skillGroupAddCmd.Flags().Set("default-install", "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = skillGroupAddCmd.Flags().Set("default-install", "false")
+	})
+	captureStdout(t, func() {
+		if err := skillGroupAddCmd.RunE(skillGroupAddCmd, []string{"base"}); err != nil {
+			t.Fatalf("group add base: %v", err)
+		}
+	})
+
+	// 1. g-def: 继承 base (default=true, global, targets=[agents])
+	skillGroup = "base"
+	skillSource = writeSkillFixture(t, "g-def")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"g-def"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// 2. g-opt: 显式 --no-default-install，不应被 --default 选中
+	skillAddNoDefault = true
+	skillSource = writeSkillFixture(t, "g-opt")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"g-opt"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	skillAddNoDefault = false
+	skillGroup = ""
+
+	// 3. p-ok: default=true, project, ~/proj-ok (存在)
+	skillAddDefault = true
+	skillAddScope = "project"
+	skillAddInstallPath = "~/proj-ok"
+	skillSource = writeSkillFixture(t, "p-ok")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"p-ok"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// 4. p-missing: default=true, project, ~/proj-missing (不存在 → skip-missing-path)
+	skillAddInstallPath = "~/proj-missing"
+	skillSource = writeSkillFixture(t, "p-missing")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"p-missing"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// 5. p-cwd: default=true, project, 无 path (→ skip-project-only)
+	skillAddInstallPath = ""
+	skillSource = writeSkillFixture(t, "p-cwd")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"p-cwd"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	skillAddDefault, skillAddScope = false, ""
+
+	// 执行 apply --default --yes（auto 路由）
+	skillApplyDefault = true
+	skillApplyYes = true
+	c, out, errOut := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, nil); err != nil {
+		t.Fatalf("apply --default: %v\nout=%s\nerr=%s", err, out.String(), errOut.String())
+	}
+
+	// g-def 仅装到 ~/.agents/skills/g-def（不装 .claude）
+	gAgents, gClaude := skillTargets(t, "g-def")
+	if !pathExists(filepath.Join(gAgents, "SKILL.md")) || pathExists(gClaude) {
+		t.Fatalf("g-def targets mismatch: agents=%v claude=%v", pathExists(gAgents), pathExists(gClaude))
+	}
+	// g-opt 未被 --default 安装
+	optAgents, _ := skillTargets(t, "g-opt")
+	if pathExists(optAgents) {
+		t.Fatal("g-opt must not be installed by --default")
+	}
+	// p-ok 装到了 ~/proj-ok 下，且未污染全局
+	if !pathExists(filepath.Join(projOK, ".agents", "skills", "p-ok", "SKILL.md")) {
+		t.Fatalf("p-ok not installed to %s", projOK)
+	}
+	pOkGlobal, _ := skillTargets(t, "p-ok")
+	if pathExists(pOkGlobal) {
+		t.Fatal("project skill p-ok must not be installed globally")
+	}
+	// p-missing 与 p-cwd 被跳过且不建目录
+	if !strings.Contains(out.String(), "[skip-missing-path] p-missing") || pathExists(filepath.Join(home, "proj-missing")) {
+		t.Fatalf("p-missing handling wrong: out=%s", out.String())
+	}
+	if !strings.Contains(out.String(), "[skip-project-only] p-cwd") {
+		t.Fatalf("p-cwd handling wrong: out=%s", out.String())
+	}
+
+	// 显式 --scope global 必须拦截 project skill（skip-scope-mismatch）
+	resetSkillApplyFlags(t)
+	skillApplyScope = "global"
+	skillApplyYes = true
+	c, out, _ = applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"p-cwd"}); err != nil {
+		t.Fatalf("scope mismatch should warn+skip, got err: %v", err)
+	}
+	if !strings.Contains(out.String(), "[skip-scope-mismatch] p-cwd") {
+		t.Fatalf("expected skip-scope-mismatch, out=%s", out.String())
+	}
+	pCwdGlobal, _ := skillTargets(t, "p-cwd")
+	if pathExists(pCwdGlobal) {
+		t.Fatal("project skill must not be installed globally without --force-scope")
+	}
+
+	// 加 --force-scope 允许强装到全局
+	skillApplyForceScope = true
+	c, _, _ = applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"p-cwd"}); err != nil {
+		t.Fatalf("force-scope apply: %v", err)
+	}
+	if !pathExists(filepath.Join(pCwdGlobal, "SKILL.md")) {
+		t.Fatal("--force-scope must install globally")
+	}
+
+	// --dir 无需 cd 即可安装到指定项目目录
+	resetSkillApplyFlags(t)
+	otherProj := t.TempDir()
+	skillApplyDir = otherProj
+	skillApplyYes = true
+	c, _, _ = applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"p-cwd"}); err != nil {
+		t.Fatalf("--dir apply: %v", err)
+	}
+	if !pathExists(filepath.Join(otherProj, ".agents", "skills", "p-cwd", "SKILL.md")) {
+		t.Fatalf("--dir did not install into %s", otherProj)
+	}
+
+	// unapply --default 对称撤回 g-def 与 p-ok
+	resetSkillApplyFlags(t)
+	skillApplyDefault = true
+	skillApplyYes = true
+	c, _, _ = applyCmdWithBuffers()
+	if err := skillUnapplyCmd.RunE(c, nil); err != nil {
+		t.Fatalf("unapply --default: %v", err)
+	}
+	if pathExists(gAgents) || pathExists(filepath.Join(projOK, ".agents", "skills", "p-ok")) {
+		t.Fatal("unapply --default must remove managed dirs for both global and project-path skills")
+	}
+}
+
+func TestSkillApplyAppendsExtraInfoAndTracksDrift(t *testing.T) {
+	newAuditTestProject(t)
+	resetSkillFlags(t)
+	resetSkillApplyFlags(t)
+
+	// 1. 入库时带 --extra，模拟 llm-wiki 服务地址扩展信息
+	skillSource = writeSkillFixture(t, "llm-wiki")
+	skillAddExtra = "- 服务地址: https://wiki.example.internal\n- 认证方式: 通过 `senv env get svc:WIKI_TOKEN` 获取"
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"llm-wiki"}); err != nil {
+			t.Fatalf("skill add with extra: %v", err)
+		}
+	})
+
+	// show 展示 Extra Info
+	showOut := captureStdout(t, func() {
+		if err := skillShowCmd.RunE(skillShowCmd, []string{"llm-wiki"}); err != nil {
+			t.Fatalf("skill show: %v", err)
+		}
+	})
+	if !strings.Contains(showOut, "Extra Info:") || !strings.Contains(showOut, "https://wiki.example.internal") {
+		t.Fatalf("show missing extra info:\n%s", showOut)
+	}
+
+	// 2. apply 后 SKILL.md 末尾包含扩展块
+	skillApplyYes = true
+	c, _, _ := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"llm-wiki"}); err != nil {
+		t.Fatalf("apply with extra: %v", err)
+	}
+	agentsDir, _ := skillTargets(t, "llm-wiki")
+	installed, err := os.ReadFile(filepath.Join(agentsDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installed), "<!-- senv:extra:start -->") || !strings.Contains(string(installed), "https://wiki.example.internal") {
+		t.Fatalf("installed SKILL.md missing extra block:\n%s", installed)
+	}
+
+	// 3. 再次 apply 必须精确 skip（不误判漂移）
+	c, out, _ := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"llm-wiki"}); err != nil {
+		t.Fatalf("idempotent apply: %v", err)
+	}
+	if !strings.Contains(out.String(), "[skip] llm-wiki") {
+		t.Fatalf("expected skip on second apply, out=%s", out.String())
+	}
+
+	// 4. 上游更新 add --force（不传 --extra）保留原有扩展信息
+	skillAddExtra = ""
+	skillForce = true
+	skillSource = writeSkillFixture(t, "llm-wiki")
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(skillAddCmd, []string{"llm-wiki"}); err != nil {
+			t.Fatalf("force upgrade: %v", err)
+		}
+	})
+	skillForce = false
+
+	// 5. 通过 skill edit --extra-file 更新扩展信息 → apply 触发 backup+overwrite 刷入新地址
+	extraFile := filepath.Join(t.TempDir(), "extra.md")
+	if err := os.WriteFile(extraFile, []byte("- 服务地址: https://wiki-v2.example.internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillEditCmd.Flags().Set("extra-file", extraFile); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = skillEditCmd.Flags().Set("extra-file", "") })
+	captureStdout(t, func() {
+		if err := skillEditCmd.RunE(skillEditCmd, []string{"llm-wiki"}); err != nil {
+			t.Fatalf("skill edit --extra-file: %v", err)
+		}
+	})
+
+	c, out, _ = applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"llm-wiki"}); err != nil {
+		t.Fatalf("apply after edit extra: %v", err)
+	}
+	if !strings.Contains(out.String(), "[backup+overwrite] llm-wiki") {
+		t.Fatalf("expected backup+overwrite after extra update, out=%s", out.String())
+	}
+	installedV2, err := os.ReadFile(filepath.Join(agentsDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installedV2), "https://wiki-v2.example.internal") || strings.Contains(string(installedV2), "https://wiki.example.internal") {
+		t.Fatalf("installed SKILL.md not updated:\n%s", installedV2)
+	}
+}

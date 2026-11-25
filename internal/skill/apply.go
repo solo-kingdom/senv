@@ -91,12 +91,39 @@ func ResolveRoots(targets []string) ([]string, error) {
 type Action string
 
 const (
-	ActionCreate          Action = "create"
-	ActionSkip            Action = "skip"
-	ActionSkipConflict    Action = "skip-conflict"
-	ActionBackupOverwrite Action = "backup+overwrite"
-	ActionRemove          Action = "remove"
+	ActionCreate            Action = "create"
+	ActionSkip              Action = "skip"
+	ActionSkipConflict      Action = "skip-conflict"
+	ActionSkipMissingPath   Action = "skip-missing-path"
+	ActionSkipProjectOnly   Action = "skip-project-only"
+	ActionSkipScopeMismatch Action = "skip-scope-mismatch"
+	ActionBackupOverwrite   Action = "backup+overwrite"
+	ActionRemove            Action = "remove"
 )
+
+// ExpandInstallPath 把存储的 install_path（~ / ~/... / 绝对路径）展开为本机路径。
+func ExpandInstallPath(home, raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "", nil
+	}
+	if p == "~" {
+		if home == "" {
+			return "", fmt.Errorf("cannot expand %q: home directory is empty", raw)
+		}
+		return home, nil
+	}
+	if strings.HasPrefix(p, "~/") {
+		if home == "" {
+			return "", fmt.Errorf("cannot expand %q: home directory is empty", raw)
+		}
+		return filepath.Join(home, filepath.FromSlash(p[2:])), nil
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("install_path %q must be absolute or start with ~/", raw)
+	}
+	return filepath.Clean(p), nil
+}
 
 // Changes 报告该动作是否会写入磁盘（含 apply 与 unapply）。
 func (a Action) Changes() bool {
@@ -148,18 +175,38 @@ type treeNode struct {
 	data []byte
 }
 
-// expanded 是通过校验、已读入内存的归档（≤1 MiB）。
+// expanded 是通过校验、已读入内存的归档（≤1 MiB），含可选追加的 extra_info。
 type expanded struct {
 	id    string
 	tree  map[string]treeNode // 文件与目录（含隐含父目录），不含根
 	bytes []byte
+	extra string
 }
 
-func prepare(id string, archive []byte) (*expanded, error) {
+// AppendExtraToSkillMD 将扩展信息（extra_info）作为受管区块追加到 SKILL.md 末尾。
+// extra 为空（或纯空白）时原样返回 orig。
+func AppendExtraToSkillMD(orig []byte, extra string) []byte {
+	trimmed := strings.TrimSpace(extra)
+	if trimmed == "" {
+		return orig
+	}
+	var buf bytes.Buffer
+	buf.Write(orig)
+	if len(orig) > 0 && orig[len(orig)-1] != '\n' {
+		buf.WriteByte('\n')
+	}
+	buf.WriteString("\n<!-- senv:extra:start -->\n## Extra Context (senv)\n\n")
+	buf.WriteString(trimmed)
+	buf.WriteString("\n<!-- senv:extra:end -->\n")
+	return buf.Bytes()
+}
+
+func prepare(id string, archive []byte, extra string) (*expanded, error) {
 	if _, err := Validate(archive, id); err != nil {
 		return nil, err
 	}
-	ex := &expanded{id: id, tree: map[string]treeNode{}, bytes: archive}
+	trimmedExtra := strings.TrimSpace(extra)
+	ex := &expanded{id: id, tree: map[string]treeNode{}, bytes: archive, extra: trimmedExtra}
 	tr := tar.NewReader(bytes.NewReader(archive))
 	for {
 		hdr, err := tr.Next()
@@ -192,6 +239,9 @@ func prepare(id string, archive []byte) (*expanded, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill archive: %w", err)
 		}
+		if name == "SKILL.md" && trimmedExtra != "" {
+			data = AppendExtraToSkillMD(data, trimmedExtra)
+		}
 		ex.tree[name] = treeNode{exec: fs.FileMode(hdr.Mode).Perm()&0o111 != 0, data: data}
 	}
 	return ex, nil
@@ -199,7 +249,12 @@ func prepare(id string, archive []byte) (*expanded, error) {
 
 // Plan 校验归档并给出每个根上的动作，不写任何东西。
 func (a *Applier) Plan(id string, archive []byte) ([]PlanItem, error) {
-	ex, err := prepare(id, archive)
+	return a.PlanWithExtra(id, archive, "")
+}
+
+// PlanWithExtra 校验归档并在计算内容等价性时把 extra 追加到 SKILL.md 末尾。
+func (a *Applier) PlanWithExtra(id string, archive []byte, extra string) ([]PlanItem, error) {
+	ex, err := prepare(id, archive, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +451,12 @@ func treeMatches(dir string, want map[string]treeNode) (bool, error) {
 // skip / skip-conflict 只返回计划。校验失败时一个根都不会碰。
 // 单个根失败不影响其它根，错误记在对应 Result.Err。
 func (a *Applier) Apply(id string, archive []byte) ([]Result, error) {
-	ex, err := prepare(id, archive)
+	return a.ApplyWithExtra(id, archive, "")
+}
+
+// ApplyWithExtra 与 Apply 相同，但会在展开后的 SKILL.md 末尾追加 extra。
+func (a *Applier) ApplyWithExtra(id string, archive []byte, extra string) ([]Result, error) {
+	ex, err := prepare(id, archive, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -426,7 +486,7 @@ func (a *Applier) install(ex *expanded, item PlanItem) (backup string, err error
 	defer func() { _ = os.RemoveAll(work) }()
 
 	staged := filepath.Join(work, ex.id)
-	if err := extractTree(staged, ex.bytes); err != nil {
+	if err := extractTree(staged, ex.bytes, ex.extra); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(staged, OwnedMarker), nil, 0o644); err != nil {
@@ -572,7 +632,7 @@ func (a *Applier) removeManagedTree(root, id string) error {
 
 // extractTree 把（已校验的）归档展开到不存在的 dest。只取权限位的 Perm 部分
 // （丢弃 setuid/setgid/sticky），并保证属主可读写（目录可进入）、组/其他不可写。
-func extractTree(dest string, archive []byte) error {
+func extractTree(dest string, archive []byte, extra string) error {
 	if err := os.Mkdir(dest, 0o755); err != nil {
 		return fmt.Errorf("create staged skill directory: %w", err)
 	}
@@ -613,7 +673,17 @@ func extractTree(dest string, archive []byte) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, io.LimitReader(tr, hdr.Size)); err != nil {
+			if name == "SKILL.md" && strings.TrimSpace(extra) != "" {
+				orig, err := io.ReadAll(io.LimitReader(tr, hdr.Size))
+				if err != nil {
+					_ = f.Close()
+					return err
+				}
+				if _, err := f.Write(AppendExtraToSkillMD(orig, extra)); err != nil {
+					_ = f.Close()
+					return err
+				}
+			} else if _, err := io.Copy(f, io.LimitReader(tr, hdr.Size)); err != nil {
 				_ = f.Close()
 				return err
 			}

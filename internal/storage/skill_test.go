@@ -373,3 +373,104 @@ func TestClassifyRekeyEntrySkill(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillIndexGroupsAndEffectivePolicy(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	now := time.Now()
+	yes, no := true, false
+
+	index := NewSkillIndex()
+	index.Groups["base"] = SkillGroup{
+		Name:           "base",
+		Description:    "global base skills",
+		DefaultInstall: &yes,
+		InstallScope:   SkillScopeGlobal,
+		Targets:        []string{"agents"},
+	}
+	index.Groups["proj"] = SkillGroup{
+		Name:           "proj",
+		Description:    "project skills",
+		DefaultInstall: &yes,
+		InstallScope:   SkillScopeProject,
+		InstallPath:    "~/code/",
+	}
+	index.Skills["a"] = SkillEntry{ID: "a", Group: "base", CreatedAt: now, UpdatedAt: now}
+	index.Skills["b"] = SkillEntry{ID: "b", Group: "base", DefaultInstall: &no, Targets: []string{"claude"}, CreatedAt: now, UpdatedAt: now}
+	index.Skills["c"] = SkillEntry{ID: "c", Group: "proj", CreatedAt: now, UpdatedAt: now}
+	index.Skills["d"] = SkillEntry{ID: "d", Group: "legacy", CreatedAt: now, UpdatedAt: now}
+
+	if err := mgr.SaveSkillIndex(index); err != nil {
+		t.Fatalf("SaveSkillIndex: %v", err)
+	}
+	loaded, err := mgr.LoadSkillIndex()
+	if err != nil {
+		t.Fatalf("LoadSkillIndex: %v", err)
+	}
+	if loaded.Groups["proj"].InstallPath != "~/code" {
+		t.Fatalf("normalized install_path = %q, want ~/code", loaded.Groups["proj"].InstallPath)
+	}
+
+	pa := loaded.EffectivePolicy(loaded.Skills["a"])
+	if !pa.DefaultInstall || !pa.DefaultInstallInherited || pa.InstallScope != SkillScopeGlobal || len(pa.Targets) != 1 || pa.Targets[0] != "agents" {
+		t.Fatalf("policy a = %+v", pa)
+	}
+	pb := loaded.EffectivePolicy(loaded.Skills["b"])
+	if pb.DefaultInstall || pb.DefaultInstallInherited || len(pb.Targets) != 1 || pb.Targets[0] != "claude" {
+		t.Fatalf("policy b = %+v", pb)
+	}
+	pc := loaded.EffectivePolicy(loaded.Skills["c"])
+	if !pc.DefaultInstall || pc.InstallScope != SkillScopeProject || pc.InstallPath != "~/code" || !pc.InstallPathInherited {
+		t.Fatalf("policy c = %+v", pc)
+	}
+	pd := loaded.EffectivePolicy(loaded.Skills["d"])
+	if pd.DefaultInstall || pd.InstallScope != SkillScopeGlobal || len(pd.Targets) != 2 {
+		t.Fatalf("legacy policy d = %+v, want default=false scope=global targets=2", pd)
+	}
+}
+
+func TestSkillIndexInstallMetaValidation(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	now := time.Now()
+	badCases := []struct {
+		name  string
+		index *SkillIndex
+	}{
+		{
+			name: "bad scope",
+			index: &SkillIndex{Skills: map[string]SkillEntry{
+				"x": {ID: "x", InstallScope: "workspace", CreatedAt: now, UpdatedAt: now},
+			}},
+		},
+		{
+			name: "relative install path",
+			index: &SkillIndex{Skills: map[string]SkillEntry{
+				"x": {ID: "x", InstallScope: SkillScopeProject, InstallPath: "rel/dir", CreatedAt: now, UpdatedAt: now},
+			}},
+		},
+		{
+			name: "traversal install path",
+			index: &SkillIndex{Skills: map[string]SkillEntry{
+				"x": {ID: "x", InstallScope: SkillScopeProject, InstallPath: "~/../etc", CreatedAt: now, UpdatedAt: now},
+			}},
+		},
+		{
+			name: "global with install path",
+			index: &SkillIndex{Skills: map[string]SkillEntry{
+				"x": {ID: "x", InstallScope: SkillScopeGlobal, InstallPath: "~/code", CreatedAt: now, UpdatedAt: now},
+			}},
+		},
+		{
+			name: "bad target",
+			index: &SkillIndex{Skills: map[string]SkillEntry{
+				"x": {ID: "x", Targets: []string{"kiro"}, CreatedAt: now, UpdatedAt: now},
+			}},
+		},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := mgr.SaveSkillIndex(tc.index); err == nil {
+				t.Fatalf("SaveSkillIndex should reject %s", tc.name)
+			}
+		})
+	}
+}

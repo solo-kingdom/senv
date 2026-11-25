@@ -174,7 +174,7 @@ func TestManagerForceReplaceKeepsCreatedAtAndGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("force add: %v", err)
 	}
-	if second.Group != "work" || !second.CreatedAt.Equal(first.CreatedAt) || second.Description != "" {
+	if second.Group != "work" || !second.CreatedAt.Equal(first.CreatedAt) || second.Description != "v1" {
 		t.Fatalf("second = %+v first = %+v", second, first)
 	}
 	detail, err := mgr.Show("alpha")
@@ -187,6 +187,15 @@ func TestManagerForceReplaceKeepsCreatedAtAndGroup(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("force replace must store the new content")
+	}
+
+	// 显式清空 description
+	cleared, err := mgr.Add(AddOptions{ID: "alpha", SourceDir: skillSource(t, "alpha", nil), DescriptionSet: true, Description: "", Force: true})
+	if err != nil {
+		t.Fatalf("force clear description: %v", err)
+	}
+	if cleared.Description != "" {
+		t.Fatalf("cleared description = %q, want empty", cleared.Description)
 	}
 
 	// 显式换组：旧分组密文被清理
@@ -234,5 +243,139 @@ func TestManagerShowDetectsTamperedArchive(t *testing.T) {
 	_, err := mgr.Show("alpha")
 	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("Show error = %v, want unsupported type rejection", err)
+	}
+}
+
+func TestManagerGroupCRUDAndPolicyInheritance(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	yes, no := true, false
+
+	if _, err := mgr.AddGroup(GroupOptions{
+		Name:           "base",
+		Description:    "global base",
+		DefaultInstall: &yes,
+		InstallScope:   storage.SkillScopeGlobal,
+		Targets:        []string{"agents"},
+	}); err != nil {
+		t.Fatalf("AddGroup base: %v", err)
+	}
+	if _, err := mgr.AddGroup(GroupOptions{Name: "base", Description: "dup"}); err == nil {
+		t.Fatal("duplicate group add must fail")
+	}
+	if _, err := mgr.AddGroup(GroupOptions{Name: "proj", Description: "zilta", DefaultInstall: &yes, InstallScope: storage.SkillScopeProject, InstallPath: "~/zilta"}); err != nil {
+		t.Fatalf("AddGroup proj: %v", err)
+	}
+
+	if _, err := mgr.Add(AddOptions{ID: "s-base", SourceDir: skillSource(t, "s-base", nil), Group: "base"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Add(AddOptions{ID: "s-proj", SourceDir: skillSource(t, "s-proj", nil), Group: "proj"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Add(AddOptions{ID: "s-manual", SourceDir: skillSource(t, "s-manual", nil), Group: "base", DefaultInstall: &no}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 非空组不可删
+	if err := mgr.DeleteGroup("base"); err == nil {
+		t.Fatal("deleting non-empty group must fail")
+	}
+	if err := mgr.DeleteGroup("default"); err == nil {
+		t.Fatal("deleting default group must fail")
+	}
+
+	// ListWithPolicy 过滤
+	defaults, _, err := mgr.ListWithPolicy(ListFilter{DefaultOnly: true})
+	if err != nil || len(defaults) != 2 {
+		t.Fatalf("defaults = %+v err=%v", defaults, err)
+	}
+	projOnly, _, err := mgr.ListWithPolicy(ListFilter{Scope: storage.SkillScopeProject})
+	if err != nil || len(projOnly) != 1 || projOnly[0].Entry.ID != "s-proj" || projOnly[0].Policy.InstallPath != "~/zilta" {
+		t.Fatalf("projOnly = %+v err=%v", projOnly, err)
+	}
+
+	// EditGroup 修改组策略立即反映在继承条目上
+	if _, err := mgr.EditGroup(GroupEditOptions{Name: "proj", InstallPathSet: true, InstallPath: "~/code/zilta"}); err != nil {
+		t.Fatalf("EditGroup: %v", err)
+	}
+	_, pol, err := mgr.GetWithPolicy("s-proj")
+	if err != nil || pol.InstallPath != "~/code/zilta" {
+		t.Fatalf("inherited updated path = %+v err=%v", pol, err)
+	}
+
+	// 清空组后可删
+	if _, err := mgr.AddGroup(GroupOptions{Name: "empty", Description: "tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.DeleteGroup("empty"); err != nil {
+		t.Fatalf("DeleteGroup empty: %v", err)
+	}
+}
+
+func TestManagerEditMetadataAndMoveGroup(t *testing.T) {
+	mgr, store := newTestManager(t)
+	if _, err := mgr.Add(AddOptions{ID: "alpha", SourceDir: skillSource(t, "alpha", map[string]string{"extra.txt": "keep-me"}), Group: "g1", Description: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	newGrp := "g2"
+	newDesc := "new desc"
+	edited, err := mgr.Edit(EditOptions{
+		ID:                "alpha",
+		Group:             &newGrp,
+		Description:       &newDesc,
+		DefaultInstallSet: true,
+		DefaultInstall:    &yes,
+		InstallScopeSet:   true,
+		InstallScope:      storage.SkillScopeProject,
+		InstallPathSet:    true,
+		InstallPath:       "~/code",
+		TargetsSet:        true,
+		Targets:           []string{"agents"},
+	})
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if edited.Group != "g2" || edited.Description != "new desc" || edited.InstallScope != storage.SkillScopeProject || edited.InstallPath != "~/code" {
+		t.Fatalf("edited = %+v", edited)
+	}
+	// 密文迁移且归档内容完整保留
+	if _, err := os.Stat(filepath.Join(store.GetDataPath(), "skills", "g1", "alpha.enc")); !os.IsNotExist(err) {
+		t.Fatalf("old ciphertext must be deleted, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.GetDataPath(), "skills", "g2", "alpha.enc")); err != nil {
+		t.Fatalf("new ciphertext missing: %v", err)
+	}
+	detail, err := mgr.Show("alpha")
+	if err != nil || !detail.Policy.DefaultInstall || detail.Policy.InstallPath != "~/code" {
+		t.Fatalf("detail after edit = %+v err=%v", detail, err)
+	}
+	foundExtra := false
+	for _, f := range detail.Entries {
+		if f.Path == "extra.txt" {
+			foundExtra = true
+		}
+	}
+	if !foundExtra {
+		t.Fatal("Edit must not lose archive contents")
+	}
+
+	// 清除回继承
+	cleared, err := mgr.Edit(EditOptions{
+		ID:                "alpha",
+		DefaultInstallSet: true,
+		DefaultInstall:    nil,
+		InstallScopeSet:   true,
+		InstallScope:      "",
+		InstallPathSet:    true,
+		InstallPath:       "",
+		TargetsSet:        true,
+		Targets:           nil,
+	})
+	if err != nil {
+		t.Fatalf("Edit clear: %v", err)
+	}
+	if cleared.DefaultInstall != nil || cleared.InstallScope != "" || cleared.InstallPath != "" || len(cleared.Targets) != 0 {
+		t.Fatalf("cleared = %+v", cleared)
 	}
 }

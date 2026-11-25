@@ -180,11 +180,11 @@ func (t *skillTab) statusFor(entries []storage.SkillEntry) ([]skillTargetStatus,
 	if err != nil {
 		return out, err.Error()
 	}
-	_, archive, err := t.mgr.Skill.Archive(id)
+	entry, archive, err := t.mgr.Skill.Archive(id)
 	if err != nil {
 		return out, err.Error()
 	}
-	plan, err := applier.Plan(id, archive)
+	plan, err := applier.PlanWithExtra(id, archive, entry.ExtraInfo)
 	if err != nil {
 		return out, err.Error()
 	}
@@ -643,11 +643,11 @@ func (t *skillTab) enterPlan(kind string, all bool) (Tab, tea.Cmd) {
 	var items []skill.PlanItem
 	switch kind {
 	case "apply":
-		_, archive, err := t.mgr.Skill.Archive(id)
+		entry, archive, err := t.mgr.Skill.Archive(id)
 		if err != nil {
 			return t, warnToast(err.Error())
 		}
-		items, err = applier.Plan(id, archive)
+		items, err = applier.PlanWithExtra(id, archive, entry.ExtraInfo)
 		if err != nil {
 			return t, warnToast(err.Error())
 		}
@@ -721,12 +721,12 @@ func (t *skillTab) executePlan() tea.Cmd {
 		failed := false
 		switch kind {
 		case "apply":
-			_, archive, err := mgrs.Skill.Archive(id)
+			entry, archive, err := mgrs.Skill.Archive(id)
 			if err != nil {
 				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id, false, "apply failed")
 				return skillReloadMsg{toast: err.Error(), warn: true, id: id}
 			}
-			results, err := applier.Apply(id, archive)
+			results, err := applier.ApplyWithExtra(id, archive, entry.ExtraInfo)
 			if err != nil {
 				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id, false, "apply failed")
 				return skillReloadMsg{toast: err.Error(), warn: true, id: id}

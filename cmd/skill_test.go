@@ -31,10 +31,20 @@ func writeSkillFixture(t *testing.T, name string) string {
 
 func resetSkillFlags(t *testing.T) {
 	t.Helper()
-	skillSource, skillGroup, skillDescription, skillForce, skillListGroup = "", "", "", false, ""
-	t.Cleanup(func() {
-		skillSource, skillGroup, skillDescription, skillForce, skillListGroup = "", "", "", false, ""
-	})
+	reset := func() {
+		skillSource, skillGroup, skillDescription, skillForce = "", "", "", false
+		skillAddDefault, skillAddNoDefault = false, false
+		skillAddScope, skillAddInstallPath, skillAddTargets = "", "", nil
+		skillAddExtra, skillAddExtraFile = "", ""
+		skillEditGroup, skillEditDescription, skillEditDefault = "", "", ""
+		skillEditScope, skillEditInstallPath, skillEditTargets = "", "", nil
+		skillEditExtra, skillEditExtraFile = "", ""
+		skillListGroup, skillListDefaultOnly, skillListScope, skillListJSON = "", false, "", false
+		skillGrpDescription, skillGrpDefault, skillGrpEditDefault = "", false, ""
+		skillGrpScope, skillGrpInstallPath, skillGrpTargets = "", "", nil
+	}
+	reset()
+	t.Cleanup(reset)
 }
 
 func TestSkillCommandSurface(t *testing.T) {
@@ -42,7 +52,7 @@ func TestSkillCommandSurface(t *testing.T) {
 	for _, c := range skillCmd.Commands() {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"add", "list", "show", "remove", "apply", "unapply"} {
+	for _, want := range []string{"add", "edit", "list", "show", "remove", "group", "apply", "unapply"} {
 		if !names[want] {
 			t.Errorf("skill %s is missing", want)
 		}

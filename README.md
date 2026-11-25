@@ -427,23 +427,28 @@ senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 把一个 skill 目录（根下直接是 `SKILL.md`）加密入库，经 `senv sync` 带到别的机器，再写进本机 agent 的 skills 目录。适合不想公开的私有 skill；公开/半公开编目仍用 `dotf agents -c`，`senv skill` 不调用也不修改 dotf。
 
 ```bash
-senv skill add my-skill --source ./my-skill --description "说明"   # SKILL.md 的 frontmatter name 必须等于 id
-senv skill list                          # 列出（--group 过滤）
-senv skill show my-skill                 # 元数据与文件清单，不打印内容
+senv skill group add base --description "通用基础 skill" --default-install --scope global
+senv skill group add proj-a --description "项目 A 专用" --default-install --scope project --install-path ~/proj-a
+senv skill add my-skill --source ./my-skill --group base --description "说明"   # SKILL.md 的 frontmatter name 必须等于 id
+senv skill edit my-skill --default-install false --scope project --install-path ~/code  # 只改元数据不动归档
+senv skill edit llm-wiki --extra-file ./wiki-extra.md  # 为无状态 skill 附加实例扩展信息（apply 时拼到 SKILL.md 末尾）
+senv skill list                          # 按分组列出（含 default/manual 与安装位置；支持 --group / --default / --scope / --json）
+senv skill show my-skill                 # 元数据、生效安装策略与文件清单，不打印内容
 senv sync                                # 与其它数据一起同步到别的机器
-senv skill apply --all --dry-run         # 先看计划（全选 vault）
-senv skill apply --all --yes             # 写入 ~/.agents/skills/<id> 与 ~/.claude/skills/<id>
-senv skill apply a b --yes               # 多选若干 id
-senv skill apply --all --scope project --target agents --yes  # 当前项目，只写 ./.agents/skills
-senv skill unapply --all --dry-run       # 撤回计划（只删带 .senv-owned 的托管目录）
+senv skill apply --default --dry-run     # 新机初始化/日常对齐首选：只装 default_install=true，按策略自动路由
+senv skill apply --default --yes         # 确认执行
+senv skill apply a b --scope project --dir ~/my-repo --target agents --yes  # 指定项目目录与目标根
+senv skill unapply --default --dry-run   # 撤回计划（只删带 .senv-owned 的托管目录）
 senv skill unapply my-skill --yes        # 撤回本机 apply，vault 条目保留
 senv skill remove my-skill               # 只删 vault 条目，已 apply 的目录保留
 ```
 
 要点：
 
-- **id 在整个 vault 内唯一**（跨分组不可重名）；已存在需 `--force`。符号链接与特殊文件会被拒绝。
-- **apply 选择器**：多个 id（多选）、`--group`、或 `--all`（全选）三选一。`--scope global|project`（默认 global）；`--target agents|claude|all`（可重复/逗号，默认 all）。
+- **分组与安装策略继承**：分组（`senv skill group add/edit/list/delete`）和单条 skill（`add`/`edit`）均可声明 `default_install`、`install_scope`（`global` / `project`）、`install_path`（仅 `project` 可选，支持 `~`）与 `targets`。条目未设置时继承所属分组，最终兜底 `default_install=false`、`install_scope=global`、`targets=all`。
+- **扩展信息（`extra_info`）**：通过 `add`/`edit` 的 `--extra` / `--extra-file`（≤32 KiB）可为无状态服务 skill 附加具体服务地址、访问方式等实例上下文；`apply` 时自动以受管区块追加到目标 `SKILL.md` 末尾并参与漂移检测，上游 `add --force` 升级归档时自动保留（不做 `{{env:...}}` 解引用，勿写明文密钥）。
+- **id 在整个 vault 内唯一**（跨分组不可重名）；`add --force` 替换归档时保留未传入的元数据。符号链接与特殊文件会被拒绝。
+- **apply 选择器与自动路由**：多个 id、`--group`、`--default`、`--all` 四选一。未传 `--scope` 时按每条 skill 生效策略自动路由：全局进 `$HOME`，带 `install_path` 的项目 skill 装入对应目录（目录不存在则 `skip-missing-path` 跳过），无 `install_path` 的项目 skill 报 `skip-project-only`；显式 `--scope global` 选中项目 skill 时默认 `skip-scope-mismatch`（加 `--force-scope` 才强装）。
 - **apply 的冲突策略**：目标是符号链接、或没有 `.senv-owned` 标记的已有目录时只警告并跳过；带标记且内容有变化时，旧目录移到 `~/.local/state/senv/skill-apply/backups/`（不在 skills 目录里）再换入新版本。全局家目录取自操作系统，项目根取自当前工作目录，均不受 `--path` 影响。
 - **存量软链不会自动迁移**：已有的手工软链 skill 不会被接管，要纳入请自行 `skill add` 并先处理原软链。
 - **体积上限**：目录打包后明文不超过 1 MiB；`skill` 类条目在 server 上的密文上限是 1.5 MiB（其它类型仍是 512 KiB）。

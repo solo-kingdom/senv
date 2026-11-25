@@ -125,8 +125,8 @@ func vaultHasSkill(t *testing.T, cfg, data, id string) bool {
 func resetSkillApplyFlags(t *testing.T) {
 	t.Helper()
 	reset := func() {
-		skillApplyGroup, skillApplyAll, skillApplyDryRun, skillApplyYes = "", false, false, false
-		skillApplyScope = "global"
+		skillApplyGroup, skillApplyDefault, skillApplyAll, skillApplyDryRun, skillApplyYes = "", false, false, false, false
+		skillApplyScope, skillApplyDir, skillApplyForceScope = "", "", false
 		skillApplyTargets = nil
 	}
 	reset()

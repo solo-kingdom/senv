@@ -25,18 +25,55 @@ const (
 	SkillDefaultGroup = "default"
 	// MaxSkillPlaintext 是加密前 skill tar 归档的大小上限（1 MiB）。
 	MaxSkillPlaintext = 1 << 20
+	// MaxSkillExtraBytes 是 skill 扩展信息（extra_info）的字节上限（32 KiB）。
+	MaxSkillExtraBytes = 32 * 1024
+
+	// SkillScopeGlobal / SkillScopeProject 是 skill 安装作用域枚举。
+	SkillScopeGlobal  = "global"
+	SkillScopeProject = "project"
+
+	// SkillTargetAgents / SkillTargetClaude 是 skill 安装目标根简称。
+	SkillTargetAgents = "agents"
+	SkillTargetClaude = "claude"
 )
 
+// SkillGroup 是 skill 分组的元数据与组级默认安装策略。
+// 条目未显式设置的字段会继承所属分组的策略。
+type SkillGroup struct {
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	DefaultInstall *bool    `json:"default_install,omitempty"`
+	InstallScope   string   `json:"install_scope,omitempty"` // "" | "global" | "project"
+	InstallPath    string   `json:"install_path,omitempty"`  // scope=project 时的推荐根目录（支持 ~ 前缀）
+	Targets        []string `json:"targets,omitempty"`       // 可选：agents / claude
+}
+
 // SkillEntry 是 skill 索引中的一条元数据。正文（ustar tar）单独加密存放在
-// EncryptedFile 指向的密文里；索引本身是明文 JSON，description 可见，可见性
-// 与 config_index 相同。
+// EncryptedFile 指向的密文里；索引本身在 v2 下加密存储。
 type SkillEntry struct {
-	ID            string    `json:"id"`
-	Group         string    `json:"group,omitempty"` // 空值等价于 default
-	Description   string    `json:"description,omitempty"`
-	EncryptedFile string    `json:"encrypted_file"` // 相对数据目录：skills/<group>/<id>.enc
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Group          string    `json:"group,omitempty"` // 空值等价于 default
+	Description    string    `json:"description,omitempty"`
+	DefaultInstall *bool     `json:"default_install,omitempty"` // nil = 继承组，最终兜底 false
+	InstallScope   string    `json:"install_scope,omitempty"`   // "" = 继承组，最终兜底 global
+	InstallPath    string    `json:"install_path,omitempty"`    // "" = 继承组（仅 project 生效）
+	Targets        []string  `json:"targets,omitempty"`         // 空 = 继承组，最终兜底全部
+	ExtraInfo      string    `json:"extra_info,omitempty"`      // apply 时追加到 SKILL.md 末尾的实例扩展信息（Markdown，勿放明文密钥）
+	EncryptedFile  string    `json:"encrypted_file"`            // 相对数据目录：skills/<group>/<id>.enc
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// SkillEffectivePolicy 是条目继承分组后的生效安装策略。
+type SkillEffectivePolicy struct {
+	DefaultInstall          bool     `json:"default_install"`
+	DefaultInstallInherited bool     `json:"default_install_inherited,omitempty"`
+	InstallScope            string   `json:"install_scope"` // 恒为 global 或 project
+	InstallScopeInherited   bool     `json:"install_scope_inherited,omitempty"`
+	InstallPath             string   `json:"install_path,omitempty"` // 仅 project 时有效
+	InstallPathInherited    bool     `json:"install_path_inherited,omitempty"`
+	Targets                 []string `json:"targets"` // 恒非空
+	TargetsInherited        bool     `json:"targets_inherited,omitempty"`
 }
 
 // NormalizedGroup 返回生效的分组名（空值回落 default）。
@@ -50,12 +87,70 @@ func (e SkillEntry) NormalizedGroup() string {
 // SkillIndex 是 skill 索引。键为 skill id，id 在整个 vault 内全局唯一（跨分组
 // 不可重名），避免 apply 时撞到同一目标路径。
 type SkillIndex struct {
+	Groups map[string]SkillGroup `json:"groups,omitempty"`
 	Skills map[string]SkillEntry `json:"skills"`
 }
 
 // NewSkillIndex 创建空索引。
 func NewSkillIndex() *SkillIndex {
-	return &SkillIndex{Skills: make(map[string]SkillEntry)}
+	return &SkillIndex{
+		Groups: make(map[string]SkillGroup),
+		Skills: make(map[string]SkillEntry),
+	}
+}
+
+// EffectivePolicy 解析条目继承分组后的生效安装策略。
+func (idx *SkillIndex) EffectivePolicy(entry SkillEntry) SkillEffectivePolicy {
+	var grp SkillGroup
+	var hasGrp bool
+	if idx != nil && idx.Groups != nil {
+		grp, hasGrp = idx.Groups[entry.NormalizedGroup()]
+	}
+
+	var p SkillEffectivePolicy
+	switch {
+	case entry.DefaultInstall != nil:
+		p.DefaultInstall = *entry.DefaultInstall
+	case hasGrp && grp.DefaultInstall != nil:
+		p.DefaultInstall = *grp.DefaultInstall
+		p.DefaultInstallInherited = true
+	default:
+		p.DefaultInstall = false
+		p.DefaultInstallInherited = true
+	}
+
+	switch {
+	case entry.InstallScope != "":
+		p.InstallScope = entry.InstallScope
+	case hasGrp && grp.InstallScope != "":
+		p.InstallScope = grp.InstallScope
+		p.InstallScopeInherited = true
+	default:
+		p.InstallScope = SkillScopeGlobal
+		p.InstallScopeInherited = true
+	}
+
+	if p.InstallScope == SkillScopeProject {
+		switch {
+		case entry.InstallPath != "":
+			p.InstallPath = entry.InstallPath
+		case hasGrp && grp.InstallPath != "":
+			p.InstallPath = grp.InstallPath
+			p.InstallPathInherited = true
+		}
+	}
+
+	switch {
+	case len(entry.Targets) > 0:
+		p.Targets = append([]string(nil), entry.Targets...)
+	case hasGrp && len(grp.Targets) > 0:
+		p.Targets = append([]string(nil), grp.Targets...)
+		p.TargetsInherited = true
+	default:
+		p.Targets = []string{SkillTargetAgents, SkillTargetClaude}
+		p.TargetsInherited = true
+	}
+	return p
 }
 
 // SkillEncryptedFile 返回 (group,id) 对应的规范密文相对路径。
@@ -95,6 +190,104 @@ func ValidateSkillID(id string) error {
 	return nil
 }
 
+// ValidateSkillExtraInfo 校验并归一 skill 扩展信息（去除首尾空白，限制最大 32 KiB，拒绝 NUL 字节）。
+func ValidateSkillExtraInfo(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(trimmed, 0) {
+		return "", fmt.Errorf("invalid skill extra_info: contains NUL byte")
+	}
+	if len(trimmed) > MaxSkillExtraBytes {
+		return "", fmt.Errorf("skill extra_info is %d bytes, exceeds the %d byte (32 KiB) limit", len(trimmed), MaxSkillExtraBytes)
+	}
+	return trimmed, nil
+}
+
+// ValidateSkillInstallScope 校验并归一安装作用域（空值表示继承）。
+func ValidateSkillInstallScope(scope string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(scope))
+	switch s {
+	case "", SkillScopeGlobal, SkillScopeProject:
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid skill install scope %q (want global or project)", scope)
+	}
+}
+
+// ValidateSkillInstallPath 校验并归一推荐安装路径（空值表示未设置）。
+// 仅接受 ~ / ~/... 或绝对路径，拒绝控制字符与 .. 穿越段。
+func ValidateSkillInstallPath(raw string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "", nil
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("invalid skill install path %q: contains control characters", raw)
+		}
+	}
+	slashed := filepath.ToSlash(p)
+	if slashed != "~" && !strings.HasPrefix(slashed, "~/") && !strings.HasPrefix(slashed, "/") {
+		return "", fmt.Errorf("invalid skill install path %q: must be an absolute path or start with ~/", raw)
+	}
+	for _, seg := range strings.Split(slashed, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("invalid skill install path %q: '..' segments are not allowed", raw)
+		}
+	}
+	if slashed == "~" {
+		return "~", nil
+	}
+	if strings.HasPrefix(slashed, "~/") {
+		rest := strings.TrimPrefix(slashed, "~/")
+		cleaned := filepath.ToSlash(filepath.Clean(rest))
+		if cleaned == "." || cleaned == "" {
+			return "~", nil
+		}
+		return "~/" + cleaned, nil
+	}
+	return filepath.ToSlash(filepath.Clean(slashed)), nil
+}
+
+// ValidateSkillTargets 校验并归一目标根简称列表（空列表表示继承）。
+func ValidateSkillTargets(targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range targets {
+		for _, part := range strings.Split(raw, ",") {
+			p := strings.ToLower(strings.TrimSpace(part))
+			if p == "" {
+				continue
+			}
+			switch p {
+			case "all":
+				return []string{SkillTargetAgents, SkillTargetClaude}, nil
+			case SkillTargetAgents, "agent":
+				if !seen[SkillTargetAgents] {
+					seen[SkillTargetAgents] = true
+					out = append(out, SkillTargetAgents)
+				}
+			case SkillTargetClaude, "claude-code":
+				if !seen[SkillTargetClaude] {
+					seen[SkillTargetClaude] = true
+					out = append(out, SkillTargetClaude)
+				}
+			default:
+				return nil, fmt.Errorf("invalid skill target %q (want agents, claude, or all)", part)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 // normalizeSkillIndex 对索引做失败关闭的校验：任何身份异常都使整个索引不可用，
 // 不静默丢条目。返回的是规范化副本（空 group → default，空 encrypted_file → 规范路径）。
 func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
@@ -102,6 +295,40 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 		return nil, fmt.Errorf("skill index is nil")
 	}
 	normalized := NewSkillIndex()
+	for mapName, grp := range index.Groups {
+		if grp.Name != "" && grp.Name != mapName {
+			return nil, fmt.Errorf("skill group identity mismatch: map key %q does not match name %q", mapName, grp.Name)
+		}
+		name, err := ValidateSkillGroup(mapName)
+		if err != nil {
+			return nil, err
+		}
+		desc, err := ValidateDescription(grp.Description, true)
+		if err != nil {
+			return nil, fmt.Errorf("skill group %q: %w", name, err)
+		}
+		scope, err := ValidateSkillInstallScope(grp.InstallScope)
+		if err != nil {
+			return nil, fmt.Errorf("skill group %q: %w", name, err)
+		}
+		installPath, err := ValidateSkillInstallPath(grp.InstallPath)
+		if err != nil {
+			return nil, fmt.Errorf("skill group %q: %w", name, err)
+		}
+		if scope == SkillScopeGlobal && installPath != "" {
+			return nil, fmt.Errorf("skill group %q: install_path cannot be set when install_scope is global", name)
+		}
+		targets, err := ValidateSkillTargets(grp.Targets)
+		if err != nil {
+			return nil, fmt.Errorf("skill group %q: %w", name, err)
+		}
+		grp.Name = name
+		grp.Description = desc
+		grp.InstallScope = scope
+		grp.InstallPath = installPath
+		grp.Targets = targets
+		normalized.Groups[name] = grp
+	}
 	for mapID, entry := range index.Skills {
 		if entry.ID != mapID {
 			return nil, fmt.Errorf("skill index identity mismatch: map key %q does not match id %q", mapID, entry.ID)
@@ -113,6 +340,25 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 		if err := ValidateSkillID(mapID); err != nil {
 			return nil, err
 		}
+		scope, err := ValidateSkillInstallScope(entry.InstallScope)
+		if err != nil {
+			return nil, fmt.Errorf("skill %q: %w", mapID, err)
+		}
+		installPath, err := ValidateSkillInstallPath(entry.InstallPath)
+		if err != nil {
+			return nil, fmt.Errorf("skill %q: %w", mapID, err)
+		}
+		if scope == SkillScopeGlobal && installPath != "" {
+			return nil, fmt.Errorf("skill %q: install_path cannot be set when install_scope is global", mapID)
+		}
+		targets, err := ValidateSkillTargets(entry.Targets)
+		if err != nil {
+			return nil, fmt.Errorf("skill %q: %w", mapID, err)
+		}
+		extraInfo, err := ValidateSkillExtraInfo(entry.ExtraInfo)
+		if err != nil {
+			return nil, fmt.Errorf("skill %q: %w", mapID, err)
+		}
 		canonical := SkillEncryptedFile(group, mapID)
 		if entry.EncryptedFile == "" {
 			entry.EncryptedFile = canonical
@@ -120,6 +366,10 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 			return nil, fmt.Errorf("skill index encrypted file mismatch for %q: got %q, want %q", mapID, entry.EncryptedFile, canonical)
 		}
 		entry.Group = group
+		entry.InstallScope = scope
+		entry.InstallPath = installPath
+		entry.Targets = targets
+		entry.ExtraInfo = extraInfo
 		normalized.Skills[mapID] = entry
 	}
 	return normalized, nil
