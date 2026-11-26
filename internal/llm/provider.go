@@ -151,6 +151,10 @@ type AddProviderOptions struct {
 	// BackgroundModel 是档案显式声明的后台模型（ADR-0029），必须属于最终
 	// 模型集；空值表示未声明，切换时回退默认模型。
 	BackgroundModel string
+	// OpusModel / SonnetModel 是档案显式声明的 Claude Code opus/sonnet 档位模型，
+	// 必须属于最终模型集；空值表示未声明。
+	OpusModel   string
+	SonnetModel string
 	// APIShape 可选声明接口形态（openai-chat | openai-responses | anthropic）；
 	// 空值表示不声明，切换时按目标 agent 协议族归一（ADR-0006）。
 	APIShape string
@@ -216,6 +220,14 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 	if backgroundModel != "" && !slices.Contains(models, backgroundModel) {
 		return nil, fmt.Errorf("background model %q is not in the model set", backgroundModel)
 	}
+	opusModel := strings.TrimSpace(opts.OpusModel)
+	if opusModel != "" && !slices.Contains(models, opusModel) {
+		return nil, fmt.Errorf("opus model %q is not in the model set", opusModel)
+	}
+	sonnetModel := strings.TrimSpace(opts.SonnetModel)
+	if sonnetModel != "" && !slices.Contains(models, sonnetModel) {
+		return nil, fmt.Errorf("sonnet model %q is not in the model set", sonnetModel)
+	}
 
 	now := time.Now().Truncate(time.Second).UTC()
 	entry := &storage.LLMProviderEntry{
@@ -228,6 +240,8 @@ func (m *ProviderManager) AddProvider(opts AddProviderOptions) (*AddProviderResu
 		ModelInfo:       modelInfo,
 		DefaultModel:    defaultModel,
 		BackgroundModel: backgroundModel,
+		OpusModel:       opusModel,
+		SonnetModel:     sonnetModel,
 		Description:     desc,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -362,6 +376,10 @@ type EditProviderOptions struct {
 	// BackgroundModel 非 nil 时应用档案后台模型声明（ADR-0029）：指向空字符串
 	// 表示清除声明（切换回退默认模型）；nil 表示保留原值。
 	BackgroundModel *string
+	// OpusModel / SonnetModel 非 nil 时应用档案档位模型声明：指向空字符串表示
+	// 清除声明；nil 表示保留原值。
+	OpusModel   *string
+	SonnetModel *string
 	APIShape        *string
 	// ShapeURLs 非 nil 时应用形态地址：出现的 key 设置（空值清除），未出现的
 	// key 保留原值；nil 表示保留全部形态地址。
@@ -482,6 +500,18 @@ func (m *ProviderManager) EditProvider(opts EditProviderOptions) (*AddProviderRe
 	}
 	if entry.BackgroundModel != "" && !slices.Contains(entry.Models, entry.BackgroundModel) {
 		return nil, fmt.Errorf("background model %q is not in the final model set", entry.BackgroundModel)
+	}
+	if opts.OpusModel != nil {
+		entry.OpusModel = strings.TrimSpace(*opts.OpusModel)
+	}
+	if entry.OpusModel != "" && !slices.Contains(entry.Models, entry.OpusModel) {
+		return nil, fmt.Errorf("opus model %q is not in the final model set", entry.OpusModel)
+	}
+	if opts.SonnetModel != nil {
+		entry.SonnetModel = strings.TrimSpace(*opts.SonnetModel)
+	}
+	if entry.SonnetModel != "" && !slices.Contains(entry.Models, entry.SonnetModel) {
+		return nil, fmt.Errorf("sonnet model %q is not in the final model set", entry.SonnetModel)
 	}
 
 	if apiKey != "" {

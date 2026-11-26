@@ -171,8 +171,14 @@ func driveAISwitch(t *testing.T, tab *aiTab, agentSteps, modelSteps int, trigger
 		tab.Update(runeKey("j"))
 	}
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// 含 claude-code 的完整切换多一步后台模型（ADR-0029）；M 与其他 agent 没有。
+	// 含 claude-code 的完整切换多后台模型及可选 opus/sonnet 档位步骤；M 与其他 agent 没有。
 	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if tab.flow == aiFlowSelectOpus {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	if tab.flow == aiFlowSelectSonnet {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	}
 	// 完整切换（非 M）多一步凭据模式（ADR-0031）：默认 auto 直接回车。
@@ -254,6 +260,12 @@ func TestAITabLeftPaneSwitchPicksAgents(t *testing.T) {
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 默认模型
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 后台模型（含 claude-code）或凭据模式
 	if tab.flow == aiFlowSelectBackground {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → opus 档位
+	}
+	if tab.flow == aiFlowSelectOpus {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → sonnet 档位
+	}
+	if tab.flow == aiFlowSelectSonnet {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → 凭据模式
 	}
 	if tab.flow == aiFlowSelectCredentialMode {
@@ -936,6 +948,12 @@ func TestAITabSwitchSelectionSubset(t *testing.T) {
 	if tab.flow == aiFlowSelectBackground {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 后台模型步骤（claude-code）
 	}
+	if tab.flow == aiFlowSelectOpus {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opus 档位步骤（默认 skip）
+	}
+	if tab.flow == aiFlowSelectSonnet {
+		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // sonnet 档位步骤（默认 skip）
+	}
 	if tab.flow == aiFlowSelectCredentialMode {
 		tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // 凭据模式步骤（ADR-0031）
 	}
@@ -999,6 +1017,15 @@ func TestAITabSwitchBackgroundModelStep(t *testing.T) {
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	tab.Update(runeKey("j")) // 选 m2 作为后台模型
 	tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if tab.flow != aiFlowSelectOpus {
+		t.Fatalf("flow = %v, want selectOpus", tab.flow)
+	}
+	// opus / sonnet 默认游标在 0（skip），一路回车不写入这两个键。
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → sonnet
+	if tab.flow != aiFlowSelectSonnet {
+		t.Fatalf("flow = %v, want selectSonnet", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → credentialMode
 	if tab.flow != aiFlowSelectCredentialMode {
 		t.Fatalf("flow = %v, want selectCredentialMode", tab.flow)
 	}
@@ -1024,6 +1051,63 @@ func TestAITabSwitchBackgroundModelStep(t *testing.T) {
 	if !strings.Contains(string(raw), `"ANTHROPIC_SMALL_FAST_MODEL": "m2"`) ||
 		!strings.Contains(string(raw), `"ANTHROPIC_DEFAULT_HAIKU_MODEL": "m2"`) {
 		t.Fatalf("settings.json missing the background model:\n%s", raw)
+	}
+}
+
+// TestAITabSwitchOpusAndSonnetSteps 覆盖 claude-code 向导中可选的 opus/sonnet
+// 档位步骤：选中具体模型后写入 ANTHROPIC_DEFAULT_OPUS_MODEL /
+// ANTHROPIC_DEFAULT_SONNET_MODEL，且 esc 正确回退上一步。
+func TestAITabSwitchOpusAndSonnetSteps(t *testing.T) {
+	tab, home, _ := newAITestTab(t)
+	runAITabLoad(t, tab)
+	tab.focusLeft = false
+	tab.agentIndex = rowIndexOf(t, tab, "claude-code")
+
+	tab.Update(runeKey("s"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // model set → default
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // default → background
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // background → opus
+	if tab.flow != aiFlowSelectOpus {
+		t.Fatalf("flow = %v, want selectOpus", tab.flow)
+	}
+	// candidates = ["", "m1", "m2"]：按一次 j 选 m1。
+	tab.Update(runeKey("j"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → sonnet
+	if tab.flow != aiFlowSelectSonnet {
+		t.Fatalf("flow = %v, want selectSonnet", tab.flow)
+	}
+	// esc 回到 opus，再按回车前进回 sonnet。
+	tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if tab.flow != aiFlowSelectOpus {
+		t.Fatalf("esc: flow = %v, want selectOpus", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → sonnet
+	// candidates = ["", "m1", "m2"]：按两次 j 选 m2。
+	tab.Update(runeKey("j"))
+	tab.Update(runeKey("j"))
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → credentialMode
+	if tab.flow != aiFlowSelectCredentialMode {
+		t.Fatalf("flow = %v, want selectCredentialMode", tab.flow)
+	}
+	tab.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → confirm
+	if tab.flow != aiFlowConfirm {
+		t.Fatalf("flow = %v, want confirm", tab.flow)
+	}
+	if tab.flowOpus != "m1" || tab.flowSonnet != "m2" {
+		t.Fatalf("flow tiers = (%q, %q), want (m1, m2)", tab.flowOpus, tab.flowSonnet)
+	}
+	_, cmd := tab.Update(runeKey("y"))
+	batch := switchOutcome(t, cmd())
+	if batch.results[0].err != nil {
+		t.Fatalf("switch error: %v", batch.results[0].err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"ANTHROPIC_DEFAULT_OPUS_MODEL": "m1"`) ||
+		!strings.Contains(string(raw), `"ANTHROPIC_DEFAULT_SONNET_MODEL": "m2"`) {
+		t.Fatalf("settings.json missing opus/sonnet models:\n%s", raw)
 	}
 }
 

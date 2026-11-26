@@ -180,3 +180,80 @@ func TestClaudeCodeStaleTierWarningThroughSwitch(t *testing.T) {
 		}
 	}
 }
+
+// SwitchWithOptions：档案声明 opus_model / sonnet_model 与单次覆盖的优先级、
+// 1M 模型的 [1m] 后缀投影，以及不在模型集内时的 fail-closed 校验。
+func TestClaudeCodeTierModelProjectionAndOverride(t *testing.T) {
+	pm, _, _ := newTestProviderManager(t)
+	if _, err := pm.AddProvider(AddProviderOptions{
+		Alias: "zhipu", BaseURL: "https://open.bigmodel.cn/api/anthropic", APIKey: "sk-secret",
+		Models:        []string{"glm-5.4", "glm-5.3-flash", "glm-5.4-mini"},
+		ModelContexts: map[string]int{"glm-5.4": claudeContext1M, "glm-5.3-flash": 200_000, "glm-5.4-mini": 200_000},
+		DefaultModel:  "glm-5.4",
+		OpusModel:     "glm-5.4",
+		SonnetModel:   "glm-5.3-flash",
+	}); err != nil {
+		t.Fatalf("AddProvider() error = %v", err)
+	}
+	home := t.TempDir()
+	sm := NewSwitchManager(pm, "", home)
+	configPath := claudeCodeAdapter().ConfigPath(home)
+
+	// 1) 走档案声明：glm-5.4 声明 1M 应带 [1m]，glm-5.3-flash 原样写入。
+	out, err := sm.SwitchWithOptions(SwitchOptions{
+		AgentID:        "claude-code",
+		ProviderAlias:  "zhipu",
+		CredentialMode: CredentialModeInline,
+	})
+	if err != nil {
+		t.Fatalf("SwitchWithOptions(profile) error = %v", err)
+	}
+	if out.OpusModel != "glm-5.4[1m]" || out.SonnetModel != "glm-5.3-flash" {
+		t.Fatalf("out tiers = (%q, %q), want (glm-5.4[1m], glm-5.3-flash)", out.OpusModel, out.SonnetModel)
+	}
+	env := readClaudeEnv(t, configPath)
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "glm-5.4[1m]" || env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "glm-5.3-flash" {
+		t.Fatalf("settings env tiers = (%v, %v)", env["ANTHROPIC_DEFAULT_OPUS_MODEL"], env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+
+	// 2) 单次覆盖优先于档案声明，且不回写档案。
+	out, err = sm.SwitchWithOptions(SwitchOptions{
+		AgentID:        "claude-code",
+		ProviderAlias:  "zhipu",
+		OpusModel:      "glm-5.4-mini",
+		SonnetModel:    "glm-5.4",
+		CredentialMode: CredentialModeInline,
+	})
+	if err != nil {
+		t.Fatalf("SwitchWithOptions(override) error = %v", err)
+	}
+	if out.OpusModel != "glm-5.4-mini" || out.SonnetModel != "glm-5.4[1m]" {
+		t.Fatalf("override out tiers = (%q, %q)", out.OpusModel, out.SonnetModel)
+	}
+	env = readClaudeEnv(t, configPath)
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "glm-5.4-mini" || env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "glm-5.4[1m]" {
+		t.Fatalf("override settings env = (%v, %v)", env["ANTHROPIC_DEFAULT_OPUS_MODEL"], env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+	entry, err := pm.GetProvider("zhipu")
+	if err != nil || entry.OpusModel != "glm-5.4" || entry.SonnetModel != "glm-5.3-flash" {
+		t.Fatalf("profile mutated: (%q, %q, %v)", entry.OpusModel, entry.SonnetModel, err)
+	}
+
+	// 3) 不在模型集内的显式值 fail-closed。
+	if _, err := sm.SwitchWithOptions(SwitchOptions{
+		AgentID:        "claude-code",
+		ProviderAlias:  "zhipu",
+		OpusModel:      "ghost",
+		CredentialMode: CredentialModeInline,
+	}); err == nil || !strings.Contains(err.Error(), "opus model") {
+		t.Fatalf("ghost opus err = %v, want opus model error", err)
+	}
+	if _, err := sm.SwitchWithOptions(SwitchOptions{
+		AgentID:        "claude-code",
+		ProviderAlias:  "zhipu",
+		SonnetModel:    "ghost",
+		CredentialMode: CredentialModeInline,
+	}); err == nil || !strings.Contains(err.Error(), "sonnet model") {
+		t.Fatalf("ghost sonnet err = %v, want sonnet model error", err)
+	}
+}

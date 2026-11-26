@@ -35,6 +35,9 @@ var (
 	aiSwitchDefaultModel string
 	// aiSwitchBackgroundModel 是单次切换的后台模型覆盖（ADR-0029）。
 	aiSwitchBackgroundModel string
+	// aiSwitchOpusModel / aiSwitchSonnetModel 是单次切换的 Claude Code 档位覆盖。
+	aiSwitchOpusModel   string
+	aiSwitchSonnetModel string
 	// aiSwitchCredentialMode 是单次切换的凭据模式偏好（ADR-0031）。
 	aiSwitchCredentialMode string
 	// aiSwitchModel 只为让已移除的 --model 给出可读错误而注册，不参与写入。
@@ -97,6 +100,13 @@ provider profile's background model is used, falling back to the default model.
 The fallback exists because Claude Code's built-in default (claude-haiku) does
 not exist on self-hosted gateways, which silently breaks auto-compaction.
 
+Claude Code also supports optional opus/sonnet tier mappings written as
+ANTHROPIC_DEFAULT_OPUS_MODEL and ANTHROPIC_DEFAULT_SONNET_MODEL in settings.json:
+--opus-model / --sonnet-model override them for this switch; otherwise the
+provider profile's opus_model / sonnet_model is used (with [1m] suffix when the
+model's declared context window is 1M or more). When neither is set, senv leaves
+those keys unmanaged and only heals stale values outside the model set.
+
 Claude Code 1M context is turned on by a [1m] suffix on the model name actually
 sent: models whose declared context window is 1M or more get the suffix on the
 modelPicker row and the top-level default model, while behavesAs stays without
@@ -126,7 +136,16 @@ OpenAI-compatible agents with it.`,
 			return err
 		}
 		sm := llm.NewSwitchManager(mgr, agentPointerPath(), home)
-		out, err := sm.Switch(args[0], args[1], models, defaultModel, strings.TrimSpace(aiSwitchBackgroundModel), credMode)
+		out, err := sm.SwitchWithOptions(llm.SwitchOptions{
+			AgentID:         args[0],
+			ProviderAlias:   args[1],
+			Models:          models,
+			DefaultModel:    defaultModel,
+			BackgroundModel: strings.TrimSpace(aiSwitchBackgroundModel),
+			OpusModel:       strings.TrimSpace(aiSwitchOpusModel),
+			SonnetModel:     strings.TrimSpace(aiSwitchSonnetModel),
+			CredentialMode:  credMode,
+		})
 		if err != nil {
 			auditOp(session.AuditOpLLMSwitch, "agent:"+args[0], false, "switch 失败")
 			return err
@@ -150,6 +169,14 @@ OpenAI-compatible agents with it.`,
 		if out.BackgroundModel != "" {
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  后台模型：%s（写入 ANTHROPIC_SMALL_FAST_MODEL 与 ANTHROPIC_DEFAULT_HAIKU_MODEL，由 senv 管理，覆盖手写值）\n", out.BackgroundModel)
+		}
+		if out.OpusModel != "" {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"  Opus 档位：%s（写入 ANTHROPIC_DEFAULT_OPUS_MODEL）\n", out.OpusModel)
+		}
+		if out.SonnetModel != "" {
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"  Sonnet 档位：%s（写入 ANTHROPIC_DEFAULT_SONNET_MODEL）\n", out.SonnetModel)
 		}
 		if len(out.Models) > aiSwitchModelSetHint {
 			fmt.Fprintf(cmd.OutOrStdout(),
@@ -261,6 +288,10 @@ func init() {
 		"starting model for the agent (default: the provider profile's default model)")
 	aiSwitchCmd.Flags().StringVar(&aiSwitchBackgroundModel, "background-model", "",
 		"background model for the agent's background tasks (claude-code only; default: the provider profile's background model, falling back to the default model)")
+	aiSwitchCmd.Flags().StringVar(&aiSwitchOpusModel, "opus-model", "",
+		"opus-tier model written to ANTHROPIC_DEFAULT_OPUS_MODEL (claude-code only; default: the provider profile's opus_model, or unmanaged when empty)")
+	aiSwitchCmd.Flags().StringVar(&aiSwitchSonnetModel, "sonnet-model", "",
+		"sonnet-tier model written to ANTHROPIC_DEFAULT_SONNET_MODEL (claude-code only; default: the provider profile's sonnet_model, or unmanaged when empty)")
 	aiSwitchCmd.Flags().StringVar(&aiSwitchCredentialMode, "credential-mode", "auto",
 		"credential write-back mode: auto (env var reference when the agent can resolve one, plaintext otherwise; claude-code falls back to plaintext), env (force env var reference; fails if the agent cannot resolve it — claude-code uses the fixed ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL contract entries), or inline (force plaintext key into the config file)")
 	// --model 的旧语义是「只写这一个模型」，与新语义（选定集 + 默认）不同，

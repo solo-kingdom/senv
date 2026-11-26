@@ -173,8 +173,13 @@ type LLMProviderEntry struct {
 	// BackgroundModel 是档案显式声明的后台模型（ADR-0029）：Coding Agent 后台
 	// 任务（如 claude-code 会话压缩）使用的模型，必须属于 Models；空值表示
 	// 未声明，切换时回退默认模型。
-	BackgroundModel string    `json:"background_model,omitempty"`
-	Description     string    `json:"description,omitempty"`
+	BackgroundModel string `json:"background_model,omitempty"`
+	// OpusModel / SonnetModel 是档案显式声明的 Claude Code opus/sonnet 档位
+	// 模型（写入 ANTHROPIC_DEFAULT_OPUS_MODEL / ANTHROPIC_DEFAULT_SONNET_MODEL），
+	// 必须属于 Models；空值表示未声明（切换时不主动写入，仅保留失效自愈）。
+	OpusModel   string    `json:"opus_model,omitempty"`
+	SonnetModel string    `json:"sonnet_model,omitempty"`
+	Description string    `json:"description,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -246,6 +251,12 @@ func (e *LLMProviderEntry) ValidateLLMProvider() error {
 	}
 	if e.BackgroundModel != "" && !slices.Contains(e.Models, e.BackgroundModel) {
 		return fmt.Errorf("provider %q background model %q is not in models", e.Alias, e.BackgroundModel)
+	}
+	if e.OpusModel != "" && !slices.Contains(e.Models, e.OpusModel) {
+		return fmt.Errorf("provider %q opus model %q is not in models", e.Alias, e.OpusModel)
+	}
+	if e.SonnetModel != "" && !slices.Contains(e.Models, e.SonnetModel) {
+		return fmt.Errorf("provider %q sonnet model %q is not in models", e.Alias, e.SonnetModel)
 	}
 	return nil
 }

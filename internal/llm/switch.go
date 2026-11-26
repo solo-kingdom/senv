@@ -84,6 +84,12 @@ type SwitchRequest struct {
 	// ProjectsBackgroundModel 的适配器消费（claude-code 投影为
 	// ANTHROPIC_SMALL_FAST_MODEL）。
 	BackgroundModel string
+	// OpusModel / SonnetModel 是已解析的 Claude Code opus/sonnet 档位模型，
+	// 仅 ProjectsBackgroundModel 的适配器（claude-code）消费：非空时经
+	// claudeProjectedModel 写入 ANTHROPIC_DEFAULT_OPUS_MODEL /
+	// ANTHROPIC_DEFAULT_SONNET_MODEL；空值保持现有「不新增、仅失效自愈」。
+	OpusModel   string
+	SonnetModel string
 	// GlobalReasoningEffort 与 ClearGlobalReasoning 描述 codex config.toml 顶层
 	// model_reasoning_effort 的写回：codex 用它覆盖 catalog 的默认档，所以切换
 	// 时必须收敛到本次默认模型的默认档；Clear 为 true 时删除该键。
@@ -551,11 +557,19 @@ func claudeCodeAdapter() AgentAdapter {
 				// 标题生成等 haiku 档位调用也会静默失败。
 				env["ANTHROPIC_SMALL_FAST_MODEL"] = req.BackgroundModel
 				env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = req.BackgroundModel
-				// OPUS/SONNET 档位只在旧值失效时自愈（ADR-0029）：用户可把
-				// 档位单独钉到集内模型，有效值不能覆盖；档案缩集后旧值已不在
-				// 模型集内，继续保留只会让该档位请求网关不存在的模型。
+				// OPUS/SONNET 档位：若本次切换有显式覆盖或档案声明，按发送名直接
+				// 写入（含 1M 模型的 [1m] 后缀）；未声明时维持 ADR-0029 原语义——
+				// 不新增键，有效手写值保留，仅在旧值不在本次模型集内时自愈。
+				tierOverrides := map[string]string{
+					"ANTHROPIC_DEFAULT_OPUS_MODEL":   req.OpusModel,
+					"ANTHROPIC_DEFAULT_SONNET_MODEL": req.SonnetModel,
+				}
 				replacement := claudeProjectedModel(req.DefaultModel, req.ModelMetadata[req.DefaultModel])
 				for _, key := range claudeTierModelKeys {
+					if model := strings.TrimSpace(tierOverrides[key]); model != "" {
+						env[key] = claudeProjectedModel(model, req.ModelMetadata[model])
+						continue
+					}
 					stale, ok := claudeStaleTierModel(env[key], req.Models)
 					if !ok {
 						continue
@@ -1399,6 +1413,10 @@ type SwitchOutput struct {
 	// BackgroundModel 是本次写入的后台模型（ADR-0029）；仅
 	// ProjectsBackgroundModel 的 agent 非空。
 	BackgroundModel string
+	// OpusModel / SonnetModel 是本次切换实际写入的 Claude Code opus/sonnet
+	// 档位发送名（含 1M 模型的 [1m] 后缀）；未声明且未覆盖时为空。
+	OpusModel   string
+	SonnetModel string
 	// BaseURL 是按该 agent 协议族解析后实际写入配置的接入地址。
 	BaseURL string
 	// BaseURLSource 标注地址来源：显式形态地址字段名，或「由 BaseURL 推断」。
@@ -1411,12 +1429,42 @@ type SwitchOutput struct {
 	Warnings   []string
 }
 
+// SwitchOptions 描述一次完整切换的全部输入。
+type SwitchOptions struct {
+	AgentID         string
+	ProviderAlias   string
+	Models          []string
+	DefaultModel    string
+	BackgroundModel string
+	OpusModel       string
+	SonnetModel     string
+	CredentialMode  CredentialModePreference
+}
+
 // Switch 执行完整切换：校验 → 解密凭据 → 适配器写回 → 指针更新（失败回滚）。
 // backgroundModel 是单次切换的后台模型覆盖（ADR-0029），空值表示沿用档案
 // 声明或回退默认模型；只有 ProjectsBackgroundModel 的 agent 消费它。
 // credentialMode 控制凭据写回方式（ADR-0031）：auto 按 adapter 能力决议，
 // env 强制环境变量引用（adapter 不支持则报错），inline 强制明文。
 func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, defaultModel string, backgroundModel string, credentialMode CredentialModePreference) (*SwitchOutput, error) {
+	return sm.SwitchWithOptions(SwitchOptions{
+		AgentID:         agentID,
+		ProviderAlias:   providerAlias,
+		Models:          models,
+		DefaultModel:    defaultModel,
+		BackgroundModel: backgroundModel,
+		CredentialMode:  credentialMode,
+	})
+}
+
+// SwitchWithOptions 按 SwitchOptions 执行完整切换（支持 opus/sonnet 档位覆盖）。
+func (sm *SwitchManager) SwitchWithOptions(opts SwitchOptions) (*SwitchOutput, error) {
+	agentID := opts.AgentID
+	providerAlias := opts.ProviderAlias
+	models := opts.Models
+	defaultModel := opts.DefaultModel
+	backgroundModel := opts.BackgroundModel
+	credentialMode := opts.CredentialMode
 	home, pointerPath, err := sm.resolvePaths()
 	if err != nil {
 		return nil, err
@@ -1443,10 +1491,14 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		return nil, err
 	}
 
-	// 后台模型（ADR-0029）：仅消费它的 agent 解析；缺省回退默认模型并提示
-	// 声明更便宜的后台模型。显式值与档案声明都必须属于 Provider 模型集。
+	// 后台模型与 opus/sonnet 档位模型（仅 claude-code 消费）：
+	// 后台模型缺省回退默认模型并提示声明；opus/sonnet 未声明时保持空值，
+	// 不主动写入（沿用既有失效自愈逻辑）。显式值与档案声明都必须属于
+	// Provider 模型集。
 	var backgroundWarnings []string
 	resolvedBackground := ""
+	resolvedOpus := ""
+	resolvedSonnet := ""
 	if adapter.ProjectsBackgroundModel {
 		var fallback bool
 		resolvedBackground, fallback, err = resolveBackgroundModel(providerAlias, entry, backgroundModel, defaultModel)
@@ -1457,6 +1509,14 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 			backgroundWarnings = append(backgroundWarnings, fmt.Sprintf(
 				"未声明后台模型，已回退默认模型 %s 作为 %s 的后台（压缩）模型；可用 `senv ai provider edit %s --background-model <model>` 声明更便宜的模型",
 				defaultModel, adapter.Name, providerAlias))
+		}
+		resolvedOpus, err = resolveTierModel("opus", "--opus-model", providerAlias, entry, opts.OpusModel, entry.OpusModel)
+		if err != nil {
+			return nil, err
+		}
+		resolvedSonnet, err = resolveTierModel("sonnet", "--sonnet-model", providerAlias, entry, opts.SonnetModel, entry.SonnetModel)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1492,7 +1552,13 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 	// codex 顶层 model_reasoning_effort 优先级高于 catalog 默认档（09-28 实测），
 	// 因此它必须跟随本次默认模型解析出的档：显式默认档优先，否则取次高。
 	// 解析不出时删除该键，避免沿用上一个模型的 none，使强制思考模型报 2013。
-	modelMetadata := ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, agentModels)
+	metaModels := agentModels
+	for _, extra := range []string{resolvedOpus, resolvedSonnet} {
+		if extra != "" && !slices.Contains(metaModels, extra) {
+			metaModels = append(metaModels, extra)
+		}
+	}
+	modelMetadata := ResolveModelMetadata(entry.ModelInfo, DefaultModelCatalogPath(pointerPath), entry.CatalogProvider, metaModels)
 	resolvedGlobalReasoning := ""
 	clearGlobalReasoning := adapter.ID == "codex"
 	if adapter.ID == "codex" {
@@ -1637,6 +1703,8 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		ModelMetadata:         modelMetadata,
 		APIShape:              string(shape),
 		BackgroundModel:       resolvedBackground,
+		OpusModel:             resolvedOpus,
+		SonnetModel:           resolvedSonnet,
 		GlobalReasoningEffort: resolvedGlobalReasoning,
 		ClearGlobalReasoning:  clearGlobalReasoning,
 		PriorProvider:         prior.Provider,
@@ -1691,6 +1759,12 @@ func (sm *SwitchManager) Switch(agentID, providerAlias string, models []string, 
 		BaseURL:         baseURL,
 		BaseURLSource:   baseURLSource,
 		ConfigPath:      configPath,
+	}
+	if resolvedOpus != "" {
+		out.OpusModel = claudeProjectedModel(resolvedOpus, modelMetadata[resolvedOpus])
+	}
+	if resolvedSonnet != "" {
+		out.SonnetModel = claudeProjectedModel(resolvedSonnet, modelMetadata[resolvedSonnet])
 	}
 	if resolvedMode == CredentialEnvVar {
 		out.CredentialEnv = credentialEnvName
@@ -2174,6 +2248,28 @@ func resolveBackgroundModel(providerAlias string, entry *storage.LLMProviderEntr
 		return declared, false, nil
 	}
 	return defaultModel, true, nil
+}
+
+// resolveTierModel 解析 Claude Code 的 opus/sonnet 档位模型：单次显式覆盖 >
+// 档案声明 > 空串（未声明，由适配器维持不新增/仅失效自愈）。显式值与档案声明
+// 都必须属于 Provider 模型集全集。
+func resolveTierModel(tierName, flagName, providerAlias string, entry *storage.LLMProviderEntry, explicit, declared string) (string, error) {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		if !slices.Contains(entry.Models, explicit) {
+			return "", fmt.Errorf("%s model %q is not in provider %q; available: %s",
+				tierName, explicit, providerAlias, strings.Join(entry.Models, ", "))
+		}
+		return explicit, nil
+	}
+	if declared = strings.TrimSpace(declared); declared != "" {
+		if !slices.Contains(entry.Models, declared) {
+			return "", fmt.Errorf(
+				"provider %q declares %s model %q, which is not in its model set; fix it with `senv ai provider edit %s %s <model>`",
+				providerAlias, tierName, declared, providerAlias, flagName)
+		}
+		return declared, nil
+	}
+	return "", nil
 }
 
 // resolveDefaultModel 解析默认模型：显式值优先，其次档案默认模型，最后在

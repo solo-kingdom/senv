@@ -72,6 +72,12 @@ type aiTab struct {
 	// 游标，后台模型步骤不得覆盖它。
 	flowBackground       string
 	flowBackgroundCursor int
+	// flowOpus / flowSonnet 是 Claude Code opus/sonnet 档位步骤选中的值（空串
+	// 表示跳过/不管理）；游标独立于 flowCursor。
+	flowOpus         string
+	flowOpusCursor   int
+	flowSonnet       string
+	flowSonnetCursor int
 	// flowCredentialMode 是凭据模式步骤选中的值（ADR-0031）：0=auto、1=env、
 	// 2=inline。flowCredentialModeCursor 同 flowBackgroundCursor 的独立性约定。
 	flowCredentialMode       int
@@ -101,6 +107,10 @@ const (
 	// aiFlowSelectBackground 是后台模型步骤（ADR-0029）：只在含 claude-code
 	// 的完整切换里出现，候选为 Provider 模型集全集。
 	aiFlowSelectBackground
+	// aiFlowSelectOpus / aiFlowSelectSonnet 是 Claude Code opus/sonnet 档位步骤，
+	// 只在含 claude-code 的完整切换里出现，首项为 skip（空值）。
+	aiFlowSelectOpus
+	aiFlowSelectSonnet
 	// aiFlowSelectCredentialMode 是凭据模式步骤（ADR-0031）：auto/env/inline
 	// 三选一，只在完整切换（非 onlyModel）里出现。
 	aiFlowSelectCredentialMode
@@ -692,12 +702,52 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		case "enter":
 			if len(candidates) > 0 {
 				t.flowBackground = candidates[clamp(t.flowBackgroundCursor, 0, len(candidates)-1)]
-				t.flowCredentialModeCursor = t.flowCredentialMode
-				t.flow = aiFlowSelectCredentialMode
+				t.flowOpusCursor = t.tierModelCursor(true)
+				t.flow = aiFlowSelectOpus
 			}
 		case "esc":
 			// 回到默认模型步骤；flowCursor 仍是默认模型游标，本步骤未触碰它。
 			t.flow = aiFlowSelectDefault
+		}
+	case aiFlowSelectOpus:
+		candidates := t.flowTierCandidates()
+		switch msg.String() {
+		case "up", "k":
+			if t.flowOpusCursor > 0 {
+				t.flowOpusCursor--
+			}
+		case "down", "j":
+			if t.flowOpusCursor < len(candidates)-1 {
+				t.flowOpusCursor++
+			}
+		case "enter":
+			if len(candidates) > 0 {
+				t.flowOpus = candidates[clamp(t.flowOpusCursor, 0, len(candidates)-1)]
+				t.flowSonnetCursor = t.tierModelCursor(false)
+				t.flow = aiFlowSelectSonnet
+			}
+		case "esc":
+			t.flow = aiFlowSelectBackground
+		}
+	case aiFlowSelectSonnet:
+		candidates := t.flowTierCandidates()
+		switch msg.String() {
+		case "up", "k":
+			if t.flowSonnetCursor > 0 {
+				t.flowSonnetCursor--
+			}
+		case "down", "j":
+			if t.flowSonnetCursor < len(candidates)-1 {
+				t.flowSonnetCursor++
+			}
+		case "enter":
+			if len(candidates) > 0 {
+				t.flowSonnet = candidates[clamp(t.flowSonnetCursor, 0, len(candidates)-1)]
+				t.flowCredentialModeCursor = t.flowCredentialMode
+				t.flow = aiFlowSelectCredentialMode
+			}
+		case "esc":
+			t.flow = aiFlowSelectOpus
 		}
 	case aiFlowSelectCredentialMode:
 		switch msg.String() {
@@ -713,9 +763,9 @@ func (t *aiTab) updateFlow(msg tea.KeyMsg) (Tab, tea.Cmd) {
 			t.flowCredentialMode = clamp(t.flowCredentialModeCursor, 0, len(credentialModeLabels)-1)
 			t.flow = aiFlowConfirm
 		case "esc":
-			// 回到后台模型步骤（若出现过）或默认模型步骤。
+			// 回到 sonnet 档位步骤（若含 claude-code）或默认模型步骤。
 			if t.flowNeedsBackground() {
-				t.flow = aiFlowSelectBackground
+				t.flow = aiFlowSelectSonnet
 			} else {
 				t.flow = aiFlowSelectDefault
 			}
@@ -762,6 +812,10 @@ func (t *aiTab) cancelMode() {
 	t.flowCursor = 0
 	t.flowBackground = ""
 	t.flowBackgroundCursor = 0
+	t.flowOpus = ""
+	t.flowOpusCursor = 0
+	t.flowSonnet = ""
+	t.flowSonnetCursor = 0
 	t.flowCredentialMode = 0
 	t.flowCredentialModeCursor = 0
 }
@@ -983,6 +1037,39 @@ func (t *aiTab) backgroundModelCursor() int {
 	return 0
 }
 
+// flowTierCandidates 返回 opus/sonnet 档位步骤的候选：第 0 项为空串（跳过/不覆盖），
+// 其余为 Provider 模型集全集。
+func (t *aiTab) flowTierCandidates() []string {
+	models := t.flowBackgroundCandidates()
+	out := make([]string, 0, len(models)+1)
+	out = append(out, "")
+	out = append(out, models...)
+	return out
+}
+
+// tierModelCursor 返回 opus/sonnet 档位步骤的初始游标：档案有声明时定位到对应模型，
+// 未声明时停在第 0 项（跳过），避免一路回车意外写入。
+func (t *aiTab) tierModelCursor(isOpus bool) int {
+	candidates := t.flowTierCandidates()
+	preferred := ""
+	if entry := t.providerByAlias(t.flowProvider); entry != nil {
+		if isOpus {
+			preferred = entry.OpusModel
+		} else {
+			preferred = entry.SonnetModel
+		}
+	}
+	if preferred == "" {
+		return 0
+	}
+	for i, model := range candidates {
+		if model == preferred {
+			return i
+		}
+	}
+	return 0
+}
+
 // credentialModeLabels 是凭据模式步骤的三档标签（ADR-0031），下标即
 // aiTab.flowCredentialMode 的取值。
 var credentialModeLabels = []struct {
@@ -1020,6 +1107,8 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	provider := t.flowProvider
 	defaultModel := models[clamp(t.flowCursor, 0, len(models)-1)]
 	backgroundModel := t.flowBackground
+	opusModel := t.flowOpus
+	sonnetModel := t.flowSonnet
 	credMode := t.flowCredentialModePref()
 	if onlyModel {
 		// 仅换默认模型仍会重写 provider 段（含凭据字段）。对 codex，inline
@@ -1031,7 +1120,16 @@ func (t *aiTab) switchCmd(onlyModel bool) tea.Cmd {
 	return func() tea.Msg {
 		out := aiSwitchBatchResultMsg{onlyModel: onlyModel}
 		for _, agentID := range agents {
-			res, err := sm.Switch(agentID, provider, models, defaultModel, backgroundModel, credMode)
+			res, err := sm.SwitchWithOptions(llm.SwitchOptions{
+				AgentID:         agentID,
+				ProviderAlias:   provider,
+				Models:          models,
+				DefaultModel:    defaultModel,
+				BackgroundModel: backgroundModel,
+				OpusModel:       opusModel,
+				SonnetModel:     sonnetModel,
+				CredentialMode:  credMode,
+			})
 			out.results = append(out.results, aiSwitchOutcome{agentID: agentID, out: res, err: err})
 		}
 		return out
@@ -1209,6 +1307,14 @@ func (t *aiTab) enterProviderForm(existing *storage.LLMProviderEntry) (Tab, tea.
 			key: "background_model", label: "background model", kind: formText, value: base.BackgroundModel,
 			placeholder: "m1 (optional; claude-code compaction, empty = default model)",
 		},
+		formField{
+			key: "opus_model", label: "opus model", kind: formText, value: base.OpusModel,
+			placeholder: "m1 (optional; claude-code ANTHROPIC_DEFAULT_OPUS_MODEL)",
+		},
+		formField{
+			key: "sonnet_model", label: "sonnet model", kind: formText, value: base.SonnetModel,
+			placeholder: "m1 (optional; claude-code ANTHROPIC_DEFAULT_SONNET_MODEL)",
+		},
 		optionalDescriptionField(base.Description),
 		formField{
 			key: "credential", label: "credential source", kind: formRef, value: credentialValue,
@@ -1323,6 +1429,14 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 	if catalog == "" && backgroundModel != "" && !containsString(models, backgroundModel) {
 		return reopen("background_model", fmt.Errorf("background model %s not in model set", backgroundModel))
 	}
+	opusModel := strings.TrimSpace(values["opus_model"])
+	if catalog == "" && opusModel != "" && !containsString(models, opusModel) {
+		return reopen("opus_model", fmt.Errorf("opus model %s not in model set", opusModel))
+	}
+	sonnetModel := strings.TrimSpace(values["sonnet_model"])
+	if catalog == "" && sonnetModel != "" && !containsString(models, sonnetModel) {
+		return reopen("sonnet_model", fmt.Errorf("sonnet model %s not in model set", sonnetModel))
+	}
 	credential := strings.TrimSpace(values["credential"])
 	apiKey := strings.TrimSpace(values["api_key"])
 	switch {
@@ -1356,6 +1470,8 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 			RequireModelMetadata:  true,
 			DefaultModel:          defaultModel,
 			BackgroundModel:       backgroundModel,
+			OpusModel:             opusModel,
+			SonnetModel:           sonnetModel,
 			APIShape:              apiShape,
 			ShapeURLs:             shapeURLs,
 			Description:           strings.TrimSpace(values["description"]),
@@ -1389,8 +1505,10 @@ func (t *aiTab) doSubmitProvider(existing *storage.LLMProviderEntry, values map[
 		ShapeURLs:    editShapeURLs,
 		DefaultModel: &defaultModel,
 	}
-	// 表单是全量状态：后台模型与默认模型一样总是传入（空值 = 清除声明）。
+	// 表单是全量状态：后台模型与 opus/sonnet 档位与默认模型一样总是传入（空值 = 清除声明）。
 	opts.BackgroundModel = &backgroundModel
+	opts.OpusModel = &opusModel
+	opts.SonnetModel = &sonnetModel
 	desc := strings.TrimSpace(values["description"])
 	opts.Description = &desc
 	contextsChanged := strings.TrimSpace(values["model_contexts"]) != strings.TrimSpace(formatModelContexts(existing.Models, existing.ModelInfo))
@@ -1581,6 +1699,10 @@ func providerErrorField(err error) string {
 		return "default_model"
 	case strings.Contains(msg, "background model"):
 		return "background_model"
+	case strings.Contains(msg, "opus model"):
+		return "opus_model"
+	case strings.Contains(msg, "sonnet model"):
+		return "sonnet_model"
 	case strings.Contains(msg, "credential"), strings.Contains(msg, "api key"), strings.Contains(msg, "key"):
 		return "api_key"
 	case strings.Contains(msg, "context"):
@@ -1633,6 +1755,8 @@ func (t *aiTab) providerDetailLines(p *storage.LLMProviderEntry) []string {
 		"catalog:        " + orDash(p.CatalogProvider),
 		"default_model:  " + orDash(p.DefaultModel),
 		"background_model: " + orDash(p.BackgroundModel),
+		"opus_model:     " + orDash(p.OpusModel),
+		"sonnet_model:   " + orDash(p.SonnetModel),
 		"description:    " + orDash(p.Description),
 		fmt.Sprintf("models (%d):", len(p.Models)),
 	}
@@ -2049,6 +2173,12 @@ func (t *aiTab) renderFlow() string {
 		if t.flowBackground != "" {
 			body += fmt.Sprintf("\nbackground: %s", t.flowBackground)
 		}
+		if t.flowOpus != "" {
+			body += fmt.Sprintf("\nopus: %s", t.flowOpus)
+		}
+		if t.flowSonnet != "" {
+			body += fmt.Sprintf("\nsonnet: %s", t.flowSonnet)
+		}
 		if !t.flowOnlyModel {
 			body += fmt.Sprintf("\ncredential: %s", credentialModeLabels[clamp(t.flowCredentialMode, 0, len(credentialModeLabels)-1)].label)
 		}
@@ -2081,6 +2211,40 @@ func (t *aiTab) renderFlow() string {
 			lines = append(lines, cursorLine(label, i == clamp(t.flowBackgroundCursor, 0, len(candidates)-1)))
 		}
 		title := fmt.Sprintf("choose background model (%d models) — %s → %s", len(candidates), agent, t.flowProvider)
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
+	case aiFlowSelectOpus:
+		candidates := t.flowTierCandidates()
+		lines := make([]string, 0, len(candidates)+2)
+		lines = append(lines,
+			mutedStyle().Render(truncateWidth("claude-code opus 档位模型（写入 ANTHROPIC_DEFAULT_OPUS_MODEL）；", maxInt(t.width-10, 12))),
+			mutedStyle().Render(truncateWidth("留空跳过则保持现有配置（仅失效时自愈）。", maxInt(t.width-10, 12))),
+		)
+		for i, m := range candidates {
+			text := m
+			if text == "" {
+				text = "(skip — unmanaged / keep existing)"
+			}
+			label := truncateWidth(text, maxInt(t.width-10, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowOpusCursor, 0, len(candidates)-1)))
+		}
+		title := fmt.Sprintf("choose opus model (optional) — %s → %s", agent, t.flowProvider)
+		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
+	case aiFlowSelectSonnet:
+		candidates := t.flowTierCandidates()
+		lines := make([]string, 0, len(candidates)+2)
+		lines = append(lines,
+			mutedStyle().Render(truncateWidth("claude-code sonnet 档位模型（写入 ANTHROPIC_DEFAULT_SONNET_MODEL）；", maxInt(t.width-10, 12))),
+			mutedStyle().Render(truncateWidth("留空跳过则保持现有配置（仅失效时自愈）。", maxInt(t.width-10, 12))),
+		)
+		for i, m := range candidates {
+			text := m
+			if text == "" {
+				text = "(skip — unmanaged / keep existing)"
+			}
+			label := truncateWidth(text, maxInt(t.width-10, 12))
+			lines = append(lines, cursorLine(label, i == clamp(t.flowSonnetCursor, 0, len(candidates)-1)))
+		}
+		title := fmt.Sprintf("choose sonnet model (optional) — %s → %s", agent, t.flowProvider)
 		return modalBox(t.width, t.height, title, strings.Join(lines, "\n"), "↑↓/jk select · enter next · esc back")
 	case aiFlowSelectDefault:
 		models := t.flowSelectedModels()

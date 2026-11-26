@@ -47,6 +47,14 @@ func setAISwitchBackgroundFlag(t *testing.T, value string) {
 	t.Cleanup(func() { aiSwitchBackgroundModel = old })
 }
 
+// setAISwitchTierFlags 预置 --opus-model 与 --sonnet-model。
+func setAISwitchTierFlags(t *testing.T, opus, sonnet string) {
+	t.Helper()
+	oldOpus, oldSonnet := aiSwitchOpusModel, aiSwitchSonnetModel
+	aiSwitchOpusModel, aiSwitchSonnetModel = opus, sonnet
+	t.Cleanup(func() { aiSwitchOpusModel, aiSwitchSonnetModel = oldOpus, oldSonnet })
+}
+
 // setAISwitchCredentialModeFlag 预置 --credential-mode。
 func setAISwitchCredentialModeFlag(t *testing.T, value string) {
 	t.Helper()
@@ -196,6 +204,34 @@ func TestAISwitchBackgroundModelFlag(t *testing.T) {
 	if _, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"claude-code", "main"}); err == nil ||
 		!strings.Contains(err.Error(), "background model") {
 		t.Fatalf("ghost background err = %v, want membership error", err)
+	}
+}
+
+func TestAISwitchOpusAndSonnetModelFlags(t *testing.T) {
+	newAuditTestProject(t)
+	addAIProviderForSwitchTest(t, "main")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	setAISwitchTierFlags(t, "m1", "m2")
+	out, _, err := runAISwitchCmd(t, aiSwitchCmd, []string{"claude-code", "main"})
+	if err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if !strings.Contains(out, "ANTHROPIC_DEFAULT_OPUS_MODEL") || !strings.Contains(out, "ANTHROPIC_DEFAULT_SONNET_MODEL") {
+		t.Fatalf("switch output missing tier lines:\n%s", out)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	env := settings["env"].(map[string]any)
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "m1" || env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "m2" {
+		t.Fatalf("env tiers = (%v, %v), want (m1, m2)", env["ANTHROPIC_DEFAULT_OPUS_MODEL"], env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
 }
 

@@ -29,8 +29,11 @@ type llmProviderView struct {
 	DefaultModel  string                `json:"default_model,omitempty"`
 	// BackgroundModel 是档案声明的后台模型（ADR-0029），空表示未声明
 	// （切换时回退默认模型）。
-	BackgroundModel string                          `json:"background_model,omitempty"`
-	Description     string                          `json:"description,omitempty"`
+	BackgroundModel string `json:"background_model,omitempty"`
+	// OpusModel / SonnetModel 是档案声明的 Claude Code opus/sonnet 档位模型。
+	OpusModel   string                          `json:"opus_model,omitempty"`
+	SonnetModel string                          `json:"sonnet_model,omitempty"`
+	Description string                          `json:"description,omitempty"`
 	Models          []string                        `json:"models"`
 	ModelInfo       map[string]storage.LLMModelInfo `json:"model_info,omitempty"`
 	CreatedAt       string                          `json:"created_at"`
@@ -46,6 +49,8 @@ func llmProviderViewFrom(e *storage.LLMProviderEntry) llmProviderView {
 		Catalog:         e.CatalogProvider,
 		DefaultModel:    e.DefaultModel,
 		BackgroundModel: e.BackgroundModel,
+		OpusModel:       e.OpusModel,
+		SonnetModel:     e.SonnetModel,
 		Description:     e.Description,
 		Models:          e.Models,
 		ModelInfo:       e.ModelInfo,
