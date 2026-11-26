@@ -111,8 +111,10 @@ func TestHelpOverlayOpensRendersAndCloses(t *testing.T) {
 
 func TestHelpOverlayNotTriggeredInInputMode(t *testing.T) {
 	m := New(newFullManagers(t))
-	// "/" puts the Env tab into filter (text input) mode.
-	out, _ := m.Update(runeKey("/"))
+	// Jump to Env tab, then "/" puts it into filter (text input) mode.
+	out, _ := m.Update(runeKey("1"))
+	m = out.(Model)
+	out, _ = m.Update(runeKey("/"))
 	m = out.(Model)
 	if !m.tabs[m.active].InputMode() {
 		t.Fatal("expected Env tab to be in input mode after /")

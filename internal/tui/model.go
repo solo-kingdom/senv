@@ -89,9 +89,11 @@ type Managers struct {
 // cursor, filter, ...) is preserved across tab switches — switching away and
 // back restores the previous selection.
 type Model struct {
-	mgr    Managers
-	tabs   []Tab
-	active int
+	mgr       Managers
+	welcome   *welcomeTab
+	onWelcome bool
+	tabs      []Tab
+	active    int
 	// activated 记录哪些 tab 已被聚焦过（true lazy-loading：首次聚焦才触发
 	// 一次性加载）。pull 应用后的 reloadAllTabs 据此跳过未激活 tab，保持懒
 	// 加载语义。由 New 初始化并把初始聚焦 tab 置位。
@@ -210,9 +212,23 @@ func New(mgr Managers) Model {
 	// Backup 排在 Settings 之前：整块存取是低频面，不打断前面的高频工作面。
 	m.tabs = append(m.tabs, newBackupTab(mgr))
 	m.tabs = append(m.tabs, newSettingsTab(mgr))
+	m.welcome = newWelcomeTab(m.tabs)
+	m.onWelcome = true
 	m.activated = make([]bool, len(m.tabs))
-	m.activated[m.active] = true
 	return m
+}
+
+// currentTab 返回当前正在显示的页面：处于欢迎页时返回 welcomeTab，否则返回 m.tabs[m.active]。
+func (m Model) currentTab() Tab {
+	if m.onWelcome && m.welcome != nil {
+		return m.welcome
+	}
+	return m.tabs[m.active]
+}
+
+// layout 根据终端尺寸与顶栏自适应行数计算整帧布局。
+func (m Model) layout() frameLayout {
+	return computeLayoutFor(m.width, m.height, m.tabStripHeight(m.width, m.height))
 }
 
 // Init performs initial setup. Only the focused tab loads eagerly; every
@@ -223,7 +239,7 @@ func New(mgr Managers) Model {
 // remote changes.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	if c := m.tabs[m.active].Init(); c != nil {
+	if c := m.currentTab().Init(); c != nil {
 		cmds = append(cmds, c)
 	}
 	if c := m.refreshSync(); c != nil {
@@ -311,11 +327,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case helpCloseMsg:
 		m.help = nil
 		return m, nil
+	case welcomeJumpMsg:
+		m.err = ""
+		m.warn = ""
+		if msg.index >= 0 && msg.index < len(m.tabs) {
+			m.onWelcome = false
+			m.active = msg.index
+			return m.activateTab(msg.index)
+		}
+		return m, nil
 	case tabSwitchMsg:
 		m.switcher = nil
 		m.err = ""
 		m.warn = ""
+		if msg.index == -1 && m.welcome != nil {
+			m.onWelcome = true
+			return m, nil
+		}
 		if msg.index >= 0 && msg.index < len(m.tabs) {
+			m.onWelcome = false
 			m.active = msg.index
 			return m.activateTab(msg.index)
 		}
@@ -369,18 +399,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		// 区域尺寸只在 frameLayout 一处计算（见 layout.go）；Tab 拿到的是
 		// 内容区格子，View 再把 Tab 输出硬装箱进同一个格子。
-		l := computeLayout(m.width, m.height)
+		l := m.layout()
 		w, h := l.tabSize()
+		if m.welcome != nil {
+			m.welcome.SetSize(w, h)
+		}
 		for _, t := range m.tabs {
 			t.SetSize(w, h)
 		}
+		overhead := 2 + l.topH + l.footH
 		if m.search != nil {
 			m.search.SetSize(m.width, m.height)
 		}
 		if m.help != nil {
+			m.help.frameOverhead = overhead
 			m.help.SetSize(m.width, m.height)
 		}
 		if m.switcher != nil {
+			m.switcher.frameOverhead = overhead
 			m.switcher.SetSize(m.width, m.height)
 		}
 		m.refreshLLMChrome()
@@ -455,7 +491,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// If the active tab is capturing text input, forward ALL keys so global
 		// shortcuts do not hijack typing.
-		if m.tabs[m.active].InputMode() {
+		if !m.onWelcome && m.tabs[m.active].InputMode() {
 			var cmd tea.Cmd
 			m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
 			return m, cmd
@@ -472,6 +508,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if idx, ok := tabIndexFor(msg.String(), len(m.tabs)); ok {
 			m.err = ""
 			m.warn = ""
+			m.onWelcome = false
 			m.active = idx
 			return m.activateTab(idx)
 		}
@@ -498,6 +535,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 命中写后/pull 前的缓存。
 			m.err = ""
 			m.mgr.snap.Invalidate()
+			m.refreshLLMChrome()
+			if m.onWelcome {
+				return m, m.refreshSync()
+			}
 			return m, m.tabs[m.active].Reload()
 		case "S":
 			// Open the global cross-type search overlay (task 10.1).
@@ -505,14 +546,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.search.SetSize(m.width, m.height)
 			return m, m.search.Init()
 		case "?":
-			// Open the keybinding overview for the active tab.
-			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active])
+			// Open the keybinding overview for the active tab (or Home).
+			cur := m.currentTab()
+			l := m.layout()
+			m.help = newHelpTab(cur.Title(), cur)
+			m.help.frameOverhead = 2 + l.topH + l.footH
 			m.help.SetSize(m.width, m.height)
 			return m, nil
-		case "0", "ctrl+p", "ctrl+k":
+		case "0":
+			if m.welcome != nil {
+				m.err = ""
+				m.warn = ""
+				m.onWelcome = true
+				return m, nil
+			}
+		case "ctrl+p", "ctrl+k":
 			m.err = ""
 			m.warn = ""
-			m.switcher = newTabSwitcher(m.tabs, m.active)
+			l := m.layout()
+			m.switcher = newTabSwitcher(m.tabs, m.active, m.welcome != nil, m.onWelcome)
+			m.switcher.frameOverhead = 2 + l.topH + l.footH
 			m.switcher.SetSize(m.width, m.height)
 			return m, nil
 		case ",":
@@ -520,6 +573,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if t.Title() == "Settings" {
 					m.err = ""
 					m.warn = ""
+					m.onWelcome = false
 					m.active = i
 					return m.activateTab(i)
 				}
@@ -528,11 +582,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			m.err = ""
 			m.warn = ""
+			if m.welcome != nil {
+				if m.onWelcome {
+					m.onWelcome = false
+					m.active = 0
+					return m.activateTab(0)
+				}
+				if m.active == len(m.tabs)-1 {
+					m.onWelcome = true
+					return m, nil
+				}
+				m.active++
+				return m.activateTab(m.active)
+			}
 			m.active = (m.active + 1) % len(m.tabs)
 			return m.activateTab(m.active)
 		case "shift+tab":
 			m.err = ""
 			m.warn = ""
+			if m.welcome != nil {
+				if m.onWelcome {
+					m.onWelcome = false
+					m.active = len(m.tabs) - 1
+					return m.activateTab(m.active)
+				}
+				if m.active == 0 {
+					m.onWelcome = true
+					return m, nil
+				}
+				m.active--
+				return m.activateTab(m.active)
+			}
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
 			return m.activateTab(m.active)
 		}
@@ -568,7 +648,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	}
 	var cmd tea.Cmd
-	m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
+	if m.onWelcome && m.welcome != nil {
+		var next Tab
+		next, cmd = m.welcome.Update(msg)
+		m.welcome = next.(*welcomeTab)
+	} else {
+		m.tabs[m.active], cmd = m.tabs[m.active].Update(msg)
+	}
 	if writeDoneMsg(msg) {
 		m.mgr.snap.Invalidate()
 		m.refreshLLMChrome()
@@ -590,8 +676,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // 发出请求的那个 Tab，但后台 Tab 装载完成时用户可能已切走，需要广播投递。
 func isLoadBroadcastMsg(msg tea.Msg) bool {
 	switch msg.(type) {
-	case envLoadedMsg, textLoadedMsg, backupLoadedMsg, configLoadedMsg, sshLoadedMsg,
-		aiLoadedMsg, mcpLoadedMsg, ledgerLoadedMsg, auditLoadedMsg, historyLoadedMsg:
+	case envLoadedMsg, textLoadedMsg, backupLoadedMsg, configLoadedMsg, sshLoadedMsg, kpLoadedMsg,
+		aiLoadedMsg, skillLoadedMsg, mcpLoadedMsg, ledgerLoadedMsg, treeLoadedMsg, auditLoadedMsg, historyLoadedMsg:
 		return true
 	}
 	return false
@@ -636,6 +722,7 @@ func (m Model) applyJump(j searchJumpMsg) (tea.Model, tea.Cmd) {
 		if t.Title() != want {
 			continue
 		}
+		m.onWelcome = false
 		m.active = i
 		if f, ok := t.(jumpFocuser); ok {
 			f.focusJump(j.group, j.key)
@@ -671,31 +758,43 @@ func (m Model) View() string {
 	if m.height == 0 {
 		return "starting…"
 	}
-	l := computeLayout(m.width, m.height)
+	l := m.layout()
 	if l.tooSmall() {
 		return l.renderTooSmall()
 	}
 
-	top := m.renderTabStrip(l.innerW)
+	top := m.renderTabStrip(l.innerW, m.height)
 
+	if m.welcome != nil {
+		syncKind := cardOK
+		switch {
+		case m.syncState.Err != nil:
+			syncKind = cardDanger
+		case m.syncState.Dirty > 0:
+			syncKind = cardWarn
+		}
+		m.welcome.setStatus(m.providerBadge(), m.syncBadge(), syncKind)
+	}
+
+	cur := m.currentTab()
 	// Active tab content. The search overlay takes over the content pane
-	// while open; the help overlay floats on top of the tab content instead.
+	// while open; the help/switcher overlays float on top of the tab content.
 	var content string
 	switch {
 	case m.search != nil:
 		content = m.search.View()
 	case m.help != nil:
-		content = overlayBox(m.tabs[m.active].View(), m.help.View(), l.innerW, l.bodyH)
+		content = overlayBox(cur.View(), m.help.View(), l.innerW, l.bodyH)
 	case m.switcher != nil:
-		content = overlayBox(m.tabs[m.active].View(), m.switcher.View(), l.innerW, l.bodyH)
+		content = overlayBox(cur.View(), m.switcher.View(), l.innerW, l.bodyH)
 	case m.codexPrompt != nil:
-		content = overlayBox(m.tabs[m.active].View(), m.renderCodexPrompt(), l.innerW, l.bodyH)
+		content = overlayBox(cur.View(), m.renderCodexPrompt(), l.innerW, l.bodyH)
 	default:
-		content = m.tabs[m.active].View()
+		content = cur.View()
 	}
 
 	// Bottom bar: error takes precedence over warning, then status hint.
-	// 同步徽标已移到顶栏右侧，底栏只承载状态或 NAV/ACT 芯片。
+	// 同步徽标已移到外框右上边，底栏只承载状态或 NAV/ACT 芯片。
 	var bottom string
 	switch {
 	case m.err != "":
@@ -703,7 +802,7 @@ func (m Model) View() string {
 	case m.warn != "":
 		bottom = m.bottomBar("WARN "+plainText(m.warn), warnBarStyle)
 	case m.toast != "":
-		style := successStyle
+		style := toastOkBarStyle
 		prefix := "OK "
 		if m.level == toastWarn {
 			style = warnBarStyle
@@ -722,12 +821,12 @@ func (m Model) View() string {
 		case m.codexPrompt != nil:
 			bs = codexPromptBindings()
 		default:
-			bs = m.tabs[m.active].Bindings()
+			bs = cur.Bindings()
 		}
 		bottom = m.bottomBar(hintBar(bs), statusBarStyle)
 	}
 
-	return l.renderFrame(top, content, bottom)
+	return l.renderFrameChrome("Senv", m.renderHeaderRight(), top, content, bottom)
 }
 
 // overlayBox 把浮窗 box 叠放在 base（底层 Tab 视图）中央，输出严格 w×h：

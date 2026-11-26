@@ -45,8 +45,12 @@ var (
 	tabSeparatorStyle   lipgloss.Style
 	statusBarStyle      lipgloss.Style
 	syncBadgeStyle      lipgloss.Style
+	syncBadgeOkStyle    lipgloss.Style
+	syncBadgeWarnStyle  lipgloss.Style
+	syncBadgeErrStyle   lipgloss.Style
 	errorBarStyle       lipgloss.Style
 	warnBarStyle        lipgloss.Style
+	toastOkBarStyle     lipgloss.Style
 	contentStyle        lipgloss.Style
 	paneStyle                 lipgloss.Style
 	activePaneStyle           lipgloss.Style
@@ -140,6 +144,18 @@ func rebuildStyles() {
 		Foreground(colorAccent).
 		Background(colorSurface)
 
+	syncBadgeOkStyle = lipgloss.NewStyle().
+		Foreground(colorOk).
+		Background(colorSurface)
+
+	syncBadgeWarnStyle = lipgloss.NewStyle().
+		Foreground(colorWarn).
+		Background(colorSurface)
+
+	syncBadgeErrStyle = lipgloss.NewStyle().
+		Foreground(colorDanger).
+		Background(colorSurface)
+
 	errorBarStyle = lipgloss.NewStyle().
 		Padding(0, 1).
 		Foreground(colorDanger).
@@ -148,6 +164,11 @@ func rebuildStyles() {
 	warnBarStyle = lipgloss.NewStyle().
 		Padding(0, 1).
 		Foreground(colorWarn).
+		Background(colorSurface)
+
+	toastOkBarStyle = lipgloss.NewStyle().
+		Padding(0, 1).
+		Foreground(colorOk).
 		Background(colorSurface)
 
 	contentStyle = lipgloss.NewStyle().Padding(0, 1)
@@ -179,8 +200,11 @@ func rebuildStyles() {
 		Foreground(colorMuted)
 
 	searchOverlayStyle = lipgloss.NewStyle().
+		Foreground(colorFg).
+		Background(colorSurface).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorAccent).
+		BorderBackground(colorSurface).
 		Padding(1, 2)
 
 	typeBadgeStyles = map[string]lipgloss.Style{
@@ -192,6 +216,7 @@ func rebuildStyles() {
 		typeLLM:    lipgloss.NewStyle().Foreground(colorOk),
 		typeMCP:    lipgloss.NewStyle().Foreground(colorWarn),
 		typeLedger: lipgloss.NewStyle().Foreground(colorCyan),
+		typeTree:   lipgloss.NewStyle().Foreground(colorOk),
 	}
 
 	emptyStateStyle = lipgloss.NewStyle().

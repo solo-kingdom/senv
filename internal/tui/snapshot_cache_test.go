@@ -256,11 +256,18 @@ func TestSnapshotVerifyMsgReloadsActivatedTab(t *testing.T) {
 	if !m.cacheSeeded {
 		t.Fatal("precondition: seeded")
 	}
+	// 进入 Env Tab 使其激活，再触发后台校验不一致的重载路径。
+	out, cmd := m.Update(runeKey("1"))
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
 	// 缓存窗口内真实数据被改写（绕过 Invalidate，模拟外部写入）
 	if err := mgrs.Env.Set("default", "API_KEY", "rotated-value"); err != nil {
 		t.Fatal(err)
 	}
-	out, cmd := m.Update(snapshotVerifiedMsg{changed: true})
+	out, cmd = m.Update(snapshotVerifiedMsg{changed: true})
 	m = out.(Model)
 	if cmd == nil {
 		t.Fatal("changed verify must trigger a reload command")

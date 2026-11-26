@@ -11,8 +11,9 @@ import (
 // globalKeys 是顶层 model 处理的键，对每个 Tab 生效；Tab 专属键位来自该
 // Tab 的 Bindings()（keymap 注册表），因此总览与实际行为同源、不可能漂移。
 var globalKeys = []KeyAction{
+	{Keys: []string{"0"}, Desc: "home / welcome page"},
 	{Keys: []string{"1–9"}, Desc: "jump to tab"},
-	{Keys: []string{"0 / ctrl+p / ctrl+k"}, Desc: "tab switcher (more tabs)"},
+	{Keys: []string{"ctrl+p / ctrl+k"}, Desc: "tab switcher"},
 	{Keys: []string{","}, Desc: "settings"},
 	{Keys: []string{"Tab / Shift+Tab"}, Desc: "cycle tabs"},
 	{Keys: []string{"S"}, Desc: "global search"},
@@ -34,11 +35,12 @@ var globalKeys = []KeyAction{
 // boundaries, continuation lines aligned under the description; the laid-out
 // rows scroll when they still exceed the box height.
 type helpTab struct {
-	title    string
-	bindings []KeyAction
-	width    int
-	height   int
-	scroll   int
+	title         string
+	bindings      []KeyAction
+	width         int
+	height        int
+	frameOverhead int
+	scroll        int
 }
 
 // helpCloseMsg asks the top-level model to close the help overlay.
@@ -108,6 +110,13 @@ type helpCell struct {
 	indent int
 }
 
+func (h *helpTab) overhead() int {
+	if h.frameOverhead > 0 {
+		return h.frameOverhead
+	}
+	return frameRows
+}
+
 func (h *helpTab) View() string {
 	rows, footer := h.layout()
 	visible := h.visibleRows()
@@ -120,13 +129,13 @@ func (h *helpTab) View() string {
 	box := searchOverlayStyle.Render(strings.Join(body, "\n"))
 	// 底栏恒占一行（见 visibleRows 的 -1），正常情况恰好不触发截断；这里
 	// 的 clipLines 只是超小终端下的兜底。
-	return clipLines(box, maxInt(h.height-frameRows-helpMarginY, 1))
+	return clipLines(box, maxInt(h.height-h.overhead()-helpMarginY, 1))
 }
 
-// visibleRows 是浮窗框内的键位行数：框总高上限（外框 5 行 + 上下留白）
+// visibleRows 是浮窗框内的键位行数：框总高上限（外框开销 + 上下留白）
 // 减去边框/内边距，再恒减 1 行底栏。
 func (h *helpTab) visibleRows() int {
-	v := h.height - frameRows - helpMarginY - overlayRows - 1
+	v := h.height - h.overhead() - helpMarginY - overlayRows - 1
 	return maxInt(v, 1)
 }
 

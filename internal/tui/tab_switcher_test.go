@@ -52,7 +52,7 @@ func newAll14Managers(t *testing.T) Managers {
 	}
 }
 
-func TestTabStripPrimaryFullAt120Cols(t *testing.T) {
+func TestTabStripAll15TabsVisibleInTwoBalancedRowsAt120Cols(t *testing.T) {
 	t.Cleanup(func() { applyIconSet(IconSetNerd) })
 	applyIconSet(IconSetNerd)
 
@@ -68,46 +68,45 @@ func TestTabStripPrimaryFullAt120Cols(t *testing.T) {
 	// Restore badge after WindowSizeMsg (which calls refreshLLMChrome).
 	m.llmChrome = []llm.StatusRow{{Pointer: &llm.AgentPointer{Provider: "deepseek"}}}
 
-	strip := ansi.Strip(strings.Split(m.View(), "\n")[1])
-	primaries := []string{"Env", "Text", "Providers", "Skill", "SSH", "KeyPair", "MCP", "Ledger", "Tree"}
-	for _, title := range primaries {
+	view := m.View()
+	assertFrameInvariants(t, "120x30 all 15 tabs", view, 120, 30)
+	lines := strings.Split(ansi.Strip(view), "\n")
+	if !strings.Contains(lines[0], "╭ Senv ") {
+		t.Fatalf("top border missing Senv brand: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "deepseek") {
+		t.Fatalf("top border missing provider badge: %q", lines[0])
+	}
+	// 120 列下 15 个菜单均衡折成 2 行（row 1 + row 2），全部常驻可见，无隐藏项。
+	strip := lines[1] + "\n" + lines[2]
+	allTitles := []string{
+		"Home", "Env", "Text", "Providers", "Skill", "SSH", "KeyPair", "MCP",
+		"Ledger", "Tree", "Config", "History", "Audit", "Backup", "Settings",
+	}
+	for _, title := range allTitles {
 		if !strings.Contains(strip, title) {
-			t.Fatalf("120-col strip missing full primary title %q:\n%q", title, strip)
-		}
-	}
-	if !strings.Contains(strip, iconMore()+"5") {
-		t.Fatalf("120-col strip missing %q indicator:\n%q", iconMore()+"5", strip)
-	}
-	for _, hidden := range []string{"Config", "History", "Audit", "Backup", "Settings"} {
-		if strings.Contains(strip, hidden) {
-			t.Fatalf("120-col strip should hide inactive secondary tab %q:\n%q", hidden, strip)
+			t.Fatalf("120-col two-row strip missing title %q:\n%s", title, strip)
 		}
 	}
 }
 
-func TestTabStripActiveSecondarySurfaces(t *testing.T) {
+func TestTabStripAll15TabsSingleRowAtWideTerminal(t *testing.T) {
+	t.Cleanup(func() { applyIconSet(IconSetNerd) })
+	applyIconSet(IconSetNerd)
+
 	m := New(newAll14Managers(t))
-	out, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	out, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 30})
 	m = out.(Model)
 
-	for _, target := range []string{"Config", "History", "Settings"} {
-		idx := -1
-		for i, tab := range m.tabs {
-			if tab.Title() == target {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			t.Fatalf("missing tab %s", target)
-		}
-		m.active = idx
-		view := m.View()
-		if w, h := lipgloss.Width(view), lipgloss.Height(view); w != 120 || h != 30 {
-			t.Fatalf("tab=%s view=%dx%d, want 120x30", target, w, h)
-		}
-		if !strings.Contains(view, renderTab(target, true)) {
-			t.Fatalf("active secondary tab %s did not surface in top bar", target)
+	if got := m.tabStripHeight(160, 30); got != layoutTopH {
+		t.Fatalf("160-col tabStripHeight = %d, want %d (single row)", got, layoutTopH)
+	}
+	view := m.View()
+	assertFrameInvariants(t, "160x30 single row", view, 160, 30)
+	row1 := ansi.Strip(strings.Split(view, "\n")[1])
+	for _, title := range []string{"Home", "Env", "Config", "History", "Audit", "Backup", "Settings"} {
+		if !strings.Contains(row1, title) {
+			t.Fatalf("160-col single-row strip missing %q:\n%q", title, row1)
 		}
 	}
 }
@@ -117,14 +116,15 @@ func TestTabSwitcherOpenFilterJumpAndClose(t *testing.T) {
 	out, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = out.(Model)
 
-	// Not triggered while tab is in InputMode.
+	// Switch to Env tab and enter InputMode with "/".
+	out, _ = m.Update(runeKey("1"))
+	m = out.(Model)
 	out, _ = m.Update(runeKey("/"))
 	m = out.(Model)
 	if !m.tabs[m.active].InputMode() {
 		t.Fatal("expected Env tab in InputMode after /")
 	}
 	for _, k := range []tea.KeyMsg{
-		runeKey("0"),
 		{Type: tea.KeyCtrlP},
 		{Type: tea.KeyCtrlK},
 	} {
@@ -140,7 +140,6 @@ func TestTabSwitcherOpenFilterJumpAndClose(t *testing.T) {
 
 	// Each trigger opens switcher; esc closes without changing active tab.
 	for _, k := range []tea.KeyMsg{
-		runeKey("0"),
 		{Type: tea.KeyCtrlP},
 		{Type: tea.KeyCtrlK},
 	} {
@@ -150,13 +149,10 @@ func TestTabSwitcherOpenFilterJumpAndClose(t *testing.T) {
 			t.Fatalf("expected switcher open after %q", k.String())
 		}
 		view := ansi.Strip(m.View())
-		if !strings.Contains(view, "More") || !strings.Contains(view, "Primary") {
-			t.Fatalf("empty filter switcher should show More and Primary sections:\n%s", view)
-		}
-		morePos := strings.Index(view, "More")
-		primaryPos := strings.Index(view, "Primary")
-		if morePos < 0 || primaryPos < 0 || morePos > primaryPos {
-			t.Fatalf("More (%d) should appear before Primary (%d)", morePos, primaryPos)
+		for _, want := range []string{"Home", "Env", "Config", "Backup", "Settings"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("switcher missing %q:\n%s", want, view)
+			}
 		}
 		out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		m = out.(Model)
@@ -166,13 +162,13 @@ func TestTabSwitcherOpenFilterJumpAndClose(t *testing.T) {
 		if m.switcher != nil {
 			t.Fatalf("expected switcher closed on esc")
 		}
-		if m.active != 0 {
-			t.Fatalf("active changed on esc: got %d, want 0", m.active)
+		if m.active != 0 || m.onWelcome {
+			t.Fatalf("active changed on esc: onWelcome=%v active=%d, want false/0", m.onWelcome, m.active)
 		}
 	}
 
 	// Open switcher, type "backup" (contains 'k' which must type, not move cursor), jump with enter.
-	out, _ = m.Update(runeKey("0"))
+	out, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	m = out.(Model)
 	for _, ch := range "backup" {
 		out, _ = m.Update(runeKey(string(ch)))
@@ -222,7 +218,9 @@ func TestCommaJumpsToSettings(t *testing.T) {
 	out, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = out.(Model)
 
-	// Ignored in InputMode.
+	// Switch to Env tab and enter InputMode.
+	out, _ = m.Update(runeKey("1"))
+	m = out.(Model)
 	out, _ = m.Update(runeKey("/"))
 	m = out.(Model)
 	out, _ = m.Update(runeKey(","))

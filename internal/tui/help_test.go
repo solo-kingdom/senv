@@ -14,6 +14,9 @@ func openHelp(t *testing.T, mgrs Managers, w, h int) Model {
 	m := New(mgrs)
 	out, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = out.(Model)
+	// 进入 Env Tab（拥有完整的列表/分组键位集），再呼出 help overlay。
+	out, _ = m.Update(runeKey("1"))
+	m = out.(Model)
 	out, _ = m.Update(runeKey("?"))
 	m = out.(Model)
 	if m.help == nil {

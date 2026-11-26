@@ -333,8 +333,9 @@ senv tui   # 启动 TUI（优先复用 session；无 session 时临时要密码�
 | 按键 | 作用 |
 | --- | --- |
 | `Tab` / `Shift+Tab` | 循环切换标签 |
-| `1`–`9` | 按高频主菜单顺序直达对应标签（越界数字忽略）。全部注册时主菜单为 Env、Text、Providers、Skill、SSH、KeyPair、MCP、Ledger、Tree；低频标签（Config、History、Audit、Backup、Settings）收进顶栏 `⋯` 切换器，选中时动态浮出 |
-| `0` / `ctrl+p` / `ctrl+k` | 打开 Tab 切换器浮层（低频项置顶，支持按名称/描述实时过滤并按 `enter` 跳转） |
+| `0` | 回到 `Home` 欢迎页（展示环境摘要、工作区入口与常用快捷键；启动默认停在此页） |
+| `1`–`9` | 按注册顺序直达对应工作区（越界数字忽略）；全部 14 个功能标签均常驻顶栏（宽屏单行、常规宽度均衡双行展示），不再隐藏低频标签 |
+| `ctrl+p` / `ctrl+k` | 打开 Tab 切换器浮层（列出 Home 与全部标签，支持按名称/描述实时过滤并按 `enter` 跳转） |
 | `,` | 直达 Settings 标签 |
 | `↑` `↓` / `j` `k` | 列表导航 |
 | `←` `→` / `h` `l` | 切换左右栏焦点（Env / Text / Providers / Skill / Config / SSH / KeyPair / MCP / Ledger Tab） |

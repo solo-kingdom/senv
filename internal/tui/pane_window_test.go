@@ -140,6 +140,7 @@ func TestModalDoesNotSqueezeContentOutOfPane(t *testing.T) {
 
 func TestFramedModalDoesNotOverflowOuterFrame(t *testing.T) {
 	m := sizedModel(80, 24)
+	m.onWelcome = false
 	et := m.tabs[0].(*envTab)
 	items := make([]envItemRow, 30)
 	for i := range items {
@@ -168,6 +169,7 @@ func TestFramedModalDoesNotOverflowOuterFrame(t *testing.T) {
 
 func TestLongItemListDoesNotOverflowOuterFrame(t *testing.T) {
 	m := sizedModel(80, 24)
+	m.onWelcome = false
 	et := m.tabs[0].(*envTab)
 	items := make([]envItemRow, 50)
 	for i := range items {

@@ -339,8 +339,9 @@ The bottom bar shows the keybindings for the current context (switching with foc
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | Cycle tabs |
-| `1`–`9` | Jump to the corresponding primary tab in registration order (out-of-range digits ignored). Full primary order is Env, Text, Providers, Skill, SSH, KeyPair, MCP, Ledger, Tree; low-frequency tabs (Config, History, Audit, Backup, Settings) are tucked into the `⋯` switcher and surface dynamically when active |
-| `0` / `ctrl+p` / `ctrl+k` | Open the Tab Switcher overlay (secondary tabs listed first, live filter by name/description, `enter` to jump) |
+| `0` | Return to the `Home` welcome page (overview, workspace launcher, and common shortcuts; default startup view) |
+| `1`–`9` | Jump to the corresponding workspace in registration order (out-of-range digits ignored); all 14 tabs remain visible in the top bar (single row on wide terminals, balanced two rows on standard terminals) |
+| `ctrl+p` / `ctrl+k` | Open the Tab Switcher overlay (lists Home and all tabs, live filter by name/description, `enter` to jump) |
 | `,` | Jump directly to the Settings tab |
 | `↑` `↓` / `j` `k` | List navigation |
 | `←` `→` / `h` `l` | Switch focus between panes (Env / Text / Config / SSH / KeyPair / LLM / MCP tabs) |

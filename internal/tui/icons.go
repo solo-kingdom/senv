@@ -78,6 +78,7 @@ type iconPack struct {
 var iconPacks = map[string]iconPack{
 	IconSetNerd: {
 		tabs: map[string]string{
+			"Home":      "\U000f02dc", // 󰋜 nf-md-home
 			"Env":       "\U000f030b", // 󰌋 nf-md-key_variant
 			"Text":      "\U000f0219", // 󰈙 nf-md-file_document_outline
 			"Providers": "\U000f06a9", // 󰚩 nf-md-robot_outline
@@ -103,6 +104,7 @@ var iconPacks = map[string]iconPack{
 	},
 	IconSetUnicode: {
 		tabs: map[string]string{
+			"Home":      "⌂",
 			"Env":       "◆",
 			"Text":      "¶",
 			"Providers": "◈",
@@ -128,6 +130,7 @@ var iconPacks = map[string]iconPack{
 	},
 	IconSetASCII: {
 		tabs: map[string]string{
+			"Home":      "~",
 			"Env":       "$",
 			"Text":      "#",
 			"Providers": "@",

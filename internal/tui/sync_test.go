@@ -238,17 +238,30 @@ func TestInitLoadsOnlyFocusedTab(t *testing.T) {
 		out, _ := m.Update(msg)
 		m = out.(Model)
 	}
+	// 首屏停在 Home（欢迎页），所有业务 Tab 均未提前解密加载。
+	for i := 0; i < len(m.tabs); i++ {
+		if loaded, hasFlag := tabLoadedFlag(m.tabs[i]); hasFlag && loaded {
+			t.Fatalf("tabs[%d] (%s) loaded at Init on Home, want lazy first-focus loading", i, m.tabs[i].Title())
+		}
+	}
+	// 首次聚焦 env tab（数字键 1）：触发一次性加载，其余 Tab 仍未加载。
+	out, cmd := m.Update(runeKey("1"))
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
 	if loaded, _ := tabLoadedFlag(m.tabs[0]); !loaded {
-		t.Fatal("precondition: focused env tab must load at Init")
+		t.Fatal("precondition: focused env tab must load on first focus")
 	}
 	for i := 1; i < len(m.tabs); i++ {
 		if loaded, hasFlag := tabLoadedFlag(m.tabs[i]); hasFlag && loaded {
-			t.Fatalf("tabs[%d] (%s) loaded at Init, want lazy first-focus loading", i, m.tabs[i].Title())
+			t.Fatalf("tabs[%d] (%s) loaded before focus, want lazy first-focus loading", i, m.tabs[i].Title())
 		}
 	}
 
 	// 首次聚焦 text tab（数字键 2）：触发一次性加载
-	out, cmd := m.Update(runeKey("2"))
+	out, cmd = m.Update(runeKey("2"))
 	m = out.(Model)
 	for _, msg := range runCmd(cmd) {
 		out, _ = m.Update(msg)
@@ -291,8 +304,14 @@ func TestReloadAllTabsSkipsNeverFocusedTabs(t *testing.T) {
 		out, _ := m.Update(msg)
 		m = out.(Model)
 	}
-	// 只聚焦过 env（Init 激活项）
-	out, cmd := m.Update(syncPullMsg{out: PullOutcome{Applied: 2}})
+	// 聚焦一次 env（其余 tab 从未聚焦）
+	out, cmd := m.Update(runeKey("1"))
+	m = out.(Model)
+	for _, msg := range runCmd(cmd) {
+		out, _ = m.Update(msg)
+		m = out.(Model)
+	}
+	out, cmd = m.Update(syncPullMsg{out: PullOutcome{Applied: 2}})
 	m = out.(Model)
 	for _, msg := range runCmd(cmd) {
 		out, _ = m.Update(msg)

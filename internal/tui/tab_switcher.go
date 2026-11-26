@@ -13,18 +13,18 @@ type tabSwitchMsg struct{ index int }
 type tabSwitchCloseMsg struct{}
 
 type tabSwitcherItem struct {
-	index     int
-	title     string
-	desc      string
-	hotkey    string
-	secondary bool
-	active    bool
+	index  int // -1 for Home/Welcome
+	title  string
+	desc   string
+	hotkey string
+	active bool
 }
 
-// tabSwitcher 是居中浮层 Tab 切换器（0 / ctrl+p / ctrl+k 呼出），把收进 `⋯`
-// 的低频 Tab 置顶，下方列出高频主 Tab，支持按名称/描述实时模糊过滤。
+// tabSwitcher 是居中浮层 Tab 切换器（ctrl+p / ctrl+k 呼出），列出 Home 与全部已注册
+// Tab，支持按名称/描述实时模糊过滤并一键跳转。
 type tabSwitcher struct {
 	width, height int
+	frameOverhead int
 	items         []tabSwitcherItem
 	filtered      []tabSwitcherItem
 	input         string
@@ -33,6 +33,8 @@ type tabSwitcher struct {
 
 func tabDescription(title string) string {
 	switch title {
+	case "Home":
+		return "Welcome page & shortcuts"
 	case "Env":
 		return "Environment variables"
 	case "Text":
@@ -66,8 +68,17 @@ func tabDescription(title string) string {
 	}
 }
 
-func newTabSwitcher(tabs []Tab, active int) *tabSwitcher {
-	var more, primary []tabSwitcherItem
+func newTabSwitcher(tabs []Tab, active int, hasHome, onWelcome bool) *tabSwitcher {
+	items := make([]tabSwitcherItem, 0, len(tabs)+1)
+	if hasHome {
+		items = append(items, tabSwitcherItem{
+			index:  -1,
+			title:  "Home",
+			desc:   tabDescription("Home"),
+			hotkey: "0",
+			active: onWelcome,
+		})
+	}
 	for i, t := range tabs {
 		title := t.Title()
 		hotkey := ""
@@ -77,23 +88,14 @@ func newTabSwitcher(tabs []Tab, active int) *tabSwitcher {
 		if title == "Settings" {
 			hotkey = ","
 		}
-		item := tabSwitcherItem{
-			index:     i,
-			title:     title,
-			desc:      tabDescription(title),
-			hotkey:    hotkey,
-			secondary: isSecondaryTab(title),
-			active:    i == active,
-		}
-		if item.secondary {
-			more = append(more, item)
-		} else {
-			primary = append(primary, item)
-		}
+		items = append(items, tabSwitcherItem{
+			index:  i,
+			title:  title,
+			desc:   tabDescription(title),
+			hotkey: hotkey,
+			active: !onWelcome && i == active,
+		})
 	}
-	items := make([]tabSwitcherItem, 0, len(tabs))
-	items = append(items, more...)
-	items = append(items, primary...)
 	s := &tabSwitcher{items: items}
 	s.refilter()
 	return s
@@ -110,10 +112,17 @@ func (s *tabSwitcher) Bindings() []KeyAction {
 	}
 }
 
-func (s *tabSwitcher) InputMode() bool   { return true }
-func (s *tabSwitcher) Init() tea.Cmd     { return nil }
-func (s *tabSwitcher) Reload() tea.Cmd   { return nil }
-func (s *tabSwitcher) SetSize(w, h int)  { s.width, s.height = w, h }
+func (s *tabSwitcher) InputMode() bool  { return true }
+func (s *tabSwitcher) Init() tea.Cmd    { return nil }
+func (s *tabSwitcher) Reload() tea.Cmd  { return nil }
+func (s *tabSwitcher) SetSize(w, h int) { s.width, s.height = w, h }
+
+func (s *tabSwitcher) overhead() int {
+	if s.frameOverhead > 0 {
+		return s.frameOverhead
+	}
+	return frameRows
+}
 
 func (s *tabSwitcher) Update(msg tea.Msg) (Tab, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -173,64 +182,33 @@ func (s *tabSwitcher) refilter() {
 	}
 }
 
-type switcherRow struct {
-	text    string
-	itemIdx int // -1 for headings
-}
-
 func (s *tabSwitcher) View() string {
+	oh := s.overhead()
 	boxW := minInt(maxInt(s.width-overlayCols-2-helpMarginX, 24), 66)
-	maxRows := maxInt(s.height-frameRows-helpMarginY-overlayRows, 3)
+	maxRows := maxInt(s.height-oh-helpMarginY-overlayRows, 3)
 
 	title := "Switch Tab"
 	inputBudget := maxInt(boxW-lipgloss.Width(title)-4, 6)
-	header := lipgloss.NewStyle().Bold(true).Render(title) +
-		"  " + statusBarStyle.Render(truncateWidth(s.input+"_", inputBudget))
+	header := lipgloss.NewStyle().Bold(true).Foreground(colorAccent).Background(colorSurface).Render(title) +
+		lipgloss.NewStyle().Background(colorSurface).Render("  ") +
+		statusBarStyle.Render(truncateWidth(s.input+"_", inputBudget))
 
 	if len(s.filtered) == 0 {
 		empty := emptyStateStyle.Render(truncateWidth("no matching tabs", maxInt(boxW-4, 8)))
 		box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, header, empty))
-		return clipLines(box, maxInt(s.height-frameRows-helpMarginY, 1))
-	}
-
-	headingStyle := lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	grouped := strings.TrimSpace(s.input) == ""
-	rows := make([]switcherRow, 0, len(s.filtered)+2)
-	selectedRowIdx := 0
-	seenMore, seenPrimary := false, false
-	for i, it := range s.filtered {
-		if grouped {
-			if it.secondary && !seenMore {
-				seenMore = true
-				rows = append(rows, switcherRow{text: headingStyle.Render("More"), itemIdx: -1})
-			} else if !it.secondary && !seenPrimary {
-				seenPrimary = true
-				rows = append(rows, switcherRow{text: headingStyle.Render("Primary"), itemIdx: -1})
-			}
-		}
-		if i == s.cursor {
-			selectedRowIdx = len(rows)
-		}
-		rows = append(rows, switcherRow{
-			text:    s.renderItemRow(it, i == s.cursor, boxW),
-			itemIdx: i,
-		})
+		return clipLines(box, maxInt(s.height-oh-helpMarginY, 1))
 	}
 
 	listBudget := maxInt(maxRows-1, 1)
-	start, end := visibleRange(len(rows), selectedRowIdx, listBudget)
-	// Keep section heading visible when cursor rests on the first item of a section.
-	if start > 0 && rows[start-1].itemIdx == -1 && end-start < listBudget {
-		start--
-	}
+	start, end := visibleRange(len(s.filtered), s.cursor, listBudget)
 
 	body := make([]string, 0, 1+(end-start))
 	body = append(body, header)
-	for _, r := range rows[start:end] {
-		body = append(body, r.text)
+	for i := start; i < end; i++ {
+		body = append(body, s.renderItemRow(s.filtered[i], i == s.cursor, boxW))
 	}
 	box := searchOverlayStyle.Render(lipgloss.JoinVertical(lipgloss.Left, body...))
-	return clipLines(box, maxInt(s.height-frameRows-helpMarginY, 1))
+	return clipLines(box, maxInt(s.height-oh-helpMarginY, 1))
 }
 
 func (s *tabSwitcher) renderItemRow(it tabSwitcherItem, selected bool, boxW int) string {

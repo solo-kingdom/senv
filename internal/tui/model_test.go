@@ -69,25 +69,38 @@ func TestTabSwitchByNumber(t *testing.T) {
 
 func TestTabSwitchCycle(t *testing.T) {
 	m := New(Managers{})
-
-	// Tab key cycles forward: Env -> Text -> Config -> Backup -> Settings -> Env.
-	tabMsg := tea.KeyMsg{Type: tea.KeyTab}
-	for _, want := range []int{1, 2, 3, 4, 0} {
-		out, _ := m.Update(tabMsg)
-		m = out.(Model)
-		if m.active != want {
-			t.Fatalf("after Tab: active = %d, want %d", m.active, want)
-		}
+	if !m.onWelcome {
+		t.Fatal("expected New() to start on Welcome page")
 	}
 
-	// Shift+Tab cycles backward: Env -> Settings -> Backup -> Config -> Text -> Env.
+	// Tab key cycles forward: Home -> Env(0) -> Text(1) -> Config(2) -> Backup(3) -> Settings(4) -> Home.
+	tabMsg := tea.KeyMsg{Type: tea.KeyTab}
+	for _, want := range []int{0, 1, 2, 3, 4} {
+		out, _ := m.Update(tabMsg)
+		m = out.(Model)
+		if m.onWelcome || m.active != want {
+			t.Fatalf("after Tab: onWelcome=%v active=%d, want onWelcome=false active=%d", m.onWelcome, m.active, want)
+		}
+	}
+	out, _ := m.Update(tabMsg)
+	m = out.(Model)
+	if !m.onWelcome {
+		t.Fatalf("after Tab from last tab: expected wrap back to Welcome")
+	}
+
+	// Shift+Tab cycles backward: Home -> Settings(4) -> Backup(3) -> Config(2) -> Text(1) -> Env(0) -> Home.
 	shiftTab := tea.KeyMsg{Type: tea.KeyShiftTab}
 	for _, want := range []int{4, 3, 2, 1, 0} {
 		out, _ := m.Update(shiftTab)
 		m = out.(Model)
-		if m.active != want {
-			t.Fatalf("after Shift+Tab: active = %d, want %d", m.active, want)
+		if m.onWelcome || m.active != want {
+			t.Fatalf("after Shift+Tab: onWelcome=%v active=%d, want onWelcome=false active=%d", m.onWelcome, m.active, want)
 		}
+	}
+	out, _ = m.Update(shiftTab)
+	m = out.(Model)
+	if !m.onWelcome {
+		t.Fatalf("after Shift+Tab from first tab: expected wrap back to Welcome")
 	}
 }
 
