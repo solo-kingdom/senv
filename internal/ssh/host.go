@@ -47,22 +47,20 @@ func (m *Manager) ListHosts() ([]*storage.HostEntry, error) {
 }
 
 func (m *Manager) listHostsEntries() ([]*storage.HostEntry, error) {
-	var names []string
-	err := m.storage.WithVaultMutation(func(locked *storage.Manager) error {
+	key := m.key
+	if key == nil {
 		var err error
-		names, err = locked.ListHosts()
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	hosts := make([]*storage.HostEntry, 0, len(names))
-	for _, alias := range names {
-		host, err := m.loadHost(alias)
+		key, err = m.storage.DeriveKeyFromPassword(m.password)
 		if err != nil {
 			return nil, err
 		}
-		hosts = append(hosts, host)
+	}
+	hosts, err := m.storage.LoadAllHostsWithKey(key)
+	if err != nil {
+		return nil, err
+	}
+	if hosts == nil {
+		return []*storage.HostEntry{}, nil
 	}
 	return hosts, nil
 }

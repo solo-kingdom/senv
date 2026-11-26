@@ -214,13 +214,14 @@ func resolveAuth(configPath, dataPath string, prompt passwordPrompter) (res *aut
 	if !store.IsInitialized() {
 		return nil, errNotInitialized
 	}
-	if _, err := store.LoadMetadata(); err != nil {
+	md, err := store.LoadMetadata()
+	if err != nil {
 		return nil, fmt.Errorf("failed to load metadata: %w", err)
 	}
 	sm := session.NewManager(configPath, dataPath)
 
 	// 1. Try session reuse.
-	key, err := sm.GetCachedKey()
+	key, err := sm.GetCachedKeyWithMetadata(md)
 	if err == nil {
 		// 会话可能来自磁盘逃生舱（较新胜出或安全存储失败回退）；
 		// 该降级路径已在 stderr 警告过，这里补一条审计痕迹。

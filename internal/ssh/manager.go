@@ -341,16 +341,20 @@ func (m *Manager) ListKeyPairs() ([]KeyPairSummary, error) {
 }
 
 func (m *Manager) listKeyPairsSummaries() ([]KeyPairSummary, error) {
-	names, err := m.listKeyPairs()
-	if err != nil {
-		return nil, err
-	}
-	summaries := make([]KeyPairSummary, 0, len(names))
-	for _, name := range names {
-		entry, err := m.loadKeyPair(name)
+	key := m.key
+	if key == nil {
+		var err error
+		key, err = m.storage.DeriveKeyFromPassword(m.password)
 		if err != nil {
 			return nil, err
 		}
+	}
+	entries, err := m.storage.LoadAllKeyPairsWithKey(key)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]KeyPairSummary, 0, len(entries))
+	for _, entry := range entries {
 		summaries = append(summaries, keyPairSummary(entry))
 	}
 	return summaries, nil

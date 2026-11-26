@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wii/senv/internal/server/store"
@@ -48,6 +49,8 @@ type Options struct {
 	// alertPayload 的 JSON 字段名（{{.alert}} {{.time}} {{.ip}} {{.user}}
 	// {{.client}} {{.reason}} {{.count}}…），用于对接只认自家 body 结构的机器人。
 	AlertBodyTemplate string
+	// AsyncAccessLogBuffer > 0 时启用有界异步访问日志队列（默认 0=同步落库，便于测试确定性）。
+	AsyncAccessLogBuffer int
 }
 
 // withDefaults 补齐零值
@@ -73,6 +76,9 @@ type Server struct {
 	maxBody           int64
 	trustProxyHeaders bool
 	alerts            *alertDetector
+	accessCh          chan store.AccessEvent
+	accessWG          sync.WaitGroup
+	accessCloseOnce   sync.Once
 }
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
@@ -93,6 +99,11 @@ func New(st store.Store, opts ...Options) *Server {
 	if o.AlertWebhook != "" {
 		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertMassDeleteThreshold, o.AlertDebounce, o.AlertBodyTemplate)
 		go s.alerts.run(context.Background())
+	}
+	if o.AsyncAccessLogBuffer > 0 {
+		s.accessCh = make(chan store.AccessEvent, o.AsyncAccessLogBuffer)
+		s.accessWG.Add(1)
+		go s.runAccessLogWorker()
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /v1/register", s.handleRegister)
@@ -119,6 +130,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // 据此感知屏蔽并清理本地状态）；屏蔽不计入认证失败限速——它不是 token 爆破。
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		authStart := time.Now()
 		ip := s.resolveRemoteIP(r)
 		info := accessInfoFrom(r.Context())
 		if s.limiter.blocked(ip) {
@@ -158,6 +170,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		info.userID = res.UserID
 		info.clientID = res.ClientID
+		info.authDur = time.Since(authStart)
 		next(w, r)
 	}
 }

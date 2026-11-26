@@ -13,6 +13,7 @@ func TestMachineLocalGitIgnoreEntriesLocked(t *testing.T) {
 	want := []string{
 		"tui-snapshot.enc",
 		".senv-sync-state.json",
+		".senv-last-pull",
 		".senv-sync.lock",
 		"server-token.json",
 		"mcp-exports.json",
@@ -26,7 +27,7 @@ func TestMachineLocalGitIgnoreEntriesLocked(t *testing.T) {
 }
 
 func TestMachineLocalDataArtifactExactMatch(t *testing.T) {
-	yes := []string{"tui-snapshot.enc", ".senv-sync-state.json", ".senv-sync.lock"}
+	yes := []string{"tui-snapshot.enc", ".senv-sync-state.json", ".senv-last-pull", ".senv-sync.lock"}
 	for _, name := range yes {
 		if !storage.IsMachineLocalDataArtifact(name) {
 			t.Errorf("IsMachineLocalDataArtifact(%q) = false, want true", name)
@@ -77,9 +78,9 @@ func TestMachineLocalConfigArtifactExactMatch(t *testing.T) {
 
 func TestMachineLocalGitExcludeGlobs(t *testing.T) {
 	globs := storage.MachineLocalGitExcludeGlobs()
-	// 7 个文件条目各 1 条 + 1 个目录条目 2 条 = 9
-	if len(globs) != 9 {
-		t.Fatalf("len(MachineLocalGitExcludeGlobs()) = %d, want 9: %v", len(globs), globs)
+	// 8 个文件条目各 1 条 + 1 个目录条目 2 条 = 10
+	if len(globs) != 10 {
+		t.Fatalf("len(MachineLocalGitExcludeGlobs()) = %d, want 10: %v", len(globs), globs)
 	}
 	seen := make(map[string]bool, len(globs))
 	for _, g := range globs {
@@ -88,6 +89,7 @@ func TestMachineLocalGitExcludeGlobs(t *testing.T) {
 	for _, want := range []string{
 		":(exclude,glob)**/tui-snapshot.enc",
 		":(exclude,glob)**/.senv-sync-state.json",
+		":(exclude,glob)**/.senv-last-pull",
 		":(exclude,glob)**/server-token.json",
 		":(exclude,glob)**/agent-pointers.json",
 		":(exclude,glob)**/cache",

@@ -4,11 +4,19 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wii/senv/internal/server/store"
+)
+
+const (
+	slowRequestThreshold  = 500 * time.Millisecond
+	largeResponseBytes    = 1 << 20
+	accessLogWriteTimeout = 5 * time.Second
 )
 
 func sanitizeLogField(s string) string {
@@ -23,17 +31,33 @@ func sanitizeLogField(s string) string {
 	return b.String()
 }
 
-// accessRecorder 记录响应状态码（WriteHeader 可能不被显式调用 → 200）
+// accessRecorder 记录响应状态码、字节数并注入 Server-Timing 响应头。
 type accessRecorder struct {
 	http.ResponseWriter
-	status      int
-	wroteHeader bool
+	status       int
+	wroteHeader  bool
+	bytesWritten int64
+	reqStart     time.Time
+	info         *accessInfo
+}
+
+func (r *accessRecorder) writeServerTiming() {
+	if r.reqStart.IsZero() {
+		return
+	}
+	totalDur := time.Since(r.reqStart)
+	timing := fmt.Sprintf("total;dur=%.2f", float64(totalDur.Microseconds())/1000.0)
+	if r.info != nil && r.info.authDur > 0 {
+		timing = fmt.Sprintf("auth;dur=%.2f, %s", float64(r.info.authDur.Microseconds())/1000.0, timing)
+	}
+	r.ResponseWriter.Header().Set("Server-Timing", timing)
 }
 
 func (r *accessRecorder) WriteHeader(status int) {
 	if !r.wroteHeader {
 		r.status = status
 		r.wroteHeader = true
+		r.writeServerTiming()
 	}
 	r.ResponseWriter.WriteHeader(status)
 }
@@ -42,7 +66,9 @@ func (r *accessRecorder) Write(b []byte) (int, error) {
 	if !r.wroteHeader {
 		r.WriteHeader(http.StatusOK)
 	}
-	return r.ResponseWriter.Write(b)
+	n, err := r.ResponseWriter.Write(b)
+	r.bytesWritten += int64(n)
+	return n, err
 }
 
 // outcomeFromStatus 把响应状态映射为安全事件结果：
@@ -70,10 +96,10 @@ func outcomeFromStatus(status int) string {
 	}
 }
 
-// recordAccess 落一条安全事件并推给告警检测器；两者皆 best-effort，
-// 失败仅记服务端错误日志，不影响响应
+// recordAccess 落一条安全事件并推给告警检测器；启用异步队列时非阻塞入队，队列满丢弃并记 warn。
 func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder) {
 	event := store.AccessEvent{
+		Time:     time.Now(),
 		IP:       sanitizeLogField(s.resolveRemoteIP(r)),
 		Method:   sanitizeLogField(r.Method),
 		Path:     sanitizeLogField(r.URL.Path),
@@ -88,9 +114,45 @@ func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Req
 	if s.alerts != nil {
 		s.alerts.push(event)
 	}
+	if s.accessCh != nil {
+		select {
+		case s.accessCh <- event:
+		default:
+			slog.Warn("access log queue full, dropping event", "method", event.Method, "path", event.Path)
+		}
+		return
+	}
 	err := s.store.RecordAccess(ctx, event)
 	if err != nil {
 		slog.Error("access log write failed", "err", err)
+	}
+}
+
+func (s *Server) runAccessLogWorker() {
+	defer s.accessWG.Done()
+	for event := range s.accessCh {
+		ctx, cancel := context.WithTimeout(context.Background(), accessLogWriteTimeout)
+		if err := s.store.RecordAccess(ctx, event); err != nil {
+			slog.Error("access log write failed", "err", err)
+		}
+		cancel()
+	}
+}
+
+// Shutdown drains any buffered async access log events up to ctx deadline.
+func (s *Server) Shutdown(ctx context.Context) {
+	if s.accessCh == nil {
+		return
+	}
+	s.accessCloseOnce.Do(func() { close(s.accessCh) })
+	done := make(chan struct{})
+	go func() {
+		s.accessWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -102,9 +164,30 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		start := time.Now()
 		info := &accessInfo{}
-		rec := &accessRecorder{ResponseWriter: w, status: http.StatusOK}
+		rec := &accessRecorder{ResponseWriter: w, status: http.StatusOK, reqStart: start, info: info}
 		next.ServeHTTP(rec, r.WithContext(contextWithAccessInfo(r.Context(), info)))
+		total := time.Since(start)
+		if total > slowRequestThreshold {
+			slog.Warn("slow http request",
+				"method", sanitizeLogField(r.Method),
+				"path", sanitizeLogField(r.URL.Path),
+				"status", rec.status,
+				"dur_ms", total.Milliseconds(),
+				"bytes", rec.bytesWritten,
+				"encoding", rec.Header().Get("Content-Encoding"),
+			)
+		} else if rec.bytesWritten > largeResponseBytes {
+			slog.Info("large http response",
+				"method", sanitizeLogField(r.Method),
+				"path", sanitizeLogField(r.URL.Path),
+				"status", rec.status,
+				"dur_ms", total.Milliseconds(),
+				"bytes", rec.bytesWritten,
+				"encoding", rec.Header().Get("Content-Encoding"),
+			)
+		}
 		s.recordAccess(r.Context(), info, r, rec)
 	})
 }

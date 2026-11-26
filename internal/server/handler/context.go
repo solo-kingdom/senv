@@ -1,6 +1,9 @@
 package handler
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // accessInfo 是一次请求的身份与拦截原因聚合。认证中间件在原 context 上
 // 通过指针原地修改（外层访问日志包装器因此能看到内层写入的值，无需重新
@@ -9,6 +12,7 @@ type accessInfo struct {
 	userID   int64
 	clientID int64
 	reason   string
+	authDur  time.Duration
 	// nEntries/nDeleted 是 push 请求的规模（条目数 / 其中 tombstone 数）；
 	// 由 push handler 在解码后写入，供访问日志与告警使用。
 	nEntries int

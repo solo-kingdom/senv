@@ -190,13 +190,15 @@ func platformEnsureDir(rootFD int, segments []string, mode fs.FileMode, tightenF
 			if created {
 				finalMode = uint32(mode.Perm())
 			}
-			if err := unix.Fchmod(next, finalMode); err != nil {
-				_ = unix.Close(next)
-				return syscallPathError("set directory mode", displayPath(segments), err)
-			}
-			if err := unix.Fsync(next); err != nil {
-				_ = unix.Close(next)
-				return syscallPathError("sync directory", displayPath(segments), err)
+			if created || (uint32(stat.Mode)&0o777) != finalMode {
+				if err := unix.Fchmod(next, finalMode); err != nil {
+					_ = unix.Close(next)
+					return syscallPathError("set directory mode", displayPath(segments), err)
+				}
+				if err := unix.Fsync(next); err != nil {
+					_ = unix.Close(next)
+					return syscallPathError("sync directory", displayPath(segments), err)
+				}
 			}
 		}
 		_ = unix.Close(current)

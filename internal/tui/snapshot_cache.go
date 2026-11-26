@@ -230,8 +230,11 @@ func (c *SnapshotCache) manifestEntries() ([]string, error) {
 		return nil, err
 	}
 	defer dataRoot.Close()
-	if err := walkManifest(dataRoot, nil, &out); err != nil {
-		return nil, err
+	// 只扫描实际喂养首屏快照的域（envs/texts/backups），跳过 trees/ledger_logs 等无关大目录。
+	for _, dir := range []string{storage.EnvDirName, storage.TextDirName, storage.BackupDirName} {
+		if err := walkManifest(dataRoot, []string{dir}, &out); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 
 	cfgRoot, err := securefs.OpenRoot(c.configPath)

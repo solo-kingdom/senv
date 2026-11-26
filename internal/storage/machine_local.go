@@ -33,6 +33,7 @@ var machineLocalArtifacts = []MachineLocalArtifact{
 	// dataPath（vault 数据树）
 	{Name: "tui-snapshot.enc", Scope: ScopeDataPath},      // TUI 首屏加密快照
 	{Name: ".senv-sync-state.json", Scope: ScopeDataPath}, // server 同步状态
+	{Name: ".senv-last-pull", Scope: ScopeDataPath},       // 空增量拉取时间戳
 	{Name: ".senv-sync.lock", Scope: ScopeDataPath},       // 同步进程锁
 	// configPath（仓库根）
 	{Name: ServerTokenFile, Scope: ScopeConfigPath},       // server provider token

@@ -47,12 +47,13 @@ func (p *ServerProvider) LocalSyncSnapshot() (dirty int, lastPull time.Time, err
 	if err != nil {
 		return 0, time.Time{}, err
 	}
-	current, err := p.cache.collect()
+	current, _, err := p.cache.collectWithState(st)
 	if err != nil {
 		return 0, time.Time{}, err
 	}
-	if st.LastPullAt > 0 {
-		lastPull = time.Unix(st.LastPullAt, 0)
+	lastPullTS := max(st.LastPullAt, p.cache.readLastPullAt())
+	if lastPullTS > 0 {
+		lastPull = time.Unix(lastPullTS, 0)
 	}
 	return len(p.collectDirty(st, current)), lastPull, nil
 }
@@ -75,7 +76,8 @@ func (p *ServerProvider) AutoPull(ctx context.Context, throttle time.Duration, r
 		if err != nil {
 			return nil, AutoSyncRan, err
 		}
-		if p.now().Sub(time.Unix(st.LastPullAt, 0)) < throttle {
+		lastPullTS := max(st.LastPullAt, p.cache.readLastPullAt())
+		if p.now().Sub(time.Unix(lastPullTS, 0)) < throttle {
 			return nil, AutoSyncSkipThrottled, nil
 		}
 	}
@@ -105,7 +107,7 @@ func (p *ServerProvider) AutoPush(ctx context.Context, budget time.Duration) (*A
 	if err != nil {
 		return nil, err
 	}
-	current, err := p.cache.collect()
+	current, _, err := p.cache.collectWithState(st)
 	if err != nil {
 		return nil, err
 	}

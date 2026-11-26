@@ -27,10 +27,12 @@ It provides encrypted storage for sensitive data with group-based organization.`
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
+			markSkipAutoPush(cmd)
 			return cmd.Help()
 		}
 		group, key, ok := parseAddress(args[0])
 		if !ok {
+			markSkipAutoPush(cmd)
 			return cmd.Help()
 		}
 		return runTextShorthand(group, key, rootShorthandFile, args[1:])

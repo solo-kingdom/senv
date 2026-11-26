@@ -573,30 +573,22 @@ func (m *Manager) ListGroups() ([]GroupInfo, error) {
 }
 
 func (m *Manager) listGroupsInfo() ([]GroupInfo, error) {
-	groups, err := m.storage.ListTextGroups()
+	vault, err := m.loadTextVault()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list groups: %w", err)
+		return nil, err
 	}
-
-	var result []GroupInfo
-	for _, name := range groups {
-		keys, err := m.storage.ListTextFiles(name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list text group %q: %w", name, err)
-		}
+	result := make([]GroupInfo, 0, len(vault.Groups))
+	for _, name := range vault.Groups {
 		desc := ""
-		if cryptoKey, err := m.resolveCryptoKey(); err == nil {
-			if meta, err := m.storage.LoadTextGroupMetaWithKey(name, cryptoKey); err == nil && meta != nil {
-				desc = meta.Description
-			}
+		if gm := vault.GroupMetas[name]; gm != nil {
+			desc = gm.Description
 		}
 		result = append(result, GroupInfo{
 			Name:        name,
 			Description: desc,
-			KeyCount:    len(keys),
+			KeyCount:    vault.KeyCount[name],
 		})
 	}
-
 	return result, nil
 }
 
@@ -627,10 +619,8 @@ func (m *Manager) Snapshot() (*Snapshot, error) {
 	total := 0
 	for _, name := range vault.Groups {
 		desc := ""
-		if cryptoKey, err := m.resolveCryptoKey(); err == nil {
-			if meta, err := m.storage.LoadTextGroupMetaWithKey(name, cryptoKey); err == nil && meta != nil {
-				desc = meta.Description
-			}
+		if gm := vault.GroupMetas[name]; gm != nil {
+			desc = gm.Description
 		}
 		out.Groups = append(out.Groups, GroupInfo{Name: name, Description: desc, KeyCount: vault.KeyCount[name]})
 		entries, ok := vault.Entries[name]

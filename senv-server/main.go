@@ -204,6 +204,7 @@ func runServe(args []string) {
 		AlertMassDeleteThreshold: *alertMassDelete,
 		AlertDebounce:            *alertDebounce,
 		AlertBodyTemplate:        *alertBodyTemplate,
+		AsyncAccessLogBuffer:     1024,
 	})
 
 	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。
@@ -248,9 +249,10 @@ func runServe(args []string) {
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "优雅停机失败: %v\n", err)
 		}
-		// last_seen 内存缓冲停机前落库（best-effort，5s 上限；崩溃丢弃无实害）
+		// last_seen 内存缓冲与异步访问日志停机前落库（best-effort，5s 上限；崩溃丢弃无实害）
 		touchCtx, touchCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer touchCancel()
+		srv.Shutdown(touchCtx)
 		st.FlushTouches(touchCtx)
 	}()
 

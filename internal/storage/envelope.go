@@ -77,6 +77,11 @@ func decryptWithPolicy(cryptoKey []byte, kind, grp, key string, encoded string, 
 	return crypto.DecryptWithAADStrict(cryptoKey, encoded, aad, policy.RequireV2)
 }
 
+func decryptWithAEAD(aead *crypto.AEAD, kind, grp, key string, encoded string, policy vaultCryptoPolicy) ([]byte, error) {
+	aad := crypto.BuildEntryAAD(kind, grp, key, policy.KeyEpoch)
+	return aead.DecryptWithAADStrict(encoded, aad, policy.RequireV2)
+}
+
 func (m *Manager) encryptEntryLocked(cryptoKey []byte, kind, grp, key string, plaintext []byte) (string, error) {
 	policy, err := m.readCryptoPolicyLocked()
 	if err != nil {

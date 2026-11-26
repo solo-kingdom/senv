@@ -50,7 +50,7 @@ func (a *MCPAuthorization) matches(cache *SessionCache, metadataSalt string, key
 // AuthorizeMCPStartup validates the current session once and returns only its
 // non-secret fingerprint. The decoded key is zeroed before this method returns.
 func (m *Manager) AuthorizeMCPStartup() (*MCPAuthorization, error) {
-	key, cache, metadataSalt, err := m.loadValidatedCredential()
+	key, cache, metadataSalt, err := m.loadValidatedCredential(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (m *Manager) AuthorizeMCPStartup() (*MCPAuthorization, error) {
 // AuthorizeMCPRequest reloads and validates the exact startup session. Every
 // failure is deliberately collapsed to one sanitized revocation error.
 func (m *Manager) AuthorizeMCPRequest(authorization *MCPAuthorization) ([]byte, error) {
-	key, cache, metadataSalt, err := m.loadValidatedCredential()
+	key, cache, metadataSalt, err := m.loadValidatedCredential(nil)
 	if err == nil && !authorization.matches(cache, metadataSalt, key) {
 		err = ErrMCPRevoked
 	}

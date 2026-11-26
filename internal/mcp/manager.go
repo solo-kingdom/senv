@@ -136,17 +136,20 @@ func (m *Manager) Delete(alias string) error {
 // List returns profile summaries sorted by alias, with env keys visible but
 // env values omitted.
 func (m *Manager) List() ([]Server, error) {
-	names, err := m.storage.ListMCPServers()
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(names)
-	out := make([]Server, 0, len(names))
-	for _, name := range names {
-		entry, err := m.load(name)
+	key := m.key
+	if key == nil {
+		var err error
+		key, err = m.storage.DeriveKeyFromPassword(m.password)
 		if err != nil {
 			return nil, err
 		}
+	}
+	entries, err := m.storage.LoadAllMCPServersWithKey(key)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Server, 0, len(entries))
+	for _, entry := range entries {
 		out = append(out, Server{
 			Alias:       entry.Alias,
 			Transport:   entry.Transport,

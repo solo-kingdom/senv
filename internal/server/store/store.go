@@ -570,18 +570,58 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 		return nil, 0, err
 	}
 
-	// 整批先做 base_revision 校验，收集冲突清单；冲突则整批回滚
+	// 整批先做重复 key 检查与 base_revision 校验，收集冲突清单；冲突则整批回滚。
+	type entryTuple struct{ kind, grp, key string }
+	seen := make(map[entryTuple]struct{}, len(entries))
+	kinds := make([]string, len(entries))
+	grps := make([]string, len(entries))
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		t := entryTuple{e.Kind, e.Grp, e.Key}
+		if _, dup := seen[t]; dup {
+			return nil, 0, validationErrorf("推送批次包含重复条目 %s/%s/%s", e.Kind, e.Grp, e.Key)
+		}
+		seen[t] = struct{}{}
+		kinds[i] = e.Kind
+		grps[i] = e.Grp
+		keys[i] = e.Key
+	}
+
+	existing := make(map[entryTuple]Conflict, len(entries))
+	rows, err := tx.Query(ctx,
+		`SELECT e.kind, e.grp, e.key, e.revision, e.deleted, e.ciphertext, e.updated_at
+		 FROM entries e
+		 JOIN unnest($2::text[], $3::text[], $4::text[]) AS u(kind, grp, key)
+		   ON e.kind = u.kind AND e.grp = u.grp AND e.key = u.key
+		 WHERE e.vault_id = $1`,
+		vaultID, kinds, grps, keys)
+	if err != nil {
+		return nil, 0, err
+	}
+	for rows.Next() {
+		var c Conflict
+		var ct []byte
+		if err := rows.Scan(&c.Kind, &c.Grp, &c.Key, &c.CurrentRevision, &c.Deleted, &ct, &c.UpdatedAt); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		c.Size = int64(len(ct))
+		if !c.Deleted && len(ct) > 0 {
+			sum := sha256.Sum256(ct)
+			c.CiphertextSHA256 = hex.EncodeToString(sum[:])
+		}
+		existing[entryTuple{c.Kind, c.Grp, c.Key}] = c
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	rows.Close()
+
 	var conflicts []Conflict
 	for _, e := range entries {
-		var current Conflict
-		var ct []byte
-		err := tx.QueryRow(ctx,
-			`SELECT revision, deleted, ciphertext, updated_at
-			 FROM entries WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4`,
-			vaultID, e.Kind, e.Grp, e.Key).Scan(
-			&current.CurrentRevision, &current.Deleted, &ct, &current.UpdatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			// 新条目：base_revision 必须为 0
+		cur, ok := existing[entryTuple{e.Kind, e.Grp, e.Key}]
+		if !ok {
 			if e.BaseRevision != 0 {
 				conflicts = append(conflicts, Conflict{
 					Kind: e.Kind, Grp: e.Grp, Key: e.Key,
@@ -590,60 +630,56 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 			}
 			continue
 		}
-		if err != nil {
-			return nil, 0, err
-		}
-		current.Size = int64(len(ct))
-		if e.BaseRevision != current.CurrentRevision {
-			current.Kind, current.Grp, current.Key = e.Kind, e.Grp, e.Key
-			if !current.Deleted && len(ct) > 0 {
-				sum := sha256.Sum256(ct)
-				current.CiphertextSHA256 = hex.EncodeToString(sum[:])
-			}
-			conflicts = append(conflicts, current)
+		if e.BaseRevision != cur.CurrentRevision {
+			conflicts = append(conflicts, cur)
 		}
 	}
 	if len(conflicts) > 0 {
 		return nil, 0, &ConflictError{Conflicts: conflicts}
 	}
 
-	// 无冲突：逐条写入，每条取新的单调 revision（更新与删除都推进）。
-	// 历史留存（可由 --history-retain<=0 关闭）：先把受影响条目的当前值
-	// 写入前像历史，推送事务整体回滚时历史随之回滚。
+	// 无冲突：历史前像留存 + 单次预分配连续 revision 号段 + 批量 upsert。
 	if s.historyRetain > 0 {
 		if err := recordHistoryPreimages(ctx, tx, vaultID, entries, userID, clientID); err != nil {
 			return nil, 0, err
 		}
 	}
 	var latest int64
+	if err := tx.QueryRow(ctx,
+		`UPDATE vaults SET seq = seq + $1 WHERE id = $2 RETURNING seq`,
+		int64(len(entries)), vaultID).Scan(&latest); err != nil {
+		return nil, 0, err
+	}
+	startRev := latest - int64(len(entries)) + 1
+	cts := make([][]byte, len(entries))
+	revs := make([]int64, len(entries))
+	dels := make([]bool, len(entries))
 	for i := range entries {
-		rev, err := nextRevision(ctx, tx, vaultID)
-		if err != nil {
-			return nil, 0, err
-		}
+		rev := startRev + int64(i)
 		entries[i].Revision = rev
-		latest = rev
-		if entries[i].Deleted {
-			_, err = tx.Exec(ctx,
-				`INSERT INTO entries (vault_id, kind, grp, key, ciphertext, revision, deleted, updated_at)
-				 VALUES ($1, $2, $3, $4, NULL, $5, TRUE, now())
-				 ON CONFLICT (vault_id, kind, grp, key)
-				 DO UPDATE SET ciphertext = NULL, revision = EXCLUDED.revision, deleted = TRUE, updated_at = EXCLUDED.updated_at`,
-				vaultID, entries[i].Kind, entries[i].Grp, entries[i].Key, rev)
-		} else {
-			_, err = tx.Exec(ctx,
-				`INSERT INTO entries (vault_id, kind, grp, key, ciphertext, revision, deleted, updated_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, FALSE, now())
-				 ON CONFLICT (vault_id, kind, grp, key)
-				 DO UPDATE SET ciphertext = EXCLUDED.ciphertext, revision = EXCLUDED.revision, deleted = FALSE, updated_at = EXCLUDED.updated_at`,
-				vaultID, entries[i].Kind, entries[i].Grp, entries[i].Key, entries[i].Ciphertext, rev)
-		}
-		if err != nil {
-			return nil, 0, err
+		revs[i] = rev
+		dels[i] = entries[i].Deleted
+		if !entries[i].Deleted {
+			cts[i] = entries[i].Ciphertext
 		}
 	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO entries (vault_id, kind, grp, key, ciphertext, revision, deleted, updated_at)
+		 SELECT $1, u.kind, u.grp, u.key,
+		        CASE WHEN u.deleted THEN NULL ELSE u.ct END,
+		        u.rev, u.deleted, now()
+		 FROM unnest($2::text[], $3::text[], $4::text[], $5::bytea[], $6::bigint[], $7::boolean[])
+		      AS u(kind, grp, key, ct, rev, deleted)
+		 ON CONFLICT (vault_id, kind, grp, key)
+		 DO UPDATE SET ciphertext = EXCLUDED.ciphertext,
+		               revision   = EXCLUDED.revision,
+		               deleted    = EXCLUDED.deleted,
+		               updated_at = EXCLUDED.updated_at`,
+		vaultID, kinds, grps, keys, cts, revs, dels); err != nil {
+		return nil, 0, err
+	}
 	if s.historyRetain > 0 && s.historyPrune {
-		if err := pruneHistory(ctx, tx, vaultID, s.historyRetain); err != nil {
+		if err := pruneHistory(ctx, tx, vaultID, s.historyRetain, entries); err != nil {
 			return nil, 0, err
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/syncschema"
 )
 
@@ -169,4 +170,97 @@ func (m *Manager) DeleteLedgerFile(dir, group, key string) error {
 		return fmt.Errorf("failed to delete ledger %q: %w", key, err)
 	}
 	return nil
+}
+
+// RawLedgerItem 是批量读取返回的单条解密前原始 JSON 与身份。
+type RawLedgerItem struct {
+	Group string
+	Key   string
+	Data  []byte
+}
+
+// LoadLedgerBatch 在单次 vault 读锁内、复用单个 data root 与 AEAD 实例批量读取并解密
+// dir 下的台账条目（group 为空遍历全部分组；keyPrefix 非空时按前缀过滤）。
+func (m *Manager) LoadLedgerBatch(dir, group, keyPrefix string, cryptoKey []byte) ([]RawLedgerItem, error) {
+	if group != "" {
+		if err := ValidateName(group); err != nil {
+			return nil, fmt.Errorf("invalid ledger group %q: %w", group, err)
+		}
+	}
+	return withVaultRead(m, func(locked *Manager) ([]RawLedgerItem, error) {
+		if err := locked.requireCurrentKey(cryptoKey); err != nil {
+			return nil, err
+		}
+		policy, err := locked.readCryptoPolicyLocked()
+		if err != nil {
+			return nil, err
+		}
+		aead, err := crypto.NewAEAD(cryptoKey)
+		if err != nil {
+			return nil, err
+		}
+		root, err := locked.openDataRoot()
+		if err != nil {
+			return nil, err
+		}
+		defer root.Close()
+
+		var groups []string
+		if group != "" {
+			groups = []string{group}
+		} else {
+			entries, err := root.ReadDir(dir)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+					return nil, nil
+				}
+				return nil, err
+			}
+			for _, e := range entries {
+				if e.IsDir {
+					groups = append(groups, e.Name)
+				}
+			}
+			sort.Strings(groups)
+		}
+
+		aadKind := ledgerAADKindForDir(dir)
+		var out []RawLedgerItem
+		for _, g := range groups {
+			files, err := root.ReadDir(dir, g)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			keys := make([]string, 0, len(files))
+			for _, f := range files {
+				if f.IsDir {
+					return nil, fmt.Errorf("invalid ledger cache entry type")
+				}
+				if f.Name == EnvMetaFileName || !strings.HasSuffix(f.Name, LedgerFileSuffix) {
+					continue
+				}
+				k := strings.TrimSuffix(f.Name, LedgerFileSuffix)
+				if keyPrefix != "" && !strings.HasPrefix(k, keyPrefix) {
+					continue
+				}
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				encrypted, err := root.Read(dir, g, k+LedgerFileSuffix)
+				if err != nil {
+					return nil, fmt.Errorf("ledger %q not found in group %q: %w", k, g, err)
+				}
+				decrypted, err := decryptWithAEAD(aead, aadKind, g, k, string(encrypted), policy)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decrypt ledger payload: %w", err)
+				}
+				out = append(out, RawLedgerItem{Group: g, Key: k, Data: decrypted})
+			}
+		}
+		return out, nil
+	})
 }

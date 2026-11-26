@@ -126,7 +126,50 @@ func postRunAutoPush(cmd *cobra.Command) {
 	printAutoPushWarning(os.Stderr, out.Dirty, err)
 }
 
+func init() {
+	for _, c := range []*cobra.Command{
+		aiCatalogStatusCmd,
+		aiProviderListCmd, aiProviderShowCmd,
+		aiStatusCmd,
+		backupGetCmd, backupExportCmd, backupListCmd, backupGroupListCmd,
+		configExportCmd, configListCmd, configGetCmd,
+		doctorCmd,
+		envGetCmd, envListCmd, envExportCmd, envGroupListCmd,
+		gitStatusCmd,
+		historyCmd,
+		ledgerListCmd, ledgerGetCmd, ledgerLogCmd, ledgerTimelineCmd,
+		mcpServeCmd, mcpListToolsCmd, mcpGetCmd, mcpListCmd,
+		searchCmd,
+		sessionStatusCmd,
+		skillListCmd, skillShowCmd, skillGroupListCmd,
+		keypairListCmd, keypairExportCmd, hostGetCmd, hostListCmd,
+		syncCmd,
+		textGetCmd, textExportCmd, textListCmd, textGroupListCmd,
+		treeGroupListCmd, treeLsCmd, treeGetCmd, treeDiffCmd, treePullCmd,
+		tuiCmd,
+		versionCmd,
+	} {
+		markSkipAutoPush(c)
+	}
+}
+
+func markSkipAutoPush(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if cmd.Annotations == nil {
+		cmd.Annotations = make(map[string]string)
+	}
+	cmd.Annotations["senv/skip-auto-push"] = "true"
+}
+
 func skipAutoPush(cmd *cobra.Command) bool {
+	if cmd != nil {
+		switch cmd.Name() {
+		case "help", "completion", "__complete", "__completeNoDesc":
+			return true
+		}
+	}
 	for c := cmd; c != nil; c = c.Parent() {
 		if c.Annotations["senv/skip-auto-push"] == "true" {
 			return true

@@ -501,7 +501,7 @@ func (p *ServerProvider) collectDirty(st *syncState, current map[string]Entry) [
 			dirty = append(dirty, cur)
 			continue
 		}
-		if snap.Hash != hashBytes(cur.Ciphertext) {
+		if snap.Hash != entryContentHash(cur) {
 			cur.BaseRevision = snap.Revision
 			dirty = append(dirty, cur)
 		}
@@ -645,12 +645,77 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 	if vaultFound && st.LastSyncedRevision > 0 && latest < st.LastSyncedRevision {
 		return nil, fmt.Errorf("检测到远端同步版本号回滚（local=%d, remote=%d），已拒绝拉取", st.LastSyncedRevision, latest)
 	}
-	current, err := p.cache.collect()
+
+	localMeta, err := p.cache.readMetadata()
+	if err != nil {
+		return nil, err
+	}
+	if localParsed, perr := storage.ParseMetadata(localMeta); perr == nil {
+		if iter, ierr := localParsed.ValidatedKDFIterations(); ierr == nil && iter > st.MinKDFIterations {
+			st.MinKDFIterations = iter
+		}
+	}
+	localHash := hashBytes(localMeta)
+	remoteHash := localHash
+	if !metaUnchanged || localHash != expectedMetaHash {
+		remoteHash = hashBytes(remoteMeta)
+	}
+	updateMetadata := false
+	metadataHealed := false
+	metadataConflict := false
+	if metaUnchanged && localHash == expectedMetaHash {
+		if st.MetadataHash != localHash {
+			st.MetadataHash = localHash
+			metadataHealed = true
+		}
+	} else if remoteHash != localHash {
+		remoteIter := 0
+		keyChanged := false
+		if remoteParsed, perr := storage.ParseMetadata(remoteMeta); perr == nil {
+			iter, ierr := remoteParsed.ValidatedKDFIterations()
+			if ierr != nil {
+				return nil, fmt.Errorf("invalid remote metadata KDF: %w", ierr)
+			}
+			remoteIter = iter
+			if st.MinKDFIterations > 0 && remoteIter < st.MinKDFIterations {
+				return nil, fmt.Errorf("远端 metadata 试图将 KDF 迭代次数从 %d 降级至 %d，已拒绝", st.MinKDFIterations, remoteIter)
+			}
+			if localParsed, lerr := storage.ParseMetadata(localMeta); lerr == nil {
+				keyChanged = localParsed.Salt != remoteParsed.Salt || localParsed.PasswordKey != remoteParsed.PasswordKey
+			}
+		}
+		if localHash == st.MetadataHash && (allowMetadataKeyChange || !keyChanged) {
+			st.MetadataHash = remoteHash
+			if remoteIter > st.MinKDFIterations {
+				st.MinKDFIterations = remoteIter
+			}
+			updateMetadata = true
+		} else {
+			metadataConflict = true
+		}
+	} else if st.MetadataHash != localHash {
+		st.MetadataHash = localHash
+		metadataHealed = true
+	}
+
+	// 空增量快速路径：远端无新条目、revision 未推进且 metadata 无变化时，
+	// 跳过全盘 collect 与重写 240+ KB 的 sync-state.json，仅更新轻量 .senv-last-pull。
+	if len(remote) == 0 && !updateMetadata && !metadataHealed && !metadataConflict && latest == st.LastSyncedRevision && (p.cache.binding == nil || st.VaultBinding != nil) {
+		_ = p.cache.writeLastPullAt(p.now().Unix())
+		return &PullResult{LatestRevision: latest}, nil
+	}
+
+	current, idents, err := p.cache.collectWithState(st)
 	if err != nil {
 		return nil, err
 	}
 	dirty := dirtyIDs(p.collectDirty(st, current))
-	res := &PullResult{LatestRevision: latest}
+	res := &PullResult{
+		LatestRevision:   latest,
+		MetadataUpdated:  updateMetadata,
+		MetadataHealed:   metadataHealed,
+		MetadataConflict: metadataConflict,
+	}
 	toApply := make([]Entry, 0, len(remote))
 	// 本次合法消失的条目（远端 tombstone），供状态防退化护栏放行。
 	removed := make(map[string]bool)
@@ -678,70 +743,30 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 			st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 		}
 	}
-
-	localMeta, err := p.cache.readMetadata()
-	if err != nil {
-		return nil, err
-	}
-	if localParsed, perr := storage.ParseMetadata(localMeta); perr == nil {
-		if iter, ierr := localParsed.ValidatedKDFIterations(); ierr == nil && iter > st.MinKDFIterations {
-			st.MinKDFIterations = iter
-		}
-	}
-	localHash := hashBytes(localMeta)
-	remoteHash := localHash
-	if !metaUnchanged || localHash != expectedMetaHash {
-		remoteHash = hashBytes(remoteMeta)
-	}
-	updateMetadata := false
-	if metaUnchanged && localHash == expectedMetaHash {
-		if st.MetadataHash != localHash {
-			st.MetadataHash = localHash
-			res.MetadataHealed = true
-		}
-	} else if remoteHash != localHash {
-		// 能解析的远端 metadata 才做防降级与 salt 变更判定；不可解析的保持旧语义
-		// （更新时由 applyRemoteOpts 校验并拒绝）。
-		remoteIter := 0
-		keyChanged := false
-		if remoteParsed, perr := storage.ParseMetadata(remoteMeta); perr == nil {
-			iter, ierr := remoteParsed.ValidatedKDFIterations()
-			if ierr != nil {
-				return nil, fmt.Errorf("invalid remote metadata KDF: %w", ierr)
-			}
-			remoteIter = iter
-			if st.MinKDFIterations > 0 && remoteIter < st.MinKDFIterations {
-				return nil, fmt.Errorf("远端 metadata 试图将 KDF 迭代次数从 %d 降级至 %d，已拒绝", st.MinKDFIterations, remoteIter)
-			}
-			if localParsed, lerr := storage.ParseMetadata(localMeta); lerr == nil {
-				keyChanged = localParsed.Salt != remoteParsed.Salt || localParsed.PasswordKey != remoteParsed.PasswordKey
+	// Backfill persisted stat for existing clean entries so future CLI runs skip root.Read.
+	for id, se := range st.Entries {
+		if se.ModSec == 0 && se.ModNsec == 0 {
+			if ident, ok := idents[id]; ok {
+				if cur, curOK := current[id]; curOK && entryContentHash(cur) == se.Hash {
+					se.Size = ident.size
+					se.ModSec = ident.sec
+					se.ModNsec = ident.nsec
+					st.Entries[id] = se
+				}
 			}
 		}
-		if localHash == st.MetadataHash && (allowMetadataKeyChange || !keyChanged) {
-			st.MetadataHash = remoteHash
-			if remoteIter > st.MinKDFIterations {
-				st.MinKDFIterations = remoteIter
-			}
-			res.MetadataUpdated = true
-			updateMetadata = true
-		} else {
-			res.MetadataConflict = true
-		}
-	} else if st.MetadataHash != localHash {
-		// 假冲突自愈：两端 metadata 字节一致，仅本地快照哈希失真（如历史状态损坏）。
-		// 不写 metadata 文件、不算冲突，直接收养哈希。
-		st.MetadataHash = localHash
-		res.MetadataHealed = true
 	}
 
 	st.LastSyncedRevision = latest
-	st.LastPullAt = p.now().Unix()
+	nowUnix := p.now().Unix()
+	st.LastPullAt = nowUnix
 	if err := p.cache.applyRemoteOpts(toApply, remoteMeta, updateMetadata, st, stateWriteOptions{
 		writerPath:     "pullApplyLocked",
 		removedEntries: removed,
 	}); err != nil {
 		return nil, err
 	}
+	_ = p.cache.writeLastPullAt(nowUnix)
 	return res, nil
 }
 
@@ -769,19 +794,22 @@ func (p *ServerProvider) preparePushPlan() (*pushPlan, error) {
 		if err != nil {
 			return err
 		}
-		current, err := p.cache.collect()
+		current, _, err := p.cache.collectWithState(st)
 		if err != nil {
 			return err
 		}
 		dirty := p.collectDirty(st, current)
 		pushedHashes := make(map[string]string, len(dirty))
-		for _, e := range dirty {
-			id := entryID(e.Kind, e.Grp, e.Key)
-			if e.Deleted {
+		for i := range dirty {
+			id := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key)
+			if dirty[i].Deleted {
 				pushedHashes[id] = ""
-			} else {
-				pushedHashes[id] = hashBytes(e.Ciphertext)
+				continue
 			}
+			if err := p.cache.populateEntryBytes(&dirty[i]); err != nil {
+				return err
+			}
+			pushedHashes[id] = hashBytes(dirty[i].Ciphertext)
 		}
 		localMeta, err := p.cache.readMetadata()
 		if err != nil {
@@ -805,14 +833,19 @@ func (p *ServerProvider) commitPushBatch(pushed []Entry, healed map[string]syncE
 		if err != nil {
 			return err
 		}
-		current, err := p.cache.collect()
+		current, idents, err := p.cache.collectWithState(st)
 		if err != nil {
 			return err
 		}
 		removed := make(map[string]bool)
 		for id, hs := range healed {
 			cur, exists := current[id]
-			if exists && hashBytes(cur.Ciphertext) == hs.Hash {
+			if exists && entryContentHash(cur) == hs.Hash {
+				if ident, ok := idents[id]; ok {
+					hs.Size = ident.size
+					hs.ModSec = ident.sec
+					hs.ModNsec = ident.nsec
+				}
 				st.Entries[id] = hs
 			}
 		}
@@ -826,8 +859,15 @@ func (p *ServerProvider) commitPushBatch(pushed []Entry, healed map[string]syncE
 				}
 				continue
 			}
-			if exists && hashBytes(cur.Ciphertext) == pushedHashes[id] {
-				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+			if exists && entryContentHash(cur) == pushedHashes[id] {
+				ident := idents[id]
+				st.Entries[id] = syncEntryState{
+					Revision: e.Revision,
+					Hash:     pushedHashes[id],
+					Size:     ident.size,
+					ModSec:   ident.sec,
+					ModNsec:  ident.nsec,
+				}
 			}
 		}
 		if setRev && latest > st.LastSyncedRevision {

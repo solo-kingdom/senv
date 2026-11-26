@@ -55,21 +55,58 @@ func BuildEntryAAD(kind, grp, key string, keyEpoch int) []byte {
 	return []byte("senv-v2\x00" + kind + "\x00" + grp + "\x00" + key + "\x00" + strconv.Itoa(keyEpoch))
 }
 
-func sealGCM(key []byte, plaintext []byte, aad []byte) (string, error) {
-	if len(key) != KeySize {
-		return "", ErrInvalidKey
-	}
+// AEAD caches an AES-256-GCM instance for batch encryption/decryption with a
+// single key, avoiding repeated AES key schedule allocations.
+type AEAD struct {
+	gcm cipher.AEAD
+}
 
+// NewAEAD constructs a reusable AES-256-GCM cipher for the given 32-byte key.
+func NewAEAD(key []byte) (*AEAD, error) {
+	if len(key) != KeySize {
+		return nil, ErrInvalidKey
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
 	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &AEAD{gcm: gcm}, nil
+}
+
+// EncryptWithAAD encrypts plaintext using the v2 envelope format with AAD.
+func (a *AEAD) EncryptWithAAD(plaintext, aad []byte) (string, error) {
+	encoded, err := sealWithGCM(a.gcm, plaintext, aad)
 	if err != nil {
 		return "", err
 	}
+	return V2Prefix + encoded, nil
+}
 
+// DecryptWithAADStrict decrypts a v2 AAD-bound envelope (verifying aad) or,
+// when requireV2 is false, falls back to legacy v1 decryption.
+func (a *AEAD) DecryptWithAADStrict(encoded string, aad []byte, requireV2 bool) ([]byte, error) {
+	if strings.HasPrefix(encoded, V2Prefix) {
+		return openWithGCM(a.gcm, strings.TrimPrefix(encoded, V2Prefix), aad)
+	}
+	if requireV2 {
+		return nil, ErrV1CiphertextRejected
+	}
+	return openWithGCM(a.gcm, encoded, nil)
+}
+
+func sealGCM(key []byte, plaintext []byte, aad []byte) (string, error) {
+	aead, err := NewAEAD(key)
+	if err != nil {
+		return "", err
+	}
+	return sealWithGCM(aead.gcm, plaintext, aad)
+}
+
+func sealWithGCM(gcm cipher.AEAD, plaintext []byte, aad []byte) (string, error) {
 	nonce := make([]byte, NonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
@@ -106,10 +143,14 @@ func DecryptWithAADStrict(key []byte, encoded string, aad []byte, requireV2 bool
 }
 
 func openGCM(key []byte, ciphertextBase64 string, aad []byte) ([]byte, error) {
-	if len(key) != KeySize {
-		return nil, ErrInvalidKey
+	aead, err := NewAEAD(key)
+	if err != nil {
+		return nil, err
 	}
+	return openWithGCM(aead.gcm, ciphertextBase64, aad)
+}
 
+func openWithGCM(gcm cipher.AEAD, ciphertextBase64 string, aad []byte) ([]byte, error) {
 	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextBase64)
 	if err != nil {
 		return nil, ErrInvalidCiphertext
@@ -117,16 +158,6 @@ func openGCM(key []byte, ciphertextBase64 string, aad []byte) ([]byte, error) {
 
 	if len(ciphertext) < NonceSize {
 		return nil, ErrInvalidCiphertext
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
 	}
 
 	nonce := ciphertext[:NonceSize]

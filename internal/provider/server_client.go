@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -258,25 +259,82 @@ func decodeBoundedJSON(r io.Reader, limit int64, out any) error {
 	return json.Unmarshal(data, out)
 }
 
-// do 发起认证请求并统一错误解析（401/404/409/其他），附耗时日志与建连维度
-// （conns_new=1 表示本请求新建了 TCP+TLS 连接，0 表示复用连接池）。
+type requestMetrics struct {
+	dnsMs    int64
+	connMs   int64
+	tlsMs    int64
+	ttfbMs   int64
+	bodyMs   int64
+	bytesIn  int64
+	status   int
+	encoding string
+}
+
+// do 发起认证请求并统一错误解析（401/404/409/其他），附耗时日志与分阶段网络维度
+// （dns_ms/conn_ms/tls_ms/ttfb_ms/body_ms/bytes_in/status/encoding/err_kind）。
 func (c *serverClient) do(ctx context.Context, method, path string, body any, out any) error {
 	st := perflog.Start("net.request").With("op", method+" "+path)
 	var connsNew int
+	var m requestMetrics
+	var dnsStart, connStart, tlsStart, wroteReq time.Time
 	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			if !dnsStart.IsZero() {
+				m.dnsMs = time.Since(dnsStart).Milliseconds()
+			}
+		},
+		ConnectStart: func(string, string) { connStart = time.Now() },
+		ConnectDone: func(string, string, error) {
+			if !connStart.IsZero() {
+				m.connMs = time.Since(connStart).Milliseconds()
+			}
+		},
+		TLSHandshakeStart: func() { tlsStart = time.Now() },
+		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+			if !tlsStart.IsZero() {
+				m.tlsMs = time.Since(tlsStart).Milliseconds()
+			}
+		},
 		GotConn: func(info httptrace.GotConnInfo) {
 			if !info.Reused {
 				connsNew = 1
 			}
 		},
+		WroteRequest: func(httptrace.WroteRequestInfo) { wroteReq = time.Now() },
+		GotFirstResponseByte: func() {
+			if !wroteReq.IsZero() {
+				m.ttfbMs = time.Since(wroteReq).Milliseconds()
+			}
+		},
 	}
-	err := c.doOnce(httptrace.WithClientTrace(ctx, trace), method, path, body, out)
-	st.With("conns_new", connsNew)
+	err := c.doOnce(httptrace.WithClientTrace(ctx, trace), method, path, body, out, &m)
+	errKind := ""
+	if err != nil {
+		var reqErr *ServerRequestError
+		if errors.As(err, &reqErr) {
+			errKind = string(reqErr.Kind)
+		} else {
+			errKind = "other"
+		}
+	}
+	st.With(
+		"conns_new", connsNew,
+		"dns_ms", m.dnsMs,
+		"conn_ms", m.connMs,
+		"tls_ms", m.tlsMs,
+		"ttfb_ms", m.ttfbMs,
+		"body_ms", m.bodyMs,
+		"bytes_in", m.bytesIn,
+		"status", m.status,
+		"encoding", m.encoding,
+		"err_kind", errKind,
+	)
 	st.EndErr(err)
 	return err
 }
 
-func (c *serverClient) doOnce(ctx context.Context, method, path string, body any, out any) error {
+func (c *serverClient) doOnce(ctx context.Context, method, path string, body any, out any, metrics *requestMetrics) error {
 	start := time.Now()
 	op := method + " " + path
 	var reader io.Reader
@@ -299,8 +357,19 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 	if err != nil {
 		return classifyTransportErr(ctx, op, "connect_or_header", time.Since(start), err)
 	}
+	bodyStart := time.Now()
 	bodyReader := &stallTimeoutReader{r: resp.Body, timeout: c.readTimeout}
 	defer bodyReader.Close()
+	if metrics != nil {
+		metrics.status = resp.StatusCode
+		metrics.encoding = resp.Header.Get("Content-Encoding")
+		if resp.ContentLength > 0 {
+			metrics.bytesIn = resp.ContentLength
+		}
+		defer func() {
+			metrics.bodyMs = time.Since(bodyStart).Milliseconds()
+		}()
+	}
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:

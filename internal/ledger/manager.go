@@ -200,27 +200,18 @@ func (m *Manager) GetHead(group, headKey string) (*Head, error) {
 
 // ListHeads 列出分组（group 为空 = 全部分组）下的实体头
 func (m *Manager) ListHeads(group string) ([]Head, error) {
-	groups := []string{group}
-	if group == "" {
-		var err error
-		groups, err = m.storage.ListLedgerGroups(storage.LedgerDirName)
-		if err != nil {
-			return nil, err
-		}
+	items, err := m.storage.LoadLedgerBatch(storage.LedgerDirName, group, "", m.key)
+	if err != nil {
+		return nil, err
 	}
-	out := []Head{}
-	for _, g := range groups {
-		keys, err := m.storage.ListLedgerKeys(storage.LedgerDirName, g)
-		if err != nil {
-			return nil, err
+	out := make([]Head, 0, len(items))
+	for _, item := range items {
+		var h Head
+		if err := storage.FromJSON(item.Data, &h); err != nil {
+			return nil, fmt.Errorf("failed to parse ledger payload: %w", err)
 		}
-		for _, k := range keys {
-			h, err := m.GetHead(g, k)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, *h)
-		}
+		h.Group = item.Group
+		out = append(out, h)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
@@ -332,21 +323,17 @@ func (m *Manager) Log(group, headKey string, limit int) ([]RecordWithKey, error)
 	if _, _, err := SplitHeadKey(headKey); err != nil {
 		return nil, err
 	}
-	keys, err := m.storage.ListLedgerKeys(storage.LedgerLogDirName, group)
+	items, err := m.storage.LoadLedgerBatch(storage.LedgerLogDirName, group, headKey+"@", m.key)
 	if err != nil {
 		return nil, err
 	}
-	prefix := headKey + "@"
 	var out []RecordWithKey
-	for i := len(keys) - 1; i >= 0 && (limit <= 0 || len(out) < limit); i-- {
-		if !strings.HasPrefix(keys[i], prefix) {
-			continue
-		}
+	for i := len(items) - 1; i >= 0 && (limit <= 0 || len(out) < limit); i-- {
 		var rec Record
-		if err := m.storage.LoadLedgerJSON(storage.LedgerLogDirName, group, keys[i], &rec, m.key); err != nil {
-			return nil, err
+		if err := storage.FromJSON(items[i].Data, &rec); err != nil {
+			return nil, fmt.Errorf("failed to parse ledger payload: %w", err)
 		}
-		out = append(out, RecordWithKey{Key: keys[i], Record: rec})
+		out = append(out, RecordWithKey{Key: items[i].Key, Record: rec})
 	}
 	return out, nil
 }

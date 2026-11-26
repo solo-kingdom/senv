@@ -41,39 +41,70 @@ func (s *pgStore) SetHistoryRetain(n int) { s.historyRetain = n }
 // 使 serve 角色对 entries_history 只需 INSERT+SELECT（历史不可被服务进程改写）。
 func (s *pgStore) SetHistoryPrune(prune bool) { s.historyPrune = prune }
 
-// recordHistoryPreimages 在推送应用变更前，把受影响条目的当前值写入历史。
+// recordHistoryPreimages 在推送应用变更前，把受影响条目的当前值批量写入历史。
 // 仅当前像与新值不同（密文或删除标记变化）才写：相同密文重推、tombstone 重推
-// 不消耗历史版本。单条 INSERT..SELECT：条目不存在时插入 0 行，天然跳过新条目。
+// 不消耗历史版本。单条 INSERT..SELECT JOIN unnest：条目不存在时跳过新条目。
 func recordHistoryPreimages(ctx context.Context, tx pgx.Tx, vaultID int64, entries []Entry, userID, clientID int64) error {
-	for _, e := range entries {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO entries_history
-			   (vault_id, kind, grp, key, ciphertext, revision, created_at, deleted,
-			    replaced_at, actor_client_id, actor_user_id)
-			 SELECT vault_id, kind, grp, key, ciphertext, revision, updated_at, deleted,
-			        now(), $5, $6
-			 FROM entries
-			 WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4
-			   AND (ciphertext IS DISTINCT FROM $7 OR deleted IS DISTINCT FROM $8)`,
-			vaultID, e.Kind, e.Grp, e.Key, clientID, userID, e.Ciphertext, e.Deleted); err != nil {
-			return err
-		}
+	if len(entries) == 0 {
+		return nil
 	}
-	return nil
+	kinds := make([]string, len(entries))
+	grps := make([]string, len(entries))
+	keys := make([]string, len(entries))
+	cts := make([][]byte, len(entries))
+	dels := make([]bool, len(entries))
+	for i, e := range entries {
+		kinds[i] = e.Kind
+		grps[i] = e.Grp
+		keys[i] = e.Key
+		if !e.Deleted {
+			cts[i] = e.Ciphertext
+		}
+		dels[i] = e.Deleted
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO entries_history
+		   (vault_id, kind, grp, key, ciphertext, revision, created_at, deleted,
+		    replaced_at, actor_client_id, actor_user_id)
+		 SELECT e.vault_id, e.kind, e.grp, e.key, e.ciphertext, e.revision, e.updated_at, e.deleted,
+		        now(), $2, $3
+		 FROM unnest($4::text[], $5::text[], $6::text[], $7::bytea[], $8::boolean[])
+		      AS u(kind, grp, key, new_ct, new_del)
+		 JOIN entries e
+		   ON e.vault_id = $1 AND e.kind = u.kind AND e.grp = u.grp AND e.key = u.key
+		 WHERE (e.ciphertext IS DISTINCT FROM u.new_ct OR e.deleted IS DISTINCT FROM u.new_del)`,
+		vaultID, clientID, userID, kinds, grps, keys, cts, dels)
+	return err
 }
 
-// pruneHistory 把 vault 内每个条目的历史裁剪到最近 retain 版。
-// 每次推送执行一次，整 vault 分区排名，vault 规模有界（条目数 × N）。
-func pruneHistory(ctx context.Context, tx pgx.Tx, vaultID int64, retain int) error {
+// pruneHistory 把本次推送涉及条目的历史裁剪到最近 retain 版（仅扫描受影响的 (kind, grp, key) 子集）。
+func pruneHistory(ctx context.Context, tx pgx.Tx, vaultID int64, retain int, entries []Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	kinds := make([]string, len(entries))
+	grps := make([]string, len(entries))
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		kinds[i] = e.Kind
+		grps[i] = e.Grp
+		keys[i] = e.Key
+	}
 	_, err := tx.Exec(ctx,
-		`DELETE FROM entries_history
+		`WITH target_keys AS (
+		   SELECT DISTINCT kind, grp, key
+		   FROM unnest($3::text[], $4::text[], $5::text[]) AS u(kind, grp, key)
+		 )
+		 DELETE FROM entries_history
 		 WHERE vault_id = $1 AND id IN (
 		   SELECT id FROM (
-		     SELECT id, ROW_NUMBER() OVER (
-		       PARTITION BY kind, grp, key ORDER BY revision DESC, id DESC) AS rn
-		     FROM entries_history WHERE vault_id = $1
+		     SELECT h.id, ROW_NUMBER() OVER (
+		       PARTITION BY h.kind, h.grp, h.key ORDER BY h.revision DESC, h.id DESC) AS rn
+		     FROM entries_history h
+		     JOIN target_keys tk ON h.kind = tk.kind AND h.grp = tk.grp AND h.key = tk.key
+		     WHERE h.vault_id = $1
 		   ) ranked WHERE ranked.rn > $2
-		 )`, vaultID, retain)
+		 )`, vaultID, retain, kinds, grps, keys)
 	return err
 }
 

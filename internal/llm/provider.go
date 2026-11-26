@@ -1127,18 +1127,15 @@ func (m *ProviderManager) GetProvider(alias string) (*storage.LLMProviderEntry, 
 
 // ListProviders 返回全部档案（按别名升序）。档案不含凭据明文。
 func (m *ProviderManager) ListProviders() ([]*storage.LLMProviderEntry, error) {
-	aliases, err := m.storage.ListLLMProviders()
+	if err := m.ensureKey(); err != nil {
+		return nil, err
+	}
+	entries, err := m.storage.LoadAllLLMProvidersWithKey(m.key)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(aliases)
-	entries := make([]*storage.LLMProviderEntry, 0, len(aliases))
-	for _, alias := range aliases {
-		entry, err := m.load(alias)
-		if err != nil {
-			return nil, fmt.Errorf("load provider %q: %w", alias, err)
-		}
-		entries = append(entries, entry)
+	if entries == nil {
+		return []*storage.LLMProviderEntry{}, nil
 	}
 	return entries, nil
 }

@@ -160,7 +160,13 @@ var errInvalidSessionPassword = errors.New("invalid session password")
 // (ErrSessionStaleMetadata / ErrSessionStaleKey) are preserved for the same
 // reason. See CONTEXT.md "自动清理" and ADR-0017.
 func (m *Manager) GetCachedKey() ([]byte, error) {
-	key, cache, _, err := m.loadValidatedCredential()
+	return m.GetCachedKeyWithMetadata(nil)
+}
+
+// GetCachedKeyWithMetadata retrieves the cached key using a pre-loaded
+// metadata object when provided, avoiding a duplicate metadata.json read.
+func (m *Manager) GetCachedKeyWithMetadata(md *storage.Metadata) ([]byte, error) {
+	key, cache, _, err := m.loadValidatedCredential(md)
 	if err != nil {
 		m.auditValidationFailure(cache, err)
 		if errors.Is(err, ErrSessionExpired) {
@@ -178,6 +184,9 @@ func (m *Manager) GetCachedKey() ([]byte, error) {
 // renewOnUse slides a duration session's expiry after a business command reused
 // it. Best-effort: a failed renewal must not break a command that already
 // authenticated, and the absolute ceiling still applies.
+// To avoid rewriting the session cache on every sub-second CLI invocation,
+// disk writes are throttled unless remaining time is below half the timeout
+// or the expiry would advance by at least 5 minutes.
 func (m *Manager) renewOnUse(cache *SessionCache) {
 	if cache.TimeoutType != string(TimeoutDuration) || cache.TimeoutSeconds <= 0 {
 		return
@@ -186,6 +195,9 @@ func (m *Manager) renewOnUse(cache *SessionCache) {
 	timeout := time.Duration(cache.TimeoutSeconds) * time.Second
 	expiry := renewalExpiry(cache.CreatedAt, timeout, m.maxLifetime(), now)
 	if !expiry.After(cache.ExpiresAt) {
+		return
+	}
+	if expiry.Sub(cache.ExpiresAt) < 5*time.Minute && cache.ExpiresAt.Sub(now) > timeout/2 {
 		return
 	}
 	updated := *cache
@@ -234,7 +246,7 @@ func (m *Manager) auditValidationFailure(cache *SessionCache, err error) {
 // loadValidatedCredential reads one cache snapshot and validates its binding,
 // current metadata salt, and cached key. Callers own and must zero a returned
 // key. Error paths zero decoded key bytes before returning.
-func (m *Manager) loadValidatedCredential() ([]byte, *SessionCache, string, error) {
+func (m *Manager) loadValidatedCredential(preloaded *storage.Metadata) ([]byte, *SessionCache, string, error) {
 	cache, err := loadCacheForDataPath(m.dataPath)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("%w: %w", ErrSessionUnverifiable, err)
@@ -262,10 +274,14 @@ func (m *Manager) loadValidatedCredential() ([]byte, *SessionCache, string, erro
 		return nil, cache, "", fmt.Errorf("%w: failed to decode key: %w", ErrSessionUnverifiable, err)
 	}
 	storageManager := storage.NewManager(m.configPath, m.dataPath)
-	metadata, err := storageManager.LoadMetadata()
-	if err != nil {
-		ZeroKey(key)
-		return nil, cache, "", fmt.Errorf("failed to load metadata: %w", err)
+	metadata := preloaded
+	if metadata == nil {
+		var mErr error
+		metadata, mErr = storageManager.LoadMetadata()
+		if mErr != nil {
+			ZeroKey(key)
+			return nil, cache, "", fmt.Errorf("failed to load metadata: %w", mErr)
+		}
 	}
 	if cache.Salt != metadata.Salt {
 		ZeroKey(key)
@@ -396,7 +412,7 @@ func (m *Manager) RenewSession(timeout *SessionTimeout) error {
 	if timeout == nil {
 		return fmt.Errorf("session cache is disabled in configuration")
 	}
-	key, cache, _, err := m.loadValidatedCredential()
+	key, cache, _, err := m.loadValidatedCredential(nil)
 	if err != nil {
 		return err
 	}

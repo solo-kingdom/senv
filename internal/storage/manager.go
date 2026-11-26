@@ -1569,10 +1569,11 @@ type TextVaultFile struct {
 // 原因记入 Errors，但 KeyCount 保留列出的文件数——与逐组消费方「List 失败
 // → 该组置空、分组仍列出」的语义等价；目录枚举与身份校验失败仍然整体失败。
 type TextVaultSnapshot struct {
-	Groups   []string
-	KeyCount map[string]int
-	Entries  map[string][]TextVaultFile
-	Errors   map[string]error
+	Groups     []string
+	GroupMetas map[string]*EnvGroupMeta
+	KeyCount   map[string]int
+	Entries    map[string][]TextVaultFile
+	Errors     map[string]error
 }
 
 // LoadTextVault 使用密码加载全部 text 分组与条目（单趟锁内批量装载）。
@@ -1599,6 +1600,10 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 	if err != nil {
 		return nil, err
 	}
+	aead, err := crypto.NewAEAD(cryptoKey)
+	if err != nil {
+		return nil, err
+	}
 	root, err := m.openDataRoot()
 	if err != nil {
 		return nil, err
@@ -1610,9 +1615,10 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 		return nil, fmt.Errorf("list text groups: %w", err)
 	}
 	snap := &TextVaultSnapshot{
-		KeyCount: make(map[string]int, len(groupDirs)),
-		Entries:  make(map[string][]TextVaultFile, len(groupDirs)),
-		Errors:   make(map[string]error),
+		GroupMetas: make(map[string]*EnvGroupMeta, len(groupDirs)),
+		KeyCount:   make(map[string]int, len(groupDirs)),
+		Entries:    make(map[string][]TextVaultFile, len(groupDirs)),
+		Errors:     make(map[string]error),
 	}
 	for _, gd := range groupDirs {
 		if !gd.IsDir {
@@ -1634,12 +1640,14 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 			name string
 			key  string
 		}
+		hasMeta := false
 		content := make([]listedFile, 0, len(files))
 		for _, f := range files {
 			if f.Name == EnvMetaFileName {
 				if f.IsDir {
 					return nil, fmt.Errorf("invalid text metadata entry in group %q", gd.Name)
 				}
+				hasMeta = true
 				continue
 			}
 			if f.IsDir || !strings.HasSuffix(f.Name, TextFileSuffix) {
@@ -1651,6 +1659,16 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 			}
 			content = append(content, listedFile{name: f.Name, key: key})
 		}
+		if hasMeta {
+			if metaData, err := root.Read(TextDirName, gd.Name, EnvMetaFileName); err == nil {
+				if decMeta, err := decryptWithAEAD(aead, syncschema.KindTextMeta, gd.Name, "", string(metaData), policy); err == nil {
+					var gm EnvGroupMeta
+					if err := FromJSON(decMeta, &gm); err == nil && gm.Name == gd.Name {
+						snap.GroupMetas[gd.Name] = &gm
+					}
+				}
+			}
+		}
 		snap.KeyCount[gd.Name] = len(content)
 		var groupFiles []TextVaultFile
 		var groupErr error
@@ -1660,7 +1678,7 @@ func (m *Manager) loadTextVaultWithKey(cryptoKey []byte) (*TextVaultSnapshot, er
 				groupErr = fmt.Errorf("failed to read text %q in group %q: %w", f.key, gd.Name, err)
 				break
 			}
-			decryptedData, err := decryptWithPolicy(cryptoKey, syncschema.KindText, gd.Name, f.key, string(encryptedData), policy)
+			decryptedData, err := decryptWithAEAD(aead, syncschema.KindText, gd.Name, f.key, string(encryptedData), policy)
 			if err != nil {
 				groupErr = fmt.Errorf("failed to decrypt text entry: %w", err)
 				break

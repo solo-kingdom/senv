@@ -42,11 +42,17 @@ const (
 	KindTreeMeta    = syncschema.KindTreeMeta
 )
 
-const syncStateFileName = ".senv-sync-state.json"
+const (
+	syncStateFileName = ".senv-sync-state.json"
+	lastPullFileName  = ".senv-last-pull"
+)
 
 type syncEntryState struct {
 	Revision int64  `json:"revision"`
 	Hash     string `json:"hash"`
+	Size     int64  `json:"size,omitempty"`
+	ModSec   int64  `json:"mod_sec,omitempty"`
+	ModNsec  int64  `json:"mod_nsec,omitempty"`
 }
 
 type syncState struct {
@@ -230,9 +236,52 @@ func validateRemoteEntries(entries []Entry) error {
 // Unchanged files (stat mtime+size) reuse the previous ciphertext without Read.
 func (c *localCache) collect() (map[string]Entry, error) {
 	st := perflog.Start("sync.collect")
-	entries, reads, err := c.collectCached()
+	entries, _, reads, err := c.collectCachedWithState(nil)
 	st.With("items", len(entries), "reads", reads).EndErr(err)
 	return entries, err
+}
+
+// collectWithState reuses persisted (Size, ModSec, ModNsec, Hash) from syncState
+// across short-lived CLI processes so unchanged files skip root.Read and SHA-256.
+// Entries satisfied from persisted stat have CiphertextSHA256 set and Ciphertext empty;
+// callers needing ciphertext bytes call populateEntryBytes lazily.
+func (c *localCache) collectWithState(state *syncState) (map[string]Entry, map[string]fileIdent, error) {
+	st := perflog.Start("sync.collect")
+	entries, idents, reads, err := c.collectCachedWithState(state)
+	st.With("items", len(entries), "reads", reads).EndErr(err)
+	return entries, idents, err
+}
+
+func entryContentHash(e Entry) string {
+	if len(e.Ciphertext) > 0 {
+		return hashBytes(e.Ciphertext)
+	}
+	return e.CiphertextSHA256
+}
+
+func (c *localCache) populateEntryBytes(e *Entry) error {
+	if e == nil || e.Deleted || len(e.Ciphertext) > 0 {
+		return nil
+	}
+	loc, err := c.entryLocation(e.Kind, e.Grp, e.Key)
+	if err != nil {
+		return err
+	}
+	base := c.dataPath
+	if loc.root == cacheConfigRoot {
+		base = c.configPath
+	}
+	root, err := c.openExistingRoot(base)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	data, err := root.Read(loc.segments...)
+	if err != nil {
+		return err
+	}
+	e.Ciphertext = data
+	return nil
 }
 
 func (c *localCache) resetCollectCache() {
@@ -243,20 +292,28 @@ func (c *localCache) resetCollectCache() {
 }
 
 func (c *localCache) collectCached() (map[string]Entry, int, error) {
+	entries, _, reads, err := c.collectCachedWithState(nil)
+	return entries, reads, err
+}
+
+func (c *localCache) collectCachedWithState(state *syncState) (map[string]Entry, map[string]fileIdent, int, error) {
 	c.collectMu.Lock()
 	prevSnap := c.collectSnap
 	prevIdent := c.collectIdent
 	c.collectMu.Unlock()
 
-	entries, ident, reads, err := c.collectEntriesDiff(prevSnap, prevIdent)
+	entries, ident, reads, err := c.collectEntriesDiff(prevSnap, prevIdent, state)
 	if err != nil {
-		return nil, reads, err
+		return nil, nil, reads, err
 	}
-	c.collectMu.Lock()
-	c.collectSnap = entries
-	c.collectIdent = ident
-	c.collectMu.Unlock()
-	return entries, reads, nil
+	// Only memoize in-process snapshot when full ciphertext bytes are present (state == nil).
+	if state == nil {
+		c.collectMu.Lock()
+		c.collectSnap = entries
+		c.collectIdent = ident
+		c.collectMu.Unlock()
+	}
+	return entries, ident, reads, nil
 }
 
 func (c *localCache) collectEntries() (map[string]Entry, error) {
@@ -264,7 +321,7 @@ func (c *localCache) collectEntries() (map[string]Entry, error) {
 	return entries, err
 }
 
-func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map[string]fileIdent) (map[string]Entry, map[string]fileIdent, int, error) {
+func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map[string]fileIdent, state *syncState) (map[string]Entry, map[string]fileIdent, int, error) {
 	entries := make(map[string]Entry)
 	identOut := make(map[string]fileIdent)
 	reads := 0
@@ -284,6 +341,13 @@ func (c *localCache) collectEntriesDiff(prevSnap map[string]Entry, prevIdent map
 		if prev, ok := prevIdent[id]; ok && prev == ident {
 			if e, ok := prevSnap[id]; ok {
 				entries[id] = e
+				return nil
+			}
+		}
+		if state != nil {
+			if se, ok := state.Entries[id]; ok && se.Hash != "" && (se.ModSec != 0 || se.ModNsec != 0) &&
+				se.Size == ident.size && se.ModSec == ident.sec && se.ModNsec == ident.nsec {
+				entries[id] = Entry{Kind: kind, Grp: grp, Key: key, CiphertextSHA256: se.Hash}
 				return nil
 			}
 		}
@@ -604,15 +668,20 @@ type cacheSnapshot struct {
 }
 
 type cacheTransaction struct {
-	cache      *localCache
-	dataRoot   securefs.TrustedRoot
-	configRoot securefs.TrustedRoot
-	snapshots  map[string]cacheSnapshot
-	order      []string
+	cache       *localCache
+	dataRoot    securefs.TrustedRoot
+	configRoot  securefs.TrustedRoot
+	snapshots   map[string]cacheSnapshot
+	ensuredDirs map[string]bool
+	order       []string
 }
 
 func newCacheTransaction(cache *localCache) *cacheTransaction {
-	return &cacheTransaction{cache: cache, snapshots: make(map[string]cacheSnapshot)}
+	return &cacheTransaction{
+		cache:       cache,
+		snapshots:   make(map[string]cacheSnapshot),
+		ensuredDirs: make(map[string]bool),
+	}
 }
 
 func (tx *cacheTransaction) close() {
@@ -677,11 +746,20 @@ func (tx *cacheTransaction) ensureParent(location cacheLocation) error {
 	if len(location.segments) <= 1 {
 		return nil
 	}
+	parentSegs := location.segments[:len(location.segments)-1]
+	dirKey := fmt.Sprintf("%d\x00%s", location.root, strings.Join(parentSegs, "\x00"))
+	if tx.ensuredDirs[dirKey] {
+		return nil
+	}
 	root, err := tx.root(location.root)
 	if err != nil {
 		return err
 	}
-	return root.EnsureDir(location.segments[:len(location.segments)-1], 0o700)
+	if err := root.EnsureDir(parentSegs, 0o700); err != nil {
+		return err
+	}
+	tx.ensuredDirs[dirKey] = true
+	return nil
 }
 
 func (tx *cacheTransaction) write(location cacheLocation, data []byte) error {
@@ -763,7 +841,31 @@ func (c *localCache) mutate(fn func(*cacheTransaction) error) error {
 }
 
 func stateBytes(state *syncState) ([]byte, error) {
-	return json.MarshalIndent(state, "", "  ")
+	return json.Marshal(state)
+}
+
+func (c *localCache) readLastPullAt() int64 {
+	root, err := c.openExistingRoot(c.dataPath)
+	if err != nil {
+		return 0
+	}
+	defer root.Close()
+	data, err := root.Read(lastPullFileName)
+	if err != nil {
+		return 0
+	}
+	var ts int64
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &ts)
+	return ts
+}
+
+func (c *localCache) writeLastPullAt(ts int64) error {
+	root, err := c.openTrustedRoot(c.dataPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.AtomicWrite([]string{lastPullFileName}, []byte(fmt.Sprintf("%d\n", ts)), 0o600)
 }
 
 // StateRegressionError 表示待写入状态相对磁盘现状出现退化（快照丢失），写入被拒绝。
@@ -959,6 +1061,9 @@ func (c *localCache) saveStateOpts(state *syncState, opts stateWriteOptions) err
 		return err
 	}
 	return c.mutate(func(tx *cacheTransaction) error {
-		return tx.write(cacheLocation{root: cacheDataRoot, segments: []string{syncStateFileName}}, data)
+		if err := tx.write(cacheLocation{root: cacheDataRoot, segments: []string{syncStateFileName}}, data); err != nil {
+			return err
+		}
+		return tx.remove(cacheLocation{root: cacheDataRoot, segments: []string{lastPullFileName}})
 	})
 }

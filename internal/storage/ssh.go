@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/wii/senv/internal/crypto"
 )
 
 const (
@@ -181,9 +184,10 @@ func (m *Manager) loadSSHEntry(dir, name string, target any, cryptoKey []byte) e
 		return err
 	}
 	if !m.mutationLocked {
-		return m.WithVaultMutation(func(locked *Manager) error {
-			return locked.loadSSHEntry(dir, name, target, cryptoKey)
+		_, err := withVaultRead(m, func(locked *Manager) (struct{}, error) {
+			return struct{}{}, locked.loadSSHEntry(dir, name, target, cryptoKey)
 		})
+		return err
 	}
 	root, err := m.openDataRoot()
 	if err != nil {
@@ -268,4 +272,135 @@ func entryKindForDir(dir string) string {
 	default:
 		return "SSH host"
 	}
+}
+
+func (m *Manager) loadEntriesBatchWithKey(dir string, cryptoKey []byte, onEntry func(name string, plaintext []byte) error) error {
+	if !m.mutationLocked {
+		_, err := withVaultRead(m, func(locked *Manager) (struct{}, error) {
+			return struct{}{}, locked.loadEntriesBatchWithKey(dir, cryptoKey, onEntry)
+		})
+		return err
+	}
+	if err := m.requireCurrentKey(cryptoKey); err != nil {
+		return err
+	}
+	policy, err := m.readCryptoPolicyLocked()
+	if err != nil {
+		return err
+	}
+	aead, err := crypto.NewAEAD(cryptoKey)
+	if err != nil {
+		return err
+	}
+	root, err := m.openDataRoot()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	entries, err := root.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to list %s: %w", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir {
+			return fmt.Errorf("invalid managed %s directory %q", dir, entry.Name)
+		}
+		if !strings.HasSuffix(entry.Name, ConfigFileSuffix) {
+			return fmt.Errorf("invalid managed %s entry %q", dir, entry.Name)
+		}
+		name := strings.TrimSuffix(entry.Name, ConfigFileSuffix)
+		if err := validateEntryIdentity(entryKindForDir(dir), name); err != nil {
+			return fmt.Errorf("invalid managed %s identity: %w", dir, err)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	kind := entryKindForDir(dir)
+	aadKind := sshAADKindForDir(dir)
+	for _, name := range names {
+		encrypted, err := root.Read(dir, name+ConfigFileSuffix)
+		if err != nil {
+			return fmt.Errorf("%s %q not found: %w", kind, name, err)
+		}
+		decrypted, err := decryptWithAEAD(aead, aadKind, "", name, string(encrypted), policy)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt %s %q: %w", kind, name, err)
+		}
+		if err := onEntry(name, decrypted); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadAllHostsWithKey loads and decrypts all SSH hosts in sorted alias order
+// using a single vault read lock and a single AEAD instance.
+func (m *Manager) LoadAllHostsWithKey(cryptoKey []byte) ([]*HostEntry, error) {
+	var out []*HostEntry
+	err := m.loadEntriesBatchWithKey(HostDirName, cryptoKey, func(name string, plaintext []byte) error {
+		var entry HostEntry
+		if err := FromJSON(plaintext, &entry); err != nil {
+			return fmt.Errorf("failed to parse SSH host %q: %w", name, err)
+		}
+		out = append(out, &entry)
+		return nil
+	})
+	return out, err
+}
+
+// LoadAllKeyPairsWithKey loads and decrypts all SSH keypairs in sorted name order
+// using a single vault read lock and a single AEAD instance.
+func (m *Manager) LoadAllKeyPairsWithKey(cryptoKey []byte) ([]*KeyPairEntry, error) {
+	var out []*KeyPairEntry
+	err := m.loadEntriesBatchWithKey(KeypairDirName, cryptoKey, func(name string, plaintext []byte) error {
+		var entry KeyPairEntry
+		if err := FromJSON(plaintext, &entry); err != nil {
+			return fmt.Errorf("failed to parse SSH keypair %q: %w", name, err)
+		}
+		out = append(out, &entry)
+		return nil
+	})
+	return out, err
+}
+
+// LoadAllLLMProvidersWithKey loads, decrypts, and validates all LLM provider
+// profiles in sorted alias order using a single vault read lock and AEAD instance.
+func (m *Manager) LoadAllLLMProvidersWithKey(cryptoKey []byte) ([]*LLMProviderEntry, error) {
+	var out []*LLMProviderEntry
+	err := m.loadEntriesBatchWithKey(LLMProviderDirName, cryptoKey, func(name string, plaintext []byte) error {
+		var entry LLMProviderEntry
+		if err := FromJSON(plaintext, &entry); err != nil {
+			return fmt.Errorf("load provider %q: failed to parse LLM provider %q: %w", name, name, err)
+		}
+		if err := entry.ValidateLLMProvider(); err != nil {
+			return fmt.Errorf("load provider %q: invalid provider %q: %w", name, name, err)
+		}
+		out = append(out, &entry)
+		return nil
+	})
+	return out, err
+}
+
+// LoadAllMCPServersWithKey loads, decrypts, and validates all MCP server
+// profiles in sorted alias order using a single vault read lock and AEAD instance.
+func (m *Manager) LoadAllMCPServersWithKey(cryptoKey []byte) ([]*MCPServerEntry, error) {
+	var out []*MCPServerEntry
+	err := m.loadEntriesBatchWithKey(MCPServerDirName, cryptoKey, func(name string, plaintext []byte) error {
+		var entry MCPServerEntry
+		if err := FromJSON(plaintext, &entry); err != nil {
+			return fmt.Errorf("failed to parse MCP server %q: %w", name, err)
+		}
+		if err := entry.ValidateMCPServer(); err != nil {
+			return fmt.Errorf("invalid MCP server %q: %w", name, err)
+		}
+		out = append(out, &entry)
+		return nil
+	})
+	return out, err
 }

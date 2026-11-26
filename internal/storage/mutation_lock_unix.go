@@ -41,8 +41,10 @@ func acquireVaultMutationLock(configPath string, timeout time.Duration) (*vaultM
 	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		return closeOnError(fmt.Errorf("vault mutation lock is not a regular file"))
 	}
-	if err := unix.Fchmod(fd, 0o600); err != nil {
-		return closeOnError(fmt.Errorf("secure vault mutation lock: %w", err))
+	if (st.Mode & 0o777) != 0o600 {
+		if err := unix.Fchmod(fd, 0o600); err != nil {
+			return closeOnError(fmt.Errorf("secure vault mutation lock: %w", err))
+		}
 	}
 
 	deadline := time.Now().Add(timeout)
