@@ -339,7 +339,9 @@ The bottom bar shows the keybindings for the current context (switching with foc
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift+Tab` | Cycle tabs |
-| `1`–`9` | Jump to the corresponding tab in registration order (out-of-range digits ignored). Order is Env, Text, Providers, Skill, Config, SSH, KeyPair, MCP, History, Audit, Backup, Settings — Audit/Backup/Settings have no digit keys; reach them with `Tab` |
+| `1`–`9` | Jump to the corresponding primary tab in registration order (out-of-range digits ignored). Full primary order is Env, Text, Providers, Skill, SSH, KeyPair, MCP, Ledger, Tree; low-frequency tabs (Config, History, Audit, Backup, Settings) are tucked into the `⋯` switcher and surface dynamically when active |
+| `0` / `ctrl+p` / `ctrl+k` | Open the Tab Switcher overlay (secondary tabs listed first, live filter by name/description, `enter` to jump) |
+| `,` | Jump directly to the Settings tab |
 | `↑` `↓` / `j` `k` | List navigation |
 | `←` `→` / `h` `l` | Switch focus between panes (Env / Text / Config / SSH / KeyPair / LLM / MCP tabs) |
 | `enter` | Open the detail overlay (Config / SSH / LLM / MCP / History; long content scrolls) / reveal the current env value in plaintext |

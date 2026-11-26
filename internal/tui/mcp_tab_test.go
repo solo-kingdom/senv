@@ -213,7 +213,7 @@ func TestMCPTabRegistration(t *testing.T) {
 	for i, tab := range full.tabs {
 		titles[i] = tab.Title()
 	}
-	want := []string{"Env", "Text", "Providers", "Skill", "Config", "SSH", "KeyPair", "MCP", "Ledger", "History", "Audit", "Backup", "Settings"}
+	want := []string{"Env", "Text", "Providers", "Skill", "SSH", "KeyPair", "MCP", "Ledger", "Config", "History", "Audit", "Backup", "Settings"}
 	if strings.Join(titles, ",") != strings.Join(want, ",") {
 		t.Fatalf("tab order = %v, want %v", titles, want)
 	}

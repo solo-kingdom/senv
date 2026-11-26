@@ -262,8 +262,11 @@ func TestHistoryToAuditSwitchKeepsSingleTabStrip(t *testing.T) {
 		view := m.View()
 		assertFrameInvariants(t, "audit", view, 100, 30)
 		plain := ansi.Strip(view)
-		if !strings.Contains(plain, "History") || !strings.Contains(plain, "Audit") {
-			t.Fatalf("tab strip missing History/Audit\n%s", dumpChrome(view))
+		if !strings.Contains(plain, "Audit") {
+			t.Fatalf("tab strip missing active Audit\n%s", dumpChrome(view))
+		}
+		if strings.Contains(plain, "History") {
+			t.Fatalf("inactive secondary tab History should not remain in tab strip\n%s", dumpChrome(view))
 		}
 		// 切到 Audit 后内容区应是审计列表；不要用样式字节断言激活胶囊，
 		// 默认 color profile 下激活/未激活渲染可能相同，会造成误报。

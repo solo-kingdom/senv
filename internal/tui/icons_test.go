@@ -36,6 +36,7 @@ func TestAllIconSetsHaveStableWidthAndCompleteTabs(t *testing.T) {
 				"cursor":    iconCursor(),
 				"sync":      iconSync(),
 				"search":    iconSearch(),
+				"more":      iconMore(),
 				"overflowL": iconOverflowL(),
 				"overflowR": iconOverflowR(),
 			} {

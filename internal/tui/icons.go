@@ -65,11 +65,12 @@ func IconSetName(id string) string {
 func allIconSets() []IconSetInfo { return builtinIconSets }
 
 type iconPack struct {
-	tabs   map[string]string
-	fallback string
-	cursor string
-	sync   string
-	search string
+	tabs      map[string]string
+	fallback  string
+	cursor    string
+	sync      string
+	search    string
+	more      string
 	overflowL string
 	overflowR string
 }
@@ -96,6 +97,7 @@ var iconPacks = map[string]iconPack{
 		cursor:    "\uf054",     //  nf-fa-chevron_right
 		sync:      "\U000f04e6", // 󰓦 nf-md-sync
 		search:    "\uf002",     //  nf-fa-search
+		more:      "\U000f01d8", // 󰇘 nf-md-dots_horizontal
 		overflowL: "‹",
 		overflowR: "›",
 	},
@@ -120,6 +122,7 @@ var iconPacks = map[string]iconPack{
 		cursor:    "▸",
 		sync:      "↻",
 		search:    "⌕",
+		more:      "⋯",
 		overflowL: "‹",
 		overflowR: "›",
 	},
@@ -144,6 +147,7 @@ var iconPacks = map[string]iconPack{
 		cursor:    ">",
 		sync:      "~",
 		search:    "/",
+		more:      "+",
 		overflowL: "<",
 		overflowR: ">",
 	},
@@ -180,6 +184,7 @@ func applyIconSet(id string) string {
 	addRunes(pack.cursor)
 	addRunes(pack.sync)
 	addRunes(pack.search)
+	addRunes(pack.more)
 	allowedIconRunes = allowed
 	return id
 }
@@ -202,6 +207,7 @@ func iconPreviewSample() string {
 func iconCursor() string    { return activeIconPack().cursor }
 func iconSync() string      { return activeIconPack().sync }
 func iconSearch() string    { return activeIconPack().search }
+func iconMore() string      { return activeIconPack().more }
 func iconOverflowL() string { return activeIconPack().overflowL }
 func iconOverflowR() string { return activeIconPack().overflowR }
 

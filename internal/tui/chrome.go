@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,13 +91,32 @@ func renderTabIconOnly(title string) string {
 	return pad + iconSt.Render(icon) + pad
 }
 
-// renderTabStrip 画顶栏：左侧 brand `senv`，中间带 icon 的功能菜单，
-// 右侧当前 provider 与同步徽标。
+// isSecondaryTab 报告哪些低频 Tab 收纳进顶栏 `⋯` 切换器（不常驻顶栏；
+// 仅在被激活时动态浮出高亮）。
+func isSecondaryTab(title string) bool {
+	switch title {
+	case "Config", "History", "Audit", "Backup", "Settings":
+		return true
+	default:
+		return false
+	}
+}
+
+// renderMorePill 渲染顶栏尾部的 `⋯N` 低频入口徽标（surface 底色，不抢激活胶囊焦点）。
+func renderMorePill(count int) string {
+	pad := lipgloss.NewStyle().Foreground(colorFg).Background(colorSurface).Render(" ")
+	iconSt := lipgloss.NewStyle().Foreground(colorAccent).Background(colorSurface)
+	numSt := lipgloss.NewStyle().Foreground(colorMuted).Background(colorSurface)
+	return pad + iconSt.Render(iconMore()) + numSt.Render(strconv.Itoa(count)) + pad
+}
+
+// renderTabStrip 画顶栏：左侧 brand `senv`，中间带 icon 的高频功能菜单 + `⋯N`
+// 低频入口（当前若停在低频 Tab 则动态浮出高亮），右侧当前 provider 与同步徽标。
 //
 // 宽度适配分三档：
-//  1. 完整模式：全部 Tab 显示「icon + 标题」；
+//  1. 完整模式：全部可见 Tab 显示「icon + 标题」；
 //  2. 紧凑模式：宽屏放不下全称时，非激活 Tab 折叠为「仅图标」、激活 Tab 显示
-//     完整「icon + 标题」，14 个 Tab 在 ~80 列也能一屏全览；
+//     完整「icon + 标题」；
 //  3. 滑动视口：超窄屏连紧凑模式也放不下时，以激活 Tab 为中心滑动展示相邻
 //     项，左右溢出以 ‹ / › 指示。
 func (m Model) renderTabStrip(width int) string {
@@ -104,7 +124,8 @@ func (m Model) renderTabStrip(width int) string {
 		return ""
 	}
 	brand := brandStyle.Render("senv")
-	separator := tabSeparatorStyle.Render(" ")
+	brandSep := tabSeparatorStyle.Render(" ")
+	separator := ""
 
 	var rightParts []string
 	if badge := m.providerBadge(); badge != "" {
@@ -137,18 +158,67 @@ func (m Model) renderTabStrip(width int) string {
 		midBudget = maxInt(budget-leftW-1-rightW-gapKeep, 4)
 	}
 
-	titles := make([]string, len(m.tabs))
-	for i, t := range m.tabs {
-		titles[i] = t.Title()
+	var titles []string
+	visibleActive := 0
+	moreCount := 0
+	activeTitle := ""
+	if m.active >= 0 && m.active < len(m.tabs) {
+		activeTitle = m.tabs[m.active].Title()
 	}
-	mid := fitTabStripTitles(titles, m.active, midBudget, separator)
-	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, separator, mid)
+	for i, t := range m.tabs {
+		title := t.Title()
+		if isSecondaryTab(title) {
+			moreCount++
+			continue
+		}
+		if i == m.active {
+			visibleActive = len(titles)
+		}
+		titles = append(titles, title)
+	}
+	if activeTitle != "" && isSecondaryTab(activeTitle) {
+		visibleActive = len(titles)
+		titles = append(titles, activeTitle)
+	}
+
+	mid := fitTabStripWithMore(titles, visibleActive, moreCount, midBudget, separator)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, brand, brandSep, mid)
 	gap := budget - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 0
 	}
 	row := left + strings.Repeat(" ", gap) + right
 	return tabStripStyle.Width(width).Render(row)
+}
+
+// fitTabStripWithMore 在三档宽度策略之上保留尾部 `⋯N` 低频入口徽标；
+// 仅在超窄屏连「激活 Tab + ⋯N」都放不下时才省去 `⋯N` 以保住激活项。
+func fitTabStripWithMore(titles []string, active, moreCount, budget int, separator string) string {
+	if moreCount <= 0 {
+		return fitTabStripTitles(titles, active, budget, separator)
+	}
+	morePill := renderMorePill(moreCount)
+	if len(titles) == 0 {
+		if lipgloss.Width(morePill) <= budget {
+			return morePill
+		}
+		return truncateWidth(morePill, maxInt(budget, 1))
+	}
+	if active < 0 || active >= len(titles) {
+		active = 0
+	}
+	sepW := lipgloss.Width(separator)
+	moreReserve := lipgloss.Width(morePill) + sepW
+	activeW := lipgloss.Width(renderTab(titles[active], true))
+	if activeW+moreReserve > budget {
+		return fitTabStripTitles(titles, active, budget, separator)
+	}
+	tabsBudget := maxInt(budget-moreReserve, 4)
+	tabs := fitTabStripTitles(titles, active, tabsBudget, separator)
+	if separator == "" {
+		return lipgloss.JoinHorizontal(lipgloss.Top, tabs, morePill)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, tabs, separator, morePill)
 }
 
 // fitTabStripTitles 按三档策略把全部 Tab 装进 budget 列，保证激活 Tab 始终可见。

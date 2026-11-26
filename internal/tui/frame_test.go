@@ -90,18 +90,34 @@ func TestTabStripContainsAllLabels(t *testing.T) {
 	out := m.View()
 	lines := strings.Split(out, "\n")
 
-	// 功能菜单在顶栏：brand 与 Env / Text / Config / Settings 同一行。
+	// 功能菜单在顶栏：brand 与高频主 Tab（Env / Text）及 `⋯3` 低频入口同一行；
+	// 未激活的低频 Tab（Config / Backup / Settings）不常驻顶栏。
 	if !strings.Contains(lines[1], "senv") {
 		t.Fatalf("top bar missing brand: %q", clipRunesT(lines[1], 40))
 	}
 	strip := lines[1]
-	for _, title := range []string{"Env", "Text", "Config", "Settings"} {
+	for _, title := range []string{"Env", "Text"} {
 		if !strings.Contains(strip, title) {
 			t.Fatalf("tab strip missing %s: %q", title, clipRunesT(strip, 80))
 		}
 		if !strings.Contains(strip, tabIcon(title)) {
 			t.Fatalf("tab strip missing icon for %s: %q", title, clipRunesT(strip, 80))
 		}
+	}
+	if !strings.Contains(strip, iconMore()+"3") {
+		t.Fatalf("tab strip missing more indicator: %q", clipRunesT(strip, 80))
+	}
+	for _, hidden := range []string{"Config", "Backup", "Settings"} {
+		if strings.Contains(strip, hidden) {
+			t.Fatalf("inactive secondary tab %s should not be permanently shown: %q", hidden, clipRunesT(strip, 80))
+		}
+	}
+
+	// 切到低频 Tab（Config）时，顶栏动态浮出该 Tab 高亮胶囊。
+	m.active = 2
+	strip2 := strings.Split(m.View(), "\n")[1]
+	if !strings.Contains(strip2, "Config") {
+		t.Fatalf("active secondary tab Config should surface in tab strip: %q", clipRunesT(strip2, 80))
 	}
 }
 

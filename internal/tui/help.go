@@ -12,6 +12,8 @@ import (
 // Tab 的 Bindings()（keymap 注册表），因此总览与实际行为同源、不可能漂移。
 var globalKeys = []KeyAction{
 	{Keys: []string{"1–9"}, Desc: "jump to tab"},
+	{Keys: []string{"0 / ctrl+p / ctrl+k"}, Desc: "tab switcher (more tabs)"},
+	{Keys: []string{","}, Desc: "settings"},
 	{Keys: []string{"Tab / Shift+Tab"}, Desc: "cycle tabs"},
 	{Keys: []string{"S"}, Desc: "global search"},
 	{Keys: []string{"ctrl+r"}, Desc: "refresh current tab"},

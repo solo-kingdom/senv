@@ -102,8 +102,9 @@ type Model struct {
 	warn      string
 	toast     string
 	level     toastLevel
-	search    *searchTab // non-nil while the global search overlay is open
-	help      *helpTab   // non-nil while the keybinding overview overlay is open
+	search    *searchTab   // non-nil while the global search overlay is open
+	help      *helpTab     // non-nil while the keybinding overview overlay is open
+	switcher  *tabSwitcher // non-nil while the tab switcher overlay is open
 	// codexPrompt 非 nil 时是「是否重启 codex app-server daemon」的覆盖层；
 	// codexPromptStage 区分探测中与确认态。写入类 Capability 由任一 Tab
 	// 触发，但确认与重启统一由顶层持有，避免每个 Tab 各复制一套状态。
@@ -177,7 +178,9 @@ func New(mgr Managers) Model {
 		newEnvTab(mgr),
 		newTextTab(mgr),
 	}
-	// LLM 紧随 Env/Text，占据第三位（数字键 3）；未配置时第三位仍是 Config。
+	// 高频主菜单按 1–9 顺序注册，低频项（Config/History/Audit/Backup/Settings）
+	// 统一排在后面并收进顶栏 `⋯` 切换器。
+	// LLM 紧随 Env/Text，占据第三位（数字键 3）；未配置时第三位按后续注册顺延。
 	if mgr.LLM != nil {
 		m.tabs = append(m.tabs, newAITab(mgr))
 	}
@@ -185,7 +188,6 @@ func New(mgr Managers) Model {
 	if mgr.Skill != nil {
 		m.tabs = append(m.tabs, newSkillTab(mgr))
 	}
-	m.tabs = append(m.tabs, newConfigTab(mgr))
 	if mgr.SSH != nil {
 		m.tabs = append(m.tabs, newSSHTab(mgr), newKeyPairTab(mgr))
 	}
@@ -198,6 +200,7 @@ func New(mgr Managers) Model {
 	if mgr.Tree != nil {
 		m.tabs = append(m.tabs, newTreeTab(mgr))
 	}
+	m.tabs = append(m.tabs, newConfigTab(mgr))
 	if mgr.History != nil {
 		m.tabs = append(m.tabs, newHistoryTab(mgr.History))
 	}
@@ -308,6 +311,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case helpCloseMsg:
 		m.help = nil
 		return m, nil
+	case tabSwitchMsg:
+		m.switcher = nil
+		m.err = ""
+		m.warn = ""
+		if msg.index >= 0 && msg.index < len(m.tabs) {
+			m.active = msg.index
+			return m.activateTab(msg.index)
+		}
+		return m, nil
+	case tabSwitchCloseMsg:
+		m.switcher = nil
+		return m, nil
 	}
 
 	// The codex daemon confirmation owns every key while it is open, and its
@@ -342,6 +357,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help = next.(*helpTab)
 		return m, cmd
 	}
+	// Same for the tab switcher overlay.
+	if m.switcher != nil {
+		next, cmd := m.switcher.Update(msg)
+		m.switcher = next.(*tabSwitcher)
+		return m, cmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -358,6 +379,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.help != nil {
 			m.help.SetSize(m.width, m.height)
+		}
+		if m.switcher != nil {
+			m.switcher.SetSize(m.width, m.height)
 		}
 		m.refreshLLMChrome()
 		return m, nil
@@ -484,6 +508,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Open the keybinding overview for the active tab.
 			m.help = newHelpTab(m.tabs[m.active].Title(), m.tabs[m.active])
 			m.help.SetSize(m.width, m.height)
+			return m, nil
+		case "0", "ctrl+p", "ctrl+k":
+			m.err = ""
+			m.warn = ""
+			m.switcher = newTabSwitcher(m.tabs, m.active)
+			m.switcher.SetSize(m.width, m.height)
+			return m, nil
+		case ",":
+			for i, t := range m.tabs {
+				if t.Title() == "Settings" {
+					m.err = ""
+					m.warn = ""
+					m.active = i
+					return m.activateTab(i)
+				}
+			}
 			return m, nil
 		case "tab":
 			m.err = ""
@@ -646,6 +686,8 @@ func (m Model) View() string {
 		content = m.search.View()
 	case m.help != nil:
 		content = overlayBox(m.tabs[m.active].View(), m.help.View(), l.innerW, l.bodyH)
+	case m.switcher != nil:
+		content = overlayBox(m.tabs[m.active].View(), m.switcher.View(), l.innerW, l.bodyH)
 	case m.codexPrompt != nil:
 		content = overlayBox(m.tabs[m.active].View(), m.renderCodexPrompt(), l.innerW, l.bodyH)
 	default:
@@ -675,6 +717,8 @@ func (m Model) View() string {
 			bs = m.search.Bindings()
 		case m.help != nil:
 			bs = m.help.Bindings()
+		case m.switcher != nil:
+			bs = m.switcher.Bindings()
 		case m.codexPrompt != nil:
 			bs = codexPromptBindings()
 		default:
