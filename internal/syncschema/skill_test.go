@@ -8,6 +8,8 @@ import (
 func TestValidateIdentitySkillKinds(t *testing.T) {
 	for _, tt := range []struct{ kind, grp, key string }{
 		{KindSkill, "default", "my-skill"},
+		{KindSkill, "default", "my-skill@1.2.3"},
+		{KindSkill, "work", "demo@v2"},
 		{KindSkillIndex, "", ""},
 	} {
 		if err := ValidateIdentity(tt.kind, tt.grp, tt.key); err != nil {

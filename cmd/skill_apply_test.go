@@ -539,3 +539,49 @@ func TestSkillApplyAppendsExtraInfoAndTracksDrift(t *testing.T) {
 		t.Fatalf("installed SKILL.md not updated:\n%s", installedV2)
 	}
 }
+
+func TestSkillApplySpecificVersionAndConflict(t *testing.T) {
+	newAuditTestProject(t)
+	resetSkillFlags(t)
+	resetSkillApplyFlags(t)
+
+	skillSource = writeSkillFixture(t, "pin-demo")
+	skillAddVersion = "v1"
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(&cobra.Command{}, []string{"pin-demo"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	srcV2 := writeSkillFixture(t, "pin-demo")
+	if err := os.WriteFile(filepath.Join(srcV2, "v2.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillSource = srcV2
+	skillAddVersion = "v2"
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(&cobra.Command{}, []string{"pin-demo"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	skillAddVersion = ""
+
+	// 同一命令内冲突版本报错
+	skillApplyYes = true
+	c, _, _ := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"pin-demo@v1", "pin-demo@v2"}); err == nil || !strings.Contains(err.Error(), "conflicting versions") {
+		t.Fatalf("conflicting versions error = %v", err)
+	}
+
+	// 按 @v1 安装，不改变 vault 当前活跃版 v2
+	c, out, _ := applyCmdWithBuffers()
+	if err := skillApplyCmd.RunE(c, []string{"pin-demo@v1"}); err != nil {
+		t.Fatalf("apply @v1: %v", err)
+	}
+	if !strings.Contains(out.String(), "(v1)") {
+		t.Fatalf("expected (v1) in output: %s", out.String())
+	}
+	agentsDir, _ := skillTargets(t, "pin-demo")
+	if pathExists(filepath.Join(agentsDir, "v2.txt")) {
+		t.Fatal("apply @v1 must not install v2.txt")
+	}
+}

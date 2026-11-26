@@ -480,3 +480,65 @@ func TestPackLongAndNonASCIIPaths(t *testing.T) {
 func tarSymlinkHeader(name, target string) tar.Header {
 	return tar.Header{Typeflag: tar.TypeSymlink, Name: name, Linkname: target, Mode: 0o777}
 }
+
+func TestParseVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		md   string
+		want string
+	}{
+		{
+			name: "top-level version",
+			md:   "---\nname: demo\nversion: 1.2.0\ndescription: x\n---\nbody\n",
+			want: "1.2.0",
+		},
+		{
+			name: "metadata nested version",
+			md:   "---\nname: senv-cli\ndescription: x\nmetadata:\n  version: \"1.30\"\n---\nbody\n",
+			want: "1.30",
+		},
+		{
+			name: "top-level takes precedence over metadata",
+			md:   "---\nname: demo\nmetadata:\n  version: \"1.0\"\nversion: '2.0.1'\n---\n",
+			want: "2.0.1",
+		},
+		{
+			name: "missing version",
+			md:   "---\nname: demo\ndescription: x\n---\n",
+			want: "",
+		},
+		{
+			name: "unclosed frontmatter",
+			md:   "---\nname: demo\nversion: 1.0\n",
+			want: "",
+		},
+		{
+			name: "no frontmatter",
+			md:   "# demo\nversion: 1.0\n",
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ParseVersion([]byte(tc.md)); got != tc.want {
+				t.Fatalf("ParseVersion() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSkillRef(t *testing.T) {
+	id, ver, err := ParseSkillRef("demo")
+	if err != nil || id != "demo" || ver != "" {
+		t.Fatalf("ParseSkillRef(demo) = (%q, %q, %v)", id, ver, err)
+	}
+	id, ver, err = ParseSkillRef("demo@v1.2.3")
+	if err != nil || id != "demo" || ver != "v1.2.3" {
+		t.Fatalf("ParseSkillRef(demo@v1.2.3) = (%q, %q, %v)", id, ver, err)
+	}
+	for _, bad := range []string{"", "@v1", "demo@", "demo@v1@v2", "demo@../x", "../demo@v1"} {
+		if _, _, err := ParseSkillRef(bad); err == nil {
+			t.Errorf("ParseSkillRef(%q) expected error", bad)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,15 @@ const (
 	// MaxSkillExtraBytes 是 skill 扩展信息（extra_info）的字节上限（32 KiB）。
 	MaxSkillExtraBytes = 32 * 1024
 
+	// SkillVersionSep 是存储键中 skill id 与版本号的分隔符：<id>@<version>。
+	SkillVersionSep = "@"
+	// MaxSkillVersionLen 是版本号最大长度。
+	MaxSkillVersionLen = 64
+	// MaxSkillStorageKeyLen 是 <id>@<version> 存储键最大长度（低于服务端 MaxKeyLen=256）。
+	MaxSkillStorageKeyLen = 200
+	// MaxSkillVersionNoteBytes 是版本说明的最大字节数。
+	MaxSkillVersionNoteBytes = 1024
+
 	// SkillScopeGlobal / SkillScopeProject 是 skill 安装作用域枚举。
 	SkillScopeGlobal  = "global"
 	SkillScopeProject = "project"
@@ -36,6 +46,8 @@ const (
 	SkillTargetAgents = "agents"
 	SkillTargetClaude = "claude"
 )
+
+var validSkillVersionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // SkillGroup 是 skill 分组的元数据与组级默认安装策略。
 // 条目未显式设置的字段会继承所属分组的策略。
@@ -48,20 +60,41 @@ type SkillGroup struct {
 	Targets        []string `json:"targets,omitempty"`       // 可选：agents / claude
 }
 
+// SkillVersion 描述一个 skill 的不可变历史版本快照。
+type SkillVersion struct {
+	Version   string    `json:"version"`
+	SHA256    string    `json:"sha256"`
+	Size      int       `json:"size"`
+	Note      string    `json:"note,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // SkillEntry 是 skill 索引中的一条元数据。正文（ustar tar）单独加密存放在
 // EncryptedFile 指向的密文里；索引本身在 v2 下加密存储。
 type SkillEntry struct {
-	ID             string    `json:"id"`
-	Group          string    `json:"group,omitempty"` // 空值等价于 default
-	Description    string    `json:"description,omitempty"`
-	DefaultInstall *bool     `json:"default_install,omitempty"` // nil = 继承组，最终兜底 false
-	InstallScope   string    `json:"install_scope,omitempty"`   // "" = 继承组，最终兜底 global
-	InstallPath    string    `json:"install_path,omitempty"`    // "" = 继承组（仅 project 生效）
-	Targets        []string  `json:"targets,omitempty"`         // 空 = 继承组，最终兜底全部
-	ExtraInfo      string    `json:"extra_info,omitempty"`      // apply 时追加到 SKILL.md 末尾的实例扩展信息（Markdown，勿放明文密钥）
-	EncryptedFile  string    `json:"encrypted_file"`            // 相对数据目录：skills/<group>/<id>.enc
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string         `json:"id"`
+	Group          string         `json:"group,omitempty"` // 空值等价于 default
+	Description    string         `json:"description,omitempty"`
+	DefaultInstall *bool          `json:"default_install,omitempty"` // nil = 继承组，最终兜底 false
+	InstallScope   string         `json:"install_scope,omitempty"`   // "" = 继承组，最终兜底 global
+	InstallPath    string         `json:"install_path,omitempty"`    // "" = 继承组（仅 project 生效）
+	Targets        []string       `json:"targets,omitempty"`         // 空 = 继承组，最终兜底全部
+	ExtraInfo      string         `json:"extra_info,omitempty"`      // apply 时追加到 SKILL.md 末尾的实例扩展信息（Markdown，勿放明文密钥）
+	CurrentVersion string         `json:"current_version,omitempty"` // 当前活跃版本号（存量未版本化条目为空）
+	Versions       []SkillVersion `json:"versions,omitempty"`        // 按创建时间升序记录的版本快照
+	EncryptedFile  string         `json:"encrypted_file"`            // 相对数据目录：skills/<group>/<id>.enc
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+// FindVersion 按版本号查找快照元数据。
+func (e SkillEntry) FindVersion(version string) (SkillVersion, bool) {
+	for _, v := range e.Versions {
+		if v.Version == version {
+			return v, true
+		}
+	}
+	return SkillVersion{}, false
 }
 
 // SkillEffectivePolicy 是条目继承分组后的生效安装策略。
@@ -161,12 +194,22 @@ func SkillEncryptedFile(group, id string) string {
 	return SkillDirName + "/" + group + "/" + id + SkillFileSuffix
 }
 
+// SkillVersionStorageKey 返回版本快照在存储层与 syncschema 中的 key（<id>@<version>）。
+func SkillVersionStorageKey(id, version string) string {
+	return id + SkillVersionSep + version
+}
+
+// SkillVersionEncryptedFile 返回 (group,id,version) 对应的规范版本快照密文相对路径。
+func SkillVersionEncryptedFile(group, id, version string) string {
+	return SkillEncryptedFile(group, SkillVersionStorageKey(id, version))
+}
+
 func validateSkillIdentity(group, id string) error {
 	if err := ValidateName(group); err != nil {
 		return fmt.Errorf("invalid skill group %q: %w", group, err)
 	}
-	if err := ValidateName(id); err != nil {
-		return fmt.Errorf("invalid skill id %q: %w", id, err)
+	if err := ValidateSkillID(id); err != nil {
+		return err
 	}
 	return nil
 }
@@ -182,12 +225,81 @@ func ValidateSkillGroup(group string) (string, error) {
 	return group, nil
 }
 
-// ValidateSkillID 校验 skill id。
+// ValidateSkillID 校验 skill id（禁止包含版本分隔符 '@'）。
 func ValidateSkillID(id string) error {
 	if err := ValidateName(id); err != nil {
 		return fmt.Errorf("invalid skill id %q: %w", id, err)
 	}
+	if strings.Contains(id, SkillVersionSep) {
+		return fmt.Errorf("invalid skill id %q: %q is reserved for version separator", id, SkillVersionSep)
+	}
 	return nil
+}
+
+// ValidateSkillVersion 校验并归一 skill 版本号（1–64 字符，匹配 ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$）。
+func ValidateSkillVersion(version string) (string, error) {
+	v := strings.TrimSpace(version)
+	if !validSkillVersionRE.MatchString(v) || ValidateName(v) != nil {
+		return "", fmt.Errorf("invalid skill version %q (must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$)", version)
+	}
+	return v, nil
+}
+
+// ValidateSkillVersionIdentity 校验 (group, id, version) 三元组与存储键长度。
+func ValidateSkillVersionIdentity(group, id, version string) error {
+	if err := validateSkillIdentity(group, id); err != nil {
+		return err
+	}
+	ver, err := ValidateSkillVersion(version)
+	if err != nil {
+		return err
+	}
+	if ver != version {
+		return fmt.Errorf("invalid skill version %q: leading/trailing whitespace not allowed", version)
+	}
+	if len(id)+1+len(ver) > MaxSkillStorageKeyLen {
+		return fmt.Errorf("skill version storage key %q exceeds %d bytes", SkillVersionStorageKey(id, ver), MaxSkillStorageKeyLen)
+	}
+	return nil
+}
+
+// ValidateSkillStorageKey 校验磁盘或 sync 上的 skill 存储键（<id> 或 <id>@<version>）。
+func ValidateSkillStorageKey(key string) error {
+	if !strings.Contains(key, SkillVersionSep) {
+		return ValidateSkillID(key)
+	}
+	id, ver, _ := strings.Cut(key, SkillVersionSep)
+	if err := ValidateSkillID(id); err != nil {
+		return err
+	}
+	normVer, err := ValidateSkillVersion(ver)
+	if err != nil {
+		return err
+	}
+	if normVer != ver {
+		return fmt.Errorf("invalid skill version %q", ver)
+	}
+	if len(key) > MaxSkillStorageKeyLen {
+		return fmt.Errorf("skill storage key %q exceeds %d bytes", key, MaxSkillStorageKeyLen)
+	}
+	return nil
+}
+
+// ValidateSkillVersionNote 校验并归一版本说明（单行，≤1024 字节，拒绝控制字符）。
+func ValidateSkillVersionNote(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	for _, r := range trimmed {
+		if r < 0x20 || r == 0x7f {
+			return "", fmt.Errorf("invalid skill version note: contains control characters")
+		}
+	}
+	if len(trimmed) > MaxSkillVersionNoteBytes {
+		return "", fmt.Errorf("skill version note is %d bytes, exceeds the %d byte limit", len(trimmed), MaxSkillVersionNoteBytes)
+	}
+	return trimmed, nil
 }
 
 // ValidateSkillExtraInfo 校验并归一 skill 扩展信息（去除首尾空白，限制最大 32 KiB，拒绝 NUL 字节）。
@@ -359,6 +471,9 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 		if err != nil {
 			return nil, fmt.Errorf("skill %q: %w", mapID, err)
 		}
+		if err := normalizeSkillVersions(mapID, &entry); err != nil {
+			return nil, err
+		}
 		canonical := SkillEncryptedFile(group, mapID)
 		if entry.EncryptedFile == "" {
 			entry.EncryptedFile = canonical
@@ -373,6 +488,71 @@ func normalizeSkillIndex(index *SkillIndex) (*SkillIndex, error) {
 		normalized.Skills[mapID] = entry
 	}
 	return normalized, nil
+}
+
+func isLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeSkillVersions(id string, entry *SkillEntry) error {
+	if len(entry.Versions) == 0 {
+		if entry.CurrentVersion != "" {
+			return fmt.Errorf("skill %q: current_version %q set without versions", id, entry.CurrentVersion)
+		}
+		return nil
+	}
+	if entry.CurrentVersion == "" {
+		return fmt.Errorf("skill %q: current_version is required when versions exist", id)
+	}
+	seen := make(map[string]bool, len(entry.Versions))
+	foundCurrent := false
+	versions := make([]SkillVersion, len(entry.Versions))
+	for i, v := range entry.Versions {
+		normVer, err := ValidateSkillVersion(v.Version)
+		if err != nil {
+			return fmt.Errorf("skill %q: %w", id, err)
+		}
+		if normVer != v.Version {
+			return fmt.Errorf("skill %q: version %q contains surrounding whitespace", id, v.Version)
+		}
+		if len(id)+1+len(normVer) > MaxSkillStorageKeyLen {
+			return fmt.Errorf("skill %q: version %q exceeds storage key limit", id, normVer)
+		}
+		if seen[normVer] {
+			return fmt.Errorf("skill %q: duplicate version %q", id, normVer)
+		}
+		seen[normVer] = true
+		if v.Size <= 0 || v.Size > MaxSkillPlaintext {
+			return fmt.Errorf("skill %q version %q: invalid size %d", id, normVer, v.Size)
+		}
+		if v.SHA256 != "" && !isLowerHex64(v.SHA256) {
+			return fmt.Errorf("skill %q version %q: invalid sha256 %q", id, normVer, v.SHA256)
+		}
+		note, err := ValidateSkillVersionNote(v.Note)
+		if err != nil {
+			return fmt.Errorf("skill %q version %q: %w", id, normVer, err)
+		}
+		v.Version = normVer
+		v.Note = note
+		versions[i] = v
+		if normVer == entry.CurrentVersion {
+			foundCurrent = true
+		}
+	}
+	if !foundCurrent {
+		return fmt.Errorf("skill %q: current_version %q not found in versions", id, entry.CurrentVersion)
+	}
+	entry.Versions = versions
+	return nil
 }
 
 // ParseSkillIndexData decodes a skill index from either legacy plaintext JSON
@@ -495,16 +675,30 @@ func (m *Manager) SaveSkillWithKey(group, id string, archive []byte, cryptoKey [
 	if err := validateSkillIdentity(group, id); err != nil {
 		return err
 	}
+	return m.saveSkillStorageKeyWithKey(group, id, archive, cryptoKey)
+}
+
+// SaveSkillVersionWithKey 加密并写入不可变版本快照 skills/<group>/<id>@<version>.enc。
+func (m *Manager) SaveSkillVersionWithKey(group, id, version string, archive []byte, cryptoKey []byte) error {
+	if err := ValidateSkillVersionIdentity(group, id, version); err != nil {
+		return err
+	}
+	return m.saveSkillStorageKeyWithKey(group, SkillVersionStorageKey(id, version), archive, cryptoKey)
+}
+
+func (m *Manager) saveSkillStorageKeyWithKey(group, storageKey string, archive []byte, cryptoKey []byte) error {
 	if len(archive) > MaxSkillPlaintext {
 		return fmt.Errorf("skill archive is %d bytes, exceeds the %d byte (1 MiB) plaintext limit", len(archive), MaxSkillPlaintext)
 	}
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.SaveSkillWithKey(group, id, archive, cryptoKey) })
+		return m.mutate(func(locked *Manager) error {
+			return locked.saveSkillStorageKeyWithKey(group, storageKey, archive, cryptoKey)
+		})
 	}
 	if err := m.requireCurrentKey(cryptoKey); err != nil {
 		return err
 	}
-	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindSkill, group, id, archive)
+	encrypted, err := m.encryptEntryLocked(cryptoKey, syncschema.KindSkill, group, storageKey, archive)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt skill: %w", err)
 	}
@@ -516,7 +710,7 @@ func (m *Manager) SaveSkillWithKey(group, id string, archive []byte, cryptoKey [
 	if err := root.EnsureDir([]string{SkillDirName, group}, 0o700); err != nil {
 		return fmt.Errorf("failed to create skill group directory: %w", err)
 	}
-	return root.AtomicWrite([]string{SkillDirName, group, id + SkillFileSuffix}, []byte(encrypted), 0o600)
+	return root.AtomicWrite([]string{SkillDirName, group, storageKey + SkillFileSuffix}, []byte(encrypted), 0o600)
 }
 
 // LoadSkillWithKey 读取并解密 skill tar 明文。
@@ -524,22 +718,34 @@ func (m *Manager) LoadSkillWithKey(group, id string, cryptoKey []byte) ([]byte, 
 	if err := validateSkillIdentity(group, id); err != nil {
 		return nil, err
 	}
+	return m.loadSkillStorageKeyWithKey(group, id, cryptoKey)
+}
+
+// LoadSkillVersionWithKey 读取并解密指定版本快照 tar 明文。
+func (m *Manager) LoadSkillVersionWithKey(group, id, version string, cryptoKey []byte) ([]byte, error) {
+	if err := ValidateSkillVersionIdentity(group, id, version); err != nil {
+		return nil, err
+	}
+	return m.loadSkillStorageKeyWithKey(group, SkillVersionStorageKey(id, version), cryptoKey)
+}
+
+func (m *Manager) loadSkillStorageKeyWithKey(group, storageKey string, cryptoKey []byte) ([]byte, error) {
 	return withVaultRead(m, func(locked *Manager) ([]byte, error) {
 		root, err := locked.openDataRoot()
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = root.Close() }()
-		ciphertext, err := root.Read(SkillDirName, group, id+SkillFileSuffix)
+		ciphertext, err := root.Read(SkillDirName, group, storageKey+SkillFileSuffix)
 		if err != nil {
-			return nil, fmt.Errorf("skill %q not found in group %q: %w", id, group, err)
+			return nil, fmt.Errorf("skill %q not found in group %q: %w", storageKey, group, err)
 		}
-		plaintext, err := locked.decryptEntryLocked(cryptoKey, syncschema.KindSkill, group, id, string(ciphertext))
+		plaintext, err := locked.decryptEntryLocked(cryptoKey, syncschema.KindSkill, group, storageKey, string(ciphertext))
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt skill %q: %w", id, err)
+			return nil, fmt.Errorf("failed to decrypt skill %q: %w", storageKey, err)
 		}
 		if len(plaintext) > MaxSkillPlaintext {
-			return nil, fmt.Errorf("skill %q archive exceeds the %d byte plaintext limit", id, MaxSkillPlaintext)
+			return nil, fmt.Errorf("skill %q archive exceeds the %d byte plaintext limit", storageKey, MaxSkillPlaintext)
 		}
 		return plaintext, nil
 	})
@@ -550,16 +756,28 @@ func (m *Manager) DeleteSkill(group, id string) error {
 	if err := validateSkillIdentity(group, id); err != nil {
 		return err
 	}
+	return m.deleteSkillStorageKey(group, id)
+}
+
+// DeleteSkillVersion 删除指定版本快照密文（不动索引，由调用方维护）。
+func (m *Manager) DeleteSkillVersion(group, id, version string) error {
+	if err := ValidateSkillVersionIdentity(group, id, version); err != nil {
+		return err
+	}
+	return m.deleteSkillStorageKey(group, SkillVersionStorageKey(id, version))
+}
+
+func (m *Manager) deleteSkillStorageKey(group, storageKey string) error {
 	if !m.mutationLocked {
-		return m.mutate(func(locked *Manager) error { return locked.DeleteSkill(group, id) })
+		return m.mutate(func(locked *Manager) error { return locked.deleteSkillStorageKey(group, storageKey) })
 	}
 	root, err := m.openDataRoot()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	if err := removeManagedFile(root, SkillDirName, group, id+SkillFileSuffix); err != nil {
-		return fmt.Errorf("failed to delete skill %q: %w", id, err)
+	if err := removeManagedFile(root, SkillDirName, group, storageKey+SkillFileSuffix); err != nil {
+		return fmt.Errorf("failed to delete skill %q: %w", storageKey, err)
 	}
 	return nil
 }
@@ -610,11 +828,11 @@ func listSkillFilesFromRoot(root securefs.TrustedRoot) ([]SkillFileRef, error) {
 			if !strings.HasSuffix(file.Name, SkillFileSuffix) {
 				continue
 			}
-			id := strings.TrimSuffix(file.Name, SkillFileSuffix)
-			if err := validateSkillIdentity(group.Name, id); err != nil {
+			key := strings.TrimSuffix(file.Name, SkillFileSuffix)
+			if err := ValidateSkillStorageKey(key); err != nil {
 				return nil, fmt.Errorf("invalid historical skill identity: %w", err)
 			}
-			refs = append(refs, SkillFileRef{Group: group.Name, ID: id})
+			refs = append(refs, SkillFileRef{Group: group.Name, ID: key})
 		}
 	}
 	sort.Slice(refs, func(i, j int) bool {

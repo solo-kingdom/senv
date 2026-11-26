@@ -379,3 +379,49 @@ func TestTargetShortName(t *testing.T) {
 		t.Fatalf("claude: %q", got)
 	}
 }
+
+func TestApplyVersionedOwnedMetaUpgradeAndDrift(t *testing.T) {
+	a := newTestApplier(t)
+	archV1 := demoArchive(t, nil)
+	archV2 := demoArchive(t, map[string]string{"extra.txt": "v2"})
+
+	// 1. 带版本 v1 安装 -> .senv-owned 为 JSON
+	results, err := a.ApplyWithOptions("demo", archV1, ApplyOptions{Version: "v1"})
+	if err != nil {
+		t.Fatalf("apply v1: %v", err)
+	}
+	meta, ok, err := ReadOwnedMeta(results[0].Target)
+	if err != nil || !ok || meta.Version != "v1" || meta.ID != "demo" || meta.SHA256 == "" {
+		t.Fatalf("ReadOwnedMeta = (%+v, %v, %v)", meta, ok, err)
+	}
+
+	// 2. 同内容同版本 -> skip
+	plan, err := a.PlanWithOptions("demo", archV1, ApplyOptions{Version: "v1"})
+	if err != nil || plan[0].Action != ActionSkip || plan[0].InstalledVersion != "v1" || plan[0].TargetVersion != "v1" {
+		t.Fatalf("same version plan = %+v, err=%v", plan[0], err)
+	}
+
+	// 3. 同内容但版本号切换 (v1 -> v1-rc) -> backup+overwrite 更新 .senv-owned
+	plan, err = a.PlanWithOptions("demo", archV1, ApplyOptions{Version: "v1-rc"})
+	if err != nil || plan[0].Action != ActionBackupOverwrite || !strings.Contains(plan[0].Reason, "v1 -> v1-rc") {
+		t.Fatalf("version metadata change plan = %+v, err=%v", plan[0], err)
+	}
+
+	// 4. 新版本不同内容 (v1 -> v2) -> backup+overwrite 并说明版本差异
+	plan, err = a.PlanWithOptions("demo", archV2, ApplyOptions{Version: "v2"})
+	if err != nil || plan[0].Action != ActionBackupOverwrite || !strings.Contains(plan[0].Reason, "v1 differs from target v2") {
+		t.Fatalf("upgrade plan = %+v, err=%v", plan[0], err)
+	}
+	if _, err := a.ApplyWithOptions("demo", archV2, ApplyOptions{Version: "v2"}); err != nil {
+		t.Fatalf("apply v2: %v", err)
+	}
+
+	// 5. 同版本本地漂移 -> 原因标注 local drift at v2
+	if err := os.WriteFile(filepath.Join(results[0].Target, "local.txt"), []byte("hack"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = a.PlanWithOptions("demo", archV2, ApplyOptions{Version: "v2"})
+	if err != nil || plan[0].Action != ActionBackupOverwrite || !strings.Contains(plan[0].Reason, "local drift at v2") {
+		t.Fatalf("local drift plan = %+v, err=%v", plan[0], err)
+	}
+}

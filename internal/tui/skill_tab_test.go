@@ -260,3 +260,98 @@ func TestSkillTabScopeToggle(t *testing.T) {
 		t.Fatalf("after s scope = %q", tab.scope)
 	}
 }
+
+func TestSkillTabVersioningOverlayAndPinnedApply(t *testing.T) {
+	tab, home := newSkillTestTab(t)
+	srcV1 := writeSkillDir(t, "ver-skill")
+	if _, err := tab.mgr.Skill.Add(skill.AddOptions{
+		ID:        "ver-skill",
+		SourceDir: srcV1,
+		Version:   "v1",
+		Note:      "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srcV2 := writeSkillDir(t, "ver-skill")
+	if err := os.WriteFile(filepath.Join(srcV2, "v2.txt"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tab.mgr.Skill.Add(skill.AddOptions{
+		ID:        "ver-skill",
+		SourceDir: srcV2,
+		Version:   "v2",
+		Note:      "second",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tab = loadSkillTab(t, tab)
+	if !strings.Contains(tab.View(), "ver-skill@v2") {
+		t.Fatalf("skill list missing @v2:\n%s", tab.View())
+	}
+
+	// enter 详情含版本列表
+	out, _ := tab.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	tab = out.(*skillTab)
+	if tab.detail == nil || !strings.Contains(tab.detail.View(), "version: v2 (active)") || !strings.Contains(tab.detail.View(), "v1") {
+		t.Fatalf("detail missing version info")
+	}
+	tab = flushTab(tab, func() tea.Cmd {
+		var c tea.Cmd
+		out, c = tab.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		tab = out.(*skillTab)
+		return c
+	}()).(*skillTab)
+
+	// v 打开版本弹层，移动游标到 v1（列表最新置顶：0=v2, 1=v1），按 x 仅安装 v1 快照
+	tab = skillKey(t, tab, "v")
+	if tab.mode != skillModeVersions || len(tab.versionsList) != 2 {
+		t.Fatalf("versions mode=%v len=%d", tab.mode, len(tab.versionsList))
+	}
+	if !strings.Contains(tab.View(), "versions · ver-skill") {
+		t.Fatalf("versions view = %q", tab.View())
+	}
+	tab = skillKey(t, tab, "j")
+	tab = skillKey(t, tab, "x")
+	if tab.mode != skillModePlan || tab.planVersion != "v1" {
+		t.Fatalf("expected plan for v1, got mode=%v planVersion=%q", tab.mode, tab.planVersion)
+	}
+	tab = flushTab(tab, func() tea.Cmd {
+		_, c := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+		return c
+	}()).(*skillTab)
+	tab = loadSkillTab(t, tab)
+
+	// 已装 v1，活跃版是 v2 -> target 状态为 drifted 且后缀显示 v1 → v2
+	if tab.status[0].State != "drifted" || !strings.Contains(tab.status[0].VersionSuffix, "v1 → v2") {
+		t.Fatalf("status after pinned v1 apply = %+v", tab.status[0])
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "ver-skill", "v2.txt")); !os.IsNotExist(err) {
+		t.Fatalf("pinned v1 apply must not write v2.txt: %v", err)
+	}
+
+	// 版本弹层按 u 把活跃版切回 v1，状态应收敛为 applied (v1)
+	tab = skillKey(t, tab, "v")
+	tab = skillKey(t, tab, "j")
+	tab = flushTab(tab, func() tea.Cmd {
+		_, c := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+		return c
+	}()).(*skillTab)
+	tab = loadSkillTab(t, tab)
+	if tab.status[0].State != "applied" || !strings.Contains(tab.status[0].VersionSuffix, "v1") {
+		t.Fatalf("status after UseVersion(v1) = %+v", tab.status[0])
+	}
+
+	// 弹层内按 d 删除非活跃版 v2（列表 0=v2, 1=v1），成功移除
+	tab = skillKey(t, tab, "v")
+	tab = skillKey(t, tab, "k") // 游标到 0 (v2)
+	tab = flushTab(tab, func() tea.Cmd {
+		_, c := tab.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+		return c
+	}()).(*skillTab)
+	tab = loadSkillTab(t, tab)
+	vers, cur, err := tab.mgr.Skill.ListVersions("ver-skill")
+	if err != nil || cur != "v1" || len(vers) != 1 {
+		t.Fatalf("versions after delete = (%+v, %q, %v)", vers, cur, err)
+	}
+}

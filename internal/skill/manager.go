@@ -1,8 +1,11 @@
 package skill
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/wii/senv/internal/storage"
@@ -58,8 +61,10 @@ type AddOptions struct {
 	InstallPath    string
 	Targets        []string
 	ExtraInfo      string
-	ExtraInfoSet   bool // Force 替换时：false 且 ExtraInfo=="" 则保留原扩展信息；true 则按 ExtraInfo 覆盖（可清空）
-	// Force 允许替换已存在的同 id skill（整条替换归档，CreatedAt 与未传入的元数据保留）。
+	ExtraInfoSet   bool   // Force 替换时：false 且 ExtraInfo=="" 则保留原扩展信息；true 则按 ExtraInfo 覆盖（可清空）
+	Version        string // 显式指定版本号（优先级高于 SKILL.md frontmatter）
+	Note           string // 本次版本发布说明
+	// Force 允许替换已存在的同 id skill 或同版本号快照（CreatedAt 与未传入的元数据保留）。
 	Force bool
 }
 
@@ -164,6 +169,23 @@ func (m *Manager) Add(opts AddOptions) (*storage.SkillEntry, error) {
 	}
 	opts.ExtraInfo = extraInfo
 
+	note, err := storage.ValidateSkillVersionNote(opts.Note)
+	if err != nil {
+		return nil, err
+	}
+	opts.Note = note
+
+	if opts.Version != "" {
+		ver, err := storage.ValidateSkillVersion(opts.Version)
+		if err != nil {
+			return nil, err
+		}
+		if len(opts.ID)+1+len(ver) > storage.MaxSkillStorageKeyLen {
+			return nil, fmt.Errorf("skill version storage key %q exceeds %d bytes", storage.SkillVersionStorageKey(opts.ID, ver), storage.MaxSkillStorageKeyLen)
+		}
+		opts.Version = ver
+	}
+
 	if opts.InstallScope == storage.SkillScopeGlobal && opts.InstallPath != "" {
 		return nil, fmt.Errorf("install_path cannot be set when install_scope is global")
 	}
@@ -173,13 +195,25 @@ func (m *Manager) Add(opts AddOptions) (*storage.SkillEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := Validate(archive, opts.ID); err != nil {
+	parsed, err := Validate(archive, opts.ID)
+	if err != nil {
 		return nil, err
+	}
+	fmVer := ParseVersion(parsed.SkillMD)
+	if opts.Version == "" && fmVer != "" {
+		normVer, err := storage.ValidateSkillVersion(fmVer)
+		if err != nil {
+			return nil, fmt.Errorf("SKILL.md frontmatter version: %w", err)
+		}
+		if len(opts.ID)+1+len(normVer) > storage.MaxSkillStorageKeyLen {
+			return nil, fmt.Errorf("skill version storage key %q exceeds %d bytes", storage.SkillVersionStorageKey(opts.ID, normVer), storage.MaxSkillStorageKeyLen)
+		}
+		fmVer = normVer
 	}
 
 	var result *storage.SkillEntry
 	err = m.mutate(func(locked *Manager) error {
-		entry, err := locked.addLocked(opts, archive)
+		entry, err := locked.addLocked(opts, archive, fmVer)
 		result = entry
 		return err
 	})
@@ -189,7 +223,31 @@ func (m *Manager) Add(opts AddOptions) (*storage.SkillEntry, error) {
 	return result, nil
 }
 
-func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntry, error) {
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func nextAutoVersion(existing []storage.SkillVersion) string {
+	used := make(map[string]bool, len(existing))
+	maxN := 0
+	for _, v := range existing {
+		used[v.Version] = true
+		if len(v.Version) >= 2 && v.Version[0] == 'v' {
+			if n, err := strconv.Atoi(v.Version[1:]); err == nil && n > maxN {
+				maxN = n
+			}
+		}
+	}
+	for n := maxN + 1; ; n++ {
+		cand := "v" + strconv.Itoa(n)
+		if !used[cand] {
+			return cand
+		}
+	}
+}
+
+func (m *Manager) addLocked(opts AddOptions, archive []byte, fmVer string) (*storage.SkillEntry, error) {
 	key, err := m.cryptoKey()
 	if err != nil {
 		return nil, err
@@ -199,14 +257,52 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 		return nil, fmt.Errorf("failed to load skill index: %w", err)
 	}
 	existing, exists := index.Skills[opts.ID]
-	if exists && !opts.Force {
-		return nil, fmt.Errorf("skill %q already exists in group %q (ids are unique across groups); use --force to replace it", opts.ID, existing.NormalizedGroup())
+	declaredVer := opts.Version
+	if declaredVer == "" {
+		declaredVer = fmVer
 	}
+
 	group := opts.Group
 	if group == "" {
 		group = storage.SkillDefaultGroup
 		if exists {
 			group = existing.NormalizedGroup()
+		}
+	}
+
+	if exists && !opts.Force {
+		if opts.Group != "" && opts.Group != existing.NormalizedGroup() {
+			return nil, fmt.Errorf("skill %q already exists in group %q (ids are unique across groups); use --force to move or replace it", opts.ID, existing.NormalizedGroup())
+		}
+		if declaredVer == "" {
+			return nil, fmt.Errorf("skill %q already exists in group %q (ids are unique across groups); use --force to replace it", opts.ID, existing.NormalizedGroup())
+		}
+		if _, dup := existing.FindVersion(declaredVer); dup {
+			return nil, fmt.Errorf("version %q already exists for skill %q (use --force to replace it)", declaredVer, opts.ID)
+		}
+	}
+
+	archiveHash := sha256Hex(archive)
+	archiveSize := len(archive)
+
+	var targetVer string
+	switch {
+	case !exists:
+		targetVer = declaredVer
+		if targetVer == "" {
+			targetVer = "v1"
+		}
+	case declaredVer != "":
+		targetVer = declaredVer
+	default: // exists && declaredVer == "" && opts.Force
+		if len(existing.Versions) > 0 {
+			if curMeta, ok := existing.FindVersion(existing.CurrentVersion); ok && curMeta.SHA256 == archiveHash && opts.Note == "" {
+				targetVer = existing.CurrentVersion
+			} else {
+				targetVer = nextAutoVersion(existing.Versions)
+			}
+		} else {
+			targetVer = "v1"
 		}
 	}
 
@@ -242,6 +338,88 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 	}
 
 	now := time.Now()
+	versions := append([]storage.SkillVersion(nil), existing.Versions...)
+
+	// 存量无版本 skill 首次版本化升级时，自动把旧归档留存为快照，防止历史丢失。
+	if exists && len(existing.Versions) == 0 {
+		oldArchive, loadErr := m.storage.LoadSkillWithKey(existing.NormalizedGroup(), opts.ID, key)
+		if loadErr == nil {
+			oldHash := sha256Hex(oldArchive)
+			if oldHash != archiveHash {
+				legacyVer := ""
+				if oldParsed, vErr := Validate(oldArchive, opts.ID); vErr == nil {
+					if parsedVer := ParseVersion(oldParsed.SkillMD); parsedVer != "" {
+						if norm, nErr := storage.ValidateSkillVersion(parsedVer); nErr == nil && len(opts.ID)+1+len(norm) <= storage.MaxSkillStorageKeyLen {
+							legacyVer = norm
+						}
+					}
+				}
+				if legacyVer == "" || legacyVer == targetVer {
+					legacyVer = "v0"
+					if legacyVer == targetVer {
+						legacyVer = "v0-legacy"
+					}
+				}
+				if err := m.storage.SaveSkillVersionWithKey(group, opts.ID, legacyVer, oldArchive, key); err != nil {
+					return nil, err
+				}
+				legacyCreated := existing.UpdatedAt
+				if legacyCreated.IsZero() {
+					legacyCreated = now
+				}
+				versions = append(versions, storage.SkillVersion{
+					Version:   legacyVer,
+					SHA256:    oldHash,
+					Size:      len(oldArchive),
+					CreatedAt: legacyCreated,
+				})
+			}
+		}
+	}
+
+	// 改组时把已有版本快照一并迁入新组（先写新组，索引落盘后再清旧组）。
+	if exists && existing.NormalizedGroup() != group {
+		for _, v := range existing.Versions {
+			verArchive, err := m.storage.LoadSkillVersionWithKey(existing.NormalizedGroup(), opts.ID, v.Version, key)
+			if err != nil {
+				return nil, err
+			}
+			if err := m.storage.SaveSkillVersionWithKey(group, opts.ID, v.Version, verArchive, key); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if err := m.storage.SaveSkillVersionWithKey(group, opts.ID, targetVer, archive, key); err != nil {
+		return nil, err
+	}
+	if err := m.storage.SaveSkillWithKey(group, opts.ID, archive, key); err != nil {
+		return nil, err
+	}
+
+	replaced := false
+	for i := range versions {
+		if versions[i].Version == targetVer {
+			versions[i].SHA256 = archiveHash
+			versions[i].Size = archiveSize
+			if opts.Note != "" {
+				versions[i].Note = opts.Note
+			}
+			versions[i].CreatedAt = now
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		versions = append(versions, storage.SkillVersion{
+			Version:   targetVer,
+			SHA256:    archiveHash,
+			Size:      archiveSize,
+			Note:      opts.Note,
+			CreatedAt: now,
+		})
+	}
+
 	entry := storage.SkillEntry{
 		ID:             opts.ID,
 		Group:          group,
@@ -251,6 +429,8 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 		InstallPath:    installPath,
 		Targets:        targets,
 		ExtraInfo:      extraInfo,
+		CurrentVersion: targetVer,
+		Versions:       versions,
 		EncryptedFile:  storage.SkillEncryptedFile(group, opts.ID),
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -262,10 +442,6 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 		return nil, fmt.Errorf("install_path %q requires install_scope=project (on the skill or its group %q)", entry.InstallPath, group)
 	}
 
-	if err := m.storage.SaveSkillWithKey(group, opts.ID, archive, key); err != nil {
-		return nil, err
-	}
-
 	index.Skills[opts.ID] = entry
 	if err := m.storage.SaveSkillIndexWithKey(index, key); err != nil {
 		return nil, fmt.Errorf("failed to save skill index: %w", err)
@@ -274,6 +450,11 @@ func (m *Manager) addLocked(opts AddOptions, archive []byte) (*storage.SkillEntr
 	if exists && existing.NormalizedGroup() != group {
 		if err := m.storage.DeleteSkill(existing.NormalizedGroup(), opts.ID); err != nil {
 			return nil, err
+		}
+		for _, v := range existing.Versions {
+			if err := m.storage.DeleteSkillVersion(existing.NormalizedGroup(), opts.ID, v.Version); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &entry, nil
@@ -391,6 +572,15 @@ func (m *Manager) Edit(opts EditOptions) (*storage.SkillEntry, error) {
 			if err := locked.storage.SaveSkillWithKey(targetGroup, opts.ID, archive, key); err != nil {
 				return err
 			}
+			for _, v := range existing.Versions {
+				verArchive, err := locked.storage.LoadSkillVersionWithKey(oldGroup, opts.ID, v.Version, key)
+				if err != nil {
+					return err
+				}
+				if err := locked.storage.SaveSkillVersionWithKey(targetGroup, opts.ID, v.Version, verArchive, key); err != nil {
+					return err
+				}
+			}
 		}
 		updated.UpdatedAt = time.Now()
 		index.Skills[opts.ID] = updated
@@ -400,6 +590,11 @@ func (m *Manager) Edit(opts EditOptions) (*storage.SkillEntry, error) {
 		if targetGroup != oldGroup {
 			if err := locked.storage.DeleteSkill(oldGroup, opts.ID); err != nil {
 				return err
+			}
+			for _, v := range existing.Versions {
+				if err := locked.storage.DeleteSkillVersion(oldGroup, opts.ID, v.Version); err != nil {
+					return err
+				}
 			}
 		}
 		result = &updated
@@ -739,9 +934,10 @@ func (m *Manager) Get(id string) (*storage.SkillEntry, error) {
 
 // Detail 是 Show 的结果：索引元数据 + 生效策略 + 归档清单（不含文件内容）。
 type Detail struct {
-	Entry   storage.SkillEntry
-	Policy  storage.SkillEffectivePolicy
-	Entries []Entry
+	Entry          storage.SkillEntry
+	Policy         storage.SkillEffectivePolicy
+	DisplayVersion string // 实际展示的版本（为空表示存量无版本）
+	Entries        []Entry
 	// ArchiveSize 是 tar 明文字节数。
 	ArchiveSize int
 }
@@ -766,17 +962,18 @@ func (m *Manager) GetWithPolicy(id string) (*storage.SkillEntry, storage.SkillEf
 	return &entry, index.EffectivePolicy(entry), nil
 }
 
-// Show 解密并校验 skill 归档，返回元数据与文件清单。不返回任何文件内容。
+// Show 解密并校验 skill 当前活跃归档，返回元数据与文件清单。不返回任何文件内容。
 func (m *Manager) Show(id string) (*Detail, error) {
+	return m.ShowVersion(id, "")
+}
+
+// ShowVersion 解密并校验 skill 指定版本（为空时取当前活跃版）归档，返回元数据与文件清单。
+func (m *Manager) ShowVersion(id, version string) (*Detail, error) {
 	entry, policy, err := m.GetWithPolicy(id)
 	if err != nil {
 		return nil, err
 	}
-	key, err := m.cryptoKey()
-	if err != nil {
-		return nil, err
-	}
-	archive, err := m.storage.LoadSkillWithKey(entry.NormalizedGroup(), id, key)
+	archive, displayVer, err := m.loadArchiveForVersion(entry, version)
 	if err != nil {
 		return nil, err
 	}
@@ -784,32 +981,177 @@ func (m *Manager) Show(id string) (*Detail, error) {
 	if err != nil {
 		return nil, fmt.Errorf("skill %q is invalid: %w", id, err)
 	}
-	return &Detail{Entry: *entry, Policy: policy, Entries: a.Entries, ArchiveSize: len(archive)}, nil
+	return &Detail{
+		Entry:          *entry,
+		Policy:         policy,
+		DisplayVersion: displayVer,
+		Entries:        a.Entries,
+		ArchiveSize:    len(archive),
+	}, nil
 }
 
-// Archive 返回已解密 tar 明文，供展开（apply）使用。调用方展开前必须再用
+// Archive 返回已解密当前活跃版 tar 明文，供展开（apply）使用。调用方展开前必须再用
 // Validate 校验——这里只负责取出。
 func (m *Manager) Archive(id string) (*storage.SkillEntry, []byte, error) {
-	return m.loadArchive(id)
+	entry, archive, _, err := m.ArchiveVersion(id, "")
+	return entry, archive, err
 }
 
-func (m *Manager) loadArchive(id string) (*storage.SkillEntry, []byte, error) {
+// ArchiveVersion 返回指定版本（为空时取当前活跃版）的已解密 tar 明文及实际版本号。
+func (m *Manager) ArchiveVersion(id, version string) (*storage.SkillEntry, []byte, string, error) {
 	entry, err := m.Get(id)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	key, err := m.cryptoKey()
+	archive, resolvedVer, err := m.loadArchiveForVersion(entry, version)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	archive, err := m.storage.LoadSkillWithKey(entry.NormalizedGroup(), id, key)
-	if err != nil {
-		return nil, nil, err
-	}
-	return entry, archive, nil
+	return entry, archive, resolvedVer, nil
 }
 
-// Remove 从索引与存储中删除 skill。已 apply 到本机的目录不受影响。
+func (m *Manager) loadArchiveForVersion(entry *storage.SkillEntry, version string) ([]byte, string, error) {
+	key, err := m.cryptoKey()
+	if err != nil {
+		return nil, "", err
+	}
+	if version == "" {
+		archive, err := m.storage.LoadSkillWithKey(entry.NormalizedGroup(), entry.ID, key)
+		if err != nil {
+			return nil, "", err
+		}
+		return archive, entry.CurrentVersion, nil
+	}
+	normVer, err := storage.ValidateSkillVersion(version)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, ok := entry.FindVersion(normVer); !ok {
+		return nil, "", fmt.Errorf("version %q not found for skill %q", normVer, entry.ID)
+	}
+	archive, err := m.storage.LoadSkillVersionWithKey(entry.NormalizedGroup(), entry.ID, normVer, key)
+	if err != nil {
+		return nil, "", err
+	}
+	return archive, normVer, nil
+}
+
+// ListVersions 返回 skill 的所有版本快照与当前活跃版本。
+func (m *Manager) ListVersions(id string) ([]storage.SkillVersion, string, error) {
+	entry, err := m.Get(id)
+	if err != nil {
+		return nil, "", err
+	}
+	out := append([]storage.SkillVersion(nil), entry.Versions...)
+	return out, entry.CurrentVersion, nil
+}
+
+// UseVersion 切换 skill 的当前活跃版本（把指定版本快照写入 <id>.enc 并更新 CurrentVersion）。
+func (m *Manager) UseVersion(id, version string) (*storage.SkillEntry, error) {
+	if err := storage.ValidateSkillID(id); err != nil {
+		return nil, err
+	}
+	normVer, err := storage.ValidateSkillVersion(version)
+	if err != nil {
+		return nil, err
+	}
+	var result *storage.SkillEntry
+	err = m.mutate(func(locked *Manager) error {
+		key, err := locked.cryptoKey()
+		if err != nil {
+			return err
+		}
+		index, err := locked.storage.LoadSkillIndexWithKey(key)
+		if err != nil {
+			return fmt.Errorf("failed to load skill index: %w", err)
+		}
+		entry, ok := index.Skills[id]
+		if !ok {
+			return fmt.Errorf("skill %q not found", id)
+		}
+		if _, hasVer := entry.FindVersion(normVer); !hasVer {
+			return fmt.Errorf("version %q not found for skill %q", normVer, id)
+		}
+		archive, err := locked.storage.LoadSkillVersionWithKey(entry.NormalizedGroup(), id, normVer, key)
+		if err != nil {
+			return err
+		}
+		if _, err := Validate(archive, id); err != nil {
+			return fmt.Errorf("skill %q version %q is invalid: %w", id, normVer, err)
+		}
+		if err := locked.storage.SaveSkillWithKey(entry.NormalizedGroup(), id, archive, key); err != nil {
+			return err
+		}
+		entry.CurrentVersion = normVer
+		entry.UpdatedAt = time.Now()
+		index.Skills[id] = entry
+		if err := locked.storage.SaveSkillIndexWithKey(index, key); err != nil {
+			return fmt.Errorf("failed to save skill index: %w", err)
+		}
+		result = &entry
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// RemoveVersion 删除非当前活跃的版本快照。
+func (m *Manager) RemoveVersion(id, version string) (*storage.SkillEntry, error) {
+	if err := storage.ValidateSkillID(id); err != nil {
+		return nil, err
+	}
+	normVer, err := storage.ValidateSkillVersion(version)
+	if err != nil {
+		return nil, err
+	}
+	var result *storage.SkillEntry
+	err = m.mutate(func(locked *Manager) error {
+		key, err := locked.cryptoKey()
+		if err != nil {
+			return err
+		}
+		index, err := locked.storage.LoadSkillIndexWithKey(key)
+		if err != nil {
+			return fmt.Errorf("failed to load skill index: %w", err)
+		}
+		entry, ok := index.Skills[id]
+		if !ok {
+			return fmt.Errorf("skill %q not found", id)
+		}
+		if entry.CurrentVersion == normVer {
+			return fmt.Errorf("cannot remove active version %q of skill %q; switch to another version first or use 'skill remove %s'", normVer, id, id)
+		}
+		idx := -1
+		for i, v := range entry.Versions {
+			if v.Version == normVer {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return fmt.Errorf("version %q not found for skill %q", normVer, id)
+		}
+		entry.Versions = append(entry.Versions[:idx], entry.Versions[idx+1:]...)
+		entry.UpdatedAt = time.Now()
+		index.Skills[id] = entry
+		if err := locked.storage.SaveSkillIndexWithKey(index, key); err != nil {
+			return fmt.Errorf("failed to save skill index: %w", err)
+		}
+		if err := locked.storage.DeleteSkillVersion(entry.NormalizedGroup(), id, normVer); err != nil {
+			return err
+		}
+		result = &entry
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Remove 从索引与存储中删除 skill 及其全部版本快照。已 apply 到本机的目录不受影响。
 func (m *Manager) Remove(id string) error {
 	if err := storage.ValidateSkillID(id); err != nil {
 		return err
@@ -831,6 +1173,14 @@ func (m *Manager) Remove(id string) error {
 		if err := locked.storage.SaveSkillIndexWithKey(index, key); err != nil {
 			return fmt.Errorf("failed to save skill index: %w", err)
 		}
-		return locked.storage.DeleteSkill(entry.NormalizedGroup(), id)
+		if err := locked.storage.DeleteSkill(entry.NormalizedGroup(), id); err != nil {
+			return err
+		}
+		for _, v := range entry.Versions {
+			if err := locked.storage.DeleteSkillVersion(entry.NormalizedGroup(), id, v.Version); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }

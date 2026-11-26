@@ -474,3 +474,129 @@ func TestSkillIndexInstallMetaValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestSkillVersionValidationAndIndexNormalization(t *testing.T) {
+	if err := ValidateSkillID("foo@v1"); err == nil {
+		t.Fatal("ValidateSkillID must reject '@'")
+	}
+	if err := ValidateSkillStorageKey("foo@v1.0.0"); err != nil {
+		t.Fatalf("ValidateSkillStorageKey(foo@v1.0.0): %v", err)
+	}
+	for _, bad := range []string{"@v1", "foo@", "foo@v1@v2", "foo@-bad", "foo@../x"} {
+		if err := ValidateSkillStorageKey(bad); err == nil {
+			t.Errorf("ValidateSkillStorageKey(%q) should fail", bad)
+		}
+	}
+	if _, err := ValidateSkillVersionNote("ok note"); err != nil {
+		t.Fatalf("valid note: %v", err)
+	}
+	if _, err := ValidateSkillVersionNote("line1\nline2"); err == nil {
+		t.Fatal("multiline note must be rejected")
+	}
+
+	mgr, _ := setupTestManager(t)
+	now := time.Now()
+	validHex := strings.Repeat("a", 64)
+
+	// 合法多版本索引 round-trip
+	idx := NewSkillIndex()
+	idx.Skills["demo"] = SkillEntry{
+		ID:             "demo",
+		CurrentVersion: "v2",
+		Versions: []SkillVersion{
+			{Version: "v1", SHA256: validHex, Size: 100, Note: "init", CreatedAt: now},
+			{Version: "v2", SHA256: validHex, Size: 120, CreatedAt: now},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := mgr.SaveSkillIndex(idx); err != nil {
+		t.Fatalf("SaveSkillIndex valid versioned: %v", err)
+	}
+	loaded, err := mgr.LoadSkillIndex()
+	if err != nil {
+		t.Fatalf("LoadSkillIndex: %v", err)
+	}
+	if loaded.Skills["demo"].CurrentVersion != "v2" || len(loaded.Skills["demo"].Versions) != 2 {
+		t.Fatalf("loaded = %+v", loaded.Skills["demo"])
+	}
+
+	// fail-closed 损坏版本索引用例
+	badVersions := []struct {
+		name  string
+		entry SkillEntry
+	}{
+		{"current_version without versions", SkillEntry{ID: "x", CurrentVersion: "v1"}},
+		{"versions without current_version", SkillEntry{ID: "x", Versions: []SkillVersion{{Version: "v1", Size: 10}}}},
+		{"current_version missing in versions", SkillEntry{ID: "x", CurrentVersion: "v2", Versions: []SkillVersion{{Version: "v1", Size: 10}}}},
+		{"duplicate versions", SkillEntry{ID: "x", CurrentVersion: "v1", Versions: []SkillVersion{{Version: "v1", Size: 10}, {Version: "v1", Size: 10}}}},
+		{"zero size", SkillEntry{ID: "x", CurrentVersion: "v1", Versions: []SkillVersion{{Version: "v1", Size: 0}}}},
+		{"bad sha256", SkillEntry{ID: "x", CurrentVersion: "v1", Versions: []SkillVersion{{Version: "v1", Size: 10, SHA256: "xyz"}}}},
+	}
+	for _, tc := range badVersions {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := NewSkillIndex()
+			bad.Skills["x"] = tc.entry
+			if err := mgr.SaveSkillIndex(bad); err == nil {
+				t.Fatalf("SaveSkillIndex should reject %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestSkillVersionSaveLoadDeleteAndRekeyDoctor(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	key := derivedKey(t, mgr, "test-password")
+
+	if err := mgr.SaveSkillWithKey("work", "demo", []byte("active-v2"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SaveSkillVersionWithKey("work", "demo", "v1", []byte("snap-v1"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SaveSkillVersionWithKey("work", "demo", "v2", []byte("active-v2"), key); err != nil {
+		t.Fatal(err)
+	}
+
+	refs, err := mgr.ListSkillFiles()
+	if err != nil {
+		t.Fatalf("ListSkillFiles: %v", err)
+	}
+	if len(refs) != 3 {
+		t.Fatalf("ListSkillFiles = %+v, want 3 entries", refs)
+	}
+	gotV1, err := mgr.LoadSkillVersionWithKey("work", "demo", "v1", key)
+	if err != nil || string(gotV1) != "snap-v1" {
+		t.Fatalf("LoadSkillVersionWithKey(v1) = %q, %v", gotV1, err)
+	}
+
+	report, err := mgr.CheckConsistency(key)
+	if err != nil || !report.AllOK() || report.SkillFiles.Total != 3 || report.SkillFiles.OK != 3 {
+		t.Fatalf("CheckConsistency = %+v, err=%v", report, err)
+	}
+
+	newSalt, err := crypto.GenerateSalt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newKey := crypto.DeriveKeyWithIterations("new-password", newSalt, crypto.DefaultIterations)
+	newPasswordKey, err := crypto.Encrypt(newKey, []byte(crypto.HashPassword("new-password")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rekeyRes, err := mgr.Rekey(key, newKey, base64.StdEncoding.EncodeToString(newSalt), newPasswordKey, crypto.DefaultIterations)
+	if err != nil || rekeyRes.SkillFiles != 3 {
+		t.Fatalf("Rekey = %+v, err=%v", rekeyRes, err)
+	}
+	gotV1After, err := mgr.LoadSkillVersionWithKey("work", "demo", "v1", newKey)
+	if err != nil || string(gotV1After) != "snap-v1" {
+		t.Fatalf("LoadSkillVersionWithKey after rekey = %q, %v", gotV1After, err)
+	}
+
+	if err := mgr.DeleteSkillVersion("work", "demo", "v1"); err != nil {
+		t.Fatalf("DeleteSkillVersion: %v", err)
+	}
+	if _, err := mgr.LoadSkillVersionWithKey("work", "demo", "v1", newKey); err == nil {
+		t.Fatal("deleted version snapshot should not load")
+	}
+}

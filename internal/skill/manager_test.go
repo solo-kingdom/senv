@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/storage"
@@ -377,5 +378,164 @@ func TestManagerEditMetadataAndMoveGroup(t *testing.T) {
 	}
 	if cleared.DefaultInstall != nil || cleared.InstallScope != "" || cleared.InstallPath != "" || len(cleared.Targets) != 0 {
 		t.Fatalf("cleared = %+v", cleared)
+	}
+}
+
+func TestManagerVersioningLifecycle(t *testing.T) {
+	mgr, store := newTestManager(t)
+
+	// 1. 新入库无显式版本 -> 自动分配 v1
+	e1, err := mgr.Add(AddOptions{ID: "alpha", SourceDir: skillSource(t, "alpha", nil), Note: "initial"})
+	if err != nil {
+		t.Fatalf("add v1: %v", err)
+	}
+	if e1.CurrentVersion != "v1" || len(e1.Versions) != 1 || e1.Versions[0].Note != "initial" {
+		t.Fatalf("e1 = %+v", e1)
+	}
+
+	// 2. 显式新版本无需 --force 即可发布并激活
+	e2, err := mgr.Add(AddOptions{
+		ID:        "alpha",
+		SourceDir: skillSource(t, "alpha", map[string]string{"extra.txt": "v2"}),
+		Version:   "1.1.0",
+		Note:      "add extra",
+	})
+	if err != nil {
+		t.Fatalf("add 1.1.0: %v", err)
+	}
+	if e2.CurrentVersion != "1.1.0" || len(e2.Versions) != 2 {
+		t.Fatalf("e2 = %+v", e2)
+	}
+
+	// 同版本无 --force 报错
+	if _, err := mgr.Add(AddOptions{ID: "alpha", SourceDir: skillSource(t, "alpha", nil), Version: "1.1.0"}); err == nil {
+		t.Fatal("duplicate explicit version without --force must fail")
+	}
+
+	// 3. --force 同内容无 --note 不递增版本号；新内容自动递增 v2
+	sameForce, err := mgr.Add(AddOptions{
+		ID:        "alpha",
+		SourceDir: skillSource(t, "alpha", map[string]string{"extra.txt": "v2"}),
+		Force:     true,
+	})
+	if err != nil || sameForce.CurrentVersion != "1.1.0" || len(sameForce.Versions) != 2 {
+		t.Fatalf("same content force = %+v, err=%v", sameForce, err)
+	}
+	autoInc, err := mgr.Add(AddOptions{
+		ID:        "alpha",
+		SourceDir: skillSource(t, "alpha", map[string]string{"extra.txt": "v3"}),
+		Force:     true,
+	})
+	if err != nil || autoInc.CurrentVersion != "v2" || len(autoInc.Versions) != 3 {
+		t.Fatalf("auto increment = %+v, err=%v", autoInc, err)
+	}
+
+	// 4. ShowVersion / ArchiveVersion / ListVersions
+	vers, cur, err := mgr.ListVersions("alpha")
+	if err != nil || cur != "v2" || len(vers) != 3 {
+		t.Fatalf("ListVersions = (%+v, %q, %v)", vers, cur, err)
+	}
+	detailV1, err := mgr.ShowVersion("alpha", "v1")
+	if err != nil || detailV1.DisplayVersion != "v1" {
+		t.Fatalf("ShowVersion(v1) = %+v, err=%v", detailV1, err)
+	}
+	_, archV1, resolvedV1, err := mgr.ArchiveVersion("alpha", "v1")
+	if err != nil || resolvedV1 != "v1" || len(archV1) == 0 {
+		t.Fatalf("ArchiveVersion(v1) = (%q, %v)", resolvedV1, err)
+	}
+
+	// 5. UseVersion 切换回 v1，并验证 RemoveVersion 保护当前活跃版
+	used, err := mgr.UseVersion("alpha", "v1")
+	if err != nil || used.CurrentVersion != "v1" {
+		t.Fatalf("UseVersion(v1) = %+v, err=%v", used, err)
+	}
+	if _, err := mgr.RemoveVersion("alpha", "v1"); err == nil {
+		t.Fatal("RemoveVersion on active version must fail")
+	}
+	if _, err := mgr.RemoveVersion("alpha", "1.1.0"); err != nil {
+		t.Fatalf("RemoveVersion(1.1.0): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.GetDataPath(), "skills", "default", "alpha@1.1.0.enc")); !os.IsNotExist(err) {
+		t.Fatalf("removed version ciphertext still exists: %v", err)
+	}
+
+	// 6. Edit 改组迁移所有剩余版本，且新组可继续 UseVersion
+	opsGroup := "ops"
+	if _, err := mgr.Edit(EditOptions{ID: "alpha", Group: &opsGroup}); err != nil {
+		t.Fatalf("Edit group: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.GetDataPath(), "skills", "default", "alpha@v2.enc")); !os.IsNotExist(err) {
+		t.Fatalf("old group version ciphertext must be removed: %v", err)
+	}
+	if _, err := mgr.UseVersion("alpha", "v2"); err != nil {
+		t.Fatalf("UseVersion(v2) after group move: %v", err)
+	}
+
+	// 7. Remove 清理全部版本密文
+	if err := mgr.Remove("alpha"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, f := range []string{"alpha.enc", "alpha@v1.enc", "alpha@v2.enc"} {
+		if _, err := os.Stat(filepath.Join(store.GetDataPath(), "skills", "ops", f)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after Remove: %v", f, err)
+		}
+	}
+}
+
+func TestManagerLegacyUnversionedUpgradePreservesSnapshot(t *testing.T) {
+	mgr, store := newTestManager(t)
+	key, err := store.DeriveKeyFromPassword("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldArch, err := Pack(skillSource(t, "legacy", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSkillWithKey("default", "legacy", oldArch, key); err != nil {
+		t.Fatal(err)
+	}
+	idx := storage.NewSkillIndex()
+	now := time.Now().Add(-time.Hour)
+	idx.Skills["legacy"] = storage.SkillEntry{
+		ID:            "legacy",
+		Group:         "default",
+		EncryptedFile: storage.SkillEncryptedFile("default", "legacy"),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := store.SaveSkillIndexWithKey(idx, key); err != nil {
+		t.Fatal(err)
+	}
+
+	// 用新内容 + --version v2 升级，应自动把旧内容留存为 v0
+	upgraded, err := mgr.Add(AddOptions{
+		ID:        "legacy",
+		SourceDir: skillSource(t, "legacy", map[string]string{"new.txt": "new"}),
+		Version:   "v2",
+	})
+	if err != nil {
+		t.Fatalf("upgrade legacy: %v", err)
+	}
+	if upgraded.CurrentVersion != "v2" || len(upgraded.Versions) != 2 || upgraded.Versions[0].Version != "v0" {
+		t.Fatalf("upgraded = %+v", upgraded)
+	}
+	if _, err := mgr.UseVersion("legacy", "v0"); err != nil {
+		t.Fatalf("rollback to preserved legacy v0: %v", err)
+	}
+}
+
+func TestManagerFrontmatterVersion(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	src := t.TempDir()
+	writeTree(t, src, map[string]string{
+		"SKILL.md": "---\nname: fm-skill\ndescription: x\nmetadata:\n  version: \"1.30\"\n---\nbody\n",
+	})
+	entry, err := mgr.Add(AddOptions{ID: "fm-skill", SourceDir: src})
+	if err != nil {
+		t.Fatalf("add with metadata.version: %v", err)
+	}
+	if entry.CurrentVersion != "1.30" {
+		t.Fatalf("CurrentVersion = %q, want 1.30", entry.CurrentVersion)
 	}
 }

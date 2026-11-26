@@ -18,7 +18,7 @@
 - ✅ **SSH 资产管理** - 加密管理既有 host 档案与 private key，支持 OpenSSH config 导出、keypair 落盘、本机默认密钥对、TUI 内 host/keypair 增删改与关联（keypair rename 自动联动 host），以及 MCP 只读查询
 - ✅ **LLM 模型目录** - `senv ai refresh` 拉取 models.dev provider/model 目录并本地缓存，离线可查（`senv ai catalog status`）
 - ✅ **LLM Provider 管理** - `senv ai provider add/edit/rename/list/show/remove` 加密保存 AI 服务档案，支持 `--api-shape`（openai-chat / openai-responses / anthropic）声明接口形态，凭据存 vault、模型集自动从 models.dev 目录装配，并在增改模型时校验 context window
-- ✅ **私有 Agent Skill** - `senv skill add/list/show/remove/apply/unapply` 把 skill 目录加密入库，随 `senv sync` 跨机；`apply`/`unapply` 支持全局/`--scope project`、多选 id / `--all`、`--target agents|claude`；TUI Skill Tab（在 Providers 后）可管理与导出（与 dotf 公开编目互不干涉）
+- ✅ **私有 Agent Skill** - `senv skill add/list/show/remove/version/apply/unapply` 把 skill 目录加密入库并支持多版本快照与切换回滚，随 `senv sync` 跨机；`apply`/`unapply` 支持全局/`--scope project`、多选 id / `@<version>` / `--all`、`--target agents|claude`；TUI Skill Tab（在 Providers 后）可管理版本与导出（与 dotf 公开编目互不干涉）
 
 ## 安装
 
@@ -371,7 +371,7 @@ KeyPair Tab（独立 Tab，紧随 SSH Tab）管密钥对（分组侧栏 → keyp
 
 LLM Tab（标签显示为 Providers）同样是可编辑两栏：左栏 provider（`n` 新建、`e` 编辑、`r` 重命名、`d` 删除、`enter` 详情），右栏 agent（`↑↓` 选择、`s` 以选中 provider 切换、`m` 仅换默认模型）。`s` 的模型集步骤用 `space` 逐个勾选/取消、进入时默认全选 Provider 模型集，空集不能提交；随后选定默认模型（默认取档案默认模型）再确认。agent 行与 `senv ai status` 同口径展示 `provider / 默认模型（N 个模型）`，指针里的模型已不在档案中时附 `⚠` 漂移标记（判定只比对指针与档案，不解析 agent 配置文件）。provider 表单覆盖 base_url、`api_shape`、目录来源、模型集、默认模型与凭据来源；凭据默认从既有 env/text 条目中选择，也可选「新建自有凭据」用遮蔽输入写入 `text:llm-keys/<alias>`，明文不进 TUI 状态与渲染文本。枚举/引用字段聚焦时会在下方列出候选值，左右键循环选择。
 
-Skill Tab 是三栏（紧挨 LLM/provider 之后）：左栏分组侧栏（All 置顶，其下各组字母序且 `default` 在前，带条目计数，空分组也显示，计数随 `/` 过滤更新），中栏当前组的 vault skill（All 下列表前缀 `group/id`；`n` 从源目录入库、`enter` 详情、`d` 删 vault 且不自动撤回、`/` 过滤），右栏 agents/claude 应用状态（未应用 / 已应用 / 漂移 / 冲突）。`←→/hl` 在三栏间移动。分组登记和安装策略走 CLI `senv skill group`，侧栏只浏览。`s` 切换 global/project scope；`x`/`X` 应用当前/全部目标、`u`/`U` 撤回当前/全部目标，均先出计划页再确认。冲突与软链跳过，与 CLI `skill apply`/`unapply` 同语义。
+Skill Tab 是三栏（紧挨 LLM/provider 之后）：左栏分组侧栏（All 置顶，其下各组字母序且 `default` 在前，带条目计数，空分组也显示，计数随 `/` 过滤更新），中栏当前组的 vault skill（带 `@<version>` 标识，All 下列表前缀 `group/id`；`n` 从源目录入库并支持可选 `version`/`note`、`enter` 详情含版本列表、`v` 打开版本弹层切换活跃版/按版本安装/删除旧版、`d` 删 vault 且不自动撤回、`/` 过滤），右栏 agents/claude 应用状态（未应用 / 已应用 / 漂移 / 冲突，附已装与目标版本对比）。`←→/hl` 在三栏间移动。分组登记和安装策略走 CLI `senv skill group`，侧栏只浏览。`s` 切换 global/project scope；`x`/`X` 应用当前/全部目标、`u`/`U` 撤回当前/全部目标，均先出计划页再确认。冲突与软链跳过，与 CLI `skill apply`/`unapply` 同语义。
 
 MCP Tab 是独立两栏：左栏 MCP Server 档案（`n` 新建、`e` 编辑且别名只读、`d` 删除且不自动撤回、`enter` 详情），右栏全部导出目标 agent（与 `senv mcp export` 相同，含 claude-desktop / cursor）及当前档案的未导出 / 已导出 / 漂移状态。`x`/`u` 针对当前档案 × 当前 agent，`X`/`U` 针对当前档案 × 全部 agent；先出计划页（标「明文 env」与路径，不渲染解析值），`y`/`enter` 确认后才写盘，`esc`/`n` 取消。漂移默认 skip，计划页 `F` 才强制覆盖；撤回被改过的条目逐条 `y/n`。列表是摘要，只显示 env 键数（remote 只显示 `scheme://host`）；详情弹层完整显示字段值：url 含 query、header 为 `Name: Value`、env 为 `KEY=value`（模板引用原样）。表单里值只在 `$EDITOR` 编辑时出现。写回命中 codex 且本机 daemon 在跑时，完成导出/撤回后同样弹重启确认框。`senv mcp install` / `serve` / `list-tools`、`--print`、`--scope project` 仍走 CLI。
 
@@ -431,14 +431,18 @@ senv mcp list-tools                       # 查看 MCP 暴露的工具清单
 ```bash
 senv skill group add base --description "通用基础 skill" --default-install --scope global
 senv skill group add proj-a --description "项目 A 专用" --default-install --scope project --install-path ~/proj-a
-senv skill add my-skill --source ./my-skill --group base --description "说明"   # SKILL.md 的 frontmatter name 必须等于 id
+senv skill add my-skill --source ./my-skill --group base --version 1.0.0 --note "初版" --description "说明"   # SKILL.md 的 frontmatter name 必须等于 id
 senv skill edit my-skill --default-install false --scope project --install-path ~/code  # 只改元数据不动归档
 senv skill edit llm-wiki --extra-file ./wiki-extra.md  # 为无状态 skill 附加实例扩展信息（apply 时拼到 SKILL.md 末尾）
-senv skill list                          # 按分组列出（含 default/manual 与安装位置；支持 --group / --default / --scope / --json）
-senv skill show my-skill                 # 元数据、生效安装策略与文件清单，不打印内容
+senv skill list                          # 按分组列出（含当前版本、default/manual 与安装位置；支持 --group / --default / --scope / --json）
+senv skill show my-skill                 # 元数据、版本历史、生效安装策略与文件清单（支持 my-skill@1.0.0）
+senv skill version list my-skill         # 列出所有版本快照与当前活跃版（支持 --json）
+senv skill version use my-skill 1.0.0    # 切换/回滚当前活跃版（也支持 my-skill@1.0.0）
+senv skill version remove my-skill 1.0.0 # 删除非活跃版本快照
 senv sync                                # 与其它数据一起同步到别的机器
 senv skill apply --default --dry-run     # 新机初始化/日常对齐首选：只装 default_install=true，按策略自动路由
 senv skill apply --default --yes         # 确认执行
+senv skill apply my-skill@1.0.0 --yes    # 按指定版本快照安装（不改变 vault 活跃版）
 senv skill apply a b --scope project --dir ~/my-repo --target agents --yes  # 指定项目目录与目标根
 senv skill unapply --default --dry-run   # 撤回计划（只删带 .senv-owned 的托管目录）
 senv skill unapply my-skill --yes        # 撤回本机 apply，vault 条目保留

@@ -3,6 +3,9 @@ package skill
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,9 +19,47 @@ import (
 	"github.com/wii/senv/internal/securefs"
 )
 
-// OwnedMarker 是 senv 在 apply 出的 skill 根目录下写入的空文件。
+// OwnedMarker 是 senv 在 apply 出的 skill 根目录下写入的托管标记文件。
 // 带它的目录才允许被 senv 备份并覆盖；没有它的同名目录一律视为用户或其他工具所有。
+// 带版本安装时写入 JSON 元数据（OwnedMeta），无版本或低层调用保持空文件。
 const OwnedMarker = ".senv-owned"
+
+// OwnedMeta 是写入 .senv-owned 的本地已装版本元数据。
+type OwnedMeta struct {
+	ID        string    `json:"id"`
+	Version   string    `json:"version,omitempty"`
+	SHA256    string    `json:"sha256,omitempty"`
+	AppliedAt time.Time `json:"applied_at,omitempty"`
+}
+
+// ReadOwnedMeta 读取目标目录下的 .senv-owned 元数据。
+// 空文件或非 JSON 普通文件均视为已托管但版本未知（ok=true, meta.Version=""）。
+func ReadOwnedMeta(dir string) (OwnedMeta, bool, error) {
+	markerPath := filepath.Join(dir, OwnedMarker)
+	fi, err := os.Lstat(markerPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return OwnedMeta{}, false, nil
+		}
+		return OwnedMeta{}, false, err
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return OwnedMeta{}, false, nil
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return OwnedMeta{}, false, err
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return OwnedMeta{ID: filepath.Base(dir)}, true, nil
+	}
+	var meta OwnedMeta
+	if err := json.Unmarshal(trimmed, &meta); err != nil {
+		return OwnedMeta{ID: filepath.Base(dir)}, true, nil
+	}
+	return meta, true, nil
+}
 
 // DefaultRoots 是 apply 的目标根（相对 Base：家目录或项目根）。不含 kiro。
 var DefaultRoots = []string{".agents/skills", ".claude/skills"}
@@ -132,13 +173,21 @@ func (a Action) Changes() bool {
 
 // PlanItem 是一个 skill 在一个目标根上的计划。
 type PlanItem struct {
-	ID     string
-	Root   string // 相对 Base 的根，如 ".agents/skills"
-	Target string // 绝对路径 <base>/<root>/<id>
-	Action Action
-	Reason string
+	ID               string
+	Root             string // 相对 Base 的根，如 ".agents/skills"
+	Target           string // 绝对路径 <base>/<root>/<id>
+	Action           Action
+	Reason           string
+	InstalledVersion string
+	TargetVersion    string
 	// Backup 仅在 ActionBackupOverwrite 且执行后填充：旧树被移到的位置。
 	Backup string
+}
+
+// ApplyOptions 是 PlanWithOptions / ApplyWithOptions 的选项。
+type ApplyOptions struct {
+	ExtraInfo string
+	Version   string
 }
 
 // Result 是一个目标根的执行结果。
@@ -175,12 +224,14 @@ type treeNode struct {
 	data []byte
 }
 
-// expanded 是通过校验、已读入内存的归档（≤1 MiB），含可选追加的 extra_info。
+// expanded 是通过校验、已读入内存的归档（≤1 MiB），含可选追加的 extra_info 与目标版本。
 type expanded struct {
-	id    string
-	tree  map[string]treeNode // 文件与目录（含隐含父目录），不含根
-	bytes []byte
-	extra string
+	id      string
+	tree    map[string]treeNode // 文件与目录（含隐含父目录），不含根
+	bytes   []byte
+	extra   string
+	version string
+	sha256  string
 }
 
 // AppendExtraToSkillMD 将扩展信息（extra_info）作为受管区块追加到 SKILL.md 末尾。
@@ -201,12 +252,20 @@ func AppendExtraToSkillMD(orig []byte, extra string) []byte {
 	return buf.Bytes()
 }
 
-func prepare(id string, archive []byte, extra string) (*expanded, error) {
+func prepare(id string, archive []byte, opts ApplyOptions) (*expanded, error) {
 	if _, err := Validate(archive, id); err != nil {
 		return nil, err
 	}
-	trimmedExtra := strings.TrimSpace(extra)
-	ex := &expanded{id: id, tree: map[string]treeNode{}, bytes: archive, extra: trimmedExtra}
+	trimmedExtra := strings.TrimSpace(opts.ExtraInfo)
+	sum := sha256.Sum256(archive)
+	ex := &expanded{
+		id:      id,
+		tree:    map[string]treeNode{},
+		bytes:   archive,
+		extra:   trimmedExtra,
+		version: strings.TrimSpace(opts.Version),
+		sha256:  hex.EncodeToString(sum[:]),
+	}
 	tr := tar.NewReader(bytes.NewReader(archive))
 	for {
 		hdr, err := tr.Next()
@@ -249,12 +308,17 @@ func prepare(id string, archive []byte, extra string) (*expanded, error) {
 
 // Plan 校验归档并给出每个根上的动作，不写任何东西。
 func (a *Applier) Plan(id string, archive []byte) ([]PlanItem, error) {
-	return a.PlanWithExtra(id, archive, "")
+	return a.PlanWithOptions(id, archive, ApplyOptions{})
 }
 
 // PlanWithExtra 校验归档并在计算内容等价性时把 extra 追加到 SKILL.md 末尾。
 func (a *Applier) PlanWithExtra(id string, archive []byte, extra string) ([]PlanItem, error) {
-	ex, err := prepare(id, archive, extra)
+	return a.PlanWithOptions(id, archive, ApplyOptions{ExtraInfo: extra})
+}
+
+// PlanWithOptions 校验归档并根据 ApplyOptions（extra_info、目标版本）给出每个根上的动作。
+func (a *Applier) PlanWithOptions(id string, archive []byte, opts ApplyOptions) ([]PlanItem, error) {
+	ex, err := prepare(id, archive, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +411,7 @@ func hasOwnedMarkerInRoot(baseRoot *securefs.Root, targetSegs []string) bool {
 
 func (a *Applier) planRoot(ex *expanded, root string) PlanItem {
 	target := filepath.Join(a.rootDir(root), ex.id)
-	item := PlanItem{ID: ex.id, Root: root, Target: target}
+	item := PlanItem{ID: ex.id, Root: root, Target: target, TargetVersion: ex.version}
 	targetSegs, baseRoot, parentExists, conflict := a.inspectParentAndTarget(root, ex.id)
 	if baseRoot != nil {
 		defer baseRoot.Close()
@@ -373,14 +437,31 @@ func (a *Applier) planRoot(ex *expanded, root string) PlanItem {
 	case !hasOwnedMarkerInRoot(baseRoot, targetSegs):
 		item.Action, item.Reason = ActionSkipConflict, "target directory has no "+OwnedMarker+" (not managed by senv)"
 	default:
+		owned, _, _ := ReadOwnedMeta(target)
+		item.InstalledVersion = owned.Version
 		same, err := treeMatches(target, ex.tree)
 		switch {
 		case err != nil:
 			item.Action, item.Reason = ActionSkipConflict, fmt.Sprintf("cannot compare target: %v", err)
-		case same:
+		case same && (ex.version == "" || owned.Version == ex.version):
 			item.Action, item.Reason = ActionSkip, "content already up to date"
+		case same:
+			item.Action = ActionBackupOverwrite
+			if owned.Version != "" {
+				item.Reason = fmt.Sprintf("installed version %s -> %s", owned.Version, ex.version)
+			} else {
+				item.Reason = fmt.Sprintf("version metadata updated to %s", ex.version)
+			}
 		default:
-			item.Action, item.Reason = ActionBackupOverwrite, "managed directory differs; old tree will be backed up"
+			item.Action = ActionBackupOverwrite
+			switch {
+			case owned.Version != "" && ex.version != "" && owned.Version != ex.version:
+				item.Reason = fmt.Sprintf("installed %s differs from target %s; old tree will be backed up", owned.Version, ex.version)
+			case owned.Version != "":
+				item.Reason = fmt.Sprintf("managed directory differs (local drift at %s); old tree will be backed up", owned.Version)
+			default:
+				item.Reason = "managed directory differs; old tree will be backed up"
+			}
 		}
 	}
 	return item
@@ -451,12 +532,17 @@ func treeMatches(dir string, want map[string]treeNode) (bool, error) {
 // skip / skip-conflict 只返回计划。校验失败时一个根都不会碰。
 // 单个根失败不影响其它根，错误记在对应 Result.Err。
 func (a *Applier) Apply(id string, archive []byte) ([]Result, error) {
-	return a.ApplyWithExtra(id, archive, "")
+	return a.ApplyWithOptions(id, archive, ApplyOptions{})
 }
 
 // ApplyWithExtra 与 Apply 相同，但会在展开后的 SKILL.md 末尾追加 extra。
 func (a *Applier) ApplyWithExtra(id string, archive []byte, extra string) ([]Result, error) {
-	ex, err := prepare(id, archive, extra)
+	return a.ApplyWithOptions(id, archive, ApplyOptions{ExtraInfo: extra})
+}
+
+// ApplyWithOptions 根据 ApplyOptions（extra_info、目标版本）展开归档并写入 .senv-owned。
+func (a *Applier) ApplyWithOptions(id string, archive []byte, opts ApplyOptions) ([]Result, error) {
+	ex, err := prepare(id, archive, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +575,21 @@ func (a *Applier) install(ex *expanded, item PlanItem) (backup string, err error
 	if err := extractTree(staged, ex.bytes, ex.extra); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(staged, OwnedMarker), nil, 0o644); err != nil {
+	var ownedBytes []byte
+	if ex.version != "" {
+		meta := OwnedMeta{
+			ID:        ex.id,
+			Version:   ex.version,
+			SHA256:    ex.sha256,
+			AppliedAt: a.Now().UTC(),
+		}
+		ownedBytes, err = json.Marshal(meta)
+		if err != nil {
+			return "", fmt.Errorf("marshal %s: %w", OwnedMarker, err)
+		}
+		ownedBytes = append(ownedBytes, '\n')
+	}
+	if err := os.WriteFile(filepath.Join(staged, OwnedMarker), ownedBytes, 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", OwnedMarker, err)
 	}
 

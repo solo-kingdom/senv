@@ -22,8 +22,10 @@ var skillCmd = &cobra.Command{
 Each skill is stored as an encrypted tar archive and synchronized by 'senv sync'.
 Skill ids are unique across groups. Plaintext archives are limited to 1 MiB.
 
-Skills and groups can declare install metadata (default_install, install_scope,
-install_path, targets). Use 'senv skill apply --default' for routine machine setup.`,
+Skills support versioned snapshots ('add --version/--note', 'version list|use|remove',
+and 'show/apply <id>@<version>'). Skills and groups can also declare install metadata
+(default_install, install_scope, install_path, targets). Use 'senv skill apply --default'
+for routine machine setup.`,
 }
 
 var (
@@ -38,6 +40,8 @@ var (
 	skillAddTargets       []string
 	skillAddExtra         string
 	skillAddExtraFile     string
+	skillAddVersion       string
+	skillAddNote          string
 
 	skillEditGroup        string
 	skillEditDescription  string
@@ -52,6 +56,7 @@ var (
 	skillListDefaultOnly  bool
 	skillListScope        string
 	skillListJSON         bool
+	skillVersionListJSON  bool
 
 	skillGrpDescription   string
 	skillGrpDefault       bool
@@ -182,14 +187,22 @@ Use --force to replace an existing skill's archive; omitted metadata flags
 			Targets:        skillAddTargets,
 			ExtraInfo:      extraVal,
 			ExtraInfoSet:   extraSet,
+			Version:        skillAddVersion,
+			Note:           skillAddNote,
 			Force:          skillForce,
 		})
 		if err != nil {
 			auditOp(session.AuditOpSkill, "skill:"+id, false, "add 失败")
 			return err
 		}
-		auditOp(session.AuditOpSkill, "skill:"+entry.NormalizedGroup()+":"+id, true, "add")
-		fmt.Printf("✓ Added skill %s [%s]\n", entry.ID, entry.NormalizedGroup())
+		target := "skill:" + entry.NormalizedGroup() + ":" + id
+		verSuffix := ""
+		if entry.CurrentVersion != "" {
+			target += "@" + entry.CurrentVersion
+			verSuffix = "@" + entry.CurrentVersion
+		}
+		auditOp(session.AuditOpSkill, target, true, "add")
+		fmt.Printf("✓ Added skill %s%s [%s]\n", entry.ID, verSuffix, entry.NormalizedGroup())
 		return nil
 	},
 }
@@ -377,7 +390,11 @@ var skillListCmd = &cobra.Command{
 				if it.Policy.DefaultInstall {
 					defTag = "default"
 				}
-				fmt.Printf("    %s [%s] (%s, %s)\n", it.Entry.ID, g, defTag, formatInstallLocation(it.Policy))
+				label := it.Entry.ID
+				if it.Entry.CurrentVersion != "" {
+					label += "@" + it.Entry.CurrentVersion
+				}
+				fmt.Printf("    %s [%s] (%s, %s)\n", label, g, defTag, formatInstallLocation(it.Policy))
 				if it.Entry.Description != "" {
 					fmt.Printf("      Description: %s\n", it.Entry.Description)
 				}
@@ -396,17 +413,21 @@ func inheritSuffix(inherited bool) string {
 }
 
 var skillShowCmd = &cobra.Command{
-	Use:   "show <id>",
+	Use:   "show <id>[@<version>]",
 	Short: "Show skill metadata, effective install policy, and file list",
-	Long:  `Show a skill's metadata, effective install policy, and the files in its archive. File contents are not printed.`,
+	Long:  `Show a skill's metadata, effective install policy, version history, and the files in its archive. File contents are not printed.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		id, reqVer, err := skill.ParseSkillRef(args[0])
+		if err != nil {
+			return err
+		}
 		autoPull(cmd, refreshRequested(cmd))
 		mgr, err := getSkillManager()
 		if err != nil {
 			return err
 		}
-		detail, err := mgr.Show(args[0])
+		detail, err := mgr.ShowVersion(id, reqVer)
 		if err != nil {
 			return err
 		}
@@ -414,6 +435,13 @@ var skillShowCmd = &cobra.Command{
 		p := detail.Policy
 		fmt.Printf("ID: %s\n", e.ID)
 		fmt.Printf("Group: %s\n", e.NormalizedGroup())
+		if detail.DisplayVersion != "" {
+			if detail.DisplayVersion == e.CurrentVersion {
+				fmt.Printf("Version: %s (active)\n", detail.DisplayVersion)
+			} else {
+				fmt.Printf("Version: %s (snapshot; active: %s)\n", detail.DisplayVersion, e.CurrentVersion)
+			}
+		}
 		fmt.Printf("Description: %s\n", e.Description)
 		fmt.Printf("Default Install: %t%s\n", p.DefaultInstall, inheritSuffix(p.DefaultInstallInherited))
 		fmt.Printf("Install Scope: %s%s\n", p.InstallScope, inheritSuffix(p.InstallScopeInherited))
@@ -433,6 +461,20 @@ var skillShowCmd = &cobra.Command{
 		}
 		fmt.Printf("Created: %s\n", e.CreatedAt)
 		fmt.Printf("Updated: %s\n", e.UpdatedAt)
+		if len(e.Versions) > 0 {
+			fmt.Printf("Versions (%d):\n", len(e.Versions))
+			for _, v := range e.Versions {
+				mark := " "
+				if v.Version == e.CurrentVersion {
+					mark = "*"
+				}
+				line := fmt.Sprintf("  %s %s  %d bytes  %s", mark, v.Version, v.Size, v.CreatedAt.Format("2006-01-02 15:04:05"))
+				if v.Note != "" {
+					line += "  — " + v.Note
+				}
+				fmt.Println(line)
+			}
+		}
 		fmt.Printf("Archive: %d bytes\n", detail.ArchiveSize)
 		fmt.Println("Files:")
 		for _, f := range detail.Entries {
@@ -446,6 +488,135 @@ var skillShowCmd = &cobra.Command{
 			}
 			fmt.Printf("  %s  %d bytes%s\n", f.Path, f.Size, exec)
 		}
+		return nil
+	},
+}
+
+var skillVersionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Manage skill version snapshots (list, use, remove)",
+}
+
+func parseSkillVersionArgs(args []string) (id, version string, err error) {
+	if len(args) == 1 {
+		id, ver, err := skill.ParseSkillRef(args[0])
+		if err != nil {
+			return "", "", err
+		}
+		if ver == "" {
+			return "", "", fmt.Errorf("version is required (use <id>@<version> or <id> <version>)")
+		}
+		return id, ver, nil
+	}
+	if err := storage.ValidateSkillID(args[0]); err != nil {
+		return "", "", err
+	}
+	ver, err := storage.ValidateSkillVersion(args[1])
+	if err != nil {
+		return "", "", err
+	}
+	return args[0], ver, nil
+}
+
+var skillVersionListCmd = &cobra.Command{
+	Use:     "list <id>",
+	Aliases: []string{"ls"},
+	Short:   "List all saved versions of a skill",
+	Args:    cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id := args[0]
+		autoPull(cmd, refreshRequested(cmd))
+		mgr, err := getSkillManager()
+		if err != nil {
+			return err
+		}
+		versions, current, err := mgr.ListVersions(id)
+		if err != nil {
+			return err
+		}
+		if skillVersionListJSON {
+			payload := struct {
+				ID             string                 `json:"id"`
+				CurrentVersion string                 `json:"current_version,omitempty"`
+				Versions       []storage.SkillVersion `json:"versions"`
+			}{
+				ID:             id,
+				CurrentVersion: current,
+				Versions:       versions,
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(payload)
+		}
+		if len(versions) == 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "Skill %s has no version snapshots (legacy unversioned entry)\n", id)
+			return nil
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Versions for %s (active: %s):\n", id, current)
+		for _, v := range versions {
+			mark := " "
+			if v.Version == current {
+				mark = "*"
+			}
+			hashShort := v.SHA256
+			if len(hashShort) > 12 {
+				hashShort = hashShort[:12]
+			}
+			line := fmt.Sprintf("  %s %-12s  %7d B  %-12s  %s", mark, v.Version, v.Size, hashShort, v.CreatedAt.Format("2006-01-02 15:04:05"))
+			if v.Note != "" {
+				line += "  — " + v.Note
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), line)
+		}
+		return nil
+	},
+}
+
+var skillVersionUseCmd = &cobra.Command{
+	Use:   "use <id> <version> | <id>@<version>",
+	Short: "Switch the active version of a skill",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, ver, err := parseSkillVersionArgs(args)
+		if err != nil {
+			return err
+		}
+		mgr, err := getSkillManager()
+		if err != nil {
+			return err
+		}
+		entry, err := mgr.UseVersion(id, ver)
+		if err != nil {
+			auditOp(session.AuditOpSkill, "skill:"+id+"@"+ver, false, "version use 失败")
+			return err
+		}
+		auditOp(session.AuditOpSkill, "skill:"+entry.NormalizedGroup()+":"+id+"@"+ver, true, "version use")
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Switched skill %s active version to %s [%s]\n", entry.ID, entry.CurrentVersion, entry.NormalizedGroup())
+		return nil
+	},
+}
+
+var skillVersionRemoveCmd = &cobra.Command{
+	Use:     "remove <id> <version> | <id>@<version>",
+	Aliases: []string{"rm"},
+	Short:   "Remove a non-active version snapshot of a skill",
+	Args:    cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, ver, err := parseSkillVersionArgs(args)
+		if err != nil {
+			return err
+		}
+		mgr, err := getSkillManager()
+		if err != nil {
+			return err
+		}
+		entry, err := mgr.RemoveVersion(id, ver)
+		if err != nil {
+			auditOp(session.AuditOpSkill, "skill:"+id+"@"+ver, false, "version remove 失败")
+			return err
+		}
+		auditOp(session.AuditOpSkill, "skill:"+entry.NormalizedGroup()+":"+id+"@"+ver, true, "version remove")
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Removed version %s of skill %s (active: %s)\n", ver, entry.ID, entry.CurrentVersion)
 		return nil
 	},
 }
@@ -629,12 +800,12 @@ var skillGroupDeleteCmd = &cobra.Command{
 }
 
 var skillApplyCmd = &cobra.Command{
-	Use:   "apply [id ...] | --group <group> | --default | --all",
+	Use:   "apply [id[@version] ...] | --group <group> | --default | --all",
 	Short: "Write skills from the vault into local agent skills directories",
 	Long: `Expand skills from the vault into agent skills directories.
 
 Skill selection (exactly one):
-  apply <id> [<id> ...]   one or more skill ids (multi-select)
+  apply <id>[@<version>] ...   one or more skill ids (optionally pinned to a version snapshot)
   --group <group>         every skill in that group
   --default               every skill whose effective default_install is true
   --all                   every skill in the vault (select-all)
@@ -694,8 +865,9 @@ Vault entries are not deleted. Use --dry-run to print the plan only.`,
 
 func init() {
 	rootCmd.AddCommand(skillCmd)
-	skillCmd.AddCommand(skillAddCmd, skillEditCmd, skillListCmd, skillShowCmd, skillRemoveCmd, skillGroupCmd, skillApplyCmd, skillUnapplyCmd)
+	skillCmd.AddCommand(skillAddCmd, skillEditCmd, skillListCmd, skillShowCmd, skillRemoveCmd, skillGroupCmd, skillVersionCmd, skillApplyCmd, skillUnapplyCmd)
 	skillGroupCmd.AddCommand(skillGroupListCmd, skillGroupAddCmd, skillGroupEditCmd, skillGroupDeleteCmd)
+	skillVersionCmd.AddCommand(skillVersionListCmd, skillVersionUseCmd, skillVersionRemoveCmd)
 
 	for _, c := range []*cobra.Command{skillApplyCmd, skillUnapplyCmd} {
 		c.Flags().StringVar(&skillApplyGroup, "group", "", "every skill in this group")
@@ -720,7 +892,9 @@ func init() {
 	skillAddCmd.Flags().StringArrayVar(&skillAddTargets, "target", nil, "target roots: agents, claude, or all (omitted = inherit group)")
 	skillAddCmd.Flags().StringVar(&skillAddExtra, "extra", "", "extra Markdown context appended to SKILL.md on apply (do not put secrets)")
 	skillAddCmd.Flags().StringVar(&skillAddExtraFile, "extra-file", "", "read extra Markdown context from file (or '-' for stdin)")
-	skillAddCmd.Flags().BoolVar(&skillForce, "force", false, "replace an existing skill with the same id")
+	skillAddCmd.Flags().StringVar(&skillAddVersion, "version", "", "explicit version label (overrides SKILL.md frontmatter)")
+	skillAddCmd.Flags().StringVar(&skillAddNote, "note", "", "short release note for this version")
+	skillAddCmd.Flags().BoolVar(&skillForce, "force", false, "replace an existing skill or version snapshot")
 	_ = skillAddCmd.MarkFlagRequired("source")
 
 	skillEditCmd.Flags().StringVar(&skillEditGroup, "group", "", "move skill to another group")
@@ -740,6 +914,9 @@ func init() {
 	addRefreshFlag(skillShowCmd)
 	addRefreshFlag(skillGroupListCmd)
 
+	skillVersionListCmd.Flags().BoolVar(&skillVersionListJSON, "json", false, "output as JSON")
+	addRefreshFlag(skillVersionListCmd)
+
 	skillGroupAddCmd.Flags().StringVar(&skillGrpDescription, "description", "", "group description (required)")
 	skillGroupAddCmd.Flags().BoolVar(&skillGrpDefault, "default-install", false, "group default for 'skill apply --default'")
 	skillGroupAddCmd.Flags().StringVar(&skillGrpScope, "scope", "", "group default install scope: global or project")
@@ -756,6 +933,7 @@ func init() {
 type resolvedSkillTarget struct {
 	entry   storage.SkillEntry
 	policy  storage.SkillEffectivePolicy
+	version string // 非空表示显式指定了版本快照
 	applier *skill.Applier // nil 时表示该条目被前置路由跳过
 	skip    *skill.PlanItem
 }
@@ -844,39 +1022,65 @@ func resolveSkillApplyContext(cmd *cobra.Command, args []string) (*skillApplyCon
 		return nil, err
 	}
 
-	var selected []skill.ListedSkill
+	type selectedSkill struct {
+		item    skill.ListedSkill
+		version string
+	}
+	var selected []selectedSkill
 	switch {
 	case len(args) > 0:
+		seenVer := map[string]string{}
 		seen := map[string]bool{}
 		for _, raw := range args {
-			entry, policy, err := mgr.GetWithPolicy(raw)
+			id, reqVer, err := skill.ParseSkillRef(raw)
 			if err != nil {
 				return nil, err
 			}
-			if seen[entry.ID] {
+			if seen[id] {
+				if seenVer[id] != reqVer {
+					return nil, fmt.Errorf("conflicting versions requested for skill %q in one apply command", id)
+				}
 				continue
 			}
-			seen[entry.ID] = true
-			selected = append(selected, skill.ListedSkill{Entry: *entry, Policy: policy})
+			entry, policy, err := mgr.GetWithPolicy(id)
+			if err != nil {
+				return nil, err
+			}
+			if reqVer != "" {
+				if _, ok := entry.FindVersion(reqVer); !ok {
+					return nil, fmt.Errorf("version %q not found for skill %q", reqVer, id)
+				}
+			}
+			seen[id] = true
+			seenVer[id] = reqVer
+			selected = append(selected, selectedSkill{
+				item:    skill.ListedSkill{Entry: *entry, Policy: policy},
+				version: reqVer,
+			})
 		}
 	case skillApplyDefault:
 		listed, _, err := mgr.ListWithPolicy(skill.ListFilter{DefaultOnly: true})
 		if err != nil {
 			return nil, err
 		}
-		selected = listed
+		for _, it := range listed {
+			selected = append(selected, selectedSkill{item: it})
+		}
 	default:
 		listed, _, err := mgr.ListWithPolicy(skill.ListFilter{Group: skillApplyGroup})
 		if err != nil {
 			return nil, err
 		}
-		selected = listed
+		for _, it := range listed {
+			selected = append(selected, selectedSkill{item: it})
+		}
 	}
 
 	stateDir := filepath.Join(home, ".local", "state", "senv", "skill-apply")
 	resolved := make([]resolvedSkillTarget, 0, len(selected))
-	for _, it := range selected {
-		target := resolvedSkillTarget{entry: it.Entry, policy: it.Policy}
+	for _, sel := range selected {
+		it := sel.item
+		target := resolvedSkillTarget{entry: it.Entry, policy: it.Policy, version: sel.version}
 		var base string
 		switch scope {
 		case storage.SkillScopeGlobal:
@@ -961,6 +1165,17 @@ func isWarningSkip(a skill.Action) bool {
 		a == skill.ActionSkipScopeMismatch
 }
 
+func formatApplyVersionSuffix(it skill.PlanItem) string {
+	switch {
+	case it.TargetVersion != "" && it.InstalledVersion != "" && it.InstalledVersion != it.TargetVersion:
+		return fmt.Sprintf(" (%s -> %s)", it.InstalledVersion, it.TargetVersion)
+	case it.TargetVersion != "":
+		return fmt.Sprintf(" (%s)", it.TargetVersion)
+	default:
+		return ""
+	}
+}
+
 func runSkillApply(cmd *cobra.Command, args []string) error {
 	ctx, err := resolveSkillApplyContext(cmd, args)
 	if err != nil {
@@ -972,7 +1187,11 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	archives := map[string][]byte{}
+	type applyArchive struct {
+		data    []byte
+		version string
+	}
+	archives := map[string]applyArchive{}
 	failures := 0
 	changes := 0
 	fmt.Fprintln(out, "Plan:")
@@ -983,14 +1202,17 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(errOut, "warning: skipped %s (%s): %s\n", tgt.skip.ID, tgt.skip.Target, tgt.skip.Reason)
 			continue
 		}
-		_, archive, err := ctx.mgr.Archive(id)
+		_, archive, targetVer, err := ctx.mgr.ArchiveVersion(id, tgt.version)
 		if err == nil {
 			var items []skill.PlanItem
-			items, err = tgt.applier.PlanWithExtra(id, archive, tgt.entry.ExtraInfo)
+			items, err = tgt.applier.PlanWithOptions(id, archive, skill.ApplyOptions{
+				ExtraInfo: tgt.entry.ExtraInfo,
+				Version:   targetVer,
+			})
 			if err == nil {
-				archives[id] = archive
+				archives[id] = applyArchive{data: archive, version: targetVer}
 				for _, it := range items {
-					fmt.Fprintf(out, "  [%s] %s -> %s\n", it.Action, it.ID, it.Target)
+					fmt.Fprintf(out, "  [%s] %s -> %s%s\n", it.Action, it.ID, it.Target, formatApplyVersionSuffix(it))
 					switch {
 					case isWarningSkip(it.Action):
 						fmt.Fprintf(errOut, "warning: skipped %s: %s\n", it.Target, it.Reason)
@@ -1034,11 +1256,14 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 		if tgt.skip != nil || tgt.applier == nil {
 			continue
 		}
-		archive, ok := archives[id]
+		arc, ok := archives[id]
 		if !ok {
 			continue
 		}
-		results, err := tgt.applier.ApplyWithExtra(id, archive, tgt.entry.ExtraInfo)
+		results, err := tgt.applier.ApplyWithOptions(id, arc.data, skill.ApplyOptions{
+			ExtraInfo: tgt.entry.ExtraInfo,
+			Version:   arc.version,
+		})
 		if err != nil {
 			failures++
 			auditOp(session.AuditOpSkill, "skill:"+id, false, "apply 失败")
@@ -1052,7 +1277,7 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 				failed = true
 				fmt.Fprintf(errOut, "error: %s: %v\n", r.Target, r.Err)
 			case r.Action.Changes():
-				fmt.Fprintf(out, "✓ %s %s -> %s\n", r.Action, r.ID, r.Target)
+				fmt.Fprintf(out, "✓ %s %s -> %s%s\n", r.Action, r.ID, r.Target, formatApplyVersionSuffix(r.PlanItem))
 				if r.Backup != "" {
 					fmt.Fprintf(out, "  old tree backed up at %s\n", r.Backup)
 				}
@@ -1062,7 +1287,11 @@ func runSkillApply(cmd *cobra.Command, args []string) error {
 			failures++
 			auditOp(session.AuditOpSkill, "skill:"+id, false, "apply 失败")
 		} else {
-			auditOp(session.AuditOpSkill, "skill:"+id, true, "apply")
+			auditTarget := "skill:" + id
+			if arc.version != "" {
+				auditTarget += "@" + arc.version
+			}
+			auditOp(session.AuditOpSkill, auditTarget, true, "apply")
 		}
 	}
 	return finish()

@@ -36,10 +36,12 @@ func resetSkillFlags(t *testing.T) {
 		skillAddDefault, skillAddNoDefault = false, false
 		skillAddScope, skillAddInstallPath, skillAddTargets = "", "", nil
 		skillAddExtra, skillAddExtraFile = "", ""
+		skillAddVersion, skillAddNote = "", ""
 		skillEditGroup, skillEditDescription, skillEditDefault = "", "", ""
 		skillEditScope, skillEditInstallPath, skillEditTargets = "", "", nil
 		skillEditExtra, skillEditExtraFile = "", ""
 		skillListGroup, skillListDefaultOnly, skillListScope, skillListJSON = "", false, "", false
+		skillVersionListJSON = false
 		skillGrpDescription, skillGrpDefault, skillGrpEditDefault = "", false, ""
 		skillGrpScope, skillGrpInstallPath, skillGrpTargets = "", "", nil
 	}
@@ -52,7 +54,7 @@ func TestSkillCommandSurface(t *testing.T) {
 	for _, c := range skillCmd.Commands() {
 		names[c.Name()] = true
 	}
-	for _, want := range []string{"add", "edit", "list", "show", "remove", "group", "apply", "unapply"} {
+	for _, want := range []string{"add", "edit", "list", "show", "remove", "group", "version", "apply", "unapply"} {
 		if !names[want] {
 			t.Errorf("skill %s is missing", want)
 		}
@@ -203,5 +205,67 @@ func TestHistoryHandlesSkillKinds(t *testing.T) {
 	plain, err := decryptHistoryValue(provider.HistoryVersion{Kind: "skill_index", Ciphertext: []byte(`{"skills":{}}`)}, nil)
 	if err != nil || string(plain) != `{"skills":{}}` {
 		t.Fatalf("skill_index history is plaintext: %q err=%v", plain, err)
+	}
+}
+
+func TestSkillVersionCLIFlow(t *testing.T) {
+	newAuditTestProject(t)
+	resetSkillFlags(t)
+
+	skillSource = writeSkillFixture(t, "ver-demo")
+	skillAddVersion = "v1"
+	skillAddNote = "init"
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(&cobra.Command{}, []string{"ver-demo"}); err != nil {
+			t.Fatalf("add v1: %v", err)
+		}
+	})
+
+	skillSource = writeSkillFixture(t, "ver-demo")
+	skillAddVersion = "1.1.0"
+	skillAddNote = "second"
+	captureStdout(t, func() {
+		if err := skillAddCmd.RunE(&cobra.Command{}, []string{"ver-demo"}); err != nil {
+			t.Fatalf("add 1.1.0: %v", err)
+		}
+	})
+
+	var listBuf bytes.Buffer
+	c := &cobra.Command{}
+	c.SetOut(&listBuf)
+	if err := skillVersionListCmd.RunE(c, []string{"ver-demo"}); err != nil {
+		t.Fatalf("version list: %v", err)
+	}
+	if !strings.Contains(listBuf.String(), "* 1.1.0") || !strings.Contains(listBuf.String(), "v1") {
+		t.Fatalf("version list = %s", listBuf.String())
+	}
+
+	showV1 := captureStdout(t, func() {
+		if err := skillShowCmd.RunE(&cobra.Command{}, []string{"ver-demo@v1"}); err != nil {
+			t.Fatalf("show @v1: %v", err)
+		}
+	})
+	if !strings.Contains(showV1, "Version: v1 (snapshot; active: 1.1.0)") {
+		t.Fatalf("show @v1 = %s", showV1)
+	}
+
+	var useBuf bytes.Buffer
+	uc := &cobra.Command{}
+	uc.SetOut(&useBuf)
+	if err := skillVersionUseCmd.RunE(uc, []string{"ver-demo", "v1"}); err != nil {
+		t.Fatalf("version use: %v", err)
+	}
+	if !strings.Contains(useBuf.String(), "active version to v1") {
+		t.Fatalf("version use = %s", useBuf.String())
+	}
+
+	var rmBuf bytes.Buffer
+	rc := &cobra.Command{}
+	rc.SetOut(&rmBuf)
+	if err := skillVersionRemoveCmd.RunE(rc, []string{"ver-demo@1.1.0"}); err != nil {
+		t.Fatalf("version remove: %v", err)
+	}
+	if !strings.Contains(rmBuf.String(), "Removed version 1.1.0") {
+		t.Fatalf("version remove = %s", rmBuf.String())
 	}
 }

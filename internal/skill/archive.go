@@ -313,6 +313,82 @@ func ParseName(skillMD []byte) (string, error) {
 	return name, nil
 }
 
+// ParseVersion 从 SKILL.md 的 YAML frontmatter 中提取 version（优先顶层 version:，
+// 次选 metadata: 缩进块下的 version:）。缺失或 frontmatter 非法时返回空串。
+func ParseVersion(skillMD []byte) string {
+	text := strings.TrimPrefix(string(skillMD), "\ufeff")
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != "---" {
+		return ""
+	}
+	inMetadata := false
+	topVer := ""
+	metaVer := ""
+	closed := false
+	for _, line := range lines[1:] {
+		if strings.TrimRight(line, " \t") == "---" {
+			closed = true
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		isIndented := len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+		if !isIndented {
+			inMetadata = false
+			if topVer == "" && strings.HasPrefix(line, "version:") {
+				topVer = unquoteFrontmatterValue(strings.TrimPrefix(line, "version:"))
+				continue
+			}
+			if strings.TrimRight(line, " \t") == "metadata:" {
+				inMetadata = true
+			}
+			continue
+		}
+		if inMetadata && metaVer == "" && strings.HasPrefix(trimmed, "version:") {
+			metaVer = unquoteFrontmatterValue(strings.TrimPrefix(trimmed, "version:"))
+		}
+	}
+	if !closed {
+		return ""
+	}
+	if topVer != "" {
+		return topVer
+	}
+	return metaVer
+}
+
+func unquoteFrontmatterValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		v = v[1 : len(v)-1]
+	}
+	return strings.TrimSpace(v)
+}
+
+// ParseSkillRef 解析 <id> 或 <id>@<version> 引用。
+func ParseSkillRef(raw string) (id, version string, err error) {
+	if !strings.Contains(raw, storage.SkillVersionSep) {
+		if err := storage.ValidateSkillID(raw); err != nil {
+			return "", "", err
+		}
+		return raw, "", nil
+	}
+	idPart, verPart, _ := strings.Cut(raw, storage.SkillVersionSep)
+	if err := storage.ValidateSkillID(idPart); err != nil {
+		return "", "", err
+	}
+	ver, err := storage.ValidateSkillVersion(verPart)
+	if err != nil {
+		return "", "", err
+	}
+	if len(idPart)+1+len(ver) > storage.MaxSkillStorageKeyLen {
+		return "", "", fmt.Errorf("skill version ref %q exceeds %d bytes", raw, storage.MaxSkillStorageKeyLen)
+	}
+	return idPart, ver, nil
+}
+
 // CheckName 要求 SKILL.md 的 frontmatter name 与 skill id 一致。
 func CheckName(skillMD []byte, id string) error {
 	name, err := ParseName(skillMD)

@@ -42,11 +42,17 @@ type skillTab struct {
 	form       *form
 	formSubmit func(values map[string]string) tea.Cmd
 
-	mode      skillMode
-	pendingID string
-	planKind  string // "apply" | "unapply"
-	planItems []skill.PlanItem
-	planAll   bool // true = 全部目标根；false = 仅当前右栏目标
+	mode        skillMode
+	pendingID   string
+	planKind    string // "apply" | "unapply"
+	planItems   []skill.PlanItem
+	planAll     bool   // true = 全部目标根；false = 仅当前右栏目标
+	planVersion string // 非空 = 按指定版本快照 apply
+
+	versionsID     string
+	versionsActive string
+	versionsList   []storage.SkillVersion
+	versionsIndex  int
 }
 
 type skillMode int
@@ -55,6 +61,7 @@ const (
 	skillModeNormal skillMode = iota
 	skillModeDelete
 	skillModePlan
+	skillModeVersions
 )
 
 // skillPane 是三栏焦点。零值是分组侧栏，和 Env 打开时停在 All 一致。
@@ -78,11 +85,12 @@ type skillGroupRow struct {
 }
 
 type skillTargetStatus struct {
-	ID     string // agents / claude
-	Root   string
-	Path   string
-	State  string // not applied / applied / drifted / conflict / error
-	Reason string
+	ID            string // agents / claude
+	Root          string
+	Path          string
+	State         string // not applied / applied / drifted / conflict / error
+	VersionSuffix string // 如 " (v1)" / " (v1 → v2)" / " (v2, local)"
+	Reason        string
 }
 
 type skillLoadedMsg struct {
@@ -121,11 +129,20 @@ func (t *skillTab) Bindings() []KeyAction {
 			{[]string{"enter/y"}, "confirm", grpConfirm, false},
 			{[]string{"esc/n"}, "cancel", grpConfirm, false},
 		}
+	case skillModeVersions:
+		return []KeyAction{
+			{[]string{"↑↓/jk"}, "select", grpNav, false},
+			{[]string{"enter/u"}, "use active", grpItem, false},
+			{[]string{"x"}, "apply version", grpItem, false},
+			{[]string{"d"}, "delete version", grpItem, false},
+			{[]string{"esc"}, "close", grpConfirm, false},
+		}
 	}
 	return append(navBindings(true),
 		actNew,
 		actDelete,
 		actDetail,
+		KeyAction{[]string{"v"}, "versions", grpItem, false},
 		KeyAction{[]string{"s"}, "scope", grpItem, false},
 		KeyAction{[]string{"x"}, "apply", grpItem, false},
 		KeyAction{[]string{"X"}, "apply all targets", grpItem, false},
@@ -138,7 +155,7 @@ func (t *skillTab) Bindings() []KeyAction {
 
 func (t *skillTab) InputMode() bool {
 	return t.form != nil || t.filterBox.Active() || t.detail != nil ||
-		t.mode == skillModeDelete || t.mode == skillModePlan
+		t.mode == skillModeDelete || t.mode == skillModePlan || t.mode == skillModeVersions
 }
 
 func (t *skillTab) SetSize(width, height int) {
@@ -207,11 +224,14 @@ func (t *skillTab) statusFor(entries []storage.SkillEntry) ([]skillTargetStatus,
 	if err != nil {
 		return out, err.Error()
 	}
-	entry, archive, err := t.mgr.Skill.Archive(id)
+	entry, archive, targetVer, err := t.mgr.Skill.ArchiveVersion(id, "")
 	if err != nil {
 		return out, err.Error()
 	}
-	plan, err := applier.PlanWithExtra(id, archive, entry.ExtraInfo)
+	plan, err := applier.PlanWithOptions(id, archive, skill.ApplyOptions{
+		ExtraInfo: entry.ExtraInfo,
+		Version:   targetVer,
+	})
 	if err != nil {
 		return out, err.Error()
 	}
@@ -227,8 +247,26 @@ func (t *skillTab) statusFor(entries []storage.SkillEntry) ([]skillTargetStatus,
 		out[i].Path = item.Target
 		out[i].Reason = item.Reason
 		out[i].State = skillStateForAction(item.Action)
+		out[i].VersionSuffix = skillVersionSuffix(item)
 	}
 	return out, ""
+}
+
+func skillVersionSuffix(item skill.PlanItem) string {
+	switch item.Action {
+	case skill.ActionSkip:
+		if item.TargetVersion != "" {
+			return " (" + item.TargetVersion + ")"
+		}
+	case skill.ActionBackupOverwrite:
+		switch {
+		case item.InstalledVersion != "" && item.TargetVersion != "" && item.InstalledVersion != item.TargetVersion:
+			return fmt.Sprintf(" (%s → %s)", item.InstalledVersion, item.TargetVersion)
+		case item.TargetVersion != "":
+			return fmt.Sprintf(" (%s, local)", item.TargetVersion)
+		}
+	}
+	return ""
 }
 
 func skillStateForAction(a skill.Action) string {
@@ -458,6 +496,11 @@ func (t *skillTab) cancelMode() {
 	t.mode = skillModeNormal
 	t.planItems = nil
 	t.pendingID = ""
+	t.planVersion = ""
+	t.versionsID = ""
+	t.versionsActive = ""
+	t.versionsList = nil
+	t.versionsIndex = 0
 }
 
 func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
@@ -579,6 +622,8 @@ func (t *skillTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			return t.handleDeleteKey(msg.String())
 		case skillModePlan:
 			return t.handlePlanKey(msg.String())
+		case skillModeVersions:
+			return t.handleVersionsKey(msg.String())
 		}
 		return t.handleKey(msg)
 	}
@@ -619,6 +664,8 @@ func (t *skillTab) handleKey(msg tea.KeyMsg) (Tab, tea.Cmd) {
 		return t.enterDelete()
 	case "enter":
 		return t.openDetail()
+	case "v":
+		return t.enterVersions()
 	case "s":
 		if t.scopeOrDefault() == "project" {
 			t.scope = "global"
@@ -706,6 +753,8 @@ func (t *skillTab) enterAddForm() (Tab, tea.Cmd) {
 			}},
 		optionalDescriptionField(""),
 		formField{key: "group", label: "group", kind: formText, optional: true, placeholder: "default"},
+		formField{key: "version", label: "version", kind: formText, optional: true, placeholder: "auto (v1 / frontmatter)"},
+		formField{key: "note", label: "release note", kind: formText, optional: true, placeholder: "optional"},
 		formField{key: "force", label: "force replace", kind: formEnum, options: []string{"no", "yes"}, value: "no"},
 	)
 	t.form.SetSize(t.width, t.height)
@@ -726,6 +775,8 @@ func (t *skillTab) submitAdd(values map[string]string) tea.Cmd {
 		SourceDir:   source,
 		Group:       strings.TrimSpace(values["group"]),
 		Description: values["description"],
+		Version:     strings.TrimSpace(values["version"]),
+		Note:        strings.TrimSpace(values["note"]),
 		Force:       values["force"] == "yes",
 	}
 	mgrs := t.mgr
@@ -788,10 +839,30 @@ func (t *skillTab) openDetail() (Tab, tea.Cmd) {
 	lines := []string{
 		"id: " + detail.Entry.ID,
 		"group: " + detail.Entry.NormalizedGroup(),
-		"description: " + detail.Entry.Description,
-		fmt.Sprintf("archive: %d bytes", detail.ArchiveSize),
-		"files:",
 	}
+	if detail.DisplayVersion != "" {
+		lines = append(lines, "version: "+detail.DisplayVersion+" (active)")
+	}
+	lines = append(lines,
+		"description: "+detail.Entry.Description,
+		fmt.Sprintf("archive: %d bytes", detail.ArchiveSize),
+	)
+	if len(detail.Entry.Versions) > 0 {
+		lines = append(lines, fmt.Sprintf("versions (%d):", len(detail.Entry.Versions)))
+		for i := len(detail.Entry.Versions) - 1; i >= 0; i-- {
+			v := detail.Entry.Versions[i]
+			mark := " "
+			if v.Version == detail.Entry.CurrentVersion {
+				mark = "*"
+			}
+			line := fmt.Sprintf("  %s %s (%d B, %s)", mark, v.Version, v.Size, v.CreatedAt.Format("2006-01-02 15:04"))
+			if v.Note != "" {
+				line += " — " + v.Note
+			}
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, "files:")
 	for _, e := range detail.Entries {
 		kind := "file"
 		if e.Dir {
@@ -804,7 +875,101 @@ func (t *skillTab) openDetail() (Tab, tea.Cmd) {
 	return t, nil
 }
 
+func (t *skillTab) enterVersions() (Tab, tea.Cmd) {
+	id := t.currentID()
+	if id == "" {
+		return t, warnToast("no skill selected")
+	}
+	versions, active, err := t.mgr.Skill.ListVersions(id)
+	if err != nil {
+		return t, warnToast(err.Error())
+	}
+	if len(versions) == 0 {
+		return t, warnToast("skill has no version snapshots")
+	}
+	// 最新版本置顶，方便浏览与切换。
+	reversed := make([]storage.SkillVersion, 0, len(versions))
+	for i := len(versions) - 1; i >= 0; i-- {
+		reversed = append(reversed, versions[i])
+	}
+	t.versionsID = id
+	t.versionsActive = active
+	t.versionsList = reversed
+	t.versionsIndex = 0
+	for i, v := range reversed {
+		if v.Version == active {
+			t.versionsIndex = i
+			break
+		}
+	}
+	t.mode = skillModeVersions
+	return t, nil
+}
+
+func (t *skillTab) handleVersionsKey(key string) (Tab, tea.Cmd) {
+	switch key {
+	case "esc", "q":
+		t.cancelMode()
+		return t, nil
+	case "up", "k":
+		if len(t.versionsList) > 0 {
+			t.versionsIndex = clamp(t.versionsIndex-1, 0, len(t.versionsList)-1)
+		}
+		return t, nil
+	case "down", "j":
+		if len(t.versionsList) > 0 {
+			t.versionsIndex = clamp(t.versionsIndex+1, 0, len(t.versionsList)-1)
+		}
+		return t, nil
+	case "enter", "u":
+		if t.versionsIndex < 0 || t.versionsIndex >= len(t.versionsList) {
+			return t, nil
+		}
+		id := t.versionsID
+		ver := t.versionsList[t.versionsIndex].Version
+		mgrs := t.mgr
+		t.cancelMode()
+		return t, func() tea.Msg {
+			entry, err := mgrs.Skill.UseVersion(id, ver)
+			if err != nil {
+				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id+"@"+ver, false, "version use failed")
+				return skillReloadMsg{toast: err.Error(), warn: true, id: id}
+			}
+			recordAudit(mgrs, session.AuditOpSkill, "skill:"+entry.NormalizedGroup()+":"+id+"@"+ver, true, "version use")
+			return skillReloadMsg{toast: fmt.Sprintf("switched %s to %s", id, ver), id: id}
+		}
+	case "x":
+		if t.versionsIndex < 0 || t.versionsIndex >= len(t.versionsList) {
+			return t, nil
+		}
+		ver := t.versionsList[t.versionsIndex].Version
+		t.cancelMode()
+		return t.enterPlanForVersion("apply", false, ver)
+	case "d":
+		if t.versionsIndex < 0 || t.versionsIndex >= len(t.versionsList) {
+			return t, nil
+		}
+		id := t.versionsID
+		ver := t.versionsList[t.versionsIndex].Version
+		mgrs := t.mgr
+		return t, func() tea.Msg {
+			entry, err := mgrs.Skill.RemoveVersion(id, ver)
+			if err != nil {
+				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id+"@"+ver, false, "version remove failed")
+				return skillReloadMsg{toast: err.Error(), warn: true, id: id}
+			}
+			recordAudit(mgrs, session.AuditOpSkill, "skill:"+entry.NormalizedGroup()+":"+id+"@"+ver, true, "version remove")
+			return skillReloadMsg{toast: fmt.Sprintf("removed %s@%s", id, ver), id: id}
+		}
+	}
+	return t, nil
+}
+
 func (t *skillTab) enterPlan(kind string, all bool) (Tab, tea.Cmd) {
+	return t.enterPlanForVersion(kind, all, "")
+}
+
+func (t *skillTab) enterPlanForVersion(kind string, all bool, version string) (Tab, tea.Cmd) {
 	id := t.currentID()
 	if id == "" {
 		return t, warnToast("no skill selected")
@@ -817,11 +982,14 @@ func (t *skillTab) enterPlan(kind string, all bool) (Tab, tea.Cmd) {
 	var items []skill.PlanItem
 	switch kind {
 	case "apply":
-		entry, archive, err := t.mgr.Skill.Archive(id)
+		entry, archive, resolvedVer, err := t.mgr.Skill.ArchiveVersion(id, version)
 		if err != nil {
 			return t, warnToast(err.Error())
 		}
-		items, err = applier.PlanWithExtra(id, archive, entry.ExtraInfo)
+		items, err = applier.PlanWithOptions(id, archive, skill.ApplyOptions{
+			ExtraInfo: entry.ExtraInfo,
+			Version:   resolvedVer,
+		})
 		if err != nil {
 			return t, warnToast(err.Error())
 		}
@@ -832,6 +1000,7 @@ func (t *skillTab) enterPlan(kind string, all bool) (Tab, tea.Cmd) {
 	}
 	t.planKind = kind
 	t.planAll = all
+	t.planVersion = version
 	t.planItems = items
 	t.pendingID = id
 	t.mode = skillModePlan
@@ -855,6 +1024,7 @@ func (t *skillTab) executePlan() tea.Cmd {
 	id := t.pendingID
 	kind := t.planKind
 	all := t.planAll
+	planVer := t.planVersion
 	roots := t.selectedRoots(all)
 	mgrs := t.mgr
 	scope := t.scopeOrDefault()
@@ -895,12 +1065,15 @@ func (t *skillTab) executePlan() tea.Cmd {
 		failed := false
 		switch kind {
 		case "apply":
-			entry, archive, err := mgrs.Skill.Archive(id)
+			entry, archive, targetVer, err := mgrs.Skill.ArchiveVersion(id, planVer)
 			if err != nil {
 				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id, false, "apply failed")
 				return skillReloadMsg{toast: err.Error(), warn: true, id: id}
 			}
-			results, err := applier.ApplyWithExtra(id, archive, entry.ExtraInfo)
+			results, err := applier.ApplyWithOptions(id, archive, skill.ApplyOptions{
+				ExtraInfo: entry.ExtraInfo,
+				Version:   targetVer,
+			})
 			if err != nil {
 				recordAudit(mgrs, session.AuditOpSkill, "skill:"+id, false, "apply failed")
 				return skillReloadMsg{toast: err.Error(), warn: true, id: id}
@@ -959,6 +1132,8 @@ func (t *skillTab) View() string {
 			"enter/y confirm · esc/n cancel")
 	case t.mode == skillModePlan:
 		overlay = t.renderPlan()
+	case t.mode == skillModeVersions:
+		overlay = t.renderVersions()
 	}
 	body := t.renderPanes()
 	if overlay != "" {
@@ -967,9 +1142,32 @@ func (t *skillTab) View() string {
 	return body
 }
 
+func (t *skillTab) renderVersions() string {
+	var b strings.Builder
+	for i, v := range t.versionsList {
+		mark := " "
+		if v.Version == t.versionsActive {
+			mark = "*"
+		}
+		line := fmt.Sprintf("%s %s  %d B  %s", mark, v.Version, v.Size, v.CreatedAt.Format("2006-01-02 15:04"))
+		if v.Note != "" {
+			line += " — " + v.Note
+		}
+		b.WriteString(cursorLine(truncateWidth(line, maxInt(t.width-12, 24)), i == t.versionsIndex))
+		b.WriteByte('\n')
+	}
+	return modalBox(t.width, t.height, "versions · "+t.versionsID,
+		strings.TrimRight(b.String(), "\n"),
+		"enter/u switch active · x apply · d delete · esc close")
+}
+
 func (t *skillTab) renderPlan() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "skill: %s\nscope: %s\n", t.pendingID, t.scopeOrDefault())
+	skillLabel := t.pendingID
+	if t.planVersion != "" {
+		skillLabel += "@" + t.planVersion
+	}
+	fmt.Fprintf(&b, "skill: %s\nscope: %s\n", skillLabel, t.scopeOrDefault())
 	for _, it := range t.planItems {
 		fmt.Fprintf(&b, "  [%s] %s\n    %s\n", it.Action, it.Target, it.Reason)
 	}
@@ -1065,6 +1263,9 @@ func (t *skillTab) skillLines(width int) []string {
 		if all {
 			name = e.NormalizedGroup() + "/" + e.ID
 		}
+		if e.CurrentVersion != "" {
+			name += "@" + e.CurrentVersion
+		}
 		line := fmt.Sprintf("%s · %s", name, desc)
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.skillIndex))
 	}
@@ -1077,7 +1278,7 @@ func (t *skillTab) targetLines(width int) []string {
 		lines = append(lines, mutedStyle().Render(truncateWidth("WARN "+t.warning, width)))
 	}
 	for i, row := range t.status {
-		line := fmt.Sprintf("%s · %s", row.ID, row.State)
+		line := fmt.Sprintf("%s · %s%s", row.ID, row.State, row.VersionSuffix)
 		lines = append(lines, cursorLine(truncateWidth(line, width), i == t.targetIndex))
 	}
 	return lines

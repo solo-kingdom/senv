@@ -187,3 +187,32 @@ func TestPullRejectsTraversalSkillIdentity(t *testing.T) {
 		t.Fatal("apply must reject a traversal group")
 	}
 }
+
+func TestSkillVersionSnapshotSyncRoundTrip(t *testing.T) {
+	srv := newFakeServer()
+	p, cache := newTestProvider(t, srv)
+	ctx := context.Background()
+
+	writeBackupCache(t, cache, KindSkill, "work", "demo", "active-v2")
+	writeBackupCache(t, cache, KindSkill, "work", "demo@v1", "snap-v1")
+	writeBackupCache(t, cache, KindSkill, "work", "demo@v2", "active-v2")
+	writeBackupCache(t, cache, KindSkillIndex, "", "", `{"skills":{}}`)
+
+	entries, err := cache.collectEntries()
+	if err != nil {
+		t.Fatalf("collectEntries: %v", err)
+	}
+	if _, ok := entries[entryID(KindSkill, "work", "demo@v1")]; !ok {
+		t.Fatalf("missing version snapshot demo@v1 in collected entries")
+	}
+	if res, err := p.SyncWithReport(ctx); err != nil || res.Push.Pushed != 4 {
+		t.Fatalf("push sync = %+v, err=%v", res, err)
+	}
+
+	// 另一台机器 Bootstrap + Sync 后应在本地 data/skills/work/ 下看到 demo.enc 与 demo@v1.enc、demo@v2.enc
+	_, cache2 := newTestProvider(t, srv)
+	got, err := os.ReadFile(filepath.Join(cache2.dataPath, storage.SkillDirName, "work", "demo@v1.enc"))
+	if err != nil || string(got) != "snap-v1" {
+		t.Fatalf("pulled demo@v1.enc = %q, err=%v", got, err)
+	}
+}
