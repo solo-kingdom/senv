@@ -843,9 +843,13 @@ func (t *skillTab) openDetail() (Tab, tea.Cmd) {
 	if detail.DisplayVersion != "" {
 		lines = append(lines, "version: "+detail.DisplayVersion+" (active)")
 	}
+	archiveLine := fmt.Sprintf("archive: %d bytes", detail.ArchiveSize)
+	if detail.Compressed {
+		archiveLine = fmt.Sprintf("archive: %d bytes (gzip, %d bytes uncompressed)", detail.ArchiveSize, detail.UncompressedSize)
+	}
 	lines = append(lines,
 		"description: "+detail.Entry.Description,
-		fmt.Sprintf("archive: %d bytes", detail.ArchiveSize),
+		archiveLine,
 	)
 	if len(detail.Entry.Versions) > 0 {
 		lines = append(lines, fmt.Sprintf("versions (%d):", len(detail.Entry.Versions)))

@@ -24,7 +24,7 @@ const (
 	SkillIndexFile = "skill_index.json"
 	// SkillDefaultGroup 是未指定分组时使用的分组。
 	SkillDefaultGroup = "default"
-	// MaxSkillPlaintext 是加密前 skill tar 归档的大小上限（1 MiB）。
+	// MaxSkillPlaintext 是加密前 skill 归档载荷（tar.gz 或存量裸 tar）的大小上限（1 MiB）。
 	MaxSkillPlaintext = 1 << 20
 	// MaxSkillExtraBytes 是 skill 扩展信息（extra_info）的字节上限（32 KiB）。
 	MaxSkillExtraBytes = 32 * 1024
@@ -69,7 +69,7 @@ type SkillVersion struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// SkillEntry 是 skill 索引中的一条元数据。正文（ustar tar）单独加密存放在
+// SkillEntry 是 skill 索引中的一条元数据。正文（ustar tar.gz 或存量裸 tar）单独加密存放在
 // EncryptedFile 指向的密文里；索引本身在 v2 下加密存储。
 type SkillEntry struct {
 	ID             string         `json:"id"`
@@ -669,7 +669,7 @@ func (m *Manager) SaveSkillIndexWithKey(index *SkillIndex, key []byte) error {
 	return root.AtomicWrite([]string{SkillIndexFile}, []byte(encrypted), 0o600)
 }
 
-// SaveSkillWithKey 加密并写入 skills/<group>/<id>.enc。archive 是 ustar tar 明文，
+// SaveSkillWithKey 加密并写入 skills/<group>/<id>.enc。archive 是 tar.gz 或存量 tar 明文，
 // 上限 MaxSkillPlaintext。
 func (m *Manager) SaveSkillWithKey(group, id string, archive []byte, cryptoKey []byte) error {
 	if err := validateSkillIdentity(group, id); err != nil {
@@ -713,7 +713,7 @@ func (m *Manager) saveSkillStorageKeyWithKey(group, storageKey string, archive [
 	return root.AtomicWrite([]string{SkillDirName, group, storageKey + SkillFileSuffix}, []byte(encrypted), 0o600)
 }
 
-// LoadSkillWithKey 读取并解密 skill tar 明文。
+// LoadSkillWithKey 读取并解密 skill 归档明文。
 func (m *Manager) LoadSkillWithKey(group, id string, cryptoKey []byte) ([]byte, error) {
 	if err := validateSkillIdentity(group, id); err != nil {
 		return nil, err

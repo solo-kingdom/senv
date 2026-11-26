@@ -19,8 +19,9 @@ var skillCmd = &cobra.Command{
 	Use:   "skill",
 	Short: "Manage Agent Skills stored in the vault",
 	Long: `Manage Agent Skills (a directory containing SKILL.md) as encrypted vault entries.
-Each skill is stored as an encrypted tar archive and synchronized by 'senv sync'.
-Skill ids are unique across groups. Plaintext archives are limited to 1 MiB.
+Each skill is stored as an encrypted tar.gz archive (reading also accepts legacy
+uncompressed tar archives) and synchronized by 'senv sync'. Skill ids are unique
+across groups. Plaintext archives are limited to 1 MiB compressed (8 MiB uncompressed).
 
 Skills support versioned snapshots ('add --version/--note', 'version list|use|remove',
 and 'show/apply <id>@<version>'). Skills and groups can also declare install metadata
@@ -29,51 +30,51 @@ for routine machine setup.`,
 }
 
 var (
-	skillSource           string
-	skillGroup            string
-	skillDescription      string
-	skillForce            bool
-	skillAddDefault       bool
-	skillAddNoDefault     bool
-	skillAddScope         string
-	skillAddInstallPath   string
-	skillAddTargets       []string
-	skillAddExtra         string
-	skillAddExtraFile     string
-	skillAddVersion       string
-	skillAddNote          string
+	skillSource         string
+	skillGroup          string
+	skillDescription    string
+	skillForce          bool
+	skillAddDefault     bool
+	skillAddNoDefault   bool
+	skillAddScope       string
+	skillAddInstallPath string
+	skillAddTargets     []string
+	skillAddExtra       string
+	skillAddExtraFile   string
+	skillAddVersion     string
+	skillAddNote        string
 
-	skillEditGroup        string
-	skillEditDescription  string
-	skillEditDefault      string
-	skillEditScope        string
-	skillEditInstallPath  string
-	skillEditTargets      []string
-	skillEditExtra        string
-	skillEditExtraFile    string
+	skillEditGroup       string
+	skillEditDescription string
+	skillEditDefault     string
+	skillEditScope       string
+	skillEditInstallPath string
+	skillEditTargets     []string
+	skillEditExtra       string
+	skillEditExtraFile   string
 
-	skillListGroup        string
-	skillListDefaultOnly  bool
-	skillListScope        string
-	skillListJSON         bool
-	skillVersionListJSON  bool
+	skillListGroup       string
+	skillListDefaultOnly bool
+	skillListScope       string
+	skillListJSON        bool
+	skillVersionListJSON bool
 
-	skillGrpDescription   string
-	skillGrpDefault       bool
-	skillGrpEditDefault   string
-	skillGrpScope         string
-	skillGrpInstallPath   string
-	skillGrpTargets       []string
+	skillGrpDescription string
+	skillGrpDefault     bool
+	skillGrpEditDefault string
+	skillGrpScope       string
+	skillGrpInstallPath string
+	skillGrpTargets     []string
 
-	skillApplyGroup       string
-	skillApplyDefault     bool
-	skillApplyAll         bool
-	skillApplyDryRun      bool
-	skillApplyYes         bool
-	skillApplyScope       string
-	skillApplyDir         string
-	skillApplyForceScope  bool
-	skillApplyTargets     []string
+	skillApplyGroup      string
+	skillApplyDefault    bool
+	skillApplyAll        bool
+	skillApplyDryRun     bool
+	skillApplyYes        bool
+	skillApplyScope      string
+	skillApplyDir        string
+	skillApplyForceScope bool
+	skillApplyTargets    []string
 )
 
 func getSkillManager() (*skill.Manager, error) {
@@ -146,7 +147,7 @@ var skillAddCmd = &cobra.Command{
 	Long: `Pack a skill directory into an encrypted vault entry.
 The directory content becomes the skill root, so SKILL.md must sit directly
 inside --source and its frontmatter 'name' must equal <id>. Symbolic links and
-special files are rejected.
+special files are rejected; a regular .senv-owned marker file at the root is skipped.
 
 Use --force to replace an existing skill's archive; omitted metadata flags
 (group, description, install policy) are preserved from the existing entry.`,
@@ -475,7 +476,11 @@ var skillShowCmd = &cobra.Command{
 				fmt.Println(line)
 			}
 		}
-		fmt.Printf("Archive: %d bytes\n", detail.ArchiveSize)
+		if detail.Compressed {
+			fmt.Printf("Archive: %d bytes (gzip, %d bytes uncompressed)\n", detail.ArchiveSize, detail.UncompressedSize)
+		} else {
+			fmt.Printf("Archive: %d bytes\n", detail.ArchiveSize)
+		}
 		fmt.Println("Files:")
 		for _, f := range detail.Entries {
 			if f.Dir {
@@ -933,7 +938,7 @@ func init() {
 type resolvedSkillTarget struct {
 	entry   storage.SkillEntry
 	policy  storage.SkillEffectivePolicy
-	version string // 非空表示显式指定了版本快照
+	version string         // 非空表示显式指定了版本快照
 	applier *skill.Applier // nil 时表示该条目被前置路由跳过
 	skip    *skill.PlanItem
 }

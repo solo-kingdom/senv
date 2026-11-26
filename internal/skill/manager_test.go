@@ -539,3 +539,45 @@ func TestManagerFrontmatterVersion(t *testing.T) {
 		t.Fatalf("CurrentVersion = %q, want 1.30", entry.CurrentVersion)
 	}
 }
+
+func TestManagerAddCompressibleOver1MiBAndShowApply(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	src := t.TempDir()
+	bigDoc := strings.Repeat("# Repeated Heading\nLine of skill documentation.\n", 30000)
+	writeTree(t, src, map[string]string{
+		"SKILL.md": "---\nname: big-skill\ndescription: compressible skill\n---\n\n# Big\n",
+		"ref.md":   bigDoc,
+	})
+	entry, err := mgr.Add(AddOptions{ID: "big-skill", SourceDir: src})
+	if err != nil {
+		t.Fatalf("Add compressible >1MiB: %v", err)
+	}
+	if entry.CurrentVersion != "v1" {
+		t.Fatalf("CurrentVersion = %q, want v1", entry.CurrentVersion)
+	}
+
+	detail, err := mgr.Show("big-skill")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if !detail.Compressed {
+		t.Fatal("Show must report Compressed=true")
+	}
+	if detail.ArchiveSize >= detail.UncompressedSize || detail.UncompressedSize <= MaxArchiveBytes {
+		t.Fatalf("unexpected sizes: compressed=%d uncompressed=%d", detail.ArchiveSize, detail.UncompressedSize)
+	}
+
+	_, archive, err := mgr.Archive("big-skill")
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	applier := NewApplier(t.TempDir())
+	res, err := applier.Apply("big-skill", archive)
+	if err != nil || res[0].Err != nil {
+		t.Fatalf("Apply: %v %+v", err, res)
+	}
+	got, err := os.ReadFile(filepath.Join(res[0].Target, "ref.md"))
+	if err != nil || string(got) != bigDoc {
+		t.Fatalf("restored ref.md mismatch: len=%d err=%v", len(got), err)
+	}
+}

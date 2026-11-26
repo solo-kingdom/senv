@@ -3,7 +3,10 @@ package skill
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
+	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,8 +81,16 @@ func TestPackRootIsSkillRootAndInspectRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
+	if !isGzipArchive(archive) {
+		t.Fatal("Pack output must be gzip-compressed")
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer func() { _ = gr.Close() }()
 	// tar 根即 skill 根：没有以源目录名开头的包装层
-	tr := tar.NewReader(bytes.NewReader(archive))
+	tr := tar.NewReader(gr)
 	first, err := tr.Next()
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +102,12 @@ func TestPackRootIsSkillRootAndInspectRoundTrip(t *testing.T) {
 	a, err := Validate(archive, "demo")
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+	if !a.Compressed {
+		t.Error("Archive.Compressed must be true for Pack output")
+	}
+	if a.UncompressedSize <= len(archive) {
+		t.Errorf("UncompressedSize (%d) should exceed compressed size (%d)", a.UncompressedSize, len(archive))
 	}
 	modes := map[string]Entry{}
 	for _, e := range a.Entries {
@@ -188,8 +205,13 @@ func TestPackRejectsMissingSkillMDAndNonDir(t *testing.T) {
 func TestPackSizeLimit(t *testing.T) {
 	src := t.TempDir()
 	writeTree(t, src, map[string]string{"SKILL.md": goodSkillMD})
-	big := bytes.Repeat([]byte("x"), MaxArchiveBytes)
-	if err := os.WriteFile(filepath.Join(src, "big.bin"), big, 0o644); err != nil {
+	// 使用不可压缩的确定性伪随机数据触发压缩后 1 MiB 上限。
+	incompressible := make([]byte, MaxArchiveBytes+4096)
+	rng := rand.New(rand.NewSource(1))
+	if _, err := io.ReadFull(rng, incompressible); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), incompressible, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Pack(src)
@@ -201,15 +223,141 @@ func TestPackSizeLimit(t *testing.T) {
 	}
 }
 
-func TestPackNearLimitCountsTarOverhead(t *testing.T) {
+func TestPackAllowsCompressibleOver1MiBAndRejectsOver8MiB(t *testing.T) {
+	// 1.5 MiB 可压缩 Markdown 应顺利压缩到远小于 1 MiB。
 	src := t.TempDir()
-	// 文件内容本身 < 1MiB，但加 tar 头/填充后 > 1MiB。
-	writeTree(t, src, map[string]string{"SKILL.md": goodSkillMD})
-	if err := os.WriteFile(filepath.Join(src, "pad.bin"), bytes.Repeat([]byte("x"), MaxArchiveBytes-len(goodSkillMD)-100), 0o644); err != nil {
+	writeTree(t, src, map[string]string{
+		"SKILL.md": goodSkillMD,
+		"docs.md":  strings.Repeat("# Section\nSome repeated markdown documentation line.\n", 30000),
+	})
+	archive, err := Pack(src)
+	if err != nil {
+		t.Fatalf("Pack compressible >1MiB: %v", err)
+	}
+	if len(archive) >= MaxArchiveBytes {
+		t.Fatalf("compressed archive = %d, want < %d", len(archive), MaxArchiveBytes)
+	}
+	a, err := Validate(archive, "demo")
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !a.Compressed || a.UncompressedSize <= MaxArchiveBytes {
+		t.Fatalf("unexpected archive metadata: compressed=%v uncompressed=%d", a.Compressed, a.UncompressedSize)
+	}
+
+	// 超过 8 MiB 未压缩上限必须拒绝。
+	tooBig := t.TempDir()
+	writeTree(t, tooBig, map[string]string{"SKILL.md": goodSkillMD})
+	if err := os.WriteFile(filepath.Join(tooBig, "huge.txt"), bytes.Repeat([]byte("a"), MaxUncompressedArchiveBytes+1), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Pack(src); !errors.Is(err, ErrArchiveTooLarge) {
-		t.Fatalf("error = %v, want ErrArchiveTooLarge (tar overhead pushes it over)", err)
+	if _, err := Pack(tooBig); !errors.Is(err, ErrUncompressedArchiveTooLarge) {
+		t.Fatalf("error = %v, want ErrUncompressedArchiveTooLarge", err)
+	}
+}
+
+func TestPackSkipsRootOwnedMarker(t *testing.T) {
+	src := t.TempDir()
+	writeTree(t, src, map[string]string{
+		"SKILL.md":  goodSkillMD,
+		OwnedMarker: "{\"id\":\"demo\",\"version\":\"v1\"}\n",
+	})
+	archive, err := Pack(src)
+	if err != nil {
+		t.Fatalf("Pack with regular %s: %v", OwnedMarker, err)
+	}
+	a, err := Validate(archive, "demo")
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	for _, e := range a.Entries {
+		if e.Path == OwnedMarker {
+			t.Fatalf("%s must be skipped during Pack", OwnedMarker)
+		}
+	}
+
+	// 根下 .senv-owned 为符号链接时仍须拒绝。
+	symSrc := t.TempDir()
+	writeTree(t, symSrc, map[string]string{"SKILL.md": goodSkillMD})
+	if err := os.Symlink("/etc/passwd", filepath.Join(symSrc, OwnedMarker)); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := Pack(symSrc); err == nil {
+		t.Fatalf("symlink %s must be rejected", OwnedMarker)
+	}
+}
+
+func TestInspectLegacyRawTarAndGzipRoundTrip(t *testing.T) {
+	rawTar := buildTar(t, skillMDEntry(), rawEntry{hdr: tar.Header{Typeflag: tar.TypeReg, Name: "a.txt", Mode: 0o644}, body: "hello"})
+	rawParsed, err := Inspect(rawTar)
+	if err != nil {
+		t.Fatalf("Inspect legacy raw tar: %v", err)
+	}
+	if rawParsed.Compressed {
+		t.Fatal("legacy raw tar must report Compressed=false")
+	}
+	if rawParsed.UncompressedSize != len(rawTar) {
+		t.Fatalf("UncompressedSize = %d, want %d", rawParsed.UncompressedSize, len(rawTar))
+	}
+
+	src := t.TempDir()
+	writeTree(t, src, map[string]string{"SKILL.md": goodSkillMD, "a.txt": "hello"})
+	gzTar, err := Pack(src)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	gzParsed, err := Inspect(gzTar)
+	if err != nil {
+		t.Fatalf("Inspect gzip tar: %v", err)
+	}
+	if !gzParsed.Compressed {
+		t.Fatal("gzip tar must report Compressed=true")
+	}
+}
+
+func gzipBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestInspectRejectsGzipBombAndCorruptGzip(t *testing.T) {
+	// 1. 单成员 gzip zip bomb：>8 MiB 全零压缩到 <16 KiB。
+	bomb := gzipBytes(t, make([]byte, MaxUncompressedArchiveBytes+4096))
+	if len(bomb) >= MaxArchiveBytes {
+		t.Fatalf("unexpected bomb compressed size %d", len(bomb))
+	}
+	if _, err := Inspect(bomb); !errors.Is(err, ErrUncompressedArchiveTooLarge) {
+		t.Fatalf("bomb err = %v, want ErrUncompressedArchiveTooLarge", err)
+	}
+
+	// 2. 多成员 gzip 拼接总解压大小超过 8 MiB。
+	half := gzipBytes(t, make([]byte, MaxUncompressedArchiveBytes/2+2048))
+	multiBomb := append(append([]byte(nil), half...), half...)
+	if _, err := Inspect(multiBomb); !errors.Is(err, ErrUncompressedArchiveTooLarge) {
+		t.Fatalf("multi-member bomb err = %v, want ErrUncompressedArchiveTooLarge", err)
+	}
+
+	// 3. 截断、CRC 损坏、合法 gzip 末尾拼垃圾字节。
+	valid := gzipBytes(t, buildTar(t, skillMDEntry()))
+	if _, err := Inspect(valid[:len(valid)-4]); err == nil {
+		t.Fatal("truncated gzip must be rejected")
+	}
+	corruptCRC := append([]byte(nil), valid...)
+	corruptCRC[len(corruptCRC)-5] ^= 0xff
+	if _, err := Inspect(corruptCRC); err == nil {
+		t.Fatal("corrupt CRC gzip must be rejected")
+	}
+	trailingGarbage := append(append([]byte(nil), valid...), []byte("not-gzip-trailer")...)
+	if _, err := Inspect(trailingGarbage); err == nil {
+		t.Fatal("gzip with trailing garbage must be rejected")
 	}
 }
 
