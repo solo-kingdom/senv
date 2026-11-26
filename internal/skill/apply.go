@@ -224,11 +224,11 @@ type treeNode struct {
 	data []byte
 }
 
-// expanded 是通过校验、已读入内存的归档（≤1 MiB），含可选追加的 extra_info 与目标版本。
+// expanded 是通过校验、已读入内存的归档（压缩前 ≤8 MiB，压缩后 ≤1 MiB），含可选追加的 extra_info 与目标版本。
 type expanded struct {
 	id      string
 	tree    map[string]treeNode // 文件与目录（含隐含父目录），不含根
-	bytes   []byte
+	bytes   []byte              // 解压后的 ustar tar
 	extra   string
 	version string
 	sha256  string
@@ -256,17 +256,21 @@ func prepare(id string, archive []byte, opts ApplyOptions) (*expanded, error) {
 	if _, err := Validate(archive, id); err != nil {
 		return nil, err
 	}
+	tarBytes, _, err := decodeArchive(archive)
+	if err != nil {
+		return nil, err
+	}
 	trimmedExtra := strings.TrimSpace(opts.ExtraInfo)
 	sum := sha256.Sum256(archive)
 	ex := &expanded{
 		id:      id,
 		tree:    map[string]treeNode{},
-		bytes:   archive,
+		bytes:   tarBytes,
 		extra:   trimmedExtra,
 		version: strings.TrimSpace(opts.Version),
 		sha256:  hex.EncodeToString(sum[:]),
 	}
-	tr := tar.NewReader(bytes.NewReader(archive))
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -294,7 +298,7 @@ func prepare(id string, archive []byte, opts ApplyOptions) (*expanded, error) {
 			ex.tree[name] = treeNode{dir: true}
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, MaxArchiveBytes+1))
+		data, err := io.ReadAll(io.LimitReader(tr, MaxUncompressedArchiveBytes+1))
 		if err != nil {
 			return nil, fmt.Errorf("invalid skill archive: %w", err)
 		}
@@ -730,16 +734,16 @@ func (a *Applier) removeManagedTree(root, id string) error {
 	return baseRoot.RemoveTree(targetSegs...)
 }
 
-// extractTree 把（已校验的）归档展开到不存在的 dest。只取权限位的 Perm 部分
+// extractTree 把（已校验并解压的）tar 归档展开到不存在的 dest。只取权限位的 Perm 部分
 // （丢弃 setuid/setgid/sticky），并保证属主可读写（目录可进入）、组/其他不可写。
-func extractTree(dest string, archive []byte, extra string) error {
+func extractTree(dest string, tarBytes []byte, extra string) error {
 	if err := os.Mkdir(dest, 0o755); err != nil {
 		return fmt.Errorf("create staged skill directory: %w", err)
 	}
 	if err := os.Chmod(dest, 0o755); err != nil {
 		return err
 	}
-	tr := tar.NewReader(bytes.NewReader(archive))
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
 	type dirMode struct {
 		path string
 		perm fs.FileMode

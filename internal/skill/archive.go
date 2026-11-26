@@ -8,6 +8,7 @@ package skill
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +25,10 @@ import (
 const (
 	// SkillFileName 是 skill 根下必须存在的说明文件。
 	SkillFileName = "SKILL.md"
-	// MaxArchiveBytes 是 tar 明文大小上限（1 MiB）。
+	// MaxArchiveBytes 是加密前归档载荷（tar.gz 或存量裸 tar）的大小上限（1 MiB）。
 	MaxArchiveBytes = storage.MaxSkillPlaintext
+	// MaxUncompressedArchiveBytes 是解压后 ustar tar 的大小上限（8 MiB，防 zip bomb）。
+	MaxUncompressedArchiveBytes = 8 << 20
 )
 
 // Entry 描述归档中的一个条目（路径相对 skill 根，正斜杠分隔）。
@@ -42,6 +45,10 @@ type Archive struct {
 	Entries []Entry
 	// SkillMD 是 SKILL.md 的内容，仅供校验 frontmatter，不应对外打印。
 	SkillMD []byte
+	// Compressed 表示归档是否为 gzip 压缩的 tar.gz（false 表示存量未压缩 ustar tar）。
+	Compressed bool
+	// UncompressedSize 是解压后 ustar tar 的字节数。
+	UncompressedSize int
 }
 
 // FileCount 返回普通文件数量。
@@ -55,15 +62,55 @@ func (a *Archive) FileCount() int {
 	return n
 }
 
-// ErrArchiveTooLarge 表示明文 tar 超过 1 MiB 上限。
+// ErrArchiveTooLarge 表示加密前归档载荷超过 1 MiB 上限。
 var ErrArchiveTooLarge = errors.New("skill archive exceeds the 1 MiB plaintext limit")
+
+// ErrUncompressedArchiveTooLarge 表示解压后 ustar tar 超过 8 MiB 上限。
+var ErrUncompressedArchiveTooLarge = errors.New("skill archive exceeds the 8 MiB uncompressed tar limit")
 
 func errTooLarge(size int64) error {
 	return fmt.Errorf("%w (%d bytes > %d bytes)", ErrArchiveTooLarge, size, MaxArchiveBytes)
 }
 
-// Pack 把 srcDir 的内容打成 ustar tar：根即 skill 根，条目按路径字典序，
-// 元数据归一化（uid/gid 为 0，mtime 为 epoch，普通文件权限为 0644 或带可执行位的 0755）。
+func errUncompressedTooLarge(size int64) error {
+	return fmt.Errorf("%w (%d bytes > %d bytes)", ErrUncompressedArchiveTooLarge, size, MaxUncompressedArchiveBytes)
+}
+
+func isGzipArchive(data []byte) bool {
+	return len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b
+}
+
+// decodeArchive 校验归档大小上限；若为 gzip 流则安全解压至 ustar tar 明文，
+// 否则按存量未压缩 tar 原样返回。
+func decodeArchive(archive []byte) (tarBytes []byte, compressed bool, err error) {
+	if len(archive) > MaxArchiveBytes {
+		return nil, false, errTooLarge(int64(len(archive)))
+	}
+	if !isGzipArchive(archive) {
+		return archive, false, nil
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil, true, fmt.Errorf("invalid gzip skill archive: %w", err)
+	}
+	defer func() { _ = gr.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(gr, MaxUncompressedArchiveBytes+1))
+	if err != nil {
+		return nil, true, fmt.Errorf("invalid gzip skill archive: %w", err)
+	}
+	if len(raw) > MaxUncompressedArchiveBytes {
+		return nil, true, errUncompressedTooLarge(int64(len(raw)))
+	}
+	if err := gr.Close(); err != nil {
+		return nil, true, fmt.Errorf("invalid gzip skill archive: %w", err)
+	}
+	return raw, true, nil
+}
+
+// Pack 把 srcDir 的内容打成确定性 ustar tar.gz：根即 skill 根，条目按路径字典序，
+// 元数据归一化（uid/gid 为 0，mtime 为 epoch，普通文件权限为 0644 或带可执行位的 0755），
+// 并自动跳过源目录根下的普通托管标记文件 .senv-owned。
 // 源目录里出现符号链接或特殊文件、路径无法写入 ustar、超过大小上限都会拒绝。
 // 返回前会用 Inspect 重新校验产物。
 func Pack(srcDir string) ([]byte, error) {
@@ -79,8 +126,8 @@ func Pack(srcDir string) ([]byte, error) {
 		return nil, fmt.Errorf("source %q is not a directory", srcDir)
 	}
 
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
 	var fileBytes int64
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -101,6 +148,9 @@ func Pack(srcDir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+		if name == OwnedMarker && fi.Mode().IsRegular() {
+			return nil
+		}
 		switch {
 		case fi.IsDir():
 			return writeHeader(tw, &tar.Header{
@@ -112,8 +162,8 @@ func Pack(srcDir string) ([]byte, error) {
 			}, name)
 		case fi.Mode().IsRegular():
 			fileBytes += fi.Size()
-			if fileBytes > MaxArchiveBytes {
-				return errTooLarge(fileBytes)
+			if fileBytes > MaxUncompressedArchiveBytes {
+				return errUncompressedTooLarge(fileBytes)
 			}
 			mode := int64(0o644)
 			if fi.Mode().Perm()&0o111 != 0 {
@@ -149,13 +199,30 @@ func Pack(srcDir string) ([]byte, error) {
 	if err := tw.Close(); err != nil {
 		return nil, err
 	}
-	if buf.Len() > MaxArchiveBytes {
-		return nil, errTooLarge(int64(buf.Len()))
+	if tarBuf.Len() > MaxUncompressedArchiveBytes {
+		return nil, errUncompressedTooLarge(int64(tarBuf.Len()))
 	}
-	if _, err := Inspect(buf.Bytes()); err != nil {
+
+	var gzBuf bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&gzBuf, gzip.DefaultCompression)
+	if err != nil {
+		return nil, fmt.Errorf("create gzip writer: %w", err)
+	}
+	gw.ModTime = time.Time{}
+	gw.OS = 255
+	if _, err := gw.Write(tarBuf.Bytes()); err != nil {
+		return nil, fmt.Errorf("compress skill archive: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return nil, fmt.Errorf("finalize compressed skill archive: %w", err)
+	}
+	if gzBuf.Len() > MaxArchiveBytes {
+		return nil, errTooLarge(int64(gzBuf.Len()))
+	}
+	if _, err := Inspect(gzBuf.Bytes()); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return gzBuf.Bytes(), nil
 }
 
 func writeHeader(tw *tar.Writer, hdr *tar.Header, name string) error {
@@ -194,18 +261,22 @@ func validateEntryPath(name string) error {
 	return nil
 }
 
-// Inspect 对 tar 明文做白名单校验并返回清单。入库（Pack 之后）与展开（apply）
+// Inspect 对归档（tar.gz 或存量未压缩 tar）做白名单校验并返回清单。入库（Pack 之后）与展开（apply）
 // 都应调用它：
-//   - 明文不超过 1 MiB；
+//   - 归档载荷不超过 1 MiB，解压后 ustar tar 不超过 8 MiB；
 //   - 条目类型只能是 TypeReg / TypeRegA / TypeDir，且必须是纯 ustar 头（无 pax/GNU 扩展）；
 //   - 路径无绝对路径、空段、"."、".."；无重复条目，也不允许同一路径既是文件又是目录/父目录；
 //   - 根下必须有普通文件 SKILL.md。
 func Inspect(archive []byte) (*Archive, error) {
-	if len(archive) > MaxArchiveBytes {
-		return nil, errTooLarge(int64(len(archive)))
+	tarBytes, compressed, err := decodeArchive(archive)
+	if err != nil {
+		return nil, err
 	}
-	tr := tar.NewReader(bytes.NewReader(archive))
-	result := &Archive{}
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	result := &Archive{
+		Compressed:       compressed,
+		UncompressedSize: len(tarBytes),
+	}
 	files := map[string]bool{}
 	dirs := map[string]bool{}         // 显式目录条目
 	implicitDirs := map[string]bool{} // 由文件/子目录路径隐含的父目录
@@ -259,7 +330,7 @@ func Inspect(archive []byte) (*Archive, error) {
 		if !isDir {
 			entry.Size = hdr.Size
 			if name == SkillFileName {
-				content, err := io.ReadAll(io.LimitReader(tr, MaxArchiveBytes+1))
+				content, err := io.ReadAll(io.LimitReader(tr, MaxUncompressedArchiveBytes+1))
 				if err != nil {
 					return nil, fmt.Errorf("invalid skill archive: %w", err)
 				}

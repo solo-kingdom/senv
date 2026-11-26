@@ -2,6 +2,7 @@ package skill
 
 import (
 	"archive/tar"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -423,5 +424,53 @@ func TestApplyVersionedOwnedMetaUpgradeAndDrift(t *testing.T) {
 	plan, err = a.PlanWithOptions("demo", archV2, ApplyOptions{Version: "v2"})
 	if err != nil || plan[0].Action != ActionBackupOverwrite || !strings.Contains(plan[0].Reason, "local drift at v2") {
 		t.Fatalf("local drift plan = %+v, err=%v", plan[0], err)
+	}
+}
+
+func TestApplySupportsGzipAndLegacyRawTarAndRejectsGzipBomb(t *testing.T) {
+	a := newTestApplier(t)
+
+	// 1. Pack 产出的 tar.gz（含 >1 MiB 可压缩文件）可正常 Plan -> Apply -> 幂等 Skip。
+	src := t.TempDir()
+	bigDoc := strings.Repeat("compressible markdown content line\n", 40000)
+	writeTree(t, src, map[string]string{
+		"SKILL.md": goodSkillMD,
+		"docs.md":  bigDoc,
+	})
+	gzArch, err := Pack(src)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	if _, err := a.Apply("demo", gzArch); err != nil {
+		t.Fatalf("Apply gzip archive: %v", err)
+	}
+	plan, err := a.Plan("demo", gzArch)
+	if err != nil || plan[0].Action != ActionSkip {
+		t.Fatalf("re-plan gzip archive = %+v, err=%v", plan, err)
+	}
+	if got := readFile(t, filepath.Join(a.rootDir(".agents/skills"), "demo", "docs.md")); got != bigDoc {
+		t.Fatalf("applied bigDoc len = %d, want %d", len(got), len(bigDoc))
+	}
+
+	// 2. 存量裸 ustar tar 仍可正常 Plan -> Apply。
+	legacy := buildTar(t, skillMDEntry(), rawEntry{hdr: tar.Header{Typeflag: tar.TypeReg, Name: "legacy.txt", Mode: 0o644}, body: "old"})
+	if res, err := a.Apply("demo", legacy); err != nil || res[0].Err != nil || res[0].Action != ActionBackupOverwrite {
+		t.Fatalf("Apply legacy raw tar = %+v, err=%v", res, err)
+	}
+	if got := readFile(t, filepath.Join(a.rootDir(".agents/skills"), "demo", "legacy.txt")); got != "old" {
+		t.Fatalf("legacy.txt = %q, want old", got)
+	}
+
+	// 3. gzip zip bomb 喂给 Plan / Apply 均被拒绝且不落盘。
+	isolated := newTestApplier(t)
+	bomb := gzipBytes(t, make([]byte, MaxUncompressedArchiveBytes+4096))
+	if _, err := isolated.Plan("demo", bomb); !errors.Is(err, ErrUncompressedArchiveTooLarge) {
+		t.Fatalf("Plan bomb err = %v, want ErrUncompressedArchiveTooLarge", err)
+	}
+	if _, err := isolated.Apply("demo", bomb); !errors.Is(err, ErrUncompressedArchiveTooLarge) {
+		t.Fatalf("Apply bomb err = %v, want ErrUncompressedArchiveTooLarge", err)
+	}
+	if _, err := os.Stat(isolated.StateDir); !os.IsNotExist(err) {
+		t.Fatalf("rejected bomb must not create state dir: %v", err)
 	}
 }

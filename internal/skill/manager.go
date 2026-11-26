@@ -938,8 +938,12 @@ type Detail struct {
 	Policy         storage.SkillEffectivePolicy
 	DisplayVersion string // 实际展示的版本（为空表示存量无版本）
 	Entries        []Entry
-	// ArchiveSize 是 tar 明文字节数。
+	// ArchiveSize 是入库归档明文字节数（gzip 归档为压缩后大小）。
 	ArchiveSize int
+	// Compressed 表示归档是否为 gzip 压缩的 tar.gz。
+	Compressed bool
+	// UncompressedSize 是解压后 ustar tar 的字节数。
+	UncompressedSize int
 }
 
 // GetWithPolicy 返回单个 skill 的索引元数据与生效安装策略。
@@ -982,11 +986,13 @@ func (m *Manager) ShowVersion(id, version string) (*Detail, error) {
 		return nil, fmt.Errorf("skill %q is invalid: %w", id, err)
 	}
 	return &Detail{
-		Entry:          *entry,
-		Policy:         policy,
-		DisplayVersion: displayVer,
-		Entries:        a.Entries,
-		ArchiveSize:    len(archive),
+		Entry:            *entry,
+		Policy:           policy,
+		DisplayVersion:   displayVer,
+		Entries:          a.Entries,
+		ArchiveSize:      len(archive),
+		Compressed:       a.Compressed,
+		UncompressedSize: a.UncompressedSize,
 	}, nil
 }
 
