@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -75,13 +76,14 @@ func validationErrorf(format string, args ...any) *ValidationError {
 
 // Conflict 描述一次乐观锁冲突：条目在 server 端的当前 revision
 type Conflict struct {
-	Kind            string    `json:"kind"`
-	Grp             string    `json:"grp"`
-	Key             string    `json:"key"`
-	CurrentRevision int64     `json:"current_revision"`
-	Deleted         bool      `json:"deleted"`
-	Size            int64     `json:"size"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Kind             string    `json:"kind"`
+	Grp              string    `json:"grp"`
+	Key              string    `json:"key"`
+	CurrentRevision  int64     `json:"current_revision"`
+	Deleted          bool      `json:"deleted"`
+	Size             int64     `json:"size"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CiphertextSHA256 string    `json:"ciphertext_sha256,omitempty"`
 }
 
 // ConflictError 整批推送因乐观锁冲突被拒绝；绝不部分写入
@@ -95,14 +97,39 @@ func (e *ConflictError) Error() string {
 
 // Entry 是一条同步条目。ciphertext 对 server 完全不透明。
 type Entry struct {
-	Kind         string    `json:"kind"`
-	Grp          string    `json:"grp"`
-	Key          string    `json:"key"`
-	Ciphertext   []byte    `json:"ciphertext,omitempty"`
-	BaseRevision int64     `json:"base_revision,omitempty"` // 推送时携带
-	Revision     int64     `json:"revision"`                // 拉取/响应时携带
-	Deleted      bool      `json:"deleted"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"` // server 端最近写入时间
+	Kind             string    `json:"kind"`
+	Grp              string    `json:"grp"`
+	Key              string    `json:"key"`
+	Ciphertext       []byte    `json:"ciphertext,omitempty"`
+	CiphertextSHA256 string    `json:"ciphertext_sha256,omitempty"`
+	Size             int64     `json:"size,omitempty"`
+	BaseRevision     int64     `json:"base_revision,omitempty"` // 推送时携带
+	Revision         int64     `json:"revision"`                // 拉取/响应时携带
+	Deleted          bool      `json:"deleted"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"` // server 端最近写入时间
+}
+
+// EntryKey 指定一条需要按需查询的条目标识。
+type EntryKey struct {
+	Kind string `json:"kind"`
+	Grp  string `json:"grp"`
+	Key  string `json:"key"`
+}
+
+// PullOptions 控制分页与全量 tombstone 过滤。
+type PullOptions struct {
+	Limit          int
+	MaxBytes       int64
+	IncludeDeleted bool
+}
+
+// PullPage 是一页增量拉取结果。
+type PullPage struct {
+	Entries        []Entry
+	LatestRevision int64
+	HasMore        bool
+	NextSince      int64
+	MetadataHash   string
 }
 
 // Store 是 senv-server 存储层的抽象：handler 与后台任务面向该接口工作，
@@ -129,6 +156,8 @@ type Store interface {
 	// 同步
 	PushEntries(ctx context.Context, userID, clientID int64, vault string, entries []Entry) ([]Entry, int64, error)
 	PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error)
+	PullEntriesPage(ctx context.Context, userID int64, vault string, since int64, opts PullOptions) (PullPage, error)
+	LookupEntries(ctx context.Context, userID int64, vault string, keys []EntryKey, metaOnly bool) ([]Entry, int64, error)
 	// SetMaxTombstonesPerPush 设置单批推送允许的最大删除条数；<=0 表示不限制
 	SetMaxTombstonesPerPush(n int)
 
@@ -545,11 +574,12 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 	var conflicts []Conflict
 	for _, e := range entries {
 		var current Conflict
+		var ct []byte
 		err := tx.QueryRow(ctx,
-			`SELECT revision, deleted, COALESCE(length(ciphertext), 0), updated_at
+			`SELECT revision, deleted, ciphertext, updated_at
 			 FROM entries WHERE vault_id = $1 AND kind = $2 AND grp = $3 AND key = $4`,
 			vaultID, e.Kind, e.Grp, e.Key).Scan(
-			&current.CurrentRevision, &current.Deleted, &current.Size, &current.UpdatedAt)
+			&current.CurrentRevision, &current.Deleted, &ct, &current.UpdatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// 新条目：base_revision 必须为 0
 			if e.BaseRevision != 0 {
@@ -563,8 +593,13 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 		if err != nil {
 			return nil, 0, err
 		}
+		current.Size = int64(len(ct))
 		if e.BaseRevision != current.CurrentRevision {
 			current.Kind, current.Grp, current.Key = e.Kind, e.Grp, e.Key
+			if !current.Deleted && len(ct) > 0 {
+				sum := sha256.Sum256(ct)
+				current.CiphertextSHA256 = hex.EncodeToString(sum[:])
+			}
 			conflicts = append(conflicts, current)
 		}
 	}
@@ -621,8 +656,104 @@ func (s *pgStore) PushEntries(ctx context.Context, userID, clientID int64, vault
 // PullEntries 增量拉取：返回 revision > since 的全部条目（含删除标记）与最新 revision。
 // 空增量返回空列表与当前最新 revision，不报错。
 func (s *pgStore) PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error) {
+	page, err := s.PullEntriesPage(ctx, userID, vault, since, PullOptions{IncludeDeleted: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	return page.Entries, page.LatestRevision, nil
+}
+
+// PullEntriesPage 支持可选分页（Limit / MaxBytes）、全量跳过 tombstone 及返回 metadata_hash。
+func (s *pgStore) PullEntriesPage(ctx context.Context, userID int64, vault string, since int64, opts PullOptions) (PullPage, error) {
+	if err := validateVaultName(vault); err != nil {
+		return PullPage{}, err
+	}
+	vaultID, err := lookupVault(ctx, s.pool, userID, vault)
+	if err != nil {
+		return PullPage{}, err
+	}
+	var latest int64
+	if err := s.pool.QueryRow(ctx, `SELECT seq FROM vaults WHERE id = $1`, vaultID).Scan(&latest); err != nil {
+		return PullPage{}, err
+	}
+
+	var metaHash string
+	var metaBlob []byte
+	if err := s.pool.QueryRow(ctx, `SELECT blob FROM vault_metadata WHERE vault_id = $1`, vaultID).Scan(&metaBlob); err == nil {
+		sum := sha256.Sum256(metaBlob)
+		metaHash = hex.EncodeToString(sum[:])
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return PullPage{}, err
+	}
+
+	query := `SELECT kind, grp, key, ciphertext, revision, deleted, updated_at FROM entries
+		 WHERE vault_id = $1 AND revision > $2`
+	if since == 0 && !opts.IncludeDeleted {
+		query += ` AND deleted = FALSE`
+	}
+	query += ` ORDER BY revision`
+	args := []any{vaultID, since}
+	if opts.Limit > 0 {
+		query += ` LIMIT $3`
+		args = append(args, opts.Limit+1)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return PullPage{}, err
+	}
+	defer rows.Close()
+
+	entries := []Entry{}
+	var totalBytes int64
+	hasMore := false
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.Kind, &e.Grp, &e.Key, &e.Ciphertext, &e.Revision, &e.Deleted, &e.UpdatedAt); err != nil {
+			return PullPage{}, err
+		}
+		if opts.Limit > 0 && len(entries) >= opts.Limit {
+			hasMore = true
+			break
+		}
+		if opts.MaxBytes > 0 && len(entries) > 0 && totalBytes+int64(len(e.Ciphertext)) > opts.MaxBytes {
+			hasMore = true
+			break
+		}
+		totalBytes += int64(len(e.Ciphertext))
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return PullPage{}, err
+	}
+	var nextSince int64
+	if hasMore && len(entries) > 0 {
+		nextSince = entries[len(entries)-1].Revision
+	}
+	return PullPage{
+		Entries:        entries,
+		LatestRevision: latest,
+		HasMore:        hasMore,
+		NextSince:      nextSince,
+		MetadataHash:   metaHash,
+	}, nil
+}
+
+// LookupEntries 批量按 (kind, grp, key) 查询远端条目当前状态或密文。
+func (s *pgStore) LookupEntries(ctx context.Context, userID int64, vault string, keys []EntryKey, metaOnly bool) ([]Entry, int64, error) {
 	if err := validateVaultName(vault); err != nil {
 		return nil, 0, err
+	}
+	if len(keys) > MaxBatchEntries {
+		return nil, 0, validationErrorf("单次查询条目数超过上限 %d", MaxBatchEntries)
+	}
+	for _, k := range keys {
+		if len(k.Kind) == 0 || len(k.Kind) > MaxKindLen || len(k.Grp) > MaxGrpLen || len(k.Key) > MaxKeyLen {
+			return nil, 0, validationErrorf("条目标识长度无效")
+		}
+		if err := syncschema.ValidateIdentity(k.Kind, k.Grp, k.Key); err != nil {
+			return nil, 0, validationErrorf("条目标识无效: %s", err)
+		}
 	}
 	vaultID, err := lookupVault(ctx, s.pool, userID, vault)
 	if err != nil {
@@ -632,10 +763,26 @@ func (s *pgStore) PullEntries(ctx context.Context, userID int64, vault string, s
 	if err := s.pool.QueryRow(ctx, `SELECT seq FROM vaults WHERE id = $1`, vaultID).Scan(&latest); err != nil {
 		return nil, 0, err
 	}
+	if len(keys) == 0 {
+		return []Entry{}, latest, nil
+	}
+
+	kinds := make([]string, len(keys))
+	grps := make([]string, len(keys))
+	keyNames := make([]string, len(keys))
+	for i, k := range keys {
+		kinds[i] = k.Kind
+		grps[i] = k.Grp
+		keyNames[i] = k.Key
+	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT kind, grp, key, ciphertext, revision, deleted, updated_at FROM entries
-		 WHERE vault_id = $1 AND revision > $2 ORDER BY revision`, vaultID, since)
+		`SELECT e.kind, e.grp, e.key, e.ciphertext, e.revision, e.deleted, e.updated_at
+		 FROM entries e
+		 JOIN unnest($2::text[], $3::text[], $4::text[]) AS q(kind, grp, key)
+		   ON e.kind = q.kind AND e.grp = q.grp AND e.key = q.key
+		 WHERE e.vault_id = $1`,
+		vaultID, kinds, grps, keyNames)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -644,8 +791,17 @@ func (s *pgStore) PullEntries(ctx context.Context, userID int64, vault string, s
 	entries := []Entry{}
 	for rows.Next() {
 		var e Entry
-		if err := rows.Scan(&e.Kind, &e.Grp, &e.Key, &e.Ciphertext, &e.Revision, &e.Deleted, &e.UpdatedAt); err != nil {
+		var ct []byte
+		if err := rows.Scan(&e.Kind, &e.Grp, &e.Key, &ct, &e.Revision, &e.Deleted, &e.UpdatedAt); err != nil {
 			return nil, 0, err
+		}
+		e.Size = int64(len(ct))
+		if !e.Deleted && len(ct) > 0 {
+			sum := sha256.Sum256(ct)
+			e.CiphertextSHA256 = hex.EncodeToString(sum[:])
+		}
+		if !metaOnly {
+			e.Ciphertext = ct
 		}
 		entries = append(entries, e)
 	}

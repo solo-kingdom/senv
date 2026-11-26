@@ -170,6 +170,45 @@ func (p *ServerProvider) History(ctx context.Context, f HistoryFilter) ([]Histor
 // 推送产生新 revision（不绕过冲突检测）。已删除/不存在条目的恢复等价于以
 // 历史密文重新创建。推送失败时本地恢复已生效（快照未推进），后续 sync 会
 // 把它当作本地改动重新推送。
+func (p *ServerProvider) lookupEntriesOrPull(ctx context.Context, keys []EntryKey, metaOnly bool) ([]Entry, int64, error) {
+	if len(keys) == 0 {
+		return []Entry{}, 0, nil
+	}
+	if api, ok := p.api.(lookupAPI); ok {
+		var all []Entry
+		var latest int64
+		supported := true
+		for start := 0; start < len(keys); start += 1000 {
+			end := start + 1000
+			if end > len(keys) {
+				end = len(keys)
+			}
+			got, rev, err := api.Lookup(ctx, p.vault, keys[start:end], metaOnly)
+			if err != nil {
+				if errors.Is(err, ErrLookupUnsupported) {
+					supported = false
+					break
+				}
+				return nil, 0, err
+			}
+			all = append(all, got...)
+			latest = rev
+		}
+		if supported {
+			return all, latest, nil
+		}
+	}
+	return p.api.Pull(ctx, p.vault, 0)
+}
+
+func (p *ServerProvider) pullAllEntries(ctx context.Context, includeDeleted bool) ([]Entry, int64, error) {
+	if api, ok := p.api.(pullWithMetaAPI); ok {
+		entries, latest, _, err := api.PullWithMeta(ctx, p.vault, 0, includeDeleted)
+		return entries, latest, err
+	}
+	return p.api.Pull(ctx, p.vault, 0)
+}
+
 func (p *ServerProvider) RestoreEntry(ctx context.Context, kind, grp, key string, ciphertext []byte) error {
 	if err := syncschema.ValidateIdentity(kind, grp, key); err != nil {
 		return fmt.Errorf("无效的条目标识: %w", err)
@@ -179,17 +218,9 @@ func (p *ServerProvider) RestoreEntry(ctx context.Context, kind, grp, key string
 		return err
 	}
 	defer release()
-	return p.withVaultMutation(func() error {
-		return p.restoreEntryLocked(ctx, kind, grp, key, ciphertext)
-	})
-}
 
-func (p *ServerProvider) restoreEntryLocked(ctx context.Context, kind, grp, key string, ciphertext []byte) error {
-	st, err := p.cache.loadState()
-	if err != nil {
-		return err
-	}
-	remote, remoteLatest, err := p.api.Pull(ctx, p.vault, 0)
+	// 阶段 1（无 vault 锁）：查询目标条目当前 revision
+	remote, _, err := p.lookupEntriesOrPull(ctx, []EntryKey{{Kind: kind, Grp: grp, Key: key}}, true)
 	if err != nil {
 		return err
 	}
@@ -201,20 +232,29 @@ func (p *ServerProvider) restoreEntryLocked(ctx context.Context, kind, grp, key 
 		remoteRevision = e.Revision
 	}
 
-	// 本地写回历史密文（快照未推进 → 若推送失败，该条目保持 dirty 可重试）
-	if err := p.cache.applyRemote([]Entry{{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext}}, nil, false, st); err != nil {
+	// 阶段 2（短写锁）：本地写回历史密文
+	if err := p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
+		}
+		return p.cache.applyRemote([]Entry{{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext}}, nil, false, st)
+	}); err != nil {
 		return err
 	}
 
+	// 阶段 3（无 vault 锁）：推送到 server
 	pushes := []Entry{{Kind: kind, Grp: grp, Key: key, Ciphertext: ciphertext, BaseRevision: remoteRevision}}
 	pushed, latest, err := p.api.Push(ctx, p.vault, pushes)
 	if err != nil {
 		var conflictErr *ConflictError
 		if errors.As(err, &conflictErr) {
-			localMeta, metaErr := p.cache.readMetadata()
-			if metaErr != nil {
+			var localMeta []byte
+			_ = p.withVaultMutation(func() error {
+				var metaErr error
+				localMeta, metaErr = p.cache.readMetadata()
 				return metaErr
-			}
+			})
 			remoteMeta, metaErr := p.api.GetMetadata(ctx, p.vault)
 			if metaErr != nil && !errors.Is(metaErr, ErrVaultNotFound) {
 				return metaErr
@@ -223,14 +263,21 @@ func (p *ServerProvider) restoreEntryLocked(ctx context.Context, kind, grp, key 
 		}
 		return err
 	}
-	st.LastSyncedRevision = latest
-	for _, entry := range pushed {
-		st.Entries[entryID(entry.Kind, entry.Grp, entry.Key)] = syncEntryState{
-			Revision: entry.Revision, Hash: hashBytes(entry.Ciphertext),
+
+	// 阶段 4（短写锁）：更新同步状态
+	return p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
 		}
-	}
-	_ = remoteLatest
-	return p.cache.saveState(st)
+		st.LastSyncedRevision = latest
+		for _, entry := range pushed {
+			st.Entries[entryID(entry.Kind, entry.Grp, entry.Key)] = syncEntryState{
+				Revision: entry.Revision, Hash: hashBytes(entry.Ciphertext),
+			}
+		}
+		return p.cache.saveState(st)
+	})
 }
 
 // SyncConflictError 同步因乐观锁冲突中止；两端数据均未改动。
@@ -346,18 +393,19 @@ func (p *ServerProvider) buildConflictError(
 	dirty, candidates []Entry, localMeta, remoteMeta []byte,
 ) *SyncConflictError {
 	known := entryMap(candidates)
-	needRefresh := false
+	var missingKeys []EntryKey
 	for _, c := range conflicts {
 		candidate, ok := known[entryID(c.Kind, c.Grp, c.Key)]
 		if !ok || candidate.Revision != c.CurrentRevision {
-			needRefresh = true
-			break
+			missingKeys = append(missingKeys, EntryKey{Kind: c.Kind, Grp: c.Grp, Key: c.Key})
 		}
 	}
-	if needRefresh {
-		if entries, _, err := p.api.Pull(ctx, p.vault, 0); err == nil {
+	if len(missingKeys) > 0 {
+		if entries, _, err := p.lookupEntriesOrPull(ctx, missingKeys, false); err == nil {
 			if err := validateRemoteEntries(entries); err == nil {
-				known = entryMap(entries)
+				for _, e := range entries {
+					known[entryID(e.Kind, e.Grp, e.Key)] = e
+				}
 			}
 		}
 	}
@@ -409,7 +457,7 @@ func (p *ServerProvider) Bootstrap(ctx context.Context) error {
 		return err
 	}
 	defer release()
-	return p.withVaultMutation(func() error { return p.bootstrapLocked(ctx) })
+	return p.bootstrapLocked(ctx)
 }
 
 func (p *ServerProvider) bootstrapLocked(ctx context.Context) error {
@@ -417,26 +465,28 @@ func (p *ServerProvider) bootstrapLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	entries, latest, err := p.api.Pull(ctx, p.vault, 0)
+	entries, latest, err := p.pullAllEntries(ctx, false)
 	if err != nil {
 		return err
 	}
 	if err := validateRemoteEntries(entries); err != nil {
 		return err
 	}
-	st := newSyncState()
-	st.MetadataHash = hashBytes(blob)
-	st.LastSyncedRevision = latest
-	st.LastPullAt = p.now().Unix()
-	for _, e := range entries {
-		if e.Deleted {
-			continue
+	return p.withVaultMutation(func() error {
+		st := newSyncState()
+		st.MetadataHash = hashBytes(blob)
+		st.LastSyncedRevision = latest
+		st.LastPullAt = p.now().Unix()
+		for _, e := range entries {
+			if e.Deleted {
+				continue
+			}
+			st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 		}
-		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
-	}
-	return p.cache.applyRemoteOpts(entries, blob, true, st, stateWriteOptions{
-		writerPath:       "bootstrapLocked",
-		allowEntryShrink: true,
+		return p.cache.applyRemoteOpts(entries, blob, true, st, stateWriteOptions{
+			writerPath:       "bootstrapLocked",
+			allowEntryShrink: true,
+		})
 	})
 }
 
@@ -502,71 +552,86 @@ func (p *ServerProvider) pull(ctx context.Context) (*PullResult, error) {
 }
 
 func (p *ServerProvider) pullWithOpts(ctx context.Context, allowMetadataKeyChange bool) (*PullResult, error) {
-	manifest, err := p.pullManifest()
+	manifest, expectedMetaHash, err := p.pullManifest()
 	if err != nil {
 		return nil, err
 	}
-	remote, latest, remoteMeta, vaultFound, err := p.pullFetch(ctx, manifest.LastSyncedRevision)
+	remote, latest, remoteMeta, metaUnchanged, vaultFound, err := p.pullFetch(ctx, manifest.LastSyncedRevision, expectedMetaHash)
 	if err != nil {
 		return nil, err
 	}
-	return p.pullApply(manifest, remote, latest, remoteMeta, vaultFound, allowMetadataKeyChange)
+	return p.pullApply(manifest, remote, latest, remoteMeta, metaUnchanged, expectedMetaHash, vaultFound, allowMetadataKeyChange)
 }
 
 // pullManifest 是 pull 阶段 1：短暂持有 vault 锁读取同步状态（版本/指纹），
 // LastSyncedRevision 作为增量请求游标，状态本体作为阶段 3 的推进基线。
-func (p *ServerProvider) pullManifest() (*syncState, error) {
+func (p *ServerProvider) pullManifest() (*syncState, string, error) {
 	t := perflog.Start("sync.pull-manifest")
 	var st *syncState
+	var localMetaHash string
 	err := p.withVaultMutation(func() error {
 		var inner error
 		st, inner = p.cache.loadState()
-		return inner
+		if inner != nil {
+			return inner
+		}
+		if localMeta, mErr := p.cache.readMetadata(); mErr == nil && len(localMeta) > 0 {
+			localMetaHash = hashBytes(localMeta)
+		}
+		return nil
 	})
 	t.End(err == nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return st, nil
+	return st, localMetaHash, nil
 }
 
 // pullFetch 是 pull 阶段 2：不持有 vault 锁执行 api.Pull 与 api.GetMetadata，
 // 网络等待与本地 vault 读取/写入并行。返回的远端条目已在任何落盘前完成
 // 身份校验（含将被 dirty 跳过的条目）。
-func (p *ServerProvider) pullFetch(ctx context.Context, since int64) (entries []Entry, latest int64, remoteMeta []byte, vaultFound bool, err error) {
+func (p *ServerProvider) pullFetch(ctx context.Context, since int64, expectedMetaHash string) (entries []Entry, latest int64, remoteMeta []byte, metaUnchanged bool, vaultFound bool, err error) {
 	t := perflog.Start("sync.pull-net")
 	defer func() { t.End(err == nil) }()
 	vaultFound = true
-	entries, latest, err = p.api.Pull(ctx, p.vault, since)
+	var remoteMetaHash string
+	if api, ok := p.api.(pullWithMetaAPI); ok {
+		entries, latest, remoteMetaHash, err = api.PullWithMeta(ctx, p.vault, since, true)
+	} else {
+		entries, latest, err = p.api.Pull(ctx, p.vault, since)
+	}
 	if errors.Is(err, ErrVaultNotFound) {
 		entries, latest, err = nil, 0, nil
 		vaultFound = false
 	}
 	if err != nil {
-		return nil, 0, nil, false, err
+		return nil, 0, nil, false, false, err
 	}
 	if err := validateRemoteEntries(entries); err != nil {
-		return nil, 0, nil, false, err
+		return nil, 0, nil, false, false, err
+	}
+	if remoteMetaHash != "" && expectedMetaHash != "" && remoteMetaHash == expectedMetaHash {
+		return entries, latest, nil, true, vaultFound, nil
 	}
 	remoteMeta, err = p.api.GetMetadata(ctx, p.vault)
 	if err != nil {
 		if errors.Is(err, ErrVaultNotFound) {
 			vaultFound = false
-			return entries, latest, nil, false, nil
+			return entries, latest, nil, false, false, nil
 		}
-		return nil, 0, nil, false, err
+		return nil, 0, nil, false, false, err
 	}
-	return entries, latest, remoteMeta, vaultFound, nil
+	return entries, latest, remoteMeta, false, vaultFound, nil
 }
 
 // pullApply 是 pull 阶段 3：持有 vault 写锁把远端响应应用落盘。单事务写入
 // 条目 + metadata + 状态文件，任何同步失败整体回滚。
-func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, remoteMeta []byte, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
+func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, remoteMeta []byte, metaUnchanged bool, expectedMetaHash string, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
 	t := perflog.Start("sync.pull-apply")
 	var res *PullResult
 	err := p.withVaultMutation(func() error {
 		var inner error
-		res, inner = p.pullApplyLocked(st, remote, latest, remoteMeta, vaultFound, allowMetadataKeyChange)
+		res, inner = p.pullApplyLocked(st, remote, latest, remoteMeta, metaUnchanged, expectedMetaHash, vaultFound, allowMetadataKeyChange)
 		return inner
 	})
 	t.End(err == nil)
@@ -576,7 +641,7 @@ func (p *ServerProvider) pullApply(st *syncState, remote []Entry, latest int64, 
 // pullApplyLocked 在写锁内重算 dirty 并应用远端条目。阶段 2 不持锁，本地写
 // 可能已落入——这里重新对比快照与现状，dirty 条目（含网络窗口内新增的写）
 // 跳过不覆盖，保持 dirty 队列语义不变，交给后续 push 乐观锁判定。
-func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest int64, remoteMeta []byte, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
+func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest int64, remoteMeta []byte, metaUnchanged bool, expectedMetaHash string, vaultFound, allowMetadataKeyChange bool) (*PullResult, error) {
 	if vaultFound && st.LastSyncedRevision > 0 && latest < st.LastSyncedRevision {
 		return nil, fmt.Errorf("检测到远端同步版本号回滚（local=%d, remote=%d），已拒绝拉取", st.LastSyncedRevision, latest)
 	}
@@ -624,9 +689,17 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 		}
 	}
 	localHash := hashBytes(localMeta)
-	remoteHash := hashBytes(remoteMeta)
+	remoteHash := localHash
+	if !metaUnchanged || localHash != expectedMetaHash {
+		remoteHash = hashBytes(remoteMeta)
+	}
 	updateMetadata := false
-	if remoteHash != localHash {
+	if metaUnchanged && localHash == expectedMetaHash {
+		if st.MetadataHash != localHash {
+			st.MetadataHash = localHash
+			res.MetadataHealed = true
+		}
+	} else if remoteHash != localHash {
 		// 能解析的远端 metadata 才做防降级与 salt 变更判定；不可解析的保持旧语义
 		// （更新时由 applyRemoteOpts 校验并拒绝）。
 		remoteIter := 0
@@ -681,37 +754,107 @@ type PushResult struct {
 	LatestRevision int64
 }
 
-// push 收集 dirty 条目并乐观锁批量推送；409 时解析为 SyncConflictError
-func (p *ServerProvider) push(ctx context.Context, remoteCandidates ...Entry) (*PushResult, error) {
-	var result *PushResult
-	err := p.withVaultMutation(func() error {
-		var err error
-		result, err = p.pushLocked(ctx, remoteCandidates)
-		return err
-	})
-	return result, err
+type pushPlan struct {
+	st           *syncState
+	dirty        []Entry
+	pushedHashes map[string]string
+	localMeta    []byte
+	metaHash     string
 }
 
-func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entry) (*PushResult, error) {
-	st, err := p.cache.loadState()
+func (p *ServerProvider) preparePushPlan() (*pushPlan, error) {
+	var plan *pushPlan
+	err := p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
+		}
+		current, err := p.cache.collect()
+		if err != nil {
+			return err
+		}
+		dirty := p.collectDirty(st, current)
+		pushedHashes := make(map[string]string, len(dirty))
+		for _, e := range dirty {
+			id := entryID(e.Kind, e.Grp, e.Key)
+			if e.Deleted {
+				pushedHashes[id] = ""
+			} else {
+				pushedHashes[id] = hashBytes(e.Ciphertext)
+			}
+		}
+		localMeta, err := p.cache.readMetadata()
+		if err != nil {
+			return err
+		}
+		plan = &pushPlan{
+			st:           st,
+			dirty:        dirty,
+			pushedHashes: pushedHashes,
+			localMeta:    localMeta,
+			metaHash:     hashBytes(localMeta),
+		}
+		return nil
+	})
+	return plan, err
+}
+
+func (p *ServerProvider) commitPushBatch(pushed []Entry, healed map[string]syncEntryState, latest int64, pushedHashes map[string]string, setRev bool) error {
+	return p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
+		}
+		current, err := p.cache.collect()
+		if err != nil {
+			return err
+		}
+		removed := make(map[string]bool)
+		for id, hs := range healed {
+			cur, exists := current[id]
+			if exists && hashBytes(cur.Ciphertext) == hs.Hash {
+				st.Entries[id] = hs
+			}
+		}
+		for _, e := range pushed {
+			id := entryID(e.Kind, e.Grp, e.Key)
+			cur, exists := current[id]
+			if e.Deleted {
+				if !exists {
+					delete(st.Entries, id)
+					removed[id] = true
+				}
+				continue
+			}
+			if exists && hashBytes(cur.Ciphertext) == pushedHashes[id] {
+				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
+			}
+		}
+		if setRev && latest > st.LastSyncedRevision {
+			st.LastSyncedRevision = latest
+		}
+		return p.cache.saveStateOpts(st, stateWriteOptions{
+			writerPath:     "pushLocked",
+			removedEntries: removed,
+		})
+	})
+}
+
+// push 收集 dirty 条目并乐观锁批量推送（三段式：短锁读 → 无锁网络 → 短锁落盘）；409 时解析为 SyncConflictError
+func (p *ServerProvider) push(ctx context.Context, remoteCandidates ...Entry) (*PushResult, error) {
+	plan, err := p.preparePushPlan()
 	if err != nil {
 		return nil, err
 	}
-	current, err := p.cache.collect()
-	if err != nil {
-		return nil, err
-	}
-	dirty := p.collectDirty(st, current)
+	st := plan.st
+	dirty := plan.dirty
+	localMeta := plan.localMeta
 
 	// metadata：本地已改时，仅在远端未改（哈希仍等于快照）的情况下安全上传
 	var metadataDirty, metadataConflict bool
 	var metadataHealed bool
 	var remoteMetaBlob []byte
-	localMeta, err := p.cache.readMetadata()
-	if err != nil {
-		return nil, err
-	}
-	if hashBytes(localMeta) != st.MetadataHash {
+	if plan.metaHash != st.MetadataHash {
 		remoteMeta, err := p.api.GetMetadata(ctx, p.vault)
 		if err != nil && !errors.Is(err, ErrVaultNotFound) {
 			return nil, err
@@ -719,10 +862,26 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 		if errors.Is(err, ErrVaultNotFound) {
 			// 远端无 metadata：本地版本可以安全上传
 			metadataDirty = true
-		} else if hashBytes(remoteMeta) == hashBytes(localMeta) {
+		} else if hashBytes(remoteMeta) == plan.metaHash {
 			// 假冲突自愈：两端 metadata 字节一致，仅本地快照哈希失真，收养哈希。
-			st.MetadataHash = hashBytes(localMeta)
 			metadataHealed = true
+			if err := p.withVaultMutation(func() error {
+				curSt, err := p.cache.loadState()
+				if err != nil {
+					return err
+				}
+				curMeta, err := p.cache.readMetadata()
+				if err != nil {
+					return err
+				}
+				if hashBytes(curMeta) == plan.metaHash {
+					curSt.MetadataHash = plan.metaHash
+					return p.cache.saveStateOpts(curSt, stateWriteOptions{writerPath: "pushLocked"})
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
 		} else if hashBytes(remoteMeta) != st.MetadataHash {
 			metadataConflict = true
 			remoteMetaBlob = remoteMeta
@@ -733,8 +892,6 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 	if metadataHealed {
 		res.MetadataHealed = true
 	}
-	// removed 收集本次推送的删除标记（合法消失的快照），供防退化护栏放行。
-	removed := make(map[string]bool)
 	// 分批推送：服务端单批上限 1000，条目总数过千时一次性推送会被整批拒绝。
 	// 先按标识排序保证批次可复现；每批成功后立即持久化同步状态，中途失败不丢已推进度。
 	sort.Slice(dirty, func(i, j int) bool {
@@ -748,25 +905,13 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 			n = len(dirty)
 		}
 		chunk, rest := dirty[:n], dirty[n:]
+		healedBatch := make(map[string]syncEntryState)
 		for attempt := 0; ; attempt++ {
 			pushed, latest, err := p.api.Push(ctx, p.vault, chunk)
 			if err == nil {
 				res.Pushed += len(pushed)
 				res.LatestRevision = latest
-				for _, e := range pushed {
-					id := entryID(e.Kind, e.Grp, e.Key)
-					if e.Deleted {
-						delete(st.Entries, id)
-						removed[id] = true
-					} else {
-						st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
-					}
-				}
-				st.LastSyncedRevision = latest
-				if err := p.cache.saveStateOpts(st, stateWriteOptions{
-					writerPath:     "pushLocked",
-					removedEntries: removed,
-				}); err != nil {
+				if err := p.commitPushBatch(pushed, healedBatch, latest, plan.pushedHashes, true); err != nil {
 					return nil, err
 				}
 				break
@@ -776,24 +921,30 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 				return nil, err
 			}
 			// 409 先做假冲突自愈：快照缺失导致的新增误判 + 两端密文一致 → 收养远端 revision。
-			healed, retry, remaining, healErr := p.healFalseConflicts(ctx, st, chunk, conflictErr.Conflicts)
+			healed, retry, remaining, healMap, healErr := p.healFalseConflicts(ctx, chunk, conflictErr.Conflicts)
 			if healErr != nil {
-				// 自愈所需的 Pull(0) 失败：不落盘、不误报内容冲突，返回原始网络错误。
+				// 自愈所需的查询失败：不落盘、不误报内容冲突，返回原始网络错误。
 				return nil, healErr
+			}
+			for id, hs := range healMap {
+				healedBatch[id] = hs
 			}
 			res.Healed += healed
 			if len(remaining) > 0 {
-				// 真实冲突：停止后续批次；已推批次的状态已持久化，未推条目保留 dirty。
-				if saveErr := p.cache.saveStateOpts(st, stateWriteOptions{
-					writerPath:     "pushLocked",
-					removedEntries: removed,
-				}); saveErr != nil {
-					return nil, saveErr
+				if len(healedBatch) > 0 {
+					if saveErr := p.commitPushBatch(nil, healedBatch, 0, plan.pushedHashes, false); saveErr != nil {
+						return nil, saveErr
+					}
 				}
 				return nil, p.buildConflictError(ctx, remaining, metadataConflict, append(retry, rest...), remoteCandidates, localMeta, remoteMetaBlob)
 			}
 			chunk = retry
 			if len(chunk) == 0 {
+				if len(healedBatch) > 0 {
+					if saveErr := p.commitPushBatch(nil, healedBatch, 0, plan.pushedHashes, false); saveErr != nil {
+						return nil, saveErr
+					}
+				}
 				break // 本批全部为假冲突并已收养，无需再次推送
 			}
 		}
@@ -812,78 +963,88 @@ func (p *ServerProvider) pushLocked(ctx context.Context, remoteCandidates []Entr
 		if err := p.api.PutMetadataIfMatch(ctx, p.vault, localMeta, st.MetadataHash); err != nil {
 			return nil, err
 		}
-		st.MetadataHash = hashBytes(localMeta)
+		if err := p.withVaultMutation(func() error {
+			curSt, err := p.cache.loadState()
+			if err != nil {
+				return err
+			}
+			curMeta, err := p.cache.readMetadata()
+			if err != nil {
+				return err
+			}
+			if hashBytes(curMeta) == plan.metaHash {
+				curSt.MetadataHash = plan.metaHash
+				return p.cache.saveStateOpts(curSt, stateWriteOptions{writerPath: "pushLocked"})
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 		res.MetadataPushed = true
 	}
 
-	if err := p.cache.saveStateOpts(st, stateWriteOptions{
-		writerPath:     "pushLocked",
-		removedEntries: removed,
-	}); err != nil {
-		return nil, err
-	}
 	return res, nil
 }
 
 // healFalseConflicts 处理 409 中的"假冲突"：本地快照缺失导致条目以 BaseRevision=0
-// 被当作新增推送，但远端密文与本地字节一致。此时收养远端 revision 修复快照，
-// 而不是报内容冲突；其余冲突原样返回，由调用方走既有冲突路径。
-// 返回：收养条数、剔除已收养条目后的待推送清单、无法自愈的冲突清单。
-func (p *ServerProvider) healFalseConflicts(ctx context.Context, st *syncState, dirty []Entry, conflicts []Conflict) (int, []Entry, []Conflict, error) {
-	// 只尝试"本地视为新增且非删除标记"的冲突；真实内容差异与删除冲突不自愈。
-	candidates := make(map[string]bool, len(conflicts))
+// 被当作新增推送，但远端密文与本地字节一致。此时优先用 409 返回的 ciphertext_sha256
+// 零请求自愈；缺失时再用 Lookup 按需查询（老 server 自动回退 Pull(0)）。
+func (p *ServerProvider) healFalseConflicts(ctx context.Context, dirty []Entry, conflicts []Conflict) (int, []Entry, []Conflict, map[string]syncEntryState, error) {
+	dirtyByID := entryMap(dirty)
+	healedIDs := make(map[string]syncEntryState)
+	var needLookup []EntryKey
 	for _, c := range conflicts {
 		id := entryID(c.Kind, c.Grp, c.Key)
-		for _, e := range dirty {
-			if entryID(e.Kind, e.Grp, e.Key) == id && e.BaseRevision == 0 && !e.Deleted {
-				candidates[id] = true
-			}
-		}
-	}
-	if len(candidates) == 0 {
-		return 0, dirty, conflicts, nil
-	}
-
-	remote, _, err := p.api.Pull(ctx, p.vault, 0)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	remoteByID := make(map[string]Entry, len(remote))
-	for _, e := range remote {
-		remoteByID[entryID(e.Kind, e.Grp, e.Key)] = e
-	}
-
-	healedIDs := make(map[string]bool, len(candidates))
-	for id := range candidates {
-		remoteEntry, ok := remoteByID[id]
-		if !ok || remoteEntry.Deleted {
+		e, ok := dirtyByID[id]
+		if !ok || e.BaseRevision != 0 || e.Deleted {
 			continue
 		}
-		for _, e := range dirty {
-			if entryID(e.Kind, e.Grp, e.Key) != id || e.Deleted {
+		if c.CiphertextSHA256 != "" {
+			if !c.Deleted && hashBytes(e.Ciphertext) == c.CiphertextSHA256 {
+				healedIDs[id] = syncEntryState{Revision: c.CurrentRevision, Hash: c.CiphertextSHA256}
+			}
+			continue
+		}
+		needLookup = append(needLookup, EntryKey{Kind: c.Kind, Grp: c.Grp, Key: c.Key})
+	}
+
+	if len(needLookup) > 0 {
+		remote, _, err := p.lookupEntriesOrPull(ctx, needLookup, false)
+		if err != nil {
+			return 0, nil, nil, nil, err
+		}
+		remoteByID := entryMap(remote)
+		for _, k := range needLookup {
+			id := entryID(k.Kind, k.Grp, k.Key)
+			remoteEntry, ok := remoteByID[id]
+			if !ok || remoteEntry.Deleted {
 				continue
 			}
-			if hashBytes(e.Ciphertext) == hashBytes(remoteEntry.Ciphertext) {
-				st.Entries[id] = syncEntryState{Revision: remoteEntry.Revision, Hash: hashBytes(remoteEntry.Ciphertext)}
-				healedIDs[id] = true
+			e := dirtyByID[id]
+			remoteHash := remoteEntry.CiphertextSHA256
+			if remoteHash == "" {
+				remoteHash = hashBytes(remoteEntry.Ciphertext)
 			}
-			break
+			localHash := hashBytes(e.Ciphertext)
+			if localHash == remoteHash {
+				healedIDs[id] = syncEntryState{Revision: remoteEntry.Revision, Hash: localHash}
+			}
 		}
 	}
 
 	retry := make([]Entry, 0, len(dirty))
 	for _, e := range dirty {
-		if !healedIDs[entryID(e.Kind, e.Grp, e.Key)] {
+		if _, ok := healedIDs[entryID(e.Kind, e.Grp, e.Key)]; !ok {
 			retry = append(retry, e)
 		}
 	}
 	var remaining []Conflict
 	for _, c := range conflicts {
-		if !healedIDs[entryID(c.Kind, c.Grp, c.Key)] {
+		if _, ok := healedIDs[entryID(c.Kind, c.Grp, c.Key)]; !ok {
 			remaining = append(remaining, c)
 		}
 	}
-	return len(healedIDs), retry, remaining, nil
+	return len(healedIDs), retry, remaining, healedIDs, nil
 }
 
 // --- Provider 接口实现（message 参数对 server 无意义，忽略） ---
@@ -987,40 +1148,42 @@ func (p *ServerProvider) AcceptRemote(ctx context.Context) error {
 		return err
 	}
 	defer release()
-	return p.withVaultMutation(func() error { return p.acceptRemoteLocked(ctx) })
+	return p.acceptRemoteLocked(ctx)
 }
 
 func (p *ServerProvider) acceptRemoteLocked(ctx context.Context) error {
-	entries, latest, err := p.api.Pull(ctx, p.vault, 0)
+	entries, latest, err := p.pullAllEntries(ctx, false)
 	if err != nil {
 		return err
 	}
 	if err := validateRemoteEntries(entries); err != nil {
 		return err
 	}
-	blob, err := p.api.GetMetadata(ctx, p.vault)
-	if err != nil && !errors.Is(err, ErrVaultNotFound) {
-		return err
+	blob, metaErr := p.api.GetMetadata(ctx, p.vault)
+	if metaErr != nil && !errors.Is(metaErr, ErrVaultNotFound) {
+		return metaErr
 	}
-	st := newSyncState()
-	for _, e := range entries {
-		if e.Deleted {
-			continue
+	if err := p.withVaultMutation(func() error {
+		st := newSyncState()
+		for _, e := range entries {
+			if e.Deleted {
+				continue
+			}
+			st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 		}
-		st.Entries[entryID(e.Kind, e.Grp, e.Key)] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
-	}
-	st.LastSyncedRevision = latest
-	if err == nil {
-		st.MetadataHash = hashBytes(blob)
-	}
-	if err := p.cache.applyRemoteOpts(entries, blob, err == nil, st, stateWriteOptions{
-		writerPath:         "acceptRemoteLocked",
-		allowEntryShrink:   true,
-		allowEmptyMetadata: errors.Is(err, ErrVaultNotFound),
+		st.LastSyncedRevision = latest
+		if metaErr == nil {
+			st.MetadataHash = hashBytes(blob)
+		}
+		return p.cache.applyRemoteOpts(entries, blob, metaErr == nil, st, stateWriteOptions{
+			writerPath:         "acceptRemoteLocked",
+			allowEntryShrink:   true,
+			allowEmptyMetadata: errors.Is(metaErr, ErrVaultNotFound),
+		})
 	}); err != nil {
 		return err
 	}
-	_, err = p.pushLocked(ctx, nil)
+	_, err = p.push(ctx)
 	return err
 }
 
@@ -1031,70 +1194,99 @@ func (p *ServerProvider) ForcePush(ctx context.Context) error {
 		return err
 	}
 	defer release()
-	return p.withVaultMutation(func() error { return p.forcePushLocked(ctx) })
-}
 
-func (p *ServerProvider) forcePushLocked(ctx context.Context) error {
-	remote, latest, err := p.api.Pull(ctx, p.vault, 0)
+	plan, err := p.preparePushPlan()
 	if err != nil {
 		return err
 	}
-	if err := validateRemoteEntries(remote); err != nil {
-		return err
-	}
-	remoteRev := make(map[string]int64, len(remote))
-	for _, e := range remote {
-		remoteRev[entryID(e.Kind, e.Grp, e.Key)] = e.Revision
-	}
+	dirty := plan.dirty
+	localMeta := plan.localMeta
 
-	st, err := p.cache.loadState()
-	if err != nil {
-		return err
-	}
-	current, err := p.cache.collect()
-	if err != nil {
-		return err
-	}
-	dirty := p.collectDirty(st, current)
-	// forceRemoved 收集被推送的删除标记，供防退化护栏放行。
-	forceRemoved := make(map[string]bool)
-	// 以远端当前 revision 为 base：server 端对应条目被本地版本覆盖
-	for i := range dirty {
-		id := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key)
-		dirty[i].BaseRevision = remoteRev[id] // 远端没有则为 0
-	}
-
+	var latest int64
 	if len(dirty) > 0 {
-		pushed, newLatest, err := p.api.Push(ctx, p.vault, dirty)
+		keys := make([]EntryKey, 0, len(dirty))
+		for _, e := range dirty {
+			keys = append(keys, EntryKey{Kind: e.Kind, Grp: e.Grp, Key: e.Key})
+		}
+		remote, rev, err := p.lookupEntriesOrPull(ctx, keys, true)
+		if err != nil {
+			return err
+		}
+		if err := validateRemoteEntries(remote); err != nil {
+			return err
+		}
+		latest = rev
+		remoteRev := make(map[string]int64, len(remote))
+		for _, e := range remote {
+			remoteRev[entryID(e.Kind, e.Grp, e.Key)] = e.Revision
+		}
+		for i := range dirty {
+			id := entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key)
+			dirty[i].BaseRevision = remoteRev[id] // 远端没有则为 0
+		}
+	} else {
+		_, rev, err := p.api.Pull(ctx, p.vault, plan.st.LastSyncedRevision)
+		if err != nil {
+			return err
+		}
+		latest = rev
+	}
+
+	var pushed []Entry
+	forceRemoved := make(map[string]bool)
+	if len(dirty) > 0 {
+		sort.Slice(dirty, func(i, j int) bool {
+			return entryID(dirty[i].Kind, dirty[i].Grp, dirty[i].Key) < entryID(dirty[j].Kind, dirty[j].Grp, dirty[j].Key)
+		})
+		batch := pushBatchSize()
+		for start := 0; start < len(dirty); start += batch {
+			end := start + batch
+			if end > len(dirty) {
+				end = len(dirty)
+			}
+			ack, newLatest, err := p.api.Push(ctx, p.vault, dirty[start:end])
+			if err != nil {
+				return err
+			}
+			pushed = append(pushed, ack...)
+			latest = newLatest
+		}
+	}
+
+	// metadata 无条件以本地为准
+	if err := p.api.PutMetadata(ctx, p.vault, localMeta); err != nil {
+		return err
+	}
+
+	return p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
+		}
+		current, err := p.cache.collect()
 		if err != nil {
 			return err
 		}
 		for _, e := range pushed {
 			id := entryID(e.Kind, e.Grp, e.Key)
+			cur, exists := current[id]
 			if e.Deleted {
-				delete(st.Entries, id)
-				forceRemoved[id] = true
-			} else {
+				if !exists {
+					delete(st.Entries, id)
+					forceRemoved[id] = true
+				}
+			} else if exists && hashBytes(cur.Ciphertext) == plan.pushedHashes[id] {
 				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 			}
 		}
-		st.LastSyncedRevision = newLatest
-	} else {
 		st.LastSyncedRevision = latest
-	}
-
-	// metadata 无条件以本地为准
-	localMeta, err := p.cache.readMetadata()
-	if err != nil {
-		return err
-	}
-	if err := p.api.PutMetadata(ctx, p.vault, localMeta); err != nil {
-		return err
-	}
-	st.MetadataHash = hashBytes(localMeta)
-	return p.cache.saveStateOpts(st, stateWriteOptions{
-		writerPath:     "forcePushLocked",
-		removedEntries: forceRemoved,
+		if curMeta, err := p.cache.readMetadata(); err == nil && hashBytes(curMeta) == plan.metaHash {
+			st.MetadataHash = plan.metaHash
+		}
+		return p.cache.saveStateOpts(st, stateWriteOptions{
+			writerPath:     "forcePushLocked",
+			removedEntries: forceRemoved,
+		})
 	})
 }
 

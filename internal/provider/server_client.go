@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wii/senv/internal/perflog"
@@ -19,25 +23,35 @@ import (
 // Entry 是一条同步条目（与 senv-server v1 API 的 wire 格式一致）。
 // ciphertext 始终是不透明密文字节；CLI 侧不依赖 server 的 pgx 类型。
 type Entry struct {
-	Kind         string    `json:"kind"`
-	Grp          string    `json:"grp"`
-	Key          string    `json:"key"`
-	Ciphertext   []byte    `json:"ciphertext,omitempty"`
-	BaseRevision int64     `json:"base_revision,omitempty"`
-	Revision     int64     `json:"revision"`
-	Deleted      bool      `json:"deleted"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	Kind             string    `json:"kind"`
+	Grp              string    `json:"grp"`
+	Key              string    `json:"key"`
+	Ciphertext       []byte    `json:"ciphertext,omitempty"`
+	CiphertextSHA256 string    `json:"ciphertext_sha256,omitempty"`
+	Size             int64     `json:"size,omitempty"`
+	BaseRevision     int64     `json:"base_revision,omitempty"`
+	Revision         int64     `json:"revision"`
+	Deleted          bool      `json:"deleted"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
+}
+
+// EntryKey 指定按需查询的条目三元组。
+type EntryKey struct {
+	Kind string `json:"kind"`
+	Grp  string `json:"grp"`
+	Key  string `json:"key"`
 }
 
 // Conflict 描述 server 返回的单条乐观锁冲突
 type Conflict struct {
-	Kind            string    `json:"kind"`
-	Grp             string    `json:"grp"`
-	Key             string    `json:"key"`
-	CurrentRevision int64     `json:"current_revision"`
-	Deleted         bool      `json:"deleted"`
-	Size            int64     `json:"size"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Kind             string    `json:"kind"`
+	Grp              string    `json:"grp"`
+	Key              string    `json:"key"`
+	CurrentRevision  int64     `json:"current_revision"`
+	Deleted          bool      `json:"deleted"`
+	Size             int64     `json:"size"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CiphertextSHA256 string    `json:"ciphertext_sha256,omitempty"`
 }
 
 // ConflictError 表示推送被 server 乐观锁拒绝（409）；包含冲突清单
@@ -51,6 +65,58 @@ func (e *ConflictError) Error() string {
 
 // ErrVaultNotFound 表示 server 端 vault 不存在（404）
 var ErrVaultNotFound = errors.New("vault not found on server")
+
+// ErrLookupUnsupported 表示老版本 server 不支持 /entries/lookup 端点（404/405）
+var ErrLookupUnsupported = errors.New("server does not support entry lookup")
+
+// ErrServerTimeout 表示服务端请求或流式读取超时（区别于连接不可达）
+var ErrServerTimeout = errors.New("server request timeout")
+
+// ErrServerUnreachable 表示无法建立连接或网络中断
+var ErrServerUnreachable = errors.New("server unreachable")
+
+// ServerRequestError 描述分层超时或传输失败的准确阶段与原因。
+type ServerRequestError struct {
+	Kind       string // "timeout" | "unreachable"
+	Op         string
+	Stage      string // "budget" | "connect_or_header" | "body_read" | "transport"
+	StatusCode int
+	Duration   time.Duration
+	Err        error
+}
+
+func (e *ServerRequestError) Error() string {
+	if e.Kind == "timeout" {
+		return fmt.Sprintf("server 请求超时（阶段=%s, op=%s）: %v", e.Stage, e.Op, e.Err)
+	}
+	return fmt.Sprintf("无法连接 server（阶段=%s, op=%s）: %v", e.Stage, e.Op, e.Err)
+}
+
+func (e *ServerRequestError) Unwrap() error { return e.Err }
+
+func (e *ServerRequestError) Is(target error) bool {
+	if target == ErrServerTimeout {
+		return e.Kind == "timeout"
+	}
+	if target == ErrServerUnreachable {
+		return e.Kind == "unreachable"
+	}
+	return false
+}
+
+// IsTimeout 判断错误是否由网络/请求超时引起（含 context.DeadlineExceeded）。
+func IsTimeout(err error) bool {
+	if errors.Is(err, ErrServerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// IsUnreachable 判断错误是否为连接不可达（非超时、非 HTTP 4xx/5xx、非冲突）。
+func IsUnreachable(err error) bool {
+	return errors.Is(err, ErrServerUnreachable)
+}
 
 // ErrClientBlocked 表示 server 判定本 client 已被屏蔽（403 + client_blocked）。
 // 收到该错误后 provider 会清空本地解锁缓存（加密数据保留），调用方应以
@@ -71,11 +137,22 @@ type serverAPI interface {
 	Pull(ctx context.Context, vault string, since int64) ([]Entry, int64, error)
 }
 
+// lookupAPI 是新服务端提供的按 key 批量查询窄接口（旧 server/fake 未实现时自动回退 Pull(0)）
+type lookupAPI interface {
+	Lookup(ctx context.Context, vault string, keys []EntryKey, metaOnly bool) ([]Entry, int64, error)
+}
+
+// pullWithMetaAPI 支持跳过全量 tombstone 并返回服务端 metadata_hash（旧 server/fake 无感）
+type pullWithMetaAPI interface {
+	PullWithMeta(ctx context.Context, vault string, since int64, includeDeleted bool) ([]Entry, int64, string, error)
+}
+
 // serverClient 是 senv-server v1 API 的 HTTP client
 type serverClient struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL     string
+	token       string
+	http        *http.Client
+	readTimeout time.Duration
 	// onBlocked 在首次收到 403 client_blocked 时触发（每实例一次），
 	// 由 provider 注入用于清空本地解锁缓存；fake 实现不含此路径。
 	onBlocked   func()
@@ -88,14 +165,51 @@ const (
 	maxServerResponseBytes int64 = 64 << 20
 	// maxServerErrorBodyBytes 限制错误响应体解码上限。
 	maxServerErrorBodyBytes int64 = 64 << 10
+	// defaultServerReadTimeout 是等待服务端响应头及响应体活跃读无进展的默认超时。
+	defaultServerReadTimeout = 30 * time.Second
+	defaultPullPageLimit     = 500
+	defaultPullPageMaxBytes  = 2 << 20
 )
 
+func parseServerReadTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("SENV_SERVER_TIMEOUT"))
+	if raw == "" {
+		return defaultServerReadTimeout
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return defaultServerReadTimeout
+}
+
 func newServerClient(baseURL, token string) *serverClient {
+	return newServerClientWithTimeout(baseURL, token, parseServerReadTimeout())
+}
+
+func newServerClientWithTimeout(baseURL, token string, readTimeout time.Duration) *serverClient {
+	if readTimeout <= 0 {
+		readTimeout = defaultServerReadTimeout
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	tr := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: readTimeout,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
+	}
 	return &serverClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		token:   token,
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		token:       token,
+		readTimeout: readTimeout,
 		http: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   0, // 使用分层超时（建连/Header/活跃读 stall + 调用方 ctx），避免大包总时长误杀
+			Transport: tr,
 			// 同步 API 不应跟随任何 HTTP 重定向，防止 HTTPS->HTTP 降级或子域重定向
 			// 导致 net/http 自动携带 Authorization: Bearer 凭据泄露。
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -103,6 +217,32 @@ func newServerClient(baseURL, token string) *serverClient {
 			},
 		},
 	}
+}
+
+type stallTimeoutReader struct {
+	r        io.ReadCloser
+	timeout  time.Duration
+	timedOut atomic.Bool
+}
+
+func (s *stallTimeoutReader) Read(p []byte) (int, error) {
+	if s.timeout <= 0 {
+		return s.r.Read(p)
+	}
+	timer := time.AfterFunc(s.timeout, func() {
+		s.timedOut.Store(true)
+		_ = s.r.Close()
+	})
+	n, err := s.r.Read(p)
+	timer.Stop()
+	if s.timedOut.Load() && err != nil {
+		return n, fmt.Errorf("%w: no body progress for %s", context.DeadlineExceeded, s.timeout)
+	}
+	return n, err
+}
+
+func (s *stallTimeoutReader) Close() error {
+	return s.r.Close()
 }
 
 // decodeBoundedJSON 从受限 reader 读取完整响应体并反序列化；若超出 limit 明确报错，
@@ -137,6 +277,8 @@ func (c *serverClient) do(ctx context.Context, method, path string, body any, ou
 }
 
 func (c *serverClient) doOnce(ctx context.Context, method, path string, body any, out any) error {
+	start := time.Now()
+	op := method + " " + path
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -155,16 +297,23 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("无法连接 server: %w", err)
+		return classifyTransportErr(ctx, op, "connect_or_header", time.Since(start), err)
 	}
-	defer resp.Body.Close()
+	bodyReader := &stallTimeoutReader{r: resp.Body, timeout: c.readTimeout}
+	defer bodyReader.Close()
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		if out == nil {
 			return nil
 		}
-		return decodeBoundedJSON(resp.Body, maxServerResponseBytes, out)
+		if err := decodeBoundedJSON(bodyReader, maxServerResponseBytes, out); err != nil {
+			if bodyReader.timedOut.Load() || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return classifyTransportErr(ctx, op, "body_read", time.Since(start), err)
+			}
+			return err
+		}
+		return nil
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
 		return fmt.Errorf("server 返回重定向（%d），已拒绝跟随以保护认证凭据", resp.StatusCode)
 	case resp.StatusCode == http.StatusUnauthorized:
@@ -173,7 +322,7 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 		var body struct {
 			Error string `json:"error"`
 		}
-		_ = decodeBoundedJSON(resp.Body, maxServerErrorBodyBytes, &body)
+		_ = decodeBoundedJSON(bodyReader, maxServerErrorBodyBytes, &body)
 		if body.Error == "client_blocked" {
 			// 仅机器可读的屏蔽语义触发本地清理；其余 403 按普通错误处理，
 			// 防御旧 server 或未知语义导致误清解锁缓存
@@ -186,13 +335,29 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 		}
 		return fmt.Errorf("server 错误: %s", body.Error)
 	case resp.StatusCode == http.StatusNotFound:
+		raw, _ := io.ReadAll(io.LimitReader(bodyReader, maxServerErrorBodyBytes))
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(raw, &errBody) == nil && errBody.Error != "" {
+			return ErrVaultNotFound
+		}
+		// 路由级 404（如旧版 server 无 /entries/lookup）返回纯文本 404 page not found
+		if strings.HasSuffix(path, "/entries/lookup") {
+			return ErrLookupUnsupported
+		}
 		return ErrVaultNotFound
+	case resp.StatusCode == http.StatusMethodNotAllowed:
+		if strings.HasSuffix(path, "/entries/lookup") {
+			return ErrLookupUnsupported
+		}
+		return fmt.Errorf("server 错误: %s", resp.Status)
 	case resp.StatusCode == http.StatusConflict:
 		var body struct {
 			Error     string     `json:"error"`
 			Conflicts []Conflict `json:"conflicts"`
 		}
-		if err := decodeBoundedJSON(resp.Body, maxServerResponseBytes, &body); err != nil {
+		if err := decodeBoundedJSON(bodyReader, maxServerResponseBytes, &body); err != nil {
 			return fmt.Errorf("推送冲突，但无法解析冲突清单: %w", err)
 		}
 		if len(body.Conflicts) == 0 {
@@ -207,12 +372,23 @@ func (c *serverClient) doOnce(ctx context.Context, method, path string, body any
 		var body struct {
 			Error string `json:"error"`
 		}
-		_ = decodeBoundedJSON(resp.Body, maxServerErrorBodyBytes, &body)
+		_ = decodeBoundedJSON(bodyReader, maxServerErrorBodyBytes, &body)
 		if body.Error == "" {
 			body.Error = resp.Status
 		}
 		return fmt.Errorf("server 错误: %s", body.Error)
 	}
+}
+
+func classifyTransportErr(ctx context.Context, op, stage string, dur time.Duration, err error) error {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && stage == "connect_or_header" {
+			stage = "budget"
+		}
+		return &ServerRequestError{Kind: "timeout", Op: op, Stage: stage, Duration: dur, Err: err}
+	}
+	return &ServerRequestError{Kind: "unreachable", Op: op, Stage: stage, Duration: dur, Err: err}
 }
 
 func (c *serverClient) GetMetadata(ctx context.Context, vault string) ([]byte, error) {
@@ -275,12 +451,65 @@ func (c *serverClient) Push(ctx context.Context, vault string, entries []Entry) 
 }
 
 func (c *serverClient) Pull(ctx context.Context, vault string, since int64) ([]Entry, int64, error) {
+	entries, latest, _, err := c.PullWithMeta(ctx, vault, since, true)
+	return entries, latest, err
+}
+
+// PullWithMeta 分页拉取增量条目并顺带获取远端 metadata_hash；老 server 不返 has_more 时单次返回。
+func (c *serverClient) PullWithMeta(ctx context.Context, vault string, since int64, includeDeleted bool) ([]Entry, int64, string, error) {
+	cur := since
+	var all []Entry
+	var latest int64
+	var metaHash string
+	for {
+		var resp struct {
+			Entries        []Entry `json:"entries"`
+			LatestRevision int64   `json:"latest_revision"`
+			HasMore        bool    `json:"has_more"`
+			NextSince      int64   `json:"next_since"`
+			MetadataHash   string  `json:"metadata_hash"`
+		}
+		path := fmt.Sprintf("/v1/vaults/%s/entries?since=%d&limit=%d&max_bytes=%d",
+			vault, cur, defaultPullPageLimit, defaultPullPageMaxBytes)
+		if since == 0 && !includeDeleted {
+			path += "&include_deleted=0"
+		}
+		if err := c.do(ctx, "GET", path, nil, &resp); err != nil {
+			return nil, 0, "", err
+		}
+		all = append(all, resp.Entries...)
+		latest = resp.LatestRevision
+		if resp.MetadataHash != "" {
+			metaHash = resp.MetadataHash
+		}
+		if !resp.HasMore {
+			break
+		}
+		if resp.NextSince <= cur {
+			return nil, 0, "", fmt.Errorf("server 分页游标未前进（since=%d, next_since=%d）", cur, resp.NextSince)
+		}
+		cur = resp.NextSince
+	}
+	if all == nil {
+		all = []Entry{}
+	}
+	return all, latest, metaHash, nil
+}
+
+// Lookup 批量按 (kind, grp, key) 查询远端条目当前状态或密文。
+func (c *serverClient) Lookup(ctx context.Context, vault string, keys []EntryKey, metaOnly bool) ([]Entry, int64, error) {
+	if len(keys) == 0 {
+		return []Entry{}, 0, nil
+	}
 	var resp struct {
 		Entries        []Entry `json:"entries"`
 		LatestRevision int64   `json:"latest_revision"`
 	}
-	path := fmt.Sprintf("/v1/vaults/%s/entries?since=%d", vault, since)
-	if err := c.do(ctx, "GET", path, nil, &resp); err != nil {
+	body := map[string]any{
+		"keys":      keys,
+		"meta_only": metaOnly,
+	}
+	if err := c.do(ctx, "POST", "/v1/vaults/"+vault+"/entries/lookup", body, &resp); err != nil {
 		return nil, 0, err
 	}
 	return resp.Entries, resp.LatestRevision, nil

@@ -62,9 +62,21 @@ func TestAutoSyncNoOpForGitAndDisabledServer(t *testing.T) {
 
 func TestAutoPushWarningsDoNotChangeExitStatus(t *testing.T) {
 	var out bytes.Buffer
-	printAutoPushWarning(&out, 2, errors.New("connect refused"))
-	if !strings.Contains(out.String(), "⚠ 2 条待推送") || !strings.Contains(out.String(), "自动重试") {
-		t.Fatalf("network warning = %q", out.String())
+	printAutoPushWarning(&out, 2, fmt.Errorf("%w: connect refused", provider.ErrServerUnreachable))
+	if !strings.Contains(out.String(), "⚠ 2 条待推送") || !strings.Contains(out.String(), "server 暂不可达") || !strings.Contains(out.String(), "自动重试") {
+		t.Fatalf("unreachable warning = %q", out.String())
+	}
+
+	out.Reset()
+	printAutoPushWarning(&out, 2, fmt.Errorf("%w: read stalled", provider.ErrServerTimeout))
+	if !strings.Contains(out.String(), "⚠ 2 条待推送") || !strings.Contains(out.String(), "同步超时") || !strings.Contains(out.String(), "senv sync") {
+		t.Fatalf("timeout warning = %q", out.String())
+	}
+
+	out.Reset()
+	printAutoPushWarning(&out, 2, errors.New("unexpected 500"))
+	if !strings.Contains(out.String(), "⚠ 2 条待推送") || !strings.Contains(out.String(), "同步失败") || !strings.Contains(out.String(), "senv sync") {
+		t.Fatalf("generic error warning = %q", out.String())
 	}
 
 	out.Reset()

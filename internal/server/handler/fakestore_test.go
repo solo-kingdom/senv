@@ -6,11 +6,14 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -239,7 +242,13 @@ func (f *fakeStore) PushEntries(_ context.Context, userID, clientID int64, vault
 			currentRev = cur.Revision
 		}
 		if e.BaseRevision != currentRev {
-			conflicts = append(conflicts, store.Conflict{Kind: e.Kind, Grp: e.Grp, Key: e.Key, CurrentRevision: currentRev, Deleted: exists && cur.Deleted})
+			c := store.Conflict{Kind: e.Kind, Grp: e.Grp, Key: e.Key, CurrentRevision: currentRev, Deleted: exists && cur.Deleted}
+			if exists && !cur.Deleted && len(cur.Ciphertext) > 0 {
+				sum := sha256.Sum256(cur.Ciphertext)
+				c.CiphertextSHA256 = hex.EncodeToString(sum[:])
+				c.Size = int64(len(cur.Ciphertext))
+			}
+			conflicts = append(conflicts, c)
 		}
 	}
 	if len(conflicts) > 0 {
@@ -258,19 +267,93 @@ func (f *fakeStore) PushEntries(_ context.Context, userID, clientID int64, vault
 }
 
 func (f *fakeStore) PullEntries(_ context.Context, userID int64, vault string, since int64) ([]store.Entry, int64, error) {
+	page, err := f.PullEntriesPage(context.Background(), userID, vault, since, store.PullOptions{IncludeDeleted: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	return page.Entries, page.LatestRevision, nil
+}
+
+func (f *fakeStore) PullEntriesPage(_ context.Context, userID int64, vault string, since int64, opts store.PullOptions) (store.PullPage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	id, err := f.vaultID(userID, vault, false)
+	if err != nil {
+		return store.PullPage{}, err
+	}
+	var all []store.Entry
+	for k, e := range f.entries {
+		if k.vaultID != id || e.Revision <= since {
+			continue
+		}
+		if since == 0 && !opts.IncludeDeleted && e.Deleted {
+			continue
+		}
+		all = append(all, e)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Revision < all[j].Revision })
+
+	out := []store.Entry{}
+	var totalBytes int64
+	hasMore := false
+	for _, e := range all {
+		if opts.Limit > 0 && len(out) >= opts.Limit {
+			hasMore = true
+			break
+		}
+		if opts.MaxBytes > 0 && len(out) > 0 && totalBytes+int64(len(e.Ciphertext)) > opts.MaxBytes {
+			hasMore = true
+			break
+		}
+		totalBytes += int64(len(e.Ciphertext))
+		out = append(out, e)
+	}
+	var nextSince int64
+	if hasMore && len(out) > 0 {
+		nextSince = out[len(out)-1].Revision
+	}
+	var metaHash string
+	if blob, ok := f.metadata[id]; ok {
+		sum := sha256.Sum256(blob)
+		metaHash = hex.EncodeToString(sum[:])
+	}
+	return store.PullPage{
+		Entries:        out,
+		LatestRevision: f.seq[id],
+		HasMore:        hasMore,
+		NextSince:      nextSince,
+		MetadataHash:   metaHash,
+	}, nil
+}
+
+func (f *fakeStore) LookupEntries(_ context.Context, userID int64, vault string, keys []store.EntryKey, metaOnly bool) ([]store.Entry, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(keys) > store.MaxBatchEntries {
+		return nil, 0, fmt.Errorf("too many keys")
+	}
 	id, err := f.vaultID(userID, vault, false)
 	if err != nil {
 		return nil, 0, err
 	}
 	out := []store.Entry{}
-	for k, e := range f.entries {
-		if k.vaultID == id && e.Revision > since {
-			out = append(out, e)
+	for _, k := range keys {
+		if k.Kind == "" {
+			return nil, 0, fmt.Errorf("empty kind")
+		}
+		if e, ok := f.entries[fakeEntryKey{id, k.Kind, k.Grp, k.Key}]; ok {
+			item := e
+			item.Size = int64(len(e.Ciphertext))
+			if !e.Deleted && len(e.Ciphertext) > 0 {
+				sum := sha256.Sum256(e.Ciphertext)
+				item.CiphertextSHA256 = hex.EncodeToString(sum[:])
+			}
+			if metaOnly {
+				item.Ciphertext = nil
+			}
+			out = append(out, item)
 		}
 	}
-	// HTTP 层只断言形状与 404/200，不依赖顺序（SQL 语义由集成测试守住）
 	return out, f.seq[id], nil
 }
 

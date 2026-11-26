@@ -148,7 +148,15 @@ func printAutoPushWarning(out io.Writer, dirty int, err error) {
 		fmt.Fprintf(out, "⚠ %d 条推送冲突：%s；运行 senv sync 解决\n", dirty, strings.Join(items, ", "))
 		return
 	}
-	fmt.Fprintf(out, "⚠ %d 条待推送，server 暂不可达，恢复后将自动重试\n", dirty)
+	if provider.IsTimeout(err) {
+		fmt.Fprintf(out, "⚠ %d 条待推送，同步超时，请运行 senv sync 重试\n", dirty)
+		return
+	}
+	if provider.IsUnreachable(err) {
+		fmt.Fprintf(out, "⚠ %d 条待推送，server 暂不可达，恢复后将自动重试\n", dirty)
+		return
+	}
+	fmt.Fprintf(out, "⚠ %d 条待推送，同步失败：%v；请运行 senv sync 重试\n", dirty, err)
 }
 
 // pushBlockingAfterCriticalWrite confirms low-frequency, high-impact writes on

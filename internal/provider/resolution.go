@@ -83,7 +83,11 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 	dirty := p.collectDirty(st, current)
 	dirtyByID := entryMap(dirty)
 
-	remote, remoteLatest, err := p.api.Pull(ctx, p.vault, 0)
+	keys := make([]EntryKey, 0, len(plan.Items))
+	for _, item := range plan.Items {
+		keys = append(keys, EntryKey{Kind: item.Kind, Grp: item.Grp, Key: item.Key})
+	}
+	remote, remoteLatest, err := p.lookupEntriesOrPull(ctx, keys, false)
 	if err != nil {
 		return err
 	}

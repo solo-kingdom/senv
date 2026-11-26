@@ -9,6 +9,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 
@@ -42,6 +43,13 @@ type vaultSeqEntry struct {
 	expires time.Time
 }
 
+type metaCacheEntry struct {
+	blob    []byte
+	hash    string
+	found   bool
+	expires time.Time
+}
+
 type cachedStore struct {
 	inner Store
 	// now 可注入时钟，供 TTL 过期测试
@@ -54,6 +62,8 @@ type cachedStore struct {
 	auth      map[authKey]authEntry
 	authEpoch uint64
 	vaultSeq  map[vaultSeqKey]vaultSeqEntry
+	metaCache map[vaultSeqKey]metaCacheEntry
+	metaHash  map[vaultSeqKey]vaultMetaHashEntry
 
 	// last_seen 内存节流缓冲（touch 切片）：TouchClient 只记内存，由
 	// StartTouchFlusher 周期或停机前 FlushTouches 批量落库。纯展示字段，
@@ -61,17 +71,24 @@ type cachedStore struct {
 	touches map[int64]struct{}
 }
 
+type vaultMetaHashEntry struct {
+	hash    string
+	expires time.Time
+}
+
 // WithCache 在 inner 外包一层进程内缓存；返回具体类型以便调用方持有
 // ClearAuth 交给失效广播监听。
 func WithCache(inner Store) *cachedStore {
 	return &cachedStore{
-		inner:    inner,
-		now:      time.Now,
-		authTTL:  DefaultAuthTTL,
-		vaultTTL: DefaultVaultTTL,
-		auth:     map[authKey]authEntry{},
-		vaultSeq: map[vaultSeqKey]vaultSeqEntry{},
-		touches:  map[int64]struct{}{},
+		inner:     inner,
+		now:       time.Now,
+		authTTL:   DefaultAuthTTL,
+		vaultTTL:  DefaultVaultTTL,
+		auth:      map[authKey]authEntry{},
+		vaultSeq:  map[vaultSeqKey]vaultSeqEntry{},
+		metaCache: map[vaultSeqKey]metaCacheEntry{},
+		metaHash:  map[vaultSeqKey]vaultMetaHashEntry{},
+		touches:   map[int64]struct{}{},
 	}
 }
 
@@ -137,14 +154,47 @@ func (c *cachedStore) AuthenticateWithClient(ctx context.Context, token string) 
 	return res, err
 }
 
-// GetMetadata 透传：metadata 低频，不值得缓存
+// GetMetadata 缓存 vault metadata blob；PutMetadata 写入时即时更新/失效。
 func (c *cachedStore) GetMetadata(ctx context.Context, userID int64, vault string) ([]byte, error) {
-	return c.inner.GetMetadata(ctx, userID, vault)
+	key := vaultSeqKey{userID, vault}
+	now := c.now()
+	c.mu.Lock()
+	e, ok := c.metaCache[key]
+	c.mu.Unlock()
+	if ok && now.Before(e.expires) {
+		if !e.found {
+			return nil, ErrNotFound
+		}
+		return append([]byte(nil), e.blob...), nil
+	}
+	blob, err := c.inner.GetMetadata(ctx, userID, vault)
+	if err == nil {
+		sum := sha256.Sum256(blob)
+		h := hex.EncodeToString(sum[:])
+		cp := append([]byte(nil), blob...)
+		c.mu.Lock()
+		c.metaCache[key] = metaCacheEntry{blob: cp, hash: h, found: true, expires: now.Add(c.vaultTTL)}
+		c.metaHash[key] = vaultMetaHashEntry{hash: h, expires: now.Add(c.vaultTTL)}
+		c.mu.Unlock()
+	}
+	return blob, err
 }
 
-// PutMetadata 透传
+// PutMetadata 写入成功后同步更新 metadata 缓存与 hash 缓存。
 func (c *cachedStore) PutMetadata(ctx context.Context, userID int64, vault string, blob []byte, baseHash string) error {
-	return c.inner.PutMetadata(ctx, userID, vault, blob, baseHash)
+	if err := c.inner.PutMetadata(ctx, userID, vault, blob, baseHash); err != nil {
+		return err
+	}
+	key := vaultSeqKey{userID, vault}
+	now := c.now()
+	sum := sha256.Sum256(blob)
+	h := hex.EncodeToString(sum[:])
+	cp := append([]byte(nil), blob...)
+	c.mu.Lock()
+	c.metaCache[key] = metaCacheEntry{blob: cp, hash: h, found: true, expires: now.Add(c.vaultTTL)}
+	c.metaHash[key] = vaultMetaHashEntry{hash: h, expires: now.Add(c.vaultTTL)}
+	c.mu.Unlock()
+	return nil
 }
 
 // GetMetadataHistory 透传（低频只读路径）
@@ -167,18 +217,37 @@ func (c *cachedStore) PushEntries(ctx context.Context, userID, clientID int64, v
 // 推进，缓存偏旧（值更小）只会漏判「已最新」而退回内层完整查询，不会
 // 假命中——方向性安全。
 func (c *cachedStore) PullEntries(ctx context.Context, userID int64, vault string, since int64) ([]Entry, int64, error) {
+	page, err := c.PullEntriesPage(ctx, userID, vault, since, PullOptions{IncludeDeleted: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	return page.Entries, page.LatestRevision, nil
+}
+
+// PullEntriesPage 复用 vault seq 与 metadata_hash 缓存做「已最新」快返。
+func (c *cachedStore) PullEntriesPage(ctx context.Context, userID int64, vault string, since int64, opts PullOptions) (PullPage, error) {
 	key := vaultSeqKey{userID, vault}
+	now := c.now()
 	c.mu.Lock()
 	e, ok := c.vaultSeq[key]
+	mh, mhOK := c.metaHash[key]
 	c.mu.Unlock()
-	if ok && c.now().Before(e.expires) && since >= e.seq {
-		return []Entry{}, e.seq, nil
+	if ok && now.Before(e.expires) && since >= e.seq && mhOK && now.Before(mh.expires) {
+		return PullPage{Entries: []Entry{}, LatestRevision: e.seq, MetadataHash: mh.hash}, nil
 	}
-	entries, latest, err := c.inner.PullEntries(ctx, userID, vault, since)
+	page, err := c.inner.PullEntriesPage(ctx, userID, vault, since, opts)
 	if err == nil {
-		c.putVaultSeq(key, latest)
+		c.putVaultSeq(key, page.LatestRevision)
+		c.mu.Lock()
+		c.metaHash[key] = vaultMetaHashEntry{hash: page.MetadataHash, expires: c.now().Add(c.vaultTTL)}
+		c.mu.Unlock()
 	}
-	return entries, latest, err
+	return page, err
+}
+
+// LookupEntries 透传按 key 批量查询。
+func (c *cachedStore) LookupEntries(ctx context.Context, userID int64, vault string, keys []EntryKey, metaOnly bool) ([]Entry, int64, error) {
+	return c.inner.LookupEntries(ctx, userID, vault, keys, metaOnly)
 }
 
 // CreateRegistrationCode 透传（admin 语义，一次性进程）

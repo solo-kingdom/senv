@@ -101,13 +101,14 @@ func New(st store.Store, opts ...Options) *Server {
 	s.mux.HandleFunc("PUT /v1/vaults/{vault}/metadata", s.auth(s.handlePutMetadata))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/entries", s.auth(s.handlePull))
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries", s.auth(s.handlePush))
+	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries/lookup", s.auth(s.handleLookup))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/history", s.auth(s.handleHistory))
 	return s
 }
 
 // ServeHTTP 实现 http.Handler；非 healthz 请求在响应后落一条安全事件
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.withAccessLog(s.mux).ServeHTTP(w, r)
+	s.withAccessLog(withGzip(s.mux)).ServeHTTP(w, r)
 }
 
 // withAccessInfo 为每个请求挂上可变的身份/原因聚合（访问日志用）
@@ -313,27 +314,105 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 type pullResponse struct {
 	Entries        []store.Entry `json:"entries"`
 	LatestRevision int64         `json:"latest_revision"`
+	HasMore        bool          `json:"has_more,omitempty"`
+	NextSince      int64         `json:"next_since,omitempty"`
+	MetadataHash   string        `json:"metadata_hash,omitempty"`
 }
 
 func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFrom(r.Context())
 	vault := r.PathValue("vault")
-	since, err := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	q := r.URL.Query()
+	since, err := strconv.ParseInt(q.Get("since"), 10, 64)
 	if err != nil || since < 0 {
 		writeError(w, http.StatusBadRequest, "invalid since parameter")
 		return
 	}
-	entries, latest, err := s.store.PullEntries(r.Context(), userID, vault, since)
+	opts := store.PullOptions{IncludeDeleted: true}
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 || n > 5000 {
+			writeError(w, http.StatusBadRequest, "invalid limit parameter")
+			return
+		}
+		opts.Limit = n
+	}
+	if raw := q.Get("max_bytes"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid max_bytes parameter")
+			return
+		}
+		opts.MaxBytes = n
+	}
+	if raw := q.Get("include_deleted"); raw != "" {
+		switch raw {
+		case "1", "true":
+			opts.IncludeDeleted = true
+		case "0", "false":
+			opts.IncludeDeleted = false
+		default:
+			writeError(w, http.StatusBadRequest, "invalid include_deleted parameter")
+			return
+		}
+	}
+
+	page, err := s.store.PullEntriesPage(r.Context(), userID, vault, since, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "vault not found")
+			return
+		}
+		var verr *store.ValidationError
+		if errors.As(err, &verr) {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		slog.Error("pull failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, pullResponse{Entries: entries, LatestRevision: latest})
+	writeJSON(w, http.StatusOK, pullResponse{
+		Entries:        page.Entries,
+		LatestRevision: page.LatestRevision,
+		HasMore:        page.HasMore,
+		NextSince:      page.NextSince,
+		MetadataHash:   page.MetadataHash,
+	})
+}
+
+type lookupRequest struct {
+	Keys     []store.EntryKey `json:"keys"`
+	MetaOnly bool             `json:"meta_only"`
+}
+
+func (s *Server) handleLookup(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFrom(r.Context())
+	vault := r.PathValue("vault")
+	var req lookupRequest
+	if err := s.decodeBody(w, r, &req); err != nil {
+		s.writeDecodeError(w, err)
+		return
+	}
+	entries, latest, err := s.store.LookupEntries(r.Context(), userID, vault, req.Keys, req.MetaOnly)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "vault not found")
+			return
+		}
+		var verr *store.ValidationError
+		if errors.As(err, &verr) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("lookup failed", "vault", vault, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries":         entries,
+		"latest_revision": latest,
+	})
 }
 
 // decodeBody 限制请求体大小并解码 JSON

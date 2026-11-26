@@ -45,6 +45,11 @@ func (f *fakeInner) PullEntries(_ context.Context, _ int64, _ string, _ int64) (
 	return f.entries, f.pullLatest, nil
 }
 
+func (f *fakeInner) PullEntriesPage(_ context.Context, _ int64, _ string, _ int64, _ PullOptions) (PullPage, error) {
+	f.pullCalls.Add(1)
+	return PullPage{Entries: f.entries, LatestRevision: f.pullLatest}, nil
+}
+
 func (f *fakeInner) PushEntries(_ context.Context, _ int64, _ int64, _ string, _ []Entry) ([]Entry, int64, error) {
 	return nil, f.pushLatest, nil
 }
