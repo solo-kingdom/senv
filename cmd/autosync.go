@@ -16,10 +16,22 @@ import (
 )
 
 const (
-	autoSyncPullBudget = 2 * time.Second
-	autoSyncPushBudget = 2 * time.Second
-	blockingPushBudget = 10 * time.Second
+	autoSyncPullBudget   = 2 * time.Second
+	preWritePullThrottle = 2 * time.Second
+	autoSyncPushBudget   = 2 * time.Second
+	blockingPushBudget   = 10 * time.Second
 )
+
+// ErrSyncConflictPending 表示在严格同步模式下，写前检测到远端已更新了本地待推送条目。
+var ErrSyncConflictPending = errors.New("存在未解决的远端同步冲突风险")
+
+func isStrictSync() bool {
+	if strictSync {
+		return true
+	}
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("SENV_STRICT_SYNC")))
+	return v == "1" || v == "true" || v == "yes"
+}
 
 // getAutoSyncServerProvider returns nil when automatic sync cannot run. The
 // settings check happens before provider.New, so git mode and auto_sync=false
@@ -98,23 +110,94 @@ func newAutoPuller(cmd *cobra.Command) func() {
 	return func() { autoPull(cmd, false) }
 }
 
-// postRunAutoPush is the root fallback for write commands. The local dirty scan
-// happens first inside AutoPush; clean, disabled, and git paths make no request.
-func postRunAutoPush(cmd *cobra.Command) {
-	if skipAutoPush(cmd) {
-		return
+// preWriteAutoPull 在写命令执行前做一次短防抖（2s）的 best-effort 增量拉取，
+// 降低多端并发写入撞车概率。离线/超时仍允许本地写入；若远端已更新本地待推送
+// 条目（SkippedDirty > 0），默认打强警告，--strict-sync / SENV_STRICT_SYNC=1 时早停报错。
+func preWriteAutoPull(cmd *cobra.Command, args []string) error {
+	if skipPreWritePull(cmd, args) {
+		return nil
 	}
 	sp, err := getAutoSyncServerProvider()
 	if err != nil || sp == nil {
-		return
+		return nil
+	}
+	st := perflog.Start("sync.prewrite-pull")
+	ctx, cancel := context.WithTimeout(commandContext(cmd), autoSyncPullBudget)
+	defer cancel()
+	res, skip, err := sp.AutoPull(ctx, preWritePullThrottle, false)
+	if err != nil {
+		st.End(false)
+		exitOnClientBlocked(cmd.ErrOrStderr(), err)
+		if !errors.Is(err, provider.ErrClientBlocked) {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, "写前 auto pull 失败")
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ 写前拉取失败（%v），将在本地缓存基线上写入\n", err)
+		}
+		return nil
+	}
+	if skip == provider.AutoSyncSkipThrottled || skip == provider.AutoSyncSkipLocked {
+		st.End(true)
+		return nil
+	}
+	if res != nil {
+		if res.Applied > 0 || res.MetadataUpdated {
+			auditOp(session.AuditOpSync, "vault:"+syncVaultName(), true, fmt.Sprintf("写前 auto pull %d 条", res.Applied))
+			fmt.Fprintf(cmd.ErrOrStderr(), "✓ 写前已从 server 更新 %d 条\n", res.Applied)
+		}
+		if res.SkippedDirty > 0 {
+			st.With("skipped_dirty", res.SkippedDirty).End(false)
+			fmt.Fprintf(cmd.ErrOrStderr(), "⚠ 远端已更新 %d 个本地待推送条目，继续写入可能扩大冲突；建议先运行 senv sync diff 查看差异\n", res.SkippedDirty)
+			if isStrictSync() {
+				return fmt.Errorf("%w（%d 个待推送条目在远端已更新）", ErrSyncConflictPending, res.SkippedDirty)
+			}
+			return nil
+		}
+	}
+	st.End(true)
+	return nil
+}
+
+func skipPreWritePull(cmd *cobra.Command, args []string) bool {
+	if skipAutoPush(cmd) {
+		return true
+	}
+	if cmd != nil && cmd.Parent() == nil {
+		if len(args) == 0 {
+			return true
+		}
+		if _, _, ok := parseAddress(args[0]); !ok {
+			return true
+		}
+	}
+	for c := cmd; c != nil; c = c.Parent() {
+		switch c.Name() {
+		case "init", "migrate", "server", "session", "audit", "update",
+			"interactive", "git", "push", "passwd", "sync", "mcp",
+			"tui", "doctor", "version", "history", "rebase", "help", "completion",
+			"__complete", "__completeNoDesc":
+			return true
+		}
+	}
+	return false
+}
+
+// postRunAutoPush is the root fallback for write commands. The local dirty scan
+// happens first inside AutoPush; clean, disabled, and git paths make no request.
+func postRunAutoPush(cmd *cobra.Command) error {
+	if skipAutoPush(cmd) {
+		return nil
+	}
+	sp, err := getAutoSyncServerProvider()
+	if err != nil || sp == nil {
+		return nil
 	}
 	st := perflog.Start("sync.autopush")
-	ctx, cancel := context.WithTimeout(commandContext(cmd), autoSyncPushBudget)
+	ctx, cancel := context.WithTimeout(commandContext(cmd), maxPushWaitBudget())
 	defer cancel()
-	out, err := sp.AutoPush(ctx, autoSyncPushBudget)
+	// 传 budget<=0 让 AutoPush 按待推送载荷字节数自适应放大预算（2s–15s）。
+	out, err := sp.AutoPush(ctx, 0)
 	if err == nil || out == nil || out.Skip == provider.AutoSyncSkipClean || out.Skip == provider.AutoSyncSkipLocked {
 		st.End(true)
-		return
+		return nil
 	}
 	st.End(false)
 	exitOnClientBlocked(os.Stderr, err)
@@ -124,6 +207,15 @@ func postRunAutoPush(cmd *cobra.Command) {
 		auditOp(session.AuditOpSync, "vault:"+syncVaultName(), false, fmt.Sprintf("auto push %d 条待推送失败", out.Dirty))
 	}
 	printAutoPushWarning(os.Stderr, out.Dirty, err)
+	var conflict *provider.SyncConflictError
+	if isStrictSync() && errors.As(err, &conflict) {
+		return err
+	}
+	return nil
+}
+
+func maxPushWaitBudget() time.Duration {
+	return 15 * time.Second
 }
 
 func init() {

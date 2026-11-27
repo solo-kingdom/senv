@@ -27,11 +27,32 @@ func (p *ServerProvider) AutoSyncEnabled() bool { return p.autoSync }
 func (p *ServerProvider) SyncThrottleWindow() time.Duration { return p.syncThrottle }
 
 const (
-	// autoSyncBudget 是自动 pull/push 的最大等待时间，避免读写命令被慢网络拖住。
+	// autoSyncBudget 是自动 pull/push 的默认基础预算，避免读写命令被慢网络拖住。
 	autoSyncBudget = 2 * time.Second
+	// maxAutoPushBudget 是按待推送载荷自适应放大后的最大等待预算。
+	maxAutoPushBudget = 15 * time.Second
+	// autoPushBytesPerSec 用于按待推字节数估算预算（按 128 KiB/s 保守估算）。
+	autoPushBytesPerSec = 128 * 1024
 	// blockingPushBudget 是 passwd 等关键写的确认预算。
 	blockingPushBudget = 10 * time.Second
 )
+
+// AutoPushBudgetForBytes 按待推送载荷总字节数计算自适应超时预算：
+// 2s + totalBytes / 128 KiB/s，clamp 到 [2s, 15s]。
+func AutoPushBudgetForBytes(totalBytes int64) time.Duration {
+	if totalBytes <= 0 {
+		return autoSyncBudget
+	}
+	extra := time.Duration(totalBytes/autoPushBytesPerSec) * time.Second
+	budget := autoSyncBudget + extra
+	if budget < autoSyncBudget {
+		return autoSyncBudget
+	}
+	if budget > maxAutoPushBudget {
+		return maxAutoPushBudget
+	}
+	return budget
+}
 
 // AutoPushOutcome 汇总一次自动推送；Dirty 在推送失败时同样有效（警告文案用）
 type AutoPushOutcome struct {
@@ -107,18 +128,27 @@ func (p *ServerProvider) AutoPush(ctx context.Context, budget time.Duration) (*A
 	if err != nil {
 		return nil, err
 	}
-	current, _, err := p.cache.collectWithState(st)
+	current, idents, err := p.cache.collectWithState(st)
 	if err != nil {
 		return nil, err
 	}
-	dirty := len(p.collectDirty(st, current))
+	dirtyEntries := p.collectDirty(st, current)
+	dirty := len(dirtyEntries)
 	if dirty == 0 {
 		return &AutoPushOutcome{Skip: AutoSyncSkipClean}, nil
 	}
 
 	out := &AutoPushOutcome{Dirty: dirty}
 	if budget <= 0 {
-		budget = autoSyncBudget
+		var totalBytes int64
+		for _, e := range dirtyEntries {
+			if len(e.Ciphertext) > 0 {
+				totalBytes += int64(len(e.Ciphertext))
+			} else if ident, ok := idents[entryID(e.Kind, e.Grp, e.Key)]; ok {
+				totalBytes += ident.size
+			}
+		}
+		budget = AutoPushBudgetForBytes(totalBytes)
 	}
 	pushCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()

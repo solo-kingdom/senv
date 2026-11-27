@@ -16,6 +16,7 @@ import (
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/provider"
 	"github.com/wii/senv/internal/session"
+	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -226,7 +227,25 @@ func renderRevealedHistory(kind string, plaintext []byte) string {
 		}
 		return contentPreviewString(plaintext)
 	case "skill":
-		// skill 正文是 tar 归档，只显示大小，不展开内容。
+		if info, err := skill.Inspect(plaintext); err == nil {
+			format := "tar"
+			if info.Compressed {
+				format = "tar.gz"
+			}
+			var paths []string
+			for _, e := range info.Entries {
+				if !e.Dir {
+					paths = append(paths, e.Path)
+				}
+			}
+			const maxShow = 10
+			preview := strings.Join(paths, ", ")
+			if len(paths) > maxShow {
+				preview = strings.Join(paths[:maxShow], ", ") + fmt.Sprintf(" …（共 %d 个文件）", len(paths))
+			}
+			return fmt.Sprintf("<skill %s, %d 文件, 载荷 %dB / 解压 %dB: %s>",
+				format, info.FileCount(), len(plaintext), info.UncompressedSize, preview)
+		}
 		return fmt.Sprintf("<skill 归档，%d 字节>", len(plaintext))
 	case "tree":
 		var entry struct {

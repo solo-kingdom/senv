@@ -276,36 +276,63 @@ func (c *serverClient) do(ctx context.Context, method, path string, body any, ou
 	st := perflog.Start("net.request").With("op", method+" "+path)
 	var connsNew int
 	var m requestMetrics
+	var traceMu sync.Mutex
 	var dnsStart, connStart, tlsStart, wroteReq time.Time
 	trace := &httptrace.ClientTrace{
-		DNSStart: func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
+		DNSStart: func(httptrace.DNSStartInfo) {
+			traceMu.Lock()
+			dnsStart = time.Now()
+			traceMu.Unlock()
+		},
 		DNSDone: func(httptrace.DNSDoneInfo) {
+			traceMu.Lock()
 			if !dnsStart.IsZero() {
 				m.dnsMs = time.Since(dnsStart).Milliseconds()
 			}
+			traceMu.Unlock()
 		},
-		ConnectStart: func(string, string) { connStart = time.Now() },
+		ConnectStart: func(string, string) {
+			traceMu.Lock()
+			connStart = time.Now()
+			traceMu.Unlock()
+		},
 		ConnectDone: func(string, string, error) {
+			traceMu.Lock()
 			if !connStart.IsZero() {
 				m.connMs = time.Since(connStart).Milliseconds()
 			}
+			traceMu.Unlock()
 		},
-		TLSHandshakeStart: func() { tlsStart = time.Now() },
+		TLSHandshakeStart: func() {
+			traceMu.Lock()
+			tlsStart = time.Now()
+			traceMu.Unlock()
+		},
 		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+			traceMu.Lock()
 			if !tlsStart.IsZero() {
 				m.tlsMs = time.Since(tlsStart).Milliseconds()
 			}
+			traceMu.Unlock()
 		},
 		GotConn: func(info httptrace.GotConnInfo) {
 			if !info.Reused {
+				traceMu.Lock()
 				connsNew = 1
+				traceMu.Unlock()
 			}
 		},
-		WroteRequest: func(httptrace.WroteRequestInfo) { wroteReq = time.Now() },
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			traceMu.Lock()
+			wroteReq = time.Now()
+			traceMu.Unlock()
+		},
 		GotFirstResponseByte: func() {
+			traceMu.Lock()
 			if !wroteReq.IsZero() {
 				m.ttfbMs = time.Since(wroteReq).Milliseconds()
 			}
+			traceMu.Unlock()
 		},
 	}
 	err := c.doOnce(httptrace.WithClientTrace(ctx, trace), method, path, body, out, &m)

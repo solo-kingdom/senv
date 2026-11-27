@@ -1330,6 +1330,142 @@ func (p *ServerProvider) ForcePush(ctx context.Context) error {
 	})
 }
 
+// LookupEntries 按需查询远端条目当前状态或密文（只读，不修改本地缓存）。
+func (p *ServerProvider) LookupEntries(ctx context.Context, keys []EntryKey, metaOnly bool) ([]Entry, int64, error) {
+	return p.lookupEntriesOrPull(ctx, keys, metaOnly)
+}
+
+// AdoptRemoteEntry 将单条已拉取的远端原版密文落盘并同步其 revision/hash 到本地状态，
+// 不回退 LastSyncedRevision（供 skill rebase 等场景直接采纳远端原版碰撞快照）。
+func (p *ServerProvider) AdoptRemoteEntry(e Entry) error {
+	if err := syncschema.ValidateIdentity(e.Kind, e.Grp, e.Key); err != nil {
+		return fmt.Errorf("invalid entry identity: %w", err)
+	}
+	release, err := p.lockBlocking()
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return p.withVaultMutation(func() error {
+		st, err := p.cache.loadState()
+		if err != nil {
+			return err
+		}
+		id := entryID(e.Kind, e.Grp, e.Key)
+		removed := make(map[string]bool)
+		if e.Deleted {
+			delete(st.Entries, id)
+			removed[id] = true
+		} else {
+			st.Entries[id] = syncEntryState{
+				Revision: e.Revision,
+				Hash:     hashBytes(e.Ciphertext),
+			}
+		}
+		return p.cache.applyRemoteOpts([]Entry{e}, nil, false, st, stateWriteOptions{
+			writerPath:     "adoptRemoteEntry",
+			removedEntries: removed,
+		})
+	})
+}
+
+// InspectConflicts 只读探测当前本地待推送更改与远端之间是否存在真实冲突。
+// 全程不修改本地缓存与同步状态文件；无冲突返回 nil, nil。
+func (p *ServerProvider) InspectConflicts(ctx context.Context) (*SyncConflictError, error) {
+	release, err := p.lockBlocking()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	plan, err := p.preparePushPlan()
+	if err != nil {
+		return nil, err
+	}
+	st := plan.st
+	dirty := plan.dirty
+	localMeta := plan.localMeta
+
+	var metadataConflict bool
+	var remoteMetaBlob []byte
+	if plan.metaHash != st.MetadataHash {
+		remoteMeta, err := p.api.GetMetadata(ctx, p.vault)
+		if err != nil && !errors.Is(err, ErrVaultNotFound) {
+			return nil, err
+		}
+		if !errors.Is(err, ErrVaultNotFound) && hashBytes(remoteMeta) != plan.metaHash && hashBytes(remoteMeta) != st.MetadataHash {
+			metadataConflict = true
+			remoteMetaBlob = remoteMeta
+		}
+	}
+
+	if len(dirty) == 0 && !metadataConflict {
+		return nil, nil
+	}
+
+	var remote []Entry
+	var conflicts []Conflict
+	if len(dirty) > 0 {
+		keys := make([]EntryKey, 0, len(dirty))
+		for _, e := range dirty {
+			keys = append(keys, EntryKey{Kind: e.Kind, Grp: e.Grp, Key: e.Key})
+		}
+		var err error
+		remote, _, err = p.lookupEntriesOrPull(ctx, keys, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateRemoteEntries(remote); err != nil {
+			return nil, err
+		}
+		remoteByID := entryMap(remote)
+		for _, d := range dirty {
+			id := entryID(d.Kind, d.Grp, d.Key)
+			r, ok := remoteByID[id]
+			if !ok {
+				continue
+			}
+			isConflict := false
+			if d.BaseRevision == 0 {
+				if !r.Deleted && !d.Deleted && hashBytes(d.Ciphertext) == hashBytes(r.Ciphertext) {
+					continue
+				}
+				if !r.Deleted {
+					isConflict = true
+				}
+			} else if r.Revision != d.BaseRevision {
+				isConflict = true
+			}
+			if isConflict {
+				rHash := r.CiphertextSHA256
+				if rHash == "" && len(r.Ciphertext) > 0 {
+					rHash = hashBytes(r.Ciphertext)
+				}
+				rSize := r.Size
+				if rSize == 0 && len(r.Ciphertext) > 0 {
+					rSize = int64(len(r.Ciphertext))
+				}
+				conflicts = append(conflicts, Conflict{
+					Kind:             d.Kind,
+					Grp:              d.Grp,
+					Key:              d.Key,
+					CurrentRevision:  r.Revision,
+					Deleted:          r.Deleted,
+					Size:             rSize,
+					UpdatedAt:        r.UpdatedAt,
+					CiphertextSHA256: rHash,
+				})
+			}
+		}
+	}
+
+	if len(conflicts) == 0 && !metadataConflict {
+		return nil, nil
+	}
+	return p.buildConflictError(ctx, conflicts, metadataConflict, dirty, remote, localMeta, remoteMetaBlob), nil
+}
+
 // Status 返回本地缓存相对远端的同步状态描述
 func (p *ServerProvider) Status() (string, error) {
 	release, err := p.lockBlocking()

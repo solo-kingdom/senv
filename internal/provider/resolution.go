@@ -96,6 +96,7 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 	}
 	remoteByID := entryMap(remote)
 
+	removed := make(map[string]bool)
 	var writes, pushes []Entry
 	for _, item := range plan.Items {
 		id := entryID(item.Kind, item.Grp, item.Key)
@@ -122,6 +123,7 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 				st.Entries[id] = syncEntryState{Revision: remoteEntry.Revision, Hash: hashBytes(remoteEntry.Ciphertext)}
 			} else {
 				delete(st.Entries, id)
+				removed[id] = true
 			}
 		case ResolutionLocal:
 			writes = append(writes, local)
@@ -181,6 +183,7 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 			id := entryID(entry.Kind, entry.Grp, entry.Key)
 			if entry.Deleted {
 				delete(st.Entries, id)
+				removed[id] = true
 			} else {
 				st.Entries[id] = syncEntryState{Revision: entry.Revision, Hash: hashBytes(entry.Ciphertext)}
 			}
@@ -193,5 +196,8 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 		}
 		st.MetadataHash = hashBytes(localMeta)
 	}
-	return p.cache.saveState(st)
+	return p.cache.saveStateOpts(st, stateWriteOptions{
+		writerPath:     "resolveConflicts",
+		removedEntries: removed,
+	})
 }

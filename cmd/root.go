@@ -13,6 +13,7 @@ import (
 var (
 	dataPath          string
 	rootShorthandFile string
+	strictSync        bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -22,8 +23,11 @@ var rootCmd = &cobra.Command{
 	Long: `Senv is a secure tool for managing environment variables and configuration files.
 It provides encrypted storage for sensitive data with group-based organization.`,
 	Args: cobra.ArbitraryArgs,
-	PersistentPostRun: func(cmd *cobra.Command, args []string) {
-		postRunAutoPush(cmd)
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return preWriteAutoPull(cmd, args)
+	},
+	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		return postRunAutoPush(cmd)
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -55,6 +59,7 @@ func init() {
 	defaultPath := getDefaultDataPath()
 
 	rootCmd.PersistentFlags().StringVar(&dataPath, "path", defaultPath, "data storage path")
+	rootCmd.PersistentFlags().BoolVar(&strictSync, "strict-sync", false, "严格同步模式：写前发现冲突风险或写后推送冲突时返回非零退出码")
 	rootCmd.Flags().StringVar(&rootShorthandFile, "file", "", "read value from file (shorthand)")
 }
 

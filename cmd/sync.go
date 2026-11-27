@@ -14,10 +14,13 @@ import (
 )
 
 var (
-	syncMessage       string
-	syncAcceptRemote  bool
-	syncForcePush     bool
-	syncNoInteractive bool
+	syncMessage          string
+	syncAcceptRemote     bool
+	syncForcePush        bool
+	syncNoInteractive    bool
+	syncResolve          []string
+	syncResolveDefault   string
+	syncNoHealEquivalent bool
 )
 
 // syncCmd 是与配置的远端 provider 双向同步的统一命令：
@@ -68,6 +71,9 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncAcceptRemote, "accept-remote", false, "冲突时放弃本地改动，以远端为准（server provider）")
 	syncCmd.Flags().BoolVar(&syncForcePush, "force-push", false, "冲突时放弃远端改动，以本地为准（server provider）")
 	syncCmd.Flags().BoolVar(&syncNoInteractive, "no-interactive", false, "冲突时禁止交互式解决器，仅输出报告")
+	syncCmd.Flags().StringSliceVar(&syncResolve, "resolve", nil, "非交互按条目裁决冲突，格式 <selector>=<local|remote>（可多次指定）")
+	syncCmd.Flags().StringVar(&syncResolveDefault, "resolve-default", "", "未匹配 --resolve 规则的冲突条目默认裁决（local|remote）")
+	syncCmd.Flags().BoolVar(&syncNoHealEquivalent, "no-heal-equivalent", false, "禁用客户端内容等价假冲突自动收养")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -78,6 +84,13 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 
 	if syncAcceptRemote && syncForcePush {
 		return fmt.Errorf("--accept-remote 与 --force-push 不能同时使用")
+	}
+	if (syncAcceptRemote || syncForcePush) && (len(syncResolve) > 0 || syncResolveDefault != "") {
+		return fmt.Errorf("--accept-remote / --force-push 不能与 --resolve / --resolve-default 同时使用")
+	}
+	rules, defaultDecision, err := parseResolveFlags(syncResolve, syncResolveDefault)
+	if err != nil {
+		return err
 	}
 	if syncAcceptRemote {
 		fmt.Println("以远端为准覆盖本地改动...")
@@ -105,6 +118,53 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	if err != nil {
 		var conflictErr *provider.SyncConflictError
 		if errors.As(err, &conflictErr) {
+			var remoteMeta []byte
+			if conflictErr.Metadata != nil {
+				remoteMeta = conflictErr.Metadata.Remote
+			}
+			auth := cachedConflictAuth(remoteMeta)
+
+			if !syncNoHealEquivalent {
+				healedCount, remaining, healErr := tryHealEquivalentConflicts(ctx, sp, conflictErr, auth)
+				if healErr != nil {
+					return healErr
+				}
+				if healedCount > 0 {
+					fmt.Fprintf(cmd.OutOrStdout(), "✓ 已自动收养 %d 条内容等价冲突（仅密文/压缩格式差异）\n", healedCount)
+					if remaining == nil {
+						auditOp(session.AuditOpConflict, target, true, fmt.Sprintf("自动收养 %d 项等价冲突", healedCount))
+						return finishSyncAfterResolution(ctx, cmd.OutOrStdout(), target, sp)
+					}
+					conflictErr = remaining
+				}
+
+				if mergedIdx, remAfterMerge, mergeErr := tryMergeSkillIndexConflict(ctx, sp, conflictErr, auth); mergeErr != nil {
+					return mergeErr
+				} else if mergedIdx {
+					fmt.Fprintln(cmd.OutOrStdout(), "✓ 已自动三方合并 skill_index（无字段冲突）")
+					if remAfterMerge == nil {
+						auditOp(session.AuditOpConflict, target, true, "自动三方合并 skill_index")
+						return finishSyncAfterResolution(ctx, cmd.OutOrStdout(), target, sp)
+					}
+					conflictErr = remAfterMerge
+				}
+			}
+
+			if len(rules) > 0 || defaultDecision != "" {
+				plan, planErr := buildResolvePlan(conflictErr, rules, defaultDecision, auth)
+				if planErr != nil {
+					auditOp(session.AuditOpSync, target, false, "resolve 计划校验失败")
+					return planErr
+				}
+				if rerr := sp.ResolveConflicts(ctx, plan); rerr != nil {
+					auditOp(session.AuditOpConflict, target, false, "resolve 执行失败")
+					return rerr
+				}
+				auditOp(session.AuditOpConflict, target, true, fmt.Sprintf("非交互解决 %d 项冲突", len(plan.Items)))
+				fmt.Fprintf(cmd.OutOrStdout(), "✓ 已按规则解决 %d 项冲突\n", len(plan.Items))
+				return finishSyncAfterResolution(ctx, cmd.OutOrStdout(), target, sp)
+			}
+
 			auditOp(session.AuditOpSync, target, false, formatSyncConflictAuditMessage(conflictErr))
 			if syncConflictResolverAvailable() {
 				return runSyncConflictResolver(cmd, sp, conflictErr)
@@ -121,6 +181,19 @@ func runServerSync(cmd *cobra.Command, sp *provider.ServerProvider) error {
 	auditOp(session.AuditOpSync, target, true,
 		fmt.Sprintf("pull %d 条 / push %d 条", res.Pull.Applied, res.Push.Pushed))
 	writeSyncSuccessReport(os.Stdout, res)
+	return nil
+}
+
+// finishSyncAfterResolution 在冲突收养/三方合并/逐条裁决完成后，继续完成同批
+// 剩余非冲突 dirty 条目的推送与远端拉取。
+func finishSyncAfterResolution(ctx context.Context, out io.Writer, target string, sp *provider.ServerProvider) error {
+	res, err := sp.SyncWithReport(ctx)
+	if err != nil {
+		return err
+	}
+	auditOp(session.AuditOpSync, target, true,
+		fmt.Sprintf("冲突收敛后续推 pull %d 条 / push %d 条", res.Pull.Applied, res.Push.Pushed))
+	writeSyncSuccessReport(out, res)
 	return nil
 }
 
@@ -199,9 +272,11 @@ func writeSyncConflictReport(w io.Writer, conflict *provider.SyncConflictError) 
 	if conflict.MetadataConflict {
 		fmt.Fprintln(w, "  M. vault metadata（本地与远端均已修改；只允许整体选择一边）")
 	}
-	fmt.Fprintln(w, "\n解决方式（二选一）:")
-	fmt.Fprintln(w, "  senv sync --accept-remote  放弃本地改动，以远端为准")
-	fmt.Fprintln(w, "  senv sync --force-push     放弃远端改动，以本地为准")
+	fmt.Fprintln(w, "\n解决方式:")
+	fmt.Fprintln(w, "  senv sync diff             查看冲突明细（skill 文件差异 / 索引碰撞）")
+	fmt.Fprintln(w, "  senv sync --resolve ...    非交互按条目裁决（如 skill:on-demand:*=local）")
+	fmt.Fprintln(w, "  senv sync --accept-remote  放弃全部本地改动，以远端为准")
+	fmt.Fprintln(w, "  senv sync --force-push     放弃全部远端改动，以本地为准")
 }
 
 // isConfigSourceKind 报告 kind 是否为人工添加、跨机分发的配置源档案；

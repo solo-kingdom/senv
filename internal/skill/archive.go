@@ -483,3 +483,72 @@ func Validate(archive []byte, id string) (*Archive, error) {
 	}
 	return a, nil
 }
+
+// ReadArchiveFiles 校验归档并返回清单及所有普通文件的 path->bytes 映射（只读，不落盘）。
+// 透明支持确定性 ustar tar.gz 与存量未压缩 ustar tar，并受 8 MiB 解压上限保护。
+func ReadArchiveFiles(archive []byte) (*Archive, map[string][]byte, error) {
+	info, err := Inspect(archive)
+	if err != nil {
+		return nil, nil, err
+	}
+	tarBytes, _, err := decodeArchive(archive)
+	if err != nil {
+		return nil, nil, err
+	}
+	files := make(map[string][]byte, info.FileCount())
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid skill archive: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, MaxUncompressedArchiveBytes+1))
+		if err != nil {
+			return nil, nil, fmt.Errorf("read archive entry %q: %w", hdr.Name, err)
+		}
+		files[hdr.Name] = data
+	}
+	return info, files, nil
+}
+
+// ExtractToDir 校验并将归档安全解包到 destDir（目录 0700，文件 0600 或 0700，不写 .senv-owned）。
+func ExtractToDir(archive []byte, destDir string) (*Archive, error) {
+	info, files, err := ReadArchiveFiles(archive)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create extract dir: %w", err)
+	}
+	for _, entry := range info.Entries {
+		if entry.Dir {
+			target := filepath.Join(destDir, filepath.FromSlash(entry.Path))
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return nil, fmt.Errorf("create dir %q: %w", entry.Path, err)
+			}
+		}
+	}
+	for _, entry := range info.Entries {
+		if entry.Dir {
+			continue
+		}
+		target := filepath.Join(destDir, filepath.FromSlash(entry.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return nil, fmt.Errorf("create parent dir for %q: %w", entry.Path, err)
+		}
+		perm := fs.FileMode(0o600)
+		if entry.Mode&0o111 != 0 {
+			perm = 0o700
+		}
+		if err := os.WriteFile(target, files[entry.Path], perm); err != nil {
+			return nil, fmt.Errorf("write file %q: %w", entry.Path, err)
+		}
+	}
+	return info, nil
+}

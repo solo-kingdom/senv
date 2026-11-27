@@ -11,6 +11,7 @@ import (
 
 	"github.com/wii/senv/internal/crypto"
 	"github.com/wii/senv/internal/provider"
+	"github.com/wii/senv/internal/skill"
 	"github.com/wii/senv/internal/storage"
 )
 
@@ -39,6 +40,8 @@ func NewAuthWithLocalMetadata(key []byte, localMetadata []byte, remoteMetadata [
 			auth.RemoteKeyEpoch = md.KeyEpoch
 		}
 		auth.RemoteKeyCompatible = MetadataKeyCompatible(remoteMetadata, key)
+	} else {
+		auth.RemoteKeyEpoch = auth.KeyEpoch
 	}
 	return auth
 }
@@ -68,10 +71,6 @@ func decodeSide(detail provider.ConflictDetail, side provider.ConflictSide, key 
 	}
 	if kind == provider.KindSSHHost || kind == provider.KindSSHKeypair {
 		// SSH 档案含私钥本体：冲突对比不解密、不产出明文，只保留元数据（ADR-0020）。
-		return decodedSide{Size: side.Size}, nil
-	}
-	if kind == provider.KindSkill {
-		// skill 正文是加密 tar 归档：冲突对比不解密、不产出明文，只保留元数据。
 		return decodedSide{Size: side.Size}, nil
 	}
 	if kind == provider.KindSkillIndex {
@@ -186,6 +185,21 @@ func decryptWithEpochFallback(key []byte, encoded, kind, grp, entryKey string, k
 	return nil, crypto.ErrDecryptionFailed
 }
 
+// DecryptEntryPayload 在客户端已解锁状态下解密单条非私钥密文（供 sync diff / 导出使用）。
+// 对 ssh_host / ssh_keypair 永不解密并显式拒绝。
+func DecryptEntryPayload(kind, grp, entryKey string, ciphertext []byte, auth Auth) ([]byte, error) {
+	if kind == provider.KindSSHHost || kind == provider.KindSSHKeypair {
+		return nil, fmt.Errorf("出于安全边界，禁止解密或导出 %s 条目", kind)
+	}
+	if (kind == provider.KindConfigIndex || kind == provider.KindSkillIndex) && !crypto.IsV2Ciphertext(string(ciphertext)) {
+		return ciphertext, nil
+	}
+	if len(auth.Key) == 0 {
+		return nil, fmt.Errorf("vault key unavailable")
+	}
+	return decryptWithEpochFallback(auth.Key, string(ciphertext), kind, grp, entryKey, auth.RemoteKeyEpoch)
+}
+
 func sideKey(kind string, side provider.ConflictSide, auth Auth, remote bool) []byte {
 	if len(side.Ciphertext) == 0 || side.Deleted {
 		return nil
@@ -220,8 +234,13 @@ func renderSide(label, kind string, side provider.ConflictSide, decoded decodedS
 		// SSH 档案含私钥本体：无论是否 reveal 都只渲染元数据（ADR-0005/0020）。
 		b.WriteString("    content=<metadata only> plaintext not decoded\n")
 	case kind == provider.KindSkill:
-		b.WriteString("    content=<metadata only> skill archive not decoded\n")
-	case kind == provider.KindConfigIndex:
+		if info, err := skill.Inspect(decoded.Plaintext); err == nil {
+			fmt.Fprintf(&b, "    archive=%s files=%d payload=%dB uncompressed=%dB\n",
+				archiveFormatLabel(info.Compressed), info.FileCount(), len(decoded.Plaintext), info.UncompressedSize)
+		} else {
+			fmt.Fprintf(&b, "    content=<skill archive %dB>\n", len(decoded.Plaintext))
+		}
+	case kind == provider.KindConfigIndex, kind == provider.KindSkillIndex:
 		b.WriteString("    semantic differences are listed below\n")
 	default:
 		value := "<text hidden>"
@@ -255,6 +274,24 @@ func RenderDetail(detail provider.ConflictDetail, auth Auth, reveal bool) string
 			b.WriteString(RenderConfigIndexDiff(local.Plaintext, remote.Plaintext))
 		} else {
 			b.WriteString("  config index: encrypted or unavailable; unlock vault to view diff\n")
+		}
+	}
+	if detail.Kind == provider.KindSkillIndex {
+		if localErr == nil && remoteErr == nil {
+			b.WriteString(RenderSkillIndexDiff(local.Plaintext, remote.Plaintext))
+		} else {
+			b.WriteString("  skill index: encrypted or unavailable; unlock vault to view diff\n")
+		}
+	}
+	if detail.Kind == provider.KindSkill && !detail.Local.Deleted && !detail.Remote.Deleted {
+		if localErr == nil && remoteErr == nil {
+			if diff, err := CompareSkillArchives(local.Plaintext, remote.Plaintext); err == nil {
+				b.WriteString(RenderSkillDiff(diff, reveal))
+			} else {
+				fmt.Fprintf(&b, "  skill archive diff unavailable: %v\n", err)
+			}
+		} else {
+			b.WriteString("  skill archive: encrypted or unavailable; unlock vault to view diff\n")
 		}
 	}
 	return b.String()

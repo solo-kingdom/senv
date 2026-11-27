@@ -690,3 +690,46 @@ func TestParseSkillRef(t *testing.T) {
 		}
 	}
 }
+
+func TestReadArchiveFilesAndExtractToDir(t *testing.T) {
+	// 1. 裸 tar 与 gzip tar.gz 均可读取并解包
+	rawTar := buildTar(t, skillMDEntry(), rawEntry{hdr: tar.Header{Typeflag: tar.TypeReg, Name: "scripts/run.sh", Mode: 0o755}, body: "#!/bin/sh\necho hi\n"})
+	info, files, err := ReadArchiveFiles(rawTar)
+	if err != nil {
+		t.Fatalf("ReadArchiveFiles(rawTar): %v", err)
+	}
+	if info.Compressed || info.FileCount() != 2 {
+		t.Fatalf("unexpected raw info: %+v", info)
+	}
+	if string(files["scripts/run.sh"]) != "#!/bin/sh\necho hi\n" {
+		t.Fatalf("unexpected run.sh content: %q", files["scripts/run.sh"])
+	}
+
+	dest := filepath.Join(t.TempDir(), "extracted")
+	if _, err := ExtractToDir(gzipBytes(t, rawTar), dest); err != nil {
+		t.Fatalf("ExtractToDir(gz): %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "scripts", "run.sh"))
+	if err != nil || string(got) != "#!/bin/sh\necho hi\n" {
+		t.Fatalf("extracted file = %q, err=%v", got, err)
+	}
+	fi, err := os.Stat(filepath.Join(dest, "scripts", "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("executable bit lost on extracted script: %v", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(dest, OwnedMarker)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ExtractToDir must not create %s", OwnedMarker)
+	}
+
+	// 2. 路径穿越归档必须被拒绝
+	badTar := buildTar(t, skillMDEntry(), rawEntry{hdr: tar.Header{Typeflag: tar.TypeReg, Name: "../escape.txt", Mode: 0o644}, body: "bad"})
+	if _, _, err := ReadArchiveFiles(badTar); err == nil {
+		t.Fatal("ReadArchiveFiles must reject traversal path")
+	}
+	if _, err := ExtractToDir(badTar, filepath.Join(t.TempDir(), "bad")); err == nil {
+		t.Fatal("ExtractToDir must reject traversal path")
+	}
+}
