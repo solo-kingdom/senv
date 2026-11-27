@@ -87,7 +87,7 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 	for _, item := range plan.Items {
 		keys = append(keys, EntryKey{Kind: item.Kind, Grp: item.Grp, Key: item.Key})
 	}
-	remote, remoteLatest, err := p.lookupEntriesOrPull(ctx, keys, false)
+	remote, _, err := p.lookupEntriesOrPull(ctx, keys, false)
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,6 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 		}
 	}
 
-	st.LastSyncedRevision = remoteLatest
 	var metadataToApply []byte
 	applyMetadata := false
 	if plan.Metadata == ResolutionRemote {
@@ -178,7 +177,7 @@ func (p *ServerProvider) resolveConflictsLocked(ctx context.Context, plan Resolu
 			}
 			return err
 		}
-		st.LastSyncedRevision = latest
+		st.LastSyncedRevision = advanceCursorAfterPush(st.LastSyncedRevision, pushed, latest)
 		for _, entry := range pushed {
 			id := entryID(entry.Kind, entry.Grp, entry.Key)
 			if entry.Deleted {

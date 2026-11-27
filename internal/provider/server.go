@@ -270,7 +270,7 @@ func (p *ServerProvider) RestoreEntry(ctx context.Context, kind, grp, key string
 		if err != nil {
 			return err
 		}
-		st.LastSyncedRevision = latest
+		st.LastSyncedRevision = advanceCursorAfterPush(st.LastSyncedRevision, pushed, latest)
 		for _, entry := range pushed {
 			st.Entries[entryID(entry.Kind, entry.Grp, entry.Key)] = syncEntryState{
 				Revision: entry.Revision, Hash: hashBytes(entry.Ciphertext),
@@ -733,6 +733,14 @@ func (p *ServerProvider) pullApplyLocked(st *syncState, remote []Entry, latest i
 			if e.Revision == prev.Revision && !e.Deleted && prev.Hash != "" && hashBytes(e.Ciphertext) != prev.Hash {
 				return nil, fmt.Errorf("检测到远端条目 %s/%s/%s 同版本密文被篡改（revision=%d），已拒绝拉取", e.Kind, e.Grp, e.Key, e.Revision)
 			}
+			// 本机先前 push 未推进游标时，下次 pull 会回环收到同 revision+hash 的条目，直接跳过落盘。
+			if e.Revision == prev.Revision && !e.Deleted && prev.Hash != "" {
+				continue
+			}
+		} else if e.Deleted {
+			if _, exists := current[id]; !exists {
+				continue
+			}
 		}
 		toApply = append(toApply, e)
 		res.Applied++
@@ -827,6 +835,25 @@ func (p *ServerProvider) preparePushPlan() (*pushPlan, error) {
 	return plan, err
 }
 
+// advanceCursorAfterPush 仅在本次 push 分配的 revision 严格连续覆盖 (cur, latest]
+// 且无空洞时推进增量拉取游标；若中间夹杂未拉取的远端写入，保持 cur 不变由下次 pull 补齐。
+func advanceCursorAfterPush(cur int64, pushed []Entry, latest int64) int64 {
+	if len(pushed) == 0 || latest <= cur || latest-cur != int64(len(pushed)) {
+		return cur
+	}
+	seen := make(map[int64]struct{}, len(pushed))
+	for _, e := range pushed {
+		if e.Revision <= cur || e.Revision > latest {
+			return cur
+		}
+		if _, dup := seen[e.Revision]; dup {
+			return cur
+		}
+		seen[e.Revision] = struct{}{}
+	}
+	return latest
+}
+
 func (p *ServerProvider) commitPushBatch(pushed []Entry, healed map[string]syncEntryState, latest int64, pushedHashes map[string]string, setRev bool) error {
 	return p.withVaultMutation(func() error {
 		st, err := p.cache.loadState()
@@ -870,8 +897,8 @@ func (p *ServerProvider) commitPushBatch(pushed []Entry, healed map[string]syncE
 				}
 			}
 		}
-		if setRev && latest > st.LastSyncedRevision {
-			st.LastSyncedRevision = latest
+		if setRev {
+			st.LastSyncedRevision = advanceCursorAfterPush(st.LastSyncedRevision, pushed, latest)
 		}
 		return p.cache.saveStateOpts(st, stateWriteOptions{
 			writerPath:     "pushLocked",
@@ -1319,7 +1346,7 @@ func (p *ServerProvider) ForcePush(ctx context.Context) error {
 				st.Entries[id] = syncEntryState{Revision: e.Revision, Hash: hashBytes(e.Ciphertext)}
 			}
 		}
-		st.LastSyncedRevision = latest
+		st.LastSyncedRevision = advanceCursorAfterPush(st.LastSyncedRevision, pushed, latest)
 		if curMeta, err := p.cache.readMetadata(); err == nil && hashBytes(curMeta) == plan.metaHash {
 			st.MetadataHash = plan.metaHash
 		}
