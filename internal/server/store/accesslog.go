@@ -30,21 +30,27 @@ const (
 // MaxHeaderBytes 量级的超长值，不截断则未认证流量可灌爆日志表；ip/reason
 // 为服务端可控，防御性同限。
 const (
-	MaxAccessLogIPBytes     = 64
-	MaxAccessLogPathBytes   = 512
-	MaxAccessLogReasonBytes = 128
+	MaxAccessLogIPBytes       = 64
+	MaxAccessLogPathBytes     = 512
+	MaxAccessLogRouteBytes    = 256
+	MaxAccessLogReasonBytes   = 128
+	MaxAccessLogAuthTypeBytes = 32
 )
 
 // AccessEvent 是一条安全事件
 type AccessEvent struct {
-	Time     time.Time `json:"time"`
-	IP       string    `json:"ip"`
-	Method   string    `json:"method"`
-	Path     string    `json:"path"`
-	ClientID int64     `json:"client_id"` // 0 = 未知（无 client 归属或认证失败）
-	UserID   int64     `json:"user_id"`   // 0 = 未知
-	Outcome  string    `json:"outcome"`
-	Reason   string    `json:"reason,omitempty"`
+	Time          time.Time `json:"time"`
+	IP            string    `json:"ip"`
+	Method        string    `json:"method"`
+	Path          string    `json:"path"`
+	RouteTemplate string    `json:"route_template,omitempty"`
+	StatusCode    int       `json:"status_code,omitempty"`
+	DurationMs    int       `json:"duration_ms,omitempty"`
+	AuthType      string    `json:"auth_type,omitempty"`
+	ClientID      int64     `json:"client_id"` // 0 = 未知（无 client 归属或认证失败）
+	UserID        int64     `json:"user_id"`   // 0 = 未知
+	Outcome       string    `json:"outcome"`
+	Reason        string    `json:"reason,omitempty"`
 	// NEntries/NDeleted 是 push 请求的规模（条目数 / 其中 tombstone 数）；
 	// 非 push 请求为 0。破坏性动作因此可从日志直接读出。
 	NEntries int `json:"n_entries,omitempty"`
@@ -79,7 +85,12 @@ func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 	}
 	e.IP = truncateUTF8(e.IP, MaxAccessLogIPBytes)
 	e.Path = truncateUTF8(e.Path, MaxAccessLogPathBytes)
+	e.RouteTemplate = truncateUTF8(e.RouteTemplate, MaxAccessLogRouteBytes)
 	e.Reason = truncateUTF8(e.Reason, MaxAccessLogReasonBytes)
+	e.AuthType = truncateUTF8(e.AuthType, MaxAccessLogAuthTypeBytes)
+	if e.DurationMs < 0 {
+		e.DurationMs = 0
+	}
 	if e.Outcome != AccessOutcomeOK && e.Outcome != AccessOutcomeAuthFailed &&
 		e.Outcome != AccessOutcomeBlocked && e.Outcome != AccessOutcomeRateLimited &&
 		e.Outcome != AccessOutcomeRejected && e.Outcome != AccessOutcomeError &&
@@ -87,9 +98,10 @@ func (s *pgStore) RecordAccess(ctx context.Context, e AccessEvent) error {
 		return validationErrorf("未知的访问结果 %q", e.Outcome)
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO access_log (ts, ip, method, path, client_id, user_id, outcome, reason, n_entries, n_deleted)
-		 VALUES ($1, $2, $3, $4, NULLIF($5, 0), NULLIF($6, 0), $7, NULLIF($8, ''), $9, $10)`,
-		e.Time, e.IP, e.Method, e.Path, e.ClientID, e.UserID, e.Outcome, e.Reason, e.NEntries, e.NDeleted)
+		`INSERT INTO access_log (ts, ip, method, path, client_id, user_id, outcome, reason, n_entries, n_deleted, route_template, status_code, duration_ms, auth_type)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, 0), NULLIF($6, 0), $7, NULLIF($8, ''), $9, $10, $11, $12, $13, $14)`,
+		e.Time, e.IP, e.Method, e.Path, e.ClientID, e.UserID, e.Outcome, e.Reason, e.NEntries, e.NDeleted,
+		e.RouteTemplate, e.StatusCode, e.DurationMs, e.AuthType)
 	return err
 }
 
@@ -142,7 +154,8 @@ func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Acce
 	args = append(args, f.Limit)
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT l.ts, l.ip, l.method, l.path, COALESCE(l.client_id, 0), COALESCE(l.user_id, 0),
+		`SELECT l.ts, l.ip, l.method, l.path, COALESCE(l.route_template, ''), l.status_code, l.duration_ms, COALESCE(l.auth_type, ''),
+		        COALESCE(l.client_id, 0), COALESCE(l.user_id, 0),
 		        l.outcome, COALESCE(l.reason, ''), l.n_entries, l.n_deleted,
 		        COALESCE(c.name, ''), COALESCE(u.name, '')
 		 FROM access_log l
@@ -157,7 +170,8 @@ func (s *pgStore) ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]Acce
 	events := []AccessEventRow{}
 	for rows.Next() {
 		var e AccessEventRow
-		if err := rows.Scan(&e.Time, &e.IP, &e.Method, &e.Path, &e.ClientID, &e.UserID,
+		if err := rows.Scan(&e.Time, &e.IP, &e.Method, &e.Path, &e.RouteTemplate, &e.StatusCode, &e.DurationMs, &e.AuthType,
+			&e.ClientID, &e.UserID,
 			&e.Outcome, &e.Reason, &e.NEntries, &e.NDeleted, &e.ClientName, &e.UserName); err != nil {
 			return nil, err
 		}
@@ -173,14 +187,14 @@ func (s *pgStore) PruneAccessLogs(ctx context.Context, before time.Time) (int64,
 	for {
 		tag, err := s.pool.Exec(ctx,
 			`DELETE FROM access_log WHERE id IN (
-			   SELECT id FROM access_log WHERE ts < $1 LIMIT 1000
+			   SELECT id FROM access_log WHERE ts < $1 LIMIT 5000
 			 )`, before)
 		if err != nil {
 			return total, err
 		}
 		n := tag.RowsAffected()
 		total += n
-		if n < 1000 {
+		if n < 5000 {
 			return total, nil
 		}
 	}

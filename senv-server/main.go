@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -147,8 +148,14 @@ func runServe(args []string) {
 		"minimum interval between repeated alerts of the same type and target")
 	alertBodyTemplate := fs.String("alert-body-template", os.Getenv("SENV_SERVER_ALERT_BODY_TEMPLATE"),
 		"webhook request body template (text/template over the alert fields: alert/time/ip/user_id/client_id/user/client/reason/count); empty posts the built-in JSON payload")
-	logsRetainDays := fs.Int("logs-retain-days", 90,
-		"access log retention in days (0 disables automatic pruning)")
+	defaultRetainDays := 30
+	if raw := strings.TrimSpace(os.Getenv("API_STATS_RETENTION_DAYS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			defaultRetainDays = v
+		}
+	}
+	logsRetainDays := fs.Int("logs-retain-days", defaultRetainDays,
+		"access log retention in days (0 disables automatic pruning; env API_STATS_RETENTION_DAYS)")
 	fs.Parse(args)
 	requireDSN(*dsn)
 
@@ -195,6 +202,7 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
+	apiStatsEnabled := parseBoolEnv("API_STATS_ENABLED", true)
 	srv := handler.New(st, handler.Options{
 		MaxBodyBytes:             *maxBodyMB,
 		AuthRateLimit:            *rateLimit,
@@ -204,7 +212,10 @@ func runServe(args []string) {
 		AlertMassDeleteThreshold: *alertMassDelete,
 		AlertDebounce:            *alertDebounce,
 		AlertBodyTemplate:        *alertBodyTemplate,
-		AsyncAccessLogBuffer:     1024,
+		AsyncAccessLogBuffer:     2048,
+		APIStatsEnabled:          &apiStatsEnabled,
+		LANAllowedCIDRs:          splitCSVEnv("SENV_SERVER_STATS_ALLOWED_CIDRS"),
+		LANAllowedHosts:          splitCSVEnv("SENV_SERVER_STATS_ALLOWED_HOSTS"),
 	})
 
 	// 访问日志自动清理：启动先跑一轮，之后每 24h 一轮；失败不致命，下轮重试。
@@ -280,11 +291,40 @@ func pruneAccessLogsPeriodically(st store.Store, retain time.Duration) {
 		}
 	}
 	prune()
-	ticker := time.NewTicker(24 * time.Hour)
+	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 	for range ticker.C {
 		prune()
 	}
+}
+
+func parseBoolEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	switch raw {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func splitCSVEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func runMigrate(args []string) {

@@ -176,6 +176,13 @@ type Store interface {
 	ListAccessLogs(ctx context.Context, f AccessLogFilter) ([]AccessEventRow, error)
 	PruneAccessLogs(ctx context.Context, before time.Time) (int64, error)
 
+	// 接口访问统计（只读聚合）
+	StatsOverview(ctx context.Context, q APIStatsQuery) (APIStatsOverview, error)
+	StatsRoutes(ctx context.Context, q APIStatsQuery) (APIStatsRoutesResponse, error)
+	StatsErrors(ctx context.Context, q APIStatsQuery) (APIStatsErrorsResponse, error)
+	StatsAPIKeys(ctx context.Context, q APIStatsQuery) (APIStatsKeysResponse, error)
+	StatsAPIKeyDetail(ctx context.Context, keyID string, q APIStatsQuery) (APIStatsKeyDetailResponse, error)
+
 	// 条目历史
 	SetHistoryRetain(n int)
 	// SetHistoryPrune 控制是否在 push 事务内裁剪；false 时由 admin cron 裁剪

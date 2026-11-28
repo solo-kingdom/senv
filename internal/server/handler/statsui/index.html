@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>senv-server 接口访问统计</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-alt: #f1f4f8;
+      --border: #e2e6ee;
+      --text: #18202c;
+      --muted: #5f6c7b;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --ok: #15803d;
+      --warn: #b45309;
+      --err: #b91c1c;
+      --radius: 10px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f131a;
+        --surface: #171d26;
+        --surface-alt: #1e2633;
+        --border: #2a3342;
+        --text: #e6ecf5;
+        --muted: #93a1b5;
+        --accent: #60a5fa;
+        --accent-soft: #172554;
+        --ok: #4ade80;
+        --warn: #fbbf24;
+        --err: #f87171;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      font-size: 14px;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 20px 18px 40px; }
+    header {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 16px;
+    }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 600; }
+    .brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 10px; margin-bottom: 12px;
+    }
+    .tabs, .ranges, .sorts { display: inline-flex; gap: 4px; background: var(--surface-alt); padding: 3px; border-radius: 8px; border: 1px solid var(--border); }
+    button {
+      font: inherit; cursor: pointer; border: none; background: transparent; color: var(--muted);
+      padding: 6px 12px; border-radius: 6px; transition: background .15s, color .15s;
+    }
+    button:hover { color: var(--text); }
+    button.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+    .btn-outline { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+    .btn-outline:hover { background: var(--surface-alt); }
+    .filters {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; margin-bottom: 16px;
+    }
+    select, input[type="text"] {
+      font: inherit; padding: 6px 10px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    input[type="text"] { min-width: 220px; flex: 1; max-width: 340px; }
+    .grid { display: grid; gap: 12px; margin-bottom: 14px; }
+    .grid-4 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .card-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .card-title { margin: 0; font-size: 14px; font-weight: 600; }
+    .card-sub { font-size: 12px; color: var(--muted); }
+    .kpi-label { font-size: 12px; color: var(--muted); }
+    .kpi-val { font-size: 24px; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+    .kpi-sub { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .kpi-click { cursor: pointer; }
+    .kpi-click:hover { border-color: var(--accent); }
+    .dist-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+    .dist-row:last-child { border-bottom: none; }
+    .bar-bg { flex: 1; height: 8px; background: var(--surface-alt); border-radius: 4px; overflow: hidden; margin: 0 8px; }
+    .bar-fg { height: 100%; background: var(--accent); border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover { background: var(--surface-alt); }
+    .table-wrap { overflow-x: auto; }
+    .badge {
+      display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      background: var(--surface-alt); color: var(--text);
+    }
+    .badge-ok { color: var(--ok); }
+    .badge-warn { color: var(--warn); }
+    .badge-err { color: var(--err); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .alert { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--err); color: var(--err); margin-bottom: 12px; }
+    .hidden { display: none !important; }
+    .empty { color: var(--muted); text-align: center; padding: 18px 0; font-size: 13px; }
+    svg.chart { width: 100%; height: 170px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <h1>senv-server 接口访问统计</h1>
+        <p>只读内网面板 · 复用 access_log · 同步 Token 禁访 · 无明文密钥</p>
+      </div>
+      <div class="ranges" role="group" aria-label="时间范围">
+        <button type="button" data-range="1h">1h</button>
+        <button type="button" data-range="24h" class="active">24h</button>
+        <button type="button" data-range="7d">7d</button>
+        <button type="button" data-range="30d">30d</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="tabs" role="tablist">
+        <button id="tab-overview" type="button" class="active" data-tab="overview">概览</button>
+        <button id="tab-apikeys" type="button" data-tab="apikeys">API Key 专项</button>
+      </div>
+      <button id="btn-refresh" type="button" class="btn-outline">刷新</button>
+    </div>
+
+    <div class="filters">
+      <select id="f-method" aria-label="HTTP 方法">
+        <option value="">全部方法</option>
+        <option value="GET">GET</option>
+        <option value="POST">POST</option>
+        <option value="PUT">PUT</option>
+        <option value="DELETE">DELETE</option>
+      </select>
+      <input id="f-route" type="text" placeholder="路由模板（如 /v1/vaults/{vault}/entries）" aria-label="路由模板" />
+      <select id="f-status" aria-label="状态段">
+        <option value="">全部状态</option>
+        <option value="2xx">2xx</option>
+        <option value="3xx">3xx</option>
+        <option value="4xx">4xx</option>
+        <option value="5xx">5xx</option>
+      </select>
+      <select id="f-auth" aria-label="调用来源">
+        <option value="">全部来源</option>
+        <option value="api_key">api_key</option>
+        <option value="invalid_key">invalid_key</option>
+        <option value="anonymous">anonymous</option>
+      </select>
+      <button id="f-reset" type="button" class="btn-outline">重置</button>
+    </div>
+
+    <div id="err-banner" class="alert hidden" role="status"></div>
+
+    <section id="view-overview">
+      <div id="ov-kpis" class="grid grid-4"></div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-hd">
+          <h2 class="card-title">请求量与异常趋势</h2>
+          <span id="ov-series-meta" class="card-sub"></span>
+        </div>
+        <div id="ov-chart"></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-hd"><h2 class="card-title">状态码分布</h2><span class="card-sub">按 HTTP 状态段</span></div>
+          <div id="ov-status-dist"></div>
+        </div>
+        <div class="card">
+          <div class="card-hd"><h2 class="card-title">调用来源拆分</h2><span class="card-sub">api_key / invalid_key / anonymous</span></div>
+          <div id="ov-auth-dist"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-hd">
+          <h2 class="card-title">Top 接口排行</h2>
+          <div class="sorts">
+            <button type="button" class="active" data-sort="count">按调用量</button>
+            <button type="button" data-sort="error_rate">按错误率</button>
+            <button type="button" data-sort="p95">按 P95</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方法</th><th>路由模板</th><th class="num">调用量</th><th class="num">4xx</th><th class="num">5xx</th><th class="num">错误率</th><th class="num">平均(ms)</th><th class="num">P95(ms)</th><th class="num">P99(ms)</th>
+              </tr>
+            </thead>
+            <tbody id="ov-routes-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-hd"><h2 class="card-title">最近错误明细</h2><span class="card-sub">status &ge; 400（不含明文凭证）</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th><th>方法</th><th>路由</th><th class="num">状态</th><th class="num">耗时(ms)</th><th>来源</th><th>客户端/Token</th><th>IP</th><th>原因</th>
+              </tr>
+            </thead>
+            <tbody id="ov-errors-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-apikeys" class="hidden">
+      <div id="ak-kpis" class="grid grid-4"></div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-hd">
+          <h2 class="card-title">Client / Token 用量排行</h2>
+          <button id="btn-invalid-drill" type="button" class="btn-outline">查看 401 无效尝试 (__invalid__)</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>标识</th><th>名称</th><th>归属用户</th><th>状态</th><th class="num">调用量</th><th class="num">占比</th><th class="num">4xx</th><th class="num">5xx</th><th class="num">P95(ms)</th><th>最近活跃</th>
+              </tr>
+            </thead>
+            <tbody id="ak-list-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="ak-detail-box" class="card hidden">
+        <div class="card-hd">
+          <div>
+            <h2 id="ak-detail-title" class="card-title">下钻详情</h2>
+            <span id="ak-detail-sub" class="card-sub"></span>
+          </div>
+          <button id="ak-detail-close" type="button" class="btn-outline">收起</button>
+        </div>
+        <div id="ak-detail-kpis" class="grid grid-4"></div>
+        <div id="ak-detail-chart" style="margin-bottom:12px"></div>
+        <div class="grid grid-2">
+          <div>
+            <h3 style="margin:0 0 8px;font-size:13px">Top 路由</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>方法</th><th>路由</th><th class="num">调用</th><th class="num">P95</th></tr></thead>
+                <tbody id="ak-detail-top"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 8px;font-size:13px">错误路由</h3>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>方法</th><th>路由</th><th class="num">4xx</th><th class="num">5xx</th></tr></thead>
+                <tbody id="ak-detail-err-routes"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <h3 style="margin:12px 0 8px;font-size:13px">最近错误</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>时间</th><th>方法</th><th>路由</th><th class="num">状态</th><th>IP</th><th>原因</th></tr></thead>
+            <tbody id="ak-detail-errors"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const state = { tab: 'overview', range: '24h', sort: 'count', selectedKey: '' };
+      const $ = (id) => document.getElementById(id);
+
+      function esc(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+      function fmtNum(n) { return Number(n || 0).toLocaleString(); }
+      function fmtPct(r) { return (Number(r || 0) * 100).toFixed(1) + '%'; }
+      function fmtMs(v) { return Number(v || 0).toFixed(1); }
+      function fmtTime(iso) {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        return isNaN(d.getTime()) ? esc(iso) : d.toLocaleString();
+      }
+      function showError(msg) {
+        const el = $('err-banner');
+        if (!msg) { el.classList.add('hidden'); el.textContent = ''; return; }
+        el.textContent = msg;
+        el.classList.remove('hidden');
+      }
+      function buildParams(extra) {
+        const p = new URLSearchParams();
+        p.set('range', state.range);
+        const m = $('f-method').value.trim(); if (m) p.set('method', m);
+        const r = $('f-route').value.trim(); if (r) p.set('route', r);
+        const s = $('f-status').value.trim(); if (s) p.set('status_class', s);
+        const a = $('f-auth').value.trim(); if (a) p.set('auth_type', a);
+        if (extra) Object.entries(extra).forEach(([k, v]) => { if (v) p.set(k, v); });
+        return p.toString();
+      }
+      async function apiGet(path) {
+        const res = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        if (!res.ok) {
+          let txt = '请求失败 (' + res.status + ')';
+          try { const j = await res.json(); if (j && j.error) txt = j.error; } catch (_) {}
+          throw new Error(txt);
+        }
+        return res.json();
+      }
+      function renderSeriesSVG(series) {
+        if (!series || series.length === 0) return '<div class="empty">当前时间窗口暂无请求数据</div>';
+        const W = 800, H = 170, padL = 38, padR = 14, padT = 14, padB = 24;
+        const innerW = W - padL - padR, innerH = H - padT - padB;
+        const maxReq = Math.max(1, ...series.map(p => p.requests || 0));
+        const barW = Math.max(4, Math.min(24, innerW / series.length * 0.6));
+        const step = innerW / Math.max(1, series.length);
+        let bars = '', errs = '';
+        series.forEach((pt, idx) => {
+          const x = padL + idx * step + (step - barW) / 2;
+          const h = ((pt.requests || 0) / maxReq) * innerH;
+          const y = padT + innerH - h;
+          bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--accent)" opacity="0.78"><title>${esc(pt.bucket)}&#10;请求: ${pt.requests}&#10;4xx: ${pt.error_4xx} 5xx: ${pt.error_5xx}&#10;P95: ${fmtMs(pt.p95_ms)}ms</title></rect>`;
+          const errCount = (pt.error_4xx || 0) + (pt.error_5xx || 0);
+          if (errCount > 0) {
+            const eh = Math.max(2, (errCount / maxReq) * innerH);
+            errs += `<rect x="${x.toFixed(1)}" y="${(padT + innerH - eh).toFixed(1)}" width="${barW.toFixed(1)}" height="${eh.toFixed(1)}" rx="2" fill="var(--err)" opacity="0.85"></rect>`;
+          }
+        });
+        return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+          <line x1="${padL}" y1="${padT + innerH}" x2="${W - padR}" y2="${padT + innerH}" stroke="var(--border)" />
+          <text x="4" y="${padT + 10}" fill="var(--muted)" font-size="11">${fmtNum(maxReq)}</text>
+          <text x="4" y="${padT + innerH}" fill="var(--muted)" font-size="11">0</text>
+          ${bars}${errs}
+        </svg>`;
+      }
+      function renderDist(elId, items, labelKey) {
+        const el = $(elId);
+        if (!items || items.length === 0) { el.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+        const total = items.reduce((s, it) => s + (it.count || 0), 0) || 1;
+        el.innerHTML = items.map(it => {
+          const pct = ((it.count || 0) / total) * 100;
+          return `<div class="dist-row">
+            <span class="mono" style="min-width:92px">${esc(it[labelKey] || '-')}</span>
+            <div class="bar-bg"><div class="bar-fg" style="width:${pct.toFixed(1)}%"></div></div>
+            <span class="mono">${fmtNum(it.count)} (${pct.toFixed(1)}%)</span>
+          </div>`;
+        }).join('');
+      }
+      async function loadOverview() {
+        const qs = buildParams();
+        const [ov, rts, errs] = await Promise.all([
+          apiGet('/stats/api/overview?' + qs),
+          apiGet('/stats/api/routes?' + buildParams({ sort: state.sort, limit: 50 })),
+          apiGet('/stats/api/errors?' + buildParams({ limit: 50 })),
+        ]);
+        const s = ov.summary || {};
+        $('ov-kpis').innerHTML = [
+          { label: '总请求数', val: fmtNum(s.total_requests), sub: 'RPS ' + Number(s.rps || 0).toFixed(3) + ' · 活跃路由 ' + fmtNum(s.active_routes) },
+          { label: '成功率', val: fmtPct(s.success_rate), sub: '4xx ' + fmtPct(s.error_4xx_rate) + ' · 5xx ' + fmtPct(s.error_5xx_rate) },
+          { label: '延迟 (P50 / P95)', val: fmtMs(s.p95_ms) + ' ms', sub: 'P50 ' + fmtMs(s.p50_ms) + ' ms · Avg ' + fmtMs(s.avg_duration_ms) + ' ms' },
+          { label: '尾延迟 (P99)', val: fmtMs(s.p99_ms) + ' ms', sub: 'scope: ' + esc((ov.capabilities && ov.capabilities.scope) || 'global') },
+        ].map(c => `<div class="card"><div class="kpi-label">${c.label}</div><div class="kpi-val">${c.val}</div><div class="kpi-sub">${c.sub}</div></div>`).join('');
+
+        $('ov-series-meta').textContent = (ov.series || []).length + ' 个时间桶';
+        $('ov-chart').innerHTML = renderSeriesSVG(ov.series || []);
+        renderDist('ov-status-dist', ov.status_distribution || [], 'status_class');
+        renderDist('ov-auth-dist', ov.auth_sources || [], 'auth_type');
+
+        const rItems = rts.items || [];
+        $('ov-routes-body').innerHTML = rItems.length === 0
+          ? '<tr><td colspan="9" class="empty">暂无路由统计</td></tr>'
+          : rItems.map(r => `<tr class="clickable" data-route="${esc(r.route_template)}">
+              <td><span class="badge">${esc(r.method)}</span></td>
+              <td class="mono">${esc(r.route_template)}</td>
+              <td class="num">${fmtNum(r.count)}</td>
+              <td class="num">${fmtNum(r.error_4xx)}</td>
+              <td class="num">${fmtNum(r.error_5xx)}</td>
+              <td class="num">${fmtPct(r.error_rate)}</td>
+              <td class="num">${fmtMs(r.avg_ms)}</td>
+              <td class="num">${fmtMs(r.p95_ms)}</td>
+              <td class="num">${fmtMs(r.p99_ms)}</td>
+            </tr>`).join('');
+        $('ov-routes-body').querySelectorAll('tr.clickable').forEach(tr => {
+          tr.addEventListener('click', () => {
+            $('f-route').value = tr.getAttribute('data-route') || '';
+            refresh();
+          });
+        });
+
+        const eItems = errs.items || [];
+        $('ov-errors-body').innerHTML = eItems.length === 0
+          ? '<tr><td colspan="9" class="empty">当前时间窗口无 4xx/5xx 错误</td></tr>'
+          : eItems.map(e => `<tr>
+              <td class="mono">${fmtTime(e.occurred_at)}</td>
+              <td><span class="badge">${esc(e.method)}</span></td>
+              <td class="mono">${esc(e.route_template)}</td>
+              <td class="num"><span class="badge ${e.status_code >= 500 ? 'badge-err' : 'badge-warn'}">${e.status_code}</span></td>
+              <td class="num">${fmtNum(e.duration_ms)}</td>
+              <td class="mono">${esc(e.auth_type)}</td>
+              <td>${esc(e.api_key_name || e.api_key_prefix || '-')}</td>
+              <td class="mono">${esc(e.client_ip || '-')}</td>
+              <td>${esc(e.error_code || '-')}</td>
+            </tr>`).join('');
+      }
+      async function loadAPIKeys() {
+        const res = await apiGet('/stats/api/api-keys?' + buildParams({ limit: 50 }));
+        const s = res.summary || {};
+        $('ak-kpis').innerHTML = [
+          { label: 'Key 总请求数', val: fmtNum(s.total_key_requests), sub: 'Client / User Token' },
+          { label: '活跃 Key 数', val: fmtNum(s.active_key_count), sub: '时间窗口内有调用' },
+          { label: '401 无效尝试', val: fmtNum(s.unauthorized_401_count), sub: '点击下钻 __invalid__', key: '__invalid__' },
+          { label: '403 禁访拦截', val: fmtNum(s.forbidden_403_count), sub: 'blocked / token 禁访' },
+        ].map(c => `<div class="card ${c.key ? 'kpi-click' : ''}" ${c.key ? `data-key="${c.key}"` : ''}><div class="kpi-label">${c.label}</div><div class="kpi-val">${c.val}</div><div class="kpi-sub">${c.sub}</div></div>`).join('');
+        $('ak-kpis').querySelectorAll('.kpi-click').forEach(el => {
+          el.addEventListener('click', () => openKeyDetail(el.getAttribute('data-key')));
+        });
+
+        const items = res.items || [];
+        $('ak-list-body').innerHTML = items.length === 0
+          ? '<tr><td colspan="10" class="empty">暂无 API Key 调用记录</td></tr>'
+          : items.map(it => `<tr class="clickable" data-key="${esc(it.api_key_id)}">
+              <td class="mono">${esc(it.api_key_prefix)}</td>
+              <td>${esc(it.api_key_name)}</td>
+              <td>${esc(it.user_name || it.user_id || '-')}</td>
+              <td><span class="badge ${it.status === 'revoked' ? 'badge-err' : 'badge-ok'}">${esc(it.status)}</span></td>
+              <td class="num">${fmtNum(it.count)}</td>
+              <td class="num">${fmtPct(it.share_rate)}</td>
+              <td class="num">${fmtNum(it.error_4xx)}</td>
+              <td class="num">${fmtNum(it.error_5xx)}</td>
+              <td class="num">${fmtMs(it.p95_ms)}</td>
+              <td class="mono">${fmtTime(it.last_active_at)}</td>
+            </tr>`).join('');
+        $('ak-list-body').querySelectorAll('tr.clickable').forEach(tr => {
+          tr.addEventListener('click', () => openKeyDetail(tr.getAttribute('data-key')));
+        });
+        if (state.selectedKey) await openKeyDetail(state.selectedKey);
+      }
+      async function openKeyDetail(keyId) {
+        if (!keyId) return;
+        state.selectedKey = keyId;
+        const box = $('ak-detail-box');
+        box.classList.remove('hidden');
+        const d = await apiGet('/stats/api/api-keys/' + encodeURIComponent(keyId) + '?' + buildParams());
+        $('ak-detail-title').textContent = (d.key_name || keyId) + ' (' + (d.key_prefix || keyId) + ')';
+        $('ak-detail-sub').textContent = '状态: ' + (d.status || 'active') + ' · 最近活跃: ' + fmtTime(d.summary && d.summary.last_active_at);
+        const ds = d.summary || {};
+        $('ak-detail-kpis').innerHTML = [
+          { label: '总调用量', val: fmtNum(ds.total_requests) },
+          { label: '4xx 错误', val: fmtNum(ds.error_4xx) },
+          { label: '5xx 错误', val: fmtNum(ds.error_5xx) },
+          { label: 'P95 延迟', val: fmtMs(ds.p95_ms) + ' ms' },
+        ].map(c => `<div class="card"><div class="kpi-label">${c.label}</div><div class="kpi-val">${c.val}</div></div>`).join('');
+        $('ak-detail-chart').innerHTML = renderSeriesSVG(d.series || []);
+        $('ak-detail-top').innerHTML = (d.top_routes || []).length === 0
+          ? '<tr><td colspan="4" class="empty">无记录</td></tr>'
+          : (d.top_routes || []).map(r => `<tr><td><span class="badge">${esc(r.method)}</span></td><td class="mono">${esc(r.route_template)}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtMs(r.p95_ms)}</td></tr>`).join('');
+        $('ak-detail-err-routes').innerHTML = (d.error_routes || []).length === 0
+          ? '<tr><td colspan="4" class="empty">无错误路由</td></tr>'
+          : (d.error_routes || []).map(r => `<tr><td><span class="badge">${esc(r.method)}</span></td><td class="mono">${esc(r.route_template)}</td><td class="num">${fmtNum(r.error_4xx)}</td><td class="num">${fmtNum(r.error_5xx)}</td></tr>`).join('');
+        $('ak-detail-errors').innerHTML = (d.recent_errors || []).length === 0
+          ? '<tr><td colspan="6" class="empty">无错误明细</td></tr>'
+          : (d.recent_errors || []).map(e => `<tr><td class="mono">${fmtTime(e.occurred_at)}</td><td><span class="badge">${esc(e.method)}</span></td><td class="mono">${esc(e.route_template)}</td><td class="num">${e.status_code}</td><td class="mono">${esc(e.client_ip || '-')}</td><td>${esc(e.error_code || '-')}</td></tr>`).join('');
+      }
+      async function refresh() {
+        showError('');
+        try {
+          if (state.tab === 'overview') await loadOverview();
+          else await loadAPIKeys();
+        } catch (err) {
+          showError(err && err.message ? err.message : '加载失败');
+        }
+      }
+      document.querySelectorAll('.tabs button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.tab = btn.getAttribute('data-tab');
+          $('view-overview').classList.toggle('hidden', state.tab !== 'overview');
+          $('view-apikeys').classList.toggle('hidden', state.tab !== 'apikeys');
+          refresh();
+        });
+      });
+      document.querySelectorAll('.ranges button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.ranges button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.range = btn.getAttribute('data-range');
+          refresh();
+        });
+      });
+      document.querySelectorAll('.sorts button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.sorts button').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state.sort = btn.getAttribute('data-sort');
+          refresh();
+        });
+      });
+      ['f-method', 'f-status', 'f-auth'].forEach(id => $(id).addEventListener('change', refresh));
+      $('f-route').addEventListener('keydown', (e) => { if (e.key === 'Enter') refresh(); });
+      $('f-reset').addEventListener('click', () => {
+        $('f-method').value = ''; $('f-route').value = ''; $('f-status').value = ''; $('f-auth').value = '';
+        refresh();
+      });
+      $('btn-refresh').addEventListener('click', refresh);
+      $('btn-invalid-drill').addEventListener('click', () => openKeyDetail('__invalid__'));
+      $('ak-detail-close').addEventListener('click', () => {
+        state.selectedKey = '';
+        $('ak-detail-box').classList.add('hidden');
+      });
+      refresh();
+    })();
+  </script>
+</body>
+</html>

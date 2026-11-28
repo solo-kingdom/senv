@@ -11,6 +11,7 @@ import (
 type accessInfo struct {
 	userID   int64
 	clientID int64
+	authType string
 	reason   string
 	authDur  time.Duration
 	// nEntries/nDeleted 是 push 请求的规模（条目数 / 其中 tombstone 数）；

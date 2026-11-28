@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -388,8 +389,23 @@ func (f *fakeStore) RegisterClient(_ context.Context, code, name string) (string
 	return "", nil, store.ErrNotFound
 }
 
-func (f *fakeStore) SetClientStatus(_ context.Context, _ int64, _ string, _ string) error {
-	return errors.New("fakeStore: not implemented")
+func (f *fakeStore) SetClientStatus(_ context.Context, userID int64, name string, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, c := range f.clients {
+		if (userID <= 0 || c.UserID == userID) && c.Name == name {
+			c.Status = status
+			for tok, res := range f.tokens {
+				if res.ClientID == id {
+					res.ClientStatus = status
+					res.ClientBlocked = status == store.ClientStatusBlocked
+					f.tokens[tok] = res
+				}
+			}
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *fakeStore) ListClients(_ context.Context, _ int64) ([]store.Client, error) {
@@ -436,8 +452,416 @@ func (f *fakeStore) ListAccessLogs(_ context.Context, _ store.AccessLogFilter) (
 	return nil, errors.New("fakeStore: not implemented")
 }
 
-func (f *fakeStore) PruneAccessLogs(_ context.Context, _ time.Time) (int64, error) {
-	return 0, errors.New("fakeStore: not implemented")
+func (f *fakeStore) PruneAccessLogs(_ context.Context, before time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kept := make([]store.AccessEvent, 0, len(f.access))
+	var deleted int64
+	for _, e := range f.access {
+		if e.Time.Before(before) {
+			deleted++
+		} else {
+			kept = append(kept, e)
+		}
+	}
+	f.access = kept
+	return deleted, nil
+}
+
+func (f *fakeStore) filterStatsEventsLocked(q store.APIStatsQuery) ([]store.AccessEvent, time.Time, time.Time, string) {
+	from, to, gran := q.ResolveWindow(time.Now().UTC())
+	out := make([]store.AccessEvent, 0, len(f.access))
+	for _, e := range f.access {
+		if e.Outcome == store.AccessOutcomeAdmin {
+			continue
+		}
+		ts := e.Time.UTC()
+		if ts.Before(from) || ts.After(to) {
+			continue
+		}
+		if q.Method != "" && !strings.EqualFold(e.Method, q.Method) {
+			continue
+		}
+		rt := e.RouteTemplate
+		if rt == "" {
+			rt = e.Path
+		}
+		if q.Route != "" && rt != q.Route {
+			continue
+		}
+		switch q.StatusClass {
+		case "2xx":
+			if e.StatusCode < 200 || e.StatusCode >= 300 {
+				continue
+			}
+		case "3xx":
+			if e.StatusCode < 300 || e.StatusCode >= 400 {
+				continue
+			}
+		case "4xx":
+			if e.StatusCode < 400 || e.StatusCode >= 500 {
+				continue
+			}
+		case "5xx":
+			if e.StatusCode < 500 {
+				continue
+			}
+		}
+		at := e.AuthType
+		if at == "" {
+			if e.ClientID > 0 || e.UserID > 0 {
+				at = "api_key"
+			} else {
+				at = "anonymous"
+			}
+		}
+		if q.AuthType != "" && at != q.AuthType {
+			continue
+		}
+		if q.ApiKeyID != "" {
+			if q.ApiKeyID == "__invalid__" {
+				if at != "invalid_key" && e.StatusCode != http.StatusUnauthorized {
+					continue
+				}
+			} else if fakeEventKeyID(e) != q.ApiKeyID {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out, from, to, gran
+}
+
+func fakeEventKeyID(e store.AccessEvent) string {
+	if e.ClientID > 0 {
+		return fmt.Sprintf("client:%d", e.ClientID)
+	}
+	if e.UserID > 0 {
+		return fmt.Sprintf("user:%d", e.UserID)
+	}
+	return ""
+}
+
+func fakePercentile(vals []int, p float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	cp := append([]int(nil), vals...)
+	sort.Ints(cp)
+	if len(cp) == 1 {
+		return float64(cp[0])
+	}
+	idx := p * float64(len(cp)-1)
+	lo := int(idx)
+	hi := lo + 1
+	if hi >= len(cp) {
+		return float64(cp[len(cp)-1])
+	}
+	frac := idx - float64(lo)
+	return float64(cp[lo])*(1-frac) + float64(cp[hi])*frac
+}
+
+func (f *fakeStore) StatsOverview(_ context.Context, q store.APIStatsQuery) (store.APIStatsOverview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	events, from, to, gran := f.filterStatsEventsLocked(q)
+	out := store.APIStatsOverview{
+		Capabilities:       store.APIStatsCapabilities{HasAPIKeys: true, Scope: "global"},
+		Series:             []store.APIStatsSeriesPoint{},
+		StatusDistribution: []store.APIStatsStatusCount{},
+		AuthSources:        []store.APIStatsAuthSourceCount{},
+	}
+	durs := make([]int, 0, len(events))
+	routes := map[string]struct{}{}
+	statusMap := map[string]int64{}
+	authMap := map[string]int64{}
+	type bAgg struct {
+		req, e4, e5 int64
+		durs        []int
+	}
+	buckets := map[time.Time]*bAgg{}
+	var okCnt, e4Cnt, e5Cnt, sumDur int64
+	for _, e := range events {
+		durs = append(durs, e.DurationMs)
+		sumDur += int64(e.DurationMs)
+		rt := e.RouteTemplate
+		if rt == "" {
+			rt = e.Path
+		}
+		routes[rt] = struct{}{}
+		cls := "other"
+		switch {
+		case e.StatusCode >= 200 && e.StatusCode < 300:
+			cls = "2xx"
+			okCnt++
+		case e.StatusCode >= 300 && e.StatusCode < 400:
+			cls = "3xx"
+			okCnt++
+		case e.StatusCode >= 400 && e.StatusCode < 500:
+			cls = "4xx"
+			e4Cnt++
+		case e.StatusCode >= 500:
+			cls = "5xx"
+			e5Cnt++
+		}
+		statusMap[cls]++
+		at := e.AuthType
+		if at == "" {
+			at = "anonymous"
+		}
+		authMap[at]++
+
+		var b time.Time
+		ts := e.Time.UTC()
+		switch gran {
+		case "minute":
+			b = ts.Truncate(time.Minute)
+		case "day":
+			b = time.Date(ts.Year(), ts.Month(), ts.Day(), 0, 0, 0, 0, time.UTC)
+		default:
+			b = ts.Truncate(time.Hour)
+		}
+		agg, ok := buckets[b]
+		if !ok {
+			agg = &bAgg{}
+			buckets[b] = agg
+		}
+		agg.req++
+		if e.StatusCode >= 400 && e.StatusCode < 500 {
+			agg.e4++
+		} else if e.StatusCode >= 500 {
+			agg.e5++
+		}
+		agg.durs = append(agg.durs, e.DurationMs)
+	}
+	total := int64(len(events))
+	span := to.Sub(from).Seconds()
+	if span < 1 {
+		span = 1
+	}
+	out.Summary = store.APIStatsSummary{
+		TotalRequests: total,
+		RPS:           float64(total) / span,
+		P50Ms:         fakePercentile(durs, 0.50),
+		P95Ms:         fakePercentile(durs, 0.95),
+		P99Ms:         fakePercentile(durs, 0.99),
+		ActiveRoutes:  int64(len(routes)),
+	}
+	if total > 0 {
+		out.Summary.SuccessRate = float64(okCnt) / float64(total)
+		out.Summary.Error4xxRate = float64(e4Cnt) / float64(total)
+		out.Summary.Error5xxRate = float64(e5Cnt) / float64(total)
+		out.Summary.AvgDurationMs = float64(sumDur) / float64(total)
+	}
+	for b, agg := range buckets {
+		out.Series = append(out.Series, store.APIStatsSeriesPoint{
+			Bucket: b, Requests: agg.req, Error4xx: agg.e4, Error5xx: agg.e5, P95Ms: fakePercentile(agg.durs, 0.95),
+		})
+	}
+	sort.Slice(out.Series, func(i, j int) bool { return out.Series[i].Bucket.Before(out.Series[j].Bucket) })
+	for k, v := range statusMap {
+		out.StatusDistribution = append(out.StatusDistribution, store.APIStatsStatusCount{StatusClass: k, Count: v})
+	}
+	sort.Slice(out.StatusDistribution, func(i, j int) bool { return out.StatusDistribution[i].StatusClass < out.StatusDistribution[j].StatusClass })
+	for k, v := range authMap {
+		out.AuthSources = append(out.AuthSources, store.APIStatsAuthSourceCount{AuthType: k, Count: v})
+	}
+	sort.Slice(out.AuthSources, func(i, j int) bool { return out.AuthSources[i].Count > out.AuthSources[j].Count })
+	return out, nil
+}
+
+func (f *fakeStore) StatsRoutes(_ context.Context, q store.APIStatsQuery) (store.APIStatsRoutesResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	events, _, _, _ := f.filterStatsEventsLocked(q)
+	type rk struct{ m, r string }
+	type rAgg struct {
+		cnt, e4, e5, sum int64
+		durs             []int
+	}
+	aggMap := map[rk]*rAgg{}
+	for _, e := range events {
+		rt := e.RouteTemplate
+		if rt == "" {
+			rt = e.Path
+		}
+		k := rk{strings.ToUpper(e.Method), rt}
+		a, ok := aggMap[k]
+		if !ok {
+			a = &rAgg{}
+			aggMap[k] = a
+		}
+		a.cnt++
+		a.sum += int64(e.DurationMs)
+		a.durs = append(a.durs, e.DurationMs)
+		if e.StatusCode >= 400 && e.StatusCode < 500 {
+			a.e4++
+		} else if e.StatusCode >= 500 {
+			a.e5++
+		}
+	}
+	items := make([]store.APIStatsRouteItem, 0, len(aggMap))
+	for k, a := range aggMap {
+		items = append(items, store.APIStatsRouteItem{
+			Method: k.m, RouteTemplate: k.r, Count: a.cnt, Error4xx: a.e4, Error5xx: a.e5,
+			ErrorRate: float64(a.e4+a.e5) / float64(a.cnt),
+			AvgMs:     float64(a.sum) / float64(a.cnt),
+			P95Ms:     fakePercentile(a.durs, 0.95),
+			P99Ms:     fakePercentile(a.durs, 0.99),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		switch q.Sort {
+		case "error_rate":
+			if items[i].ErrorRate != items[j].ErrorRate {
+				return items[i].ErrorRate > items[j].ErrorRate
+			}
+		case "p95":
+			if items[i].P95Ms != items[j].P95Ms {
+				return items[i].P95Ms > items[j].P95Ms
+			}
+		}
+		return items[i].Count > items[j].Count
+	})
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return store.APIStatsRoutesResponse{Items: items}, nil
+}
+
+func (f *fakeStore) StatsErrors(_ context.Context, q store.APIStatsQuery) (store.APIStatsErrorsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	events, _, _, _ := f.filterStatsEventsLocked(q)
+	items := []store.APIStatsErrorItem{}
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.StatusCode < 400 {
+			continue
+		}
+		rt := e.RouteTemplate
+		if rt == "" {
+			rt = e.Path
+		}
+		items = append(items, store.APIStatsErrorItem{
+			OccurredAt: e.Time, Method: strings.ToUpper(e.Method), RouteTemplate: rt,
+			StatusCode: e.StatusCode, DurationMs: e.DurationMs, AuthType: e.AuthType,
+			APIKeyID: fakeEventKeyID(e), ClientIP: e.IP, ErrorCode: e.Reason,
+		})
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return store.APIStatsErrorsResponse{Items: items}, nil
+}
+
+func (f *fakeStore) StatsAPIKeys(_ context.Context, q store.APIStatsQuery) (store.APIStatsKeysResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	events, _, _, _ := f.filterStatsEventsLocked(q)
+	out := store.APIStatsKeysResponse{Items: []store.APIStatsKeyItem{}}
+	type kAgg struct {
+		item store.APIStatsKeyItem
+		durs []int
+		last time.Time
+	}
+	aggMap := map[string]*kAgg{}
+	for _, e := range events {
+		if e.StatusCode == http.StatusUnauthorized || e.AuthType == "invalid_key" {
+			out.Summary.Unauthorized401Count++
+		}
+		if e.StatusCode == http.StatusForbidden {
+			out.Summary.Forbidden403Count++
+		}
+		kid := fakeEventKeyID(e)
+		if kid == "" {
+			continue
+		}
+		out.Summary.TotalKeyRequests++
+		a, ok := aggMap[kid]
+		if !ok {
+			prefix := kid
+			name := kid
+			status := "active"
+			if e.ClientID > 0 {
+				prefix = fmt.Sprintf("client#%d", e.ClientID)
+				if c, ok := f.clients[e.ClientID]; ok {
+					name = c.Name
+					if c.Status == store.ClientStatusBlocked {
+						status = "revoked"
+					}
+				}
+			} else if e.UserID > 0 {
+				prefix = fmt.Sprintf("user#%d", e.UserID)
+			}
+			a = &kAgg{item: store.APIStatsKeyItem{
+				APIKeyID: kid, APIKeyPrefix: prefix, APIKeyName: name, Status: status,
+			}}
+			aggMap[kid] = a
+		}
+		a.item.Count++
+		a.durs = append(a.durs, e.DurationMs)
+		if e.StatusCode >= 400 && e.StatusCode < 500 {
+			a.item.Error4xx++
+		} else if e.StatusCode >= 500 {
+			a.item.Error5xx++
+		}
+		if e.Time.After(a.last) {
+			a.last = e.Time
+		}
+	}
+	out.Summary.ActiveKeyCount = int64(len(aggMap))
+	for _, a := range aggMap {
+		a.item.P95Ms = fakePercentile(a.durs, 0.95)
+		if out.Summary.TotalKeyRequests > 0 {
+			a.item.ShareRate = float64(a.item.Count) / float64(out.Summary.TotalKeyRequests)
+		}
+		if !a.last.IsZero() {
+			t := a.last.UTC()
+			a.item.LastActiveAt = &t
+		}
+		out.Items = append(out.Items, a.item)
+	}
+	sort.Slice(out.Items, func(i, j int) bool { return out.Items[i].Count > out.Items[j].Count })
+	return out, nil
+}
+
+func (f *fakeStore) StatsAPIKeyDetail(ctx context.Context, keyID string, q store.APIStatsQuery) (store.APIStatsKeyDetailResponse, error) {
+	q.ApiKeyID = keyID
+	ov, _ := f.StatsOverview(ctx, q)
+	rts, _ := f.StatsRoutes(ctx, q)
+	errs, _ := f.StatsErrors(ctx, q)
+	errRoutes := make([]store.APIStatsRouteItem, 0)
+	for _, r := range rts.Items {
+		if r.Error4xx > 0 || r.Error5xx > 0 {
+			errRoutes = append(errRoutes, r)
+		}
+	}
+	name := keyID
+	status := "active"
+	if keyID == "__invalid__" {
+		name = "无效 / 已吊销 Token 尝试"
+		status = "revoked"
+	}
+	return store.APIStatsKeyDetailResponse{
+		KeyID: keyID, KeyPrefix: keyID, KeyName: name, Status: status,
+		Summary: store.APIStatsKeyDetailSummary{
+			TotalRequests: ov.Summary.TotalRequests,
+			P95Ms:         ov.Summary.P95Ms,
+		},
+		Series:       ov.Series,
+		TopRoutes:    rts.Items,
+		ErrorRoutes:  errRoutes,
+		RecentErrors: errs.Items,
+	}, nil
 }
 
 func (f *fakeStore) SetHistoryRetain(n int) {

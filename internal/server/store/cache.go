@@ -337,6 +337,31 @@ func (c *cachedStore) PruneAccessLogs(ctx context.Context, before time.Time) (in
 	return c.inner.PruneAccessLogs(ctx, before)
 }
 
+// StatsOverview 透传
+func (c *cachedStore) StatsOverview(ctx context.Context, q APIStatsQuery) (APIStatsOverview, error) {
+	return c.inner.StatsOverview(ctx, q)
+}
+
+// StatsRoutes 透传
+func (c *cachedStore) StatsRoutes(ctx context.Context, q APIStatsQuery) (APIStatsRoutesResponse, error) {
+	return c.inner.StatsRoutes(ctx, q)
+}
+
+// StatsErrors 透传
+func (c *cachedStore) StatsErrors(ctx context.Context, q APIStatsQuery) (APIStatsErrorsResponse, error) {
+	return c.inner.StatsErrors(ctx, q)
+}
+
+// StatsAPIKeys 透传
+func (c *cachedStore) StatsAPIKeys(ctx context.Context, q APIStatsQuery) (APIStatsKeysResponse, error) {
+	return c.inner.StatsAPIKeys(ctx, q)
+}
+
+// StatsAPIKeyDetail 透传
+func (c *cachedStore) StatsAPIKeyDetail(ctx context.Context, keyID string, q APIStatsQuery) (APIStatsKeyDetailResponse, error) {
+	return c.inner.StatsAPIKeyDetail(ctx, keyID, q)
+}
+
 // SetHistoryRetain 透传
 func (c *cachedStore) SetHistoryRetain(n int) { c.inner.SetHistoryRetain(n) }
 

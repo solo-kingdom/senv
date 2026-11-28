@@ -17,7 +17,52 @@ const (
 	slowRequestThreshold  = 500 * time.Millisecond
 	largeResponseBytes    = 1 << 20
 	accessLogWriteTimeout = 5 * time.Second
+	dropWarnInterval      = 5 * time.Second
 )
+
+func shouldSkipAccessLog(path string) bool {
+	lower := strings.ToLower(path)
+	switch lower {
+	case "/healthz", "/health", "/readyz", "/livez", "/stats", "/stats/":
+		return true
+	}
+	if strings.HasPrefix(lower, "/stats/api") {
+		return true
+	}
+	for _, ext := range []string{".js", ".css", ".png", ".svg", ".ico", ".woff2"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeRouteTemplate(r *http.Request) string {
+	pat := strings.TrimSpace(r.Pattern)
+	if pat == "" {
+		return "/_unmatched"
+	}
+	if _, rest, ok := strings.Cut(pat, " "); ok {
+		pat = strings.TrimSpace(rest)
+	}
+	if pat == "" {
+		return "/_unmatched"
+	}
+	return sanitizeLogField(pat)
+}
+
+func resolveAuthType(info *accessInfo, r *http.Request, status int) string {
+	if info != nil && info.authType != "" {
+		return info.authType
+	}
+	if info != nil && (info.clientID > 0 || info.userID > 0) {
+		return "api_key"
+	}
+	if status == http.StatusUnauthorized && strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		return "invalid_key"
+	}
+	return "anonymous"
+}
 
 func sanitizeLogField(s string) string {
 	var b strings.Builder
@@ -97,18 +142,29 @@ func outcomeFromStatus(status int) string {
 }
 
 // recordAccess 落一条安全事件并推给告警检测器；启用异步队列时非阻塞入队，队列满丢弃并记 warn。
-func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder) {
+func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Request, rec *accessRecorder, dur time.Duration) {
+	if !s.apiStatsEnabled {
+		return
+	}
+	durMs := int(dur.Milliseconds())
+	if durMs < 0 {
+		durMs = 0
+	}
 	event := store.AccessEvent{
-		Time:     time.Now(),
-		IP:       sanitizeLogField(s.resolveRemoteIP(r)),
-		Method:   sanitizeLogField(r.Method),
-		Path:     sanitizeLogField(r.URL.Path),
-		ClientID: info.clientID,
-		UserID:   info.userID,
-		Outcome:  outcomeFromStatus(rec.status),
-		Reason:   sanitizeLogField(info.reason),
-		NEntries: info.nEntries,
-		NDeleted: info.nDeleted,
+		Time:          time.Now().UTC(),
+		IP:            sanitizeLogField(s.resolveRemoteIP(r)),
+		Method:        sanitizeLogField(r.Method),
+		Path:          sanitizeLogField(r.URL.Path),
+		RouteTemplate: normalizeRouteTemplate(r),
+		StatusCode:    rec.status,
+		DurationMs:    durMs,
+		AuthType:      resolveAuthType(info, r, rec.status),
+		ClientID:      info.clientID,
+		UserID:        info.userID,
+		Outcome:       outcomeFromStatus(rec.status),
+		Reason:        sanitizeLogField(info.reason),
+		NEntries:      info.nEntries,
+		NDeleted:      info.nDeleted,
 	}
 	// 告警检测在非阻塞 channel 上：队列满丢弃 + slog，绝不拖慢响应路径
 	if s.alerts != nil {
@@ -118,7 +174,16 @@ func (s *Server) recordAccess(ctx context.Context, info *accessInfo, r *http.Req
 		select {
 		case s.accessCh <- event:
 		default:
-			slog.Warn("access log queue full, dropping event", "method", event.Method, "path", event.Path)
+			dropped := s.droppedAccessLog.Add(1)
+			nowNano := time.Now().UnixNano()
+			last := s.lastDropWarnNano.Load()
+			if nowNano-last >= int64(dropWarnInterval) && s.lastDropWarnNano.CompareAndSwap(last, nowNano) {
+				slog.Warn("access log queue full, dropping event",
+					"method", event.Method,
+					"route", event.RouteTemplate,
+					"dropped_total", dropped,
+				)
+			}
 		}
 		return
 	}
@@ -156,23 +221,24 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 }
 
-// withAccessLog 包装 ServeHTTP：healthz 跳过（健康探测会淹没事件流水）。
+// withAccessLog 包装 ServeHTTP：healthz/探活/统计端点/静态资源跳过（避免淹没事件流水）。
 // 每个请求挂一个可变 accessInfo，认证中间件原地写入身份与拦截原因。
 func (s *Server) withAccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
+		if shouldSkipAccessLog(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		start := time.Now()
 		info := &accessInfo{}
+		reqWithInfo := r.WithContext(contextWithAccessInfo(r.Context(), info))
 		rec := &accessRecorder{ResponseWriter: w, status: http.StatusOK, reqStart: start, info: info}
-		next.ServeHTTP(rec, r.WithContext(contextWithAccessInfo(r.Context(), info)))
+		next.ServeHTTP(rec, reqWithInfo)
 		total := time.Since(start)
 		if total > slowRequestThreshold {
 			slog.Warn("slow http request",
-				"method", sanitizeLogField(r.Method),
-				"path", sanitizeLogField(r.URL.Path),
+				"method", sanitizeLogField(reqWithInfo.Method),
+				"path", sanitizeLogField(reqWithInfo.URL.Path),
 				"status", rec.status,
 				"dur_ms", total.Milliseconds(),
 				"bytes", rec.bytesWritten,
@@ -180,14 +246,14 @@ func (s *Server) withAccessLog(next http.Handler) http.Handler {
 			)
 		} else if rec.bytesWritten > largeResponseBytes {
 			slog.Info("large http response",
-				"method", sanitizeLogField(r.Method),
-				"path", sanitizeLogField(r.URL.Path),
+				"method", sanitizeLogField(reqWithInfo.Method),
+				"path", sanitizeLogField(reqWithInfo.URL.Path),
 				"status", rec.status,
 				"dur_ms", total.Milliseconds(),
 				"bytes", rec.bytesWritten,
 				"encoding", rec.Header().Get("Content-Encoding"),
 			)
 		}
-		s.recordAccess(r.Context(), info, r, rec)
+		s.recordAccess(reqWithInfo.Context(), info, reqWithInfo, rec, total)
 	})
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wii/senv/internal/server/store"
@@ -51,6 +52,11 @@ type Options struct {
 	AlertBodyTemplate string
 	// AsyncAccessLogBuffer > 0 时启用有界异步访问日志队列（默认 0=同步落库，便于测试确定性）。
 	AsyncAccessLogBuffer int
+	// APIStatsEnabled 控制是否采集访问统计（nil 默认 true；设为 false 可一键关闭）。
+	APIStatsEnabled *bool
+	// LANAllowedCIDRs / LANAllowedHosts 为 /stats* 门禁额外放行的内网网段或主机名。
+	LANAllowedCIDRs []string
+	LANAllowedHosts []string
 }
 
 // withDefaults 补齐零值
@@ -75,10 +81,19 @@ type Server struct {
 	limiter           *authRateLimiter
 	maxBody           int64
 	trustProxyHeaders bool
+	apiStatsEnabled   bool
+	lanChecker        *LANChecker
 	alerts            *alertDetector
 	accessCh          chan store.AccessEvent
 	accessWG          sync.WaitGroup
 	accessCloseOnce   sync.Once
+	droppedAccessLog  atomic.Int64
+	lastDropWarnNano  atomic.Int64
+}
+
+// DroppedAccessLogCount 返回异步访问日志队列满时累计丢弃的事件数。
+func (s *Server) DroppedAccessLogCount() int64 {
+	return s.droppedAccessLog.Load()
 }
 
 // New 创建 HTTP server（路由带 v1 前缀；健康检查除外，均需 Bearer token）。
@@ -94,8 +109,19 @@ func New(st store.Store, opts ...Options) *Server {
 	if o.AuthRateLimit > 0 {
 		limiter = newAuthRateLimiter(o.AuthRateLimit)
 	}
-	s := &Server{store: st, mux: http.NewServeMux(), limiter: limiter, maxBody: o.MaxBodyBytes,
-		trustProxyHeaders: o.TrustProxyHeaders}
+	statsEnabled := true
+	if o.APIStatsEnabled != nil {
+		statsEnabled = *o.APIStatsEnabled
+	}
+	s := &Server{
+		store:             st,
+		mux:               http.NewServeMux(),
+		limiter:           limiter,
+		maxBody:           o.MaxBodyBytes,
+		trustProxyHeaders: o.TrustProxyHeaders,
+		apiStatsEnabled:   statsEnabled,
+		lanChecker:        NewLANChecker(o.LANAllowedCIDRs, o.LANAllowedHosts),
+	}
 	if o.AlertWebhook != "" {
 		s.alerts = newAlertDetector(st, o.AlertWebhook, o.AlertAuthFailThreshold, o.AlertMassDeleteThreshold, o.AlertDebounce, o.AlertBodyTemplate)
 		go s.alerts.run(context.Background())
@@ -114,6 +140,12 @@ func New(st store.Store, opts ...Options) *Server {
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries", s.auth(s.handlePush))
 	s.mux.HandleFunc("POST /v1/vaults/{vault}/entries/lookup", s.auth(s.handleLookup))
 	s.mux.HandleFunc("GET /v1/vaults/{vault}/history", s.auth(s.handleHistory))
+	s.mux.HandleFunc("GET /stats", s.statsProtected(s.handleStatsPage))
+	s.mux.HandleFunc("GET /stats/api/overview", s.statsProtected(s.handleStatsOverview))
+	s.mux.HandleFunc("GET /stats/api/routes", s.statsProtected(s.handleStatsRoutes))
+	s.mux.HandleFunc("GET /stats/api/errors", s.statsProtected(s.handleStatsErrors))
+	s.mux.HandleFunc("GET /stats/api/api-keys", s.statsProtected(s.handleStatsAPIKeys))
+	s.mux.HandleFunc("GET /stats/api/api-keys/{keyId}", s.statsProtected(s.handleStatsAPIKeyDetail))
 	return s
 }
 
@@ -134,12 +166,22 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		ip := s.resolveRemoteIP(r)
 		info := accessInfoFrom(r.Context())
 		if s.limiter.blocked(ip) {
+			if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+				info.authType = "invalid_key"
+			} else {
+				info.authType = "anonymous"
+			}
 			info.reason = "rate limited"
 			writeError(w, http.StatusTooManyRequests, "too many requests")
 			return
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok || strings.TrimSpace(token) == "" {
+			if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+				info.authType = "invalid_key"
+			} else {
+				info.authType = "anonymous"
+			}
 			info.reason = "missing bearer token"
 			s.limiter.countFailure(ip)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -148,6 +190,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		res, err := s.store.AuthenticateWithClient(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
+				info.authType = "invalid_key"
 				info.reason = "invalid or revoked token"
 				s.limiter.countFailure(ip)
 				writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -159,6 +202,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if res.ClientBlocked {
 			// 安全事件需要 client 身份：info 为指针，原地写入即可被外层读到
+			info.authType = "api_key"
 			info.clientID = res.ClientID
 			info.reason = "client blocked"
 			writeError(w, http.StatusForbidden, "client_blocked")
@@ -168,6 +212,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			// best-effort 刷新最近活跃时间，失败不影响请求
 			s.store.TouchClient(r.Context(), res.ClientID)
 		}
+		info.authType = "api_key"
 		info.userID = res.UserID
 		info.clientID = res.ClientID
 		info.authDur = time.Since(authStart)
