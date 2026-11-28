@@ -53,6 +53,19 @@ func getGitManager() (*git.Manager, error) {
 	return manager, nil
 }
 
+// ensureMachineLocalGitIgnore 尽力把机器本地工件补写进仓库根的 .gitignore。
+//
+// 该文件只在 `senv init` 时生成；比该特性更早初始化的 vault（例如 mini 上
+// 2026-10 建的仓）没有它，`.senv-vault.lock`、`mcp-exports.json` 会一直以
+// 未跟踪文件出现，既污染 `git status`，也可能被用户手写 `git add .` 误提交。
+// git add 的排除 pathspec 只是兜底，无法让 status 变干净。失败不阻断 git
+// 操作：兜底排除仍然生效。
+func ensureMachineLocalGitIgnore() {
+	if err := getStorage().EnsureGitIgnoreMachineLocal(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: 补写 .gitignore 失败（不影响本次操作）: %v\n", err)
+	}
+}
+
 // gitPullCmd represents the git pull command
 var gitPullCmd = &cobra.Command{
 	Use:   "pull",
@@ -115,8 +128,13 @@ On merge conflict the merge is aborted and push stops; never force-pushes.
 
 		// -m provided: use specified message, add+commit+push directly
 		if gitCommitMessage != "" {
+			ensureMachineLocalGitIgnore()
 			fmt.Printf("正在同步更改到远程仓库...\n")
 			if err := manager.AddCommitPush(gitCommitMessage); err != nil {
+				if errors.Is(err, git.ErrNothingToPush) {
+					fmt.Printf("✓ 已与远程对齐，无需推送\n")
+					return nil
+				}
 				return err
 			}
 			fmt.Printf("✓ 成功推送更改 (commit: %s)\n", gitCommitMessage)
@@ -124,7 +142,8 @@ On merge conflict the merge is aborted and push stops; never force-pushes.
 		}
 
 		// No flags: auto-generate message and ask for confirmation
-		status, err := manager.Status()
+		ensureMachineLocalGitIgnore()
+		status, err := manager.SyncableStatus()
 		if err != nil {
 			return err
 		}
@@ -185,6 +204,8 @@ You must provide a commit message with -m flag.`,
 			return fmt.Errorf("请提供提交信息，使用 -m 标志")
 		}
 
+		ensureMachineLocalGitIgnore()
+
 		// Add changes
 		fmt.Printf("正在添加更改...\n")
 		if err := manager.Add(); err != nil {
@@ -225,12 +246,14 @@ updates if needed). Use sync when you want rebase-based bidirectional sync.`,
 			message = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
 		}
 
-		hasChanges, err := manager.HasChanges()
+		ensureMachineLocalGitIgnore()
+
+		hasChanges, err := manager.HasSyncableChanges()
 		if err != nil {
 			return err
 		}
 		if hasChanges {
-			status, _ := manager.Status()
+			status, _ := manager.SyncableStatus()
 			fmt.Printf("将提交本地更改:\n%s\n", status)
 		}
 

@@ -54,6 +54,7 @@ server provider:  incremental pull into the local cache, then push pending chang
 		if message == "" {
 			message = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
 		}
+		ensureMachineLocalGitIgnore()
 		fmt.Printf("正在同步（commit → pull --rebase → push）...\n")
 		if err := p.Sync(message); err != nil {
 			auditOp(session.AuditOpSync, "git", false, "git sync 失败")

@@ -316,3 +316,137 @@ func assertNoMergeInProgress(t *testing.T, repo string) {
 		t.Fatal("MERGE_HEAD should not exist")
 	}
 }
+
+// writeMachineLocalArtifacts 模拟旧版本 vault：没有生成的 .gitignore，
+// .senv-vault.lock 与 mcp-exports.json 以未跟踪文件长期存在。
+func writeMachineLocalArtifacts(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, ".senv-vault.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "mcp-exports.json"), []byte(`{"cursor":{"github":"fp"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSync_OnlyMachineLocalArtifactsIsNoop 复现 mini 事故：
+// 只有机器本地工件的未跟踪状态时，Sync 曾先判定「有改动」、Add 后暂存区为空、
+// 在 Commit 处以「没有需要提交的更改」中止，连远端更新都拉不下来。
+func TestSync_OnlyMachineLocalArtifactsIsNoop(t *testing.T) {
+	_, machineA, machineB := setupRemotePair(t)
+
+	// 远端先行提交：修复前 sync 在 commit 处就失败，根本走不到 pull。
+	if err := os.WriteFile(filepath.Join(machineB, "from-b.txt"), []byte("b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineB, "add", ".")
+	runGit(t, machineB, "commit", "-m", "from b")
+	runGit(t, machineB, "push")
+
+	writeMachineLocalArtifacts(t, machineA)
+
+	mgr := NewManager(machineA)
+	if err := mgr.Sync("should be a no-op"); err != nil {
+		t.Fatalf("Sync with only machine-local artifacts must succeed: %v", err)
+	}
+
+	// 远端更新已经拉下来（证明 pull 真正执行了）。
+	if _, err := os.Stat(filepath.Join(machineA, "from-b.txt")); err != nil {
+		t.Fatalf("expected remote update to be pulled: %v", err)
+	}
+
+	// 机器本地工件不得被提交。
+	tracked, err := exec.Command("git", "-C", machineA, "ls-files").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".senv-vault.lock", "mcp-exports.json"} {
+		if strings.Contains(string(tracked), name) {
+			t.Fatalf("%s must never be committed, tracked files:\n%s", name, tracked)
+		}
+	}
+}
+
+// TestPull_IgnoresMachineLocalArtifacts 覆盖单独的 pull 路径：机器本地工件
+// 不应触发「存在未提交的更改」。
+func TestPull_IgnoresMachineLocalArtifacts(t *testing.T) {
+	_, machineA, machineB := setupRemotePair(t)
+
+	if err := os.WriteFile(filepath.Join(machineB, "from-b.txt"), []byte("b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, machineB, "add", ".")
+	runGit(t, machineB, "commit", "-m", "from b")
+	runGit(t, machineB, "push")
+
+	writeMachineLocalArtifacts(t, machineA)
+
+	if err := NewManager(machineA).Pull(); err != nil {
+		t.Fatalf("Pull with only machine-local artifacts must succeed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(machineA, "from-b.txt")); err != nil {
+		t.Fatalf("expected remote update to be pulled: %v", err)
+	}
+}
+
+// TestAddCommitPush_OnlyMachineLocalArtifactsSkipsCommit 覆盖 push 语义：
+// 没有可提交内容时跳过 commit 直接 push，而不是报「没有需要提交的更改」。
+func TestAddCommitPush_OnlyMachineLocalArtifactsSkipsCommit(t *testing.T) {
+	_, machineA, _ := setupRemotePair(t)
+
+	before, err := exec.Command("git", "-C", machineA, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeMachineLocalArtifacts(t, machineA)
+
+	err = NewManager(machineA).AddCommitPush("should not create a commit")
+	if !errors.Is(err, ErrNothingToPush) {
+		t.Fatalf("expected ErrNothingToPush (no commit, nothing to push), got %v", err)
+	}
+
+	after, err := exec.Command("git", "-C", machineA, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("HEAD moved: machine-local artifacts must not be committed (%s -> %s)", before, after)
+	}
+}
+
+// TestHasSyncableChangesIgnoresMachineLocalArtifacts 锁定判定语义：
+// HasChanges 看原始工作树，HasSyncableChanges 只看会被 Add 暂存的部分。
+func TestHasSyncableChangesIgnoresMachineLocalArtifacts(t *testing.T) {
+	m := initRealRepo(t)
+
+	writeMachineLocalArtifacts(t, m.repoPath)
+
+	hasChanges, err := m.HasChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChanges {
+		t.Fatal("HasChanges should report untracked machine-local artifacts")
+	}
+
+	hasSyncable, err := m.HasSyncableChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasSyncable {
+		t.Fatal("HasSyncableChanges must ignore machine-local artifacts")
+	}
+
+	// 真实改动仍然可见。
+	if err := os.WriteFile(filepath.Join(m.repoPath, "normal.txt"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hasSyncable, err = m.HasSyncableChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasSyncable {
+		t.Fatal("HasSyncableChanges must report regular changes")
+	}
+}

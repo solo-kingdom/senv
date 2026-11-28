@@ -91,6 +91,11 @@ func (is *interactiveSession) gitCommit() {
 		return
 	}
 
+	// 旧 vault 可能缺 .gitignore；补写后再 add，避免机器本地工件污染状态。
+	if err := is.storageManager.EnsureGitIgnoreMachineLocal(); err != nil {
+		fmt.Printf("⚠️  补写 .gitignore 失败（不影响本次提交）: %v\n", err)
+	}
+
 	fmt.Println("正在提交...")
 	if err := is.gitManager.Add(); err != nil {
 		fmt.Printf("❌ 添加更改失败: %v\n", err)
@@ -118,6 +123,10 @@ func (is *interactiveSession) gitSync() {
 	message := is.prompt("提交信息 (无本地改动可回车): ")
 	if message == "" {
 		message = fmt.Sprintf("Update configurations - %s", time.Now().Format("2006-01-02 15:04:05"))
+	}
+
+	if err := is.storageManager.EnsureGitIgnoreMachineLocal(); err != nil {
+		fmt.Printf("⚠️  补写 .gitignore 失败（不影响本次同步）: %v\n", err)
 	}
 
 	fmt.Println("\n正在同步（commit → pull --rebase → push）...")

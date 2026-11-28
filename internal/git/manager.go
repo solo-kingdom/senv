@@ -152,6 +152,66 @@ func (m *Manager) HasChangesWithContext(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(status) != "", nil
 }
 
+// SyncableStatus returns the working-tree changes that Add would stage, in
+// porcelain format. Machine-local artifacts (see
+// storage.machineLocalArtifacts) are filtered out because Add never stages
+// them.
+func (m *Manager) SyncableStatus() (string, error) {
+	return m.SyncableStatusWithContext(context.Background())
+}
+
+// SyncableStatusWithContext is SyncableStatus with an explicit context.
+func (m *Manager) SyncableStatusWithContext(ctx context.Context) (status string, err error) {
+	defer func() { err = m.withDataDir(err) }()
+	args := append([]string{"status", "--porcelain", "--"}, syncStatusPathspecs()...)
+	output, err := m.runCommand(ctx, args...)
+	if err != nil {
+		return "", fmt.Errorf("failed to get git status: %w", err)
+	}
+	return string(output), nil
+}
+
+// HasSyncableChanges reports whether the worktree has changes that can enter
+// the sync channel at all (i.e. would be staged by Add).
+func (m *Manager) HasSyncableChanges() (bool, error) {
+	return m.HasSyncableChangesWithContext(context.Background())
+}
+
+// HasSyncableChangesWithContext is HasSyncableChanges with an explicit context.
+//
+// 与 HasChanges 的区别：机器本地工件（server token、MCP 导出账本、同步/口令锁、
+// TUI 快照、cache 等）永远不被 git add 暂存，也不能让 sync/pull/push 认为工作树
+// 「脏」。旧版本初始化的 vault 可能没有生成的 .gitignore，这些文件会出现在
+// git status 里；此时若用 HasChanges 判定，sync 会先认定有改动，Add 后暂存区
+// 为空，最后在 commit 处以「没有需要提交的更改」失败，连 pull 都走不到。
+func (m *Manager) HasSyncableChangesWithContext(ctx context.Context) (bool, error) {
+	status, err := m.SyncableStatusWithContext(ctx)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(status) != "", nil
+}
+
+// HasStagedChanges reports whether the index differs from HEAD.
+func (m *Manager) HasStagedChanges() (bool, error) {
+	return m.HasStagedChangesWithContext(context.Background())
+}
+
+// HasStagedChangesWithContext is HasStagedChanges with an explicit context.
+// `git diff --cached --quiet` exits 0 when the index matches HEAD, 1 when it
+// differs, and >1 on real errors.
+func (m *Manager) HasStagedChangesWithContext(ctx context.Context) (bool, error) {
+	_, err := m.runCommand(ctx, "diff", "--cached", "--quiet")
+	if err == nil {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	}
+	return false, fmt.Errorf("检查暂存区失败: %w", err)
+}
+
 // Pull performs a git pull operation
 func (m *Manager) Pull() error {
 	return m.PullWithContext(context.Background())
@@ -161,7 +221,9 @@ func (m *Manager) Pull() error {
 func (m *Manager) PullWithContext(ctx context.Context) (err error) {
 	defer func() { err = m.withDataDir(err) }()
 
-	hasChanges, err := m.HasChangesWithContext(ctx)
+	// 这里只拦真正会进同步通道的更改；机器本地工件（如 .senv-vault.lock、
+	// mcp-exports.json）不参与提交，也不该阻塞 pull。
+	hasChanges, err := m.HasSyncableChangesWithContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -224,6 +286,14 @@ func (m *Manager) revListHasCommits(ctx context.Context, rangeSpec, parseErrPref
 // 目录缓存。`**/` 形式匹配任意深度；即使 .gitignore 缺失也不会被暂存。
 var machineLocalExcludePathspecs = storage.MachineLocalGitExcludeGlobs()
 
+// syncStatusPathspecs 是「可同步更改」判定用的 pathspec：全仓路径 + 机器本地
+// 工件排除，与 AddWithContext 的暂存范围严格一致。
+func syncStatusPathspecs() []string {
+	args := make([]string, 0, len(machineLocalExcludePathspecs)+1)
+	args = append(args, ".")
+	return append(args, machineLocalExcludePathspecs...)
+}
+
 // Add adds all changes to the staging area except machine-local secret files
 func (m *Manager) Add() error {
 	return m.AddWithContext(context.Background())
@@ -253,12 +323,11 @@ func (m *Manager) Commit(message string) error {
 func (m *Manager) CommitWithContext(ctx context.Context, message string) (err error) {
 	defer func() { err = m.withDataDir(err) }()
 
-	// Check if there are staged changes
-	// git diff --cached --quiet returns exit code 0 if no staged changes, 1 if there are staged changes
-	output, err := m.runCommand(ctx, "diff", "--cached", "--quiet")
-
-	if err == nil {
-		// Exit code 0 means no staged changes
+	staged, err := m.HasStagedChangesWithContext(ctx)
+	if err != nil {
+		return err
+	}
+	if !staged {
 		return fmt.Errorf("没有需要提交的更改。请先使用 'git add' 添加更改")
 	}
 
@@ -268,7 +337,6 @@ func (m *Manager) CommitWithContext(ctx context.Context, message string) (err er
 		return fmt.Errorf("commit 失败: %w\n%s", err, string(commitOut))
 	}
 
-	_ = output // output is not used, we only care about the exit code
 	return nil
 }
 
@@ -323,7 +391,8 @@ func (m *Manager) PushWithContext(ctx context.Context) (err error) {
 		return fmt.Errorf("检查远程更新失败: %w", err)
 	}
 	if needsMerge {
-		dirty, dirtyErr := m.HasChangesWithContext(ctx)
+		// 机器本地工件不足以阻塞 merge：它们不会进版本库，也不参与后续 commit。
+		dirty, dirtyErr := m.HasSyncableChangesWithContext(ctx)
 		if dirtyErr != nil {
 			return dirtyErr
 		}
@@ -375,8 +444,16 @@ func (m *Manager) AddCommitPushWithContext(ctx context.Context, message string) 
 		return err
 	}
 
-	if err := m.CommitWithContext(ctx, message); err != nil {
+	// 只有机器本地工件变化时暂存区为空，commit 无事可做；push 语义下应继续
+	// 推送既有本地提交，而不是以「没有需要提交的更改」失败。
+	staged, err := m.HasStagedChangesWithContext(ctx)
+	if err != nil {
 		return err
+	}
+	if staged {
+		if err := m.CommitWithContext(ctx, message); err != nil {
+			return err
+		}
 	}
 
 	if err := m.PushWithContext(ctx); err != nil {
@@ -393,19 +470,24 @@ func (m *Manager) Sync(message string) error {
 }
 
 // SyncWithContext is Sync with an explicit context.
+//
+// 「是否有本地改动」以暂存区为准：先 Add，再检查 `diff --cached`。不能沿用
+// HasChanges 预判——只有机器本地工件变化时 HasChanges 为 true，但 Add 不会
+// 暂存它们，随后的 Commit 会以「没有需要提交的更改」失败，整个 sync 中止。
 func (m *Manager) SyncWithContext(ctx context.Context, message string) (err error) {
 	defer func() { err = m.withDataDir(err) }()
 
-	hasChanges, err := m.HasChangesWithContext(ctx)
+	if err := m.AddWithContext(ctx); err != nil {
+		return err
+	}
+
+	staged, err := m.HasStagedChangesWithContext(ctx)
 	if err != nil {
 		return err
 	}
-	if hasChanges {
+	if staged {
 		if strings.TrimSpace(message) == "" {
 			return fmt.Errorf("有未提交更改时必须提供提交信息")
-		}
-		if err := m.AddWithContext(ctx); err != nil {
-			return err
 		}
 		if err := m.CommitWithContext(ctx, message); err != nil {
 			return err
@@ -484,7 +566,9 @@ func (m *Manager) GetStatusInfoWithContext(ctx context.Context) (info *StatusInf
 		info.RemoteURL = url
 	}
 
-	hasChanges, err := m.HasChangesWithContext(ctx)
+	// HasChanges 对状态展示应反映「可提交的更改」；机器本地工件不会被提交，
+	// 列入详情只会制造噪音（旧 vault 缺 .gitignore 时尤其明显）。
+	hasChanges, err := m.HasSyncableChangesWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
