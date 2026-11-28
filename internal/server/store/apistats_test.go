@@ -14,10 +14,7 @@ func TestPGStatsQueriesAndPercentiles(t *testing.T) {
 	st := NewSQL(pool)
 	ctx := context.Background()
 
-	var userID int64
-	if err := pool.QueryRow(ctx, `INSERT INTO users (name, token_hash) VALUES ('stats-user', 'hash-stats') RETURNING id`).Scan(&userID); err != nil {
-		t.Fatalf("insert user: %v", err)
-	}
+	userID, _ := newTestUser(t, st, "stats-user")
 	code, err := st.CreateRegistrationCode(ctx, userID, time.Hour)
 	if err != nil {
 		t.Fatalf("CreateRegistrationCode: %v", err)
